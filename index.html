@@ -1880,14 +1880,14 @@ a.btn{text-decoration:none}
         <section class="landing-section" aria-labelledby="landingTrustTitle">
           <h2 id="landingTrustTitle">Private by default</h2>
           <ul class="landing-trust">
-            <li><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-shield"/></svg><span><b>Invite-only.</b> Members are approved by the circle owner.</span></li>
+            <li><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-shield"/></svg><span><b>Invite-only.</b> Members are approved by a circle owner.</span></li>
             <li><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-users"/></svg><span><b>Just you and your partner.</b> Your sessions stay private to the two of you.</span></li>
             <li><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-check"/></svg><span><b>No noise.</b> No recruiters, no ads, no public profiles.</span></li>
           </ul>
           <details id="landingPrivacy" class="landing-privacy">
             <summary>Privacy note</summary>
-            <p>Randori Circle is a private practice space run by its owner. Members see the names of the people in their circle. Your editor, whiteboard and chat in a pairing room are shared only with your partner for that week.</p>
-            <p>If you request an invite, the circle owner sees your name, email and note so they can decide. A request that isn’t answered expires after 30 days. Once the owner approves or declines it, your name, email and note are removed from the request. If you’re approved, you get a normal invitation email.</p>
+            <p>Randori Circle is a private practice space run by its owners. Members see the names of the people in their circle. Your editor, whiteboard and chat in a pairing room are shared only with your partner for that week.</p>
+            <p>If you request an invite, the circle owners see your name, email and note so they can decide. A request that isn’t answered expires after 30 days. Once an owner approves or declines it, your name, email and note are removed from the request. If you’re approved, you get a normal invitation email.</p>
           </details>
         </section>
 
@@ -1898,7 +1898,7 @@ a.btn{text-decoration:none}
             <button id="requestInviteSignin" class="btn secondary" type="button">Sign in</button>
           </div>
           <form id="requestInviteForm" class="landing-form" data-testid="request-invite-form" novalidate hidden aria-busy="false">
-            <p class="landing-form-intro">Tell the circle owner a little about yourself. They review every request.</p>
+            <p class="landing-form-intro">Tell the circle owners a little about yourself. They review every request.</p>
             <div id="requestInviteFormError" class="rc-banner rc-banner--danger" data-testid="request-invite-error" role="alert" tabindex="-1" hidden></div>
             <div class="landing-field">
               <label for="requestInviteName">Name</label>
@@ -2994,7 +2994,7 @@ a.btn{text-decoration:none}
       verified:'Your email is verified and your account is ready.',
       expired:'This verification link expired. Return to your invitation and request a new link.',
       used:'This verification link has already been used. Sign in with your email and password.',
-      revoked:'This activation is no longer available. Ask the circle owner for a new invitation.',
+      revoked:'This activation is no longer available. Ask a circle owner for a new invitation.',
       invalid:'This verification link is invalid or unavailable.',
       unavailable:'Verification is temporarily unavailable. Please retry shortly.',
     };
@@ -3215,7 +3215,7 @@ a.btn{text-decoration:none}
         :inviteState.rateLimited
         ? `Too many attempts. Try again${inviteState.retryAfter?` in ${inviteState.retryAfter} seconds`: ' later'}.`
         : (inviteState.expired||(inviteState.ready&&!liveInvite)
-          ?'This prepared invitation expired. Reopen the original invitation link or ask the circle owner for a new one.'
+          ?'This prepared invitation expired. Reopen the original invitation link or ask a circle owner for a new one.'
         : (inviteState.failed
           ? 'This invitation is unavailable or has expired.'
           : (liveInvite
@@ -3405,8 +3405,9 @@ async function refreshMe(){
     }catch{}
     return true;
   }
-  const ADMIN_EMAIL='festusomole14@gmail.com';
-  function isAdmin(){ return !!(me && (me.is_admin || me.isAdmin || (me.email && me.email.toLowerCase()===ADMIN_EMAIL))); }
+  // Admin is read from the server's current account state (is_admin), never
+  // from a hard-coded address, so grants and revocations apply to everyone.
+  function isAdmin(){ return !!(me && (me.is_admin || me.isAdmin)); }
   function currentPairingRecoveryAvailable(){
     const state=currentPairingPublicationState;
     const fence=currentPairingPublicationFence;
@@ -6405,7 +6406,9 @@ async function refreshMe(){
   function lifecycleErrorMessage(error){
     const code=String(error?.error||'');
     if(error?.code==='recent_auth_required'||code==='recent authentication required') return 'Confirm your identity to continue this sensitive change.';
-    if(code==='another active owner is required') return 'Transfer ownership before removing the last active owner.';
+    const roleMessage=circleUi.memberRoleErrorMessage(error);
+    if(roleMessage) return roleMessage;
+    if(code==='another active owner is required') return 'Add or transfer an owner before removing the last active owner.';
     if(code==='membership state changed') return 'Membership changed elsewhere. Refreshing the current list.';
     if(code==='member not found') return 'That member is no longer available in this circle.';
     if(code==='choose another active member') return 'Choose another active member for ownership.';
@@ -6449,7 +6452,7 @@ async function refreshMe(){
     const createdAt=Number(pending?.created_at);
     const currentCircleId=String(activeCircleContext?.active_circle?.public_id||'');
     const currentContextVersion=Number(activeCircleContext?.context_version||0);
-    const actionValid=['deactivate','transfer','archive'].includes(pending?.action);
+    const actionValid=pending?.action==='archive'||circleUi.RECENT_AUTH_MEMBER_ACTIONS.includes(pending?.action);
     const targetValid=pending?.action==='archive'
       ?!Object.prototype.hasOwnProperty.call(pending,'member_id')
       :Number.isSafeInteger(pending?.member_id)&&pending.member_id>0;
@@ -6465,7 +6468,8 @@ async function refreshMe(){
   async function requestLifecycleRecentAuth(action,memberId=null){
     const actorId=Number(me?.id||me?.uid);
     const targetValid=action==='archive'||Number.isSafeInteger(memberId)&&memberId>0;
-    if(!Number.isSafeInteger(actorId)||actorId<1||!['deactivate','transfer','archive'].includes(action)
+    if(!Number.isSafeInteger(actorId)||actorId<1
+      ||!(action==='archive'||circleUi.RECENT_AUTH_MEMBER_ACTIONS.includes(action))
       ||!targetValid) return false;
     try{
       sessionStorage.setItem(LIFECYCLE_RECENT_ACTION_KEY,JSON.stringify({
@@ -6480,7 +6484,10 @@ async function refreshMe(){
       clearLifecycleRecentAction();
       return false;
     }
-    return window._randori_identity.confirm(action==='transfer'
+    const roleCopy=circleUi.memberRoleActionCopy(action);
+    return window._randori_identity.confirm(roleCopy
+      ?roleCopy.confirm
+      :action==='transfer'
       ?'Confirm your identity before transferring circle ownership.'
       :action==='archive'
       ?'Confirm your identity before archiving this circle.'
@@ -6528,19 +6535,20 @@ async function refreshMe(){
       reactivate:[`Reactivate ${label}?`,'They can sign in again and rejoin future pairing cycles.'],
       transfer:[`Transfer ownership to ${label}?`,'They become the owner and you become a member. This change takes effect immediately.'],
     };
-    const prompt=prompts[action];
+    const roleCopy=circleUi.memberRoleActionCopy(action,label);
+    const prompt=roleCopy?[roleCopy.title,roleCopy.body]:prompts[action];
     if(!prompt||(!skipPrompt&&!await showConfirm(prompt[0],prompt[1]))) return false;
     if(!circleControlOperationMatches(operation)) return false;
     const actorId=Number(me.id||me.uid);
     circleLifecyclePending=true;
     clearCircleLifecycleNotice();
-    if(circleLifecycleStatus) circleLifecycleStatus.textContent=`${action==='transfer'?'Transferring ownership':action==='reactivate'?'Reactivating member':'Deactivating member'}…`;
+    if(circleLifecycleStatus) circleLifecycleStatus.textContent=roleCopy?roleCopy.pending:`${action==='transfer'?'Transferring ownership':action==='reactivate'?'Reactivating member':'Deactivating member'}…`;
     circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=true; });
     try{
       const result=await api('/api/members',{method:'PATCH',body:{action,member_id:Number(member.id)}});
       if(!me||Number(me.id||me.uid)!==actorId
         ||!circleControlOperationMatches(operation,result)) return false;
-      if(circleLifecycleStatus) circleLifecycleStatus.textContent=action==='transfer'?'Ownership transferred.':action==='reactivate'?'Member reactivated.':'Member deactivated and signed out.';
+      if(circleLifecycleStatus) circleLifecycleStatus.textContent=roleCopy?roleCopy.done:action==='transfer'?'Ownership transferred.':action==='reactivate'?'Member reactivated.':'Member deactivated and signed out.';
       circleRosterState.loaded=false;
       circleRosterLoading=false;
       circleRosterLoadEpoch=0;
@@ -6577,7 +6585,7 @@ async function refreshMe(){
     const actorId=Number(me?.id||me?.uid);
     const list=document.createElement('ul'); list.className='people circle-member-rows'; list.setAttribute('aria-label','Circle members');
     members.forEach(member=>{
-      const view=circleUi.memberView(member,{actorId});
+      const view=circleUi.memberView(member,{actorId,actorIsAdmin:isAdmin()});
       if(!view) return;
       const row=document.createElement('li'); row.className='circle-row circle-member-row'; row.dataset.testid='circle-member-row';
       row.dataset.memberId=String(view.id); row.dataset.memberRole=view.role; row.dataset.memberStatus=view.status;
@@ -6590,6 +6598,7 @@ async function refreshMe(){
       if(view.isSelf){ const you=document.createElement('span'); you.className='circle-you'; you.textContent='(you)'; title.appendChild(you); }
       const badges=document.createElement('div'); badges.className='circle-row-badges';
       badges.append(circleUi.badgeNode(document,view.roleLabel,view.role==='owner'?'info':null),circleUi.badgeNode(document,view.statusLabel,view.statusTone));
+      if(view.isAdmin) badges.appendChild(circleUi.adminBadgeNode(document));
       identity.append(title,badges);
       if(view.joined){ const joined=document.createElement('div'); joined.className='small muted'; joined.textContent=view.joined; identity.appendChild(joined); }
       row.append(avatar,identity);
@@ -6608,6 +6617,12 @@ async function refreshMe(){
           controls.appendChild(button);
         });
         row.appendChild(controls);
+      }
+      const roleMenu=circleUi.memberRoleMenuNode(document,view,action=>{ applyMemberAction(action,member); });
+      if(roleMenu){
+        let controls=row.querySelector('.membership-controls');
+        if(!controls){ controls=document.createElement('div'); controls.className='circle-row-actions membership-controls'; row.appendChild(controls); }
+        controls.appendChild(roleMenu);
       }
       list.appendChild(row);
     });
@@ -6741,7 +6756,7 @@ async function refreshMe(){
       ||Number(me?.id||me?.uid)!==activeCircleUserId) return;
     circleLifecyclePanel.hidden=false; circleLifecyclePanel.style.display='grid';
     if(circleLifecycleHelp) circleLifecycleHelp.textContent=role==='owner'
-      ?'Deactivated members are signed out until you reactivate them. Ownership transfer is immediate; if you are the only owner, transfer it before leaving.'
+      ?'Deactivated members are signed out until you reactivate them. A circle can have several owners; use Roles to add or remove one. If you are the only owner, add or transfer an owner before leaving.'
       :'Leaving signs you out and removes access to private rooms immediately.';
     if(circleManageMembers) circleManageMembers.hidden=role!=='owner';
     if(circleMemberSearchForm) circleMemberSearchForm.hidden=role!=='owner';
