@@ -3,7 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
-export const OUTBOX_WATCHDOG_FORMAT='randori.outbox-dispatch-watchdog.v1';
+export const OUTBOX_WATCHDOG_FORMAT='randori.outbox-dispatch-watchdog.v2';
+export const OUTBOX_SCHEDULE_FORMAT='randori.outbox-dispatch-schedule.v1';
 
 const SOURCE_WORKFLOW='outbox-dispatch.yml';
 const CADENCE_MS=5*60*1000;
@@ -74,7 +75,7 @@ function scheduleWindow(nowMilliseconds,scheduleGraceMs){
 function baseResult({ok,status,category,checkedAt,scheduleGraceMs,workerDeadlineMs,scan,matchingRuns,
   currentSlotAt,freshnessFloorAt}){
   return {
-    ok,kind:'outbox-dispatch-watchdog',format:OUTBOX_WATCHDOG_FORMAT,status,
+    ok,kind:'outbox-dispatch-schedule',format:OUTBOX_SCHEDULE_FORMAT,status,
     alert:!ok,category,checkedAt,sourceWorkflow:SOURCE_WORKFLOW,
     cadenceMs:CADENCE_MS,scheduleGraceMs,workerDeadlineMs,currentSlotAt,freshnessFloorAt,
     ...scanMetadata(scan),matchingRuns,
@@ -297,20 +298,141 @@ export async function discoverOutboxDispatchStatus(environment,{fetchImpl=fetch,
   return assessOutboxDispatchRuns(runs,{defaultBranch,scheduleGraceMs,workerDeadlineMs,clock,scan});
 }
 
+// Delivery health is authoritative: the alert fires when due mail is not being
+// drained, whichever scheduler (GitHub, cron-job.org, ...) is responsible. The
+// GitHub run cadence is reported only as a non-failing warning because GitHub
+// routinely delays */5 schedules by hours while external schedulers keep up.
+const HEALTH_PATH='/api/cron/outbox-health';
+const DELIVERY_ALERT_CATEGORIES=new Set([
+  'delivery_stale','lease_stale','health_unavailable','health_unauthorized','malformed_health',
+  'health_config_missing','watchdog_failure',
+]);
+
+function nonNegativeInteger(value){
+  return Number.isSafeInteger(value)&&value>=0;
+}
+
+function nullableAge(value){
+  return value===null||nonNegativeInteger(value);
+}
+
+function publicDelivery(health){
+  return {
+    oldestDueAgeMs:health.oldestDueAgeMs,dueCount:health.dueCount,
+    processingStaleCount:health.processingStaleCount,oldestStaleLeaseAgeMs:health.oldestStaleLeaseAgeMs,
+    deadLetterCount:health.deadLetterCount,deadLetterWindowMs:health.deadLetterWindowMs,
+    lastDeliveredAt:health.lastDeliveredAt,healthCheckedAt:health.checkedAt,
+  };
+}
+
+export function assessOutboxDeliveryHealth(value,{deliveryMaxAgeMs}={}){
+  const maxAge=positiveInteger(deliveryMaxAgeMs,'delivery maximum age',{maximum:6*60*60*1000});
+  const health=record(value);
+  if(!health||health.ok!==true||!timestamp(health.checkedAt)
+    ||!nullableAge(health.oldestDueAgeMs)||!nonNegativeInteger(health.dueCount)
+    ||!nonNegativeInteger(health.processingStaleCount)||!nullableAge(health.oldestStaleLeaseAgeMs)
+    ||!nonNegativeInteger(health.deadLetterCount)||!nonNegativeInteger(health.deadLetterWindowMs)
+    ||(health.lastDeliveredAt!==null&&!timestamp(health.lastDeliveredAt))
+    ||(health.dueCount===0)!==(health.oldestDueAgeMs===null)
+    ||(health.processingStaleCount===0)!==(health.oldestStaleLeaseAgeMs===null)){
+    return {ok:false,category:'malformed_health',delivery:null,warnings:[]};
+  }
+  const delivery=publicDelivery(health);
+  const warnings=health.deadLetterCount>0?['dead_letters_recent']:[];
+  if(health.oldestDueAgeMs!==null&&health.oldestDueAgeMs>maxAge){
+    return {ok:false,category:'delivery_stale',delivery,warnings};
+  }
+  if(health.oldestStaleLeaseAgeMs!==null&&health.oldestStaleLeaseAgeMs>maxAge){
+    return {ok:false,category:'lease_stale',delivery,warnings};
+  }
+  if(health.dueCount>0||health.processingStaleCount>0) warnings.push('delivery_backlog');
+  return {ok:true,category:null,delivery,warnings};
+}
+
+export async function fetchOutboxDeliveryHealth(environment,{fetchImpl=fetch,setTimer=setTimeout,
+  clearTimer=clearTimeout}={}){
+  const appUrl=String(environment.APP_URL||'');
+  const secret=String(environment.CRON_SECRET||'');
+  const apiTimeoutMs=positiveInteger(environment.WATCHDOG_API_TIMEOUT_MS,'API timeout',{maximum:30*1000});
+  if(!/^https:\/\/[^/?#\s]+\/?$/.test(appUrl)||!secret) return {category:'health_config_missing'};
+  const controller=new AbortController();
+  const timer=setTimer(()=>controller.abort(),apiTimeoutMs);
+  try{
+    const response=await fetchImpl(`${appUrl.replace(/\/$/u,'')}${HEALTH_PATH}`,{method:'GET',
+      signal:controller.signal,headers:{accept:'application/json',authorization:`Bearer ${secret}`}});
+    if(!response||typeof response.ok!=='boolean'||typeof response.text!=='function'){
+      return {category:'malformed_health'};
+    }
+    if(response.status===401||response.status===403) return {category:'health_unauthorized'};
+    if(!response.ok) return {category:'health_unavailable'};
+    return {health:parseJsonBody(await readBoundedBody(response))};
+  }catch(error){
+    return {category:error instanceof MalformedResponseError?'malformed_health':'health_unavailable'};
+  }finally{
+    clearTimer(timer);
+  }
+}
+
+function scheduleWarning(schedule){
+  return schedule.alert?[`github_${schedule.category}`]:[];
+}
+
+function publicSchedule(schedule){
+  const {kind:_kind,format:_format,...rest}=schedule;
+  return rest;
+}
+
+function watchdogResult({checkedAt,deliveryMaxAgeMs,delivery,schedule}){
+  const ok=delivery.ok===true;
+  const warnings=[...new Set([...(delivery.warnings||[]),...(schedule?scheduleWarning(schedule):[])])];
+  return freeze({
+    ok,kind:'outbox-dispatch-watchdog',format:OUTBOX_WATCHDOG_FORMAT,
+    status:ok?(warnings.length?'warning':'healthy'):'alert',alert:!ok,
+    category:ok?null:(DELIVERY_ALERT_CATEGORIES.has(delivery.category)?delivery.category:'watchdog_failure'),
+    checkedAt,deliveryMaxAgeMs,delivery:delivery.delivery||null,warnings,
+    githubSchedule:schedule?publicSchedule(schedule):null,
+  });
+}
+
+async function scheduleSignal(environment,options){
+  try{ return await discoverOutboxDispatchStatus(environment,options); }
+  catch{
+    const now=canonicalNow(options.clock);
+    const grace=15*60*1000;
+    return alertResult('api_failure',{checkedAt:now.timestamp,nowMilliseconds:now.milliseconds,
+      scheduleGraceMs:grace,workerDeadlineMs:2*60*1000,
+      scan:{pagesScanned:0,runsScanned:0,truncated:false},matchingRuns:0,
+      ...scheduleWindow(now.milliseconds,grace)});
+  }
+}
+
+export async function assessOutboxWatchdog(environment,{fetchImpl=fetch,clock=Date.now,
+  setTimer=setTimeout,clearTimer=clearTimeout,monotonicClock=()=>performance.now()}={}){
+  const now=canonicalNow(clock);
+  const deliveryMaxAgeMs=positiveInteger(environment.WATCHDOG_DELIVERY_MAX_AGE_MS,'delivery maximum age',
+    {maximum:6*60*60*1000});
+  const [fetched,schedule]=await Promise.all([
+    fetchOutboxDeliveryHealth(environment,{fetchImpl,setTimer,clearTimer}),
+    scheduleSignal(environment,{fetchImpl,clock,setTimer,clearTimer,monotonicClock}),
+  ]);
+  const delivery=fetched.category
+    ?{ok:false,category:fetched.category,delivery:null,warnings:[]}
+    :assessOutboxDeliveryHealth(fetched.health,{deliveryMaxAgeMs});
+  return watchdogResult({checkedAt:now.timestamp,deliveryMaxAgeMs,delivery,schedule});
+}
+
 export async function main({argv=process.argv.slice(2),environment=process.env,stdout=process.stdout,
   fetchImpl=fetch,clock=Date.now,setTimer=setTimeout,clearTimer=clearTimeout,
   monotonicClock=()=>performance.now()}={}){
   let result;
   try{
     if(argv.length!==0) throw new TypeError('watchdog usage is invalid');
-    result=await discoverOutboxDispatchStatus(environment,{fetchImpl,clock,setTimer,clearTimer,
-      monotonicClock});
+    result=await assessOutboxWatchdog(environment,{fetchImpl,clock,setTimer,clearTimer,monotonicClock});
   }catch{
-    const now=canonicalNow(clock);
-    const window=scheduleWindow(now.milliseconds,15*60*1000);
-    result=alertResult('api_failure',{checkedAt:now.timestamp,nowMilliseconds:now.milliseconds,
-      scheduleGraceMs:15*60*1000,workerDeadlineMs:2*60*1000,
-      scan:{pagesScanned:0,runsScanned:0,truncated:false},matchingRuns:0,...window});
+    let checkedAt;
+    try{ checkedAt=canonicalNow(clock).timestamp; }catch{ checkedAt=new Date(0).toISOString(); }
+    result=watchdogResult({checkedAt,deliveryMaxAgeMs:null,
+      delivery:{ok:false,category:'watchdog_failure',delivery:null,warnings:[]},schedule:null});
   }
   stdout.write(`${JSON.stringify(result)}\n`);
   return {exitCode:result.alert?1:0,result};

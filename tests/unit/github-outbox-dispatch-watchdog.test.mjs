@@ -3,9 +3,12 @@ import { test } from 'node:test';
 import { performance } from 'node:perf_hooks';
 
 import {
+  assessOutboxDeliveryHealth,
   assessOutboxDispatchRuns,
   discoverOutboxDispatchStatus,
+  fetchOutboxDeliveryHealth,
   main,
+  OUTBOX_SCHEDULE_FORMAT,
   OUTBOX_WATCHDOG_FORMAT,
 } from '../../scripts/github-outbox-dispatch-watchdog.mjs';
 
@@ -33,9 +36,19 @@ function environment(overrides={}){
     GITHUB_API_URL:'https://api.github.test',GITHUB_TOKEN:'private-watchdog-token',
     WATCHDOG_SCHEDULE_GRACE_MS:String(GRACE),WATCHDOG_WORKER_DEADLINE_MS:String(DEADLINE),
     WATCHDOG_API_TIMEOUT_MS:'10000',WATCHDOG_MAX_PAGES:'2',WATCHDOG_PER_PAGE:'100',
+    APP_URL:'https://randori.example.test',CRON_SECRET:'private-cron-secret',
+    WATCHDOG_DELIVERY_MAX_AGE_MS:String(GRACE),
     ...overrides,
   };
 }
+
+function health(overrides={}){
+  return {ok:true,checkedAt:'2026-09-20T12:00:00.000Z',oldestDueAgeMs:null,dueCount:0,
+    processingStaleCount:0,oldestStaleLeaseAgeMs:null,deadLetterCount:0,deadLetterWindowMs:86400000,
+    lastDeliveredAt:'2026-09-20T11:58:00.000Z',...overrides};
+}
+
+const isHealthUrl=url=>String(url).endsWith('/api/cron/outbox-health');
 
 function response(body,{ok=true,status=200}={}){
   const text=typeof body==='string'?body:JSON.stringify(body);
@@ -52,7 +65,7 @@ test('a fresh successful scheduled default-branch run is healthy and manual runs
     run(),
   ],options({scan:{pagesScanned:2,runsScanned:3,truncated:false}}));
   assert.deepEqual(result,{
-    ok:true,kind:'outbox-dispatch-watchdog',format:OUTBOX_WATCHDOG_FORMAT,status:'healthy',
+    ok:true,kind:'outbox-dispatch-schedule',format:OUTBOX_SCHEDULE_FORMAT,status:'healthy',
     alert:false,category:null,checkedAt:'2026-09-20T12:00:00.000Z',
     sourceWorkflow:'outbox-dispatch.yml',cadenceMs:300000,scheduleGraceMs:GRACE,
     workerDeadlineMs:DEADLINE,currentSlotAt:'2026-09-20T12:00:00.000Z',
@@ -316,7 +329,8 @@ test('the CLI default preserves its monotonic budget across a backward wall-cloc
     execution=await main({argv:[],environment:environment({
       WATCHDOG_API_TIMEOUT_MS:'10000',WATCHDOG_MAX_PAGES:'2',WATCHDOG_PER_PAGE:'1',
     }),
-    fetchImpl:async()=>{
+    fetchImpl:async url=>{
+      if(isHealthUrl(url)) return response(health());
       calls+=1;
       return response({total_count:3,workflow_runs:[run({id:300+calls})]});
     },
@@ -328,40 +342,169 @@ test('the CLI default preserves its monotonic budget across a backward wall-cloc
     delete performance.now;
   }
   assert.equal(calls,2);
-  assert.deepEqual(delays,[10000,4000]);
-  assert.equal(execution.exitCode,1);
-  assert.equal(execution.result.category,'api_failure');
+  // The first timer bounds the health request; the next two share GitHub's budget.
+  assert.deepEqual(delays,[10000,10000,4000]);
+  assert.equal(execution.result.githubSchedule.category,'api_failure');
+  assert.deepEqual(execution.result.warnings,['github_api_failure']);
+  assert.equal(execution.exitCode,0,'a GitHub API failure is only a warning');
   assert.deepEqual(JSON.parse(output),execution.result);
 });
 
-test('CLI emits one bounded document and fails only alert outcomes',async()=>{
+test('fresh delivery health is healthy even when GitHub runs are hours late',async()=>{
+  let output='';
+  const requests=[];
+  const execution=await main({argv:[],environment:environment(),clock:()=>NOW,
+    fetchImpl:async(url,request)=>{
+      requests.push({url:String(url),request});
+      return isHealthUrl(url)
+        ?response(health({dueCount:2,oldestDueAgeMs:60_000,deadLetterCount:1}))
+        :response({total_count:1,workflow_runs:[run({created_at:'2026-09-20T09:00:00Z',
+          run_started_at:'2026-09-20T09:00:01Z',updated_at:'2026-09-20T09:00:30Z'})]});
+    },
+    stdout:{write(value){ output+=value; }}});
+  assert.equal(execution.exitCode,0);
+  assert.deepEqual(JSON.parse(output),execution.result);
+  const result=execution.result;
+  assert.equal(result.ok,true);
+  assert.equal(result.format,OUTBOX_WATCHDOG_FORMAT);
+  assert.equal(result.status,'warning');
+  assert.equal(result.category,null);
+  assert.equal(result.deliveryMaxAgeMs,GRACE);
+  assert.deepEqual(result.warnings,['dead_letters_recent','delivery_backlog','github_run_stale']);
+  assert.deepEqual(result.delivery,{oldestDueAgeMs:60000,dueCount:2,processingStaleCount:0,
+    oldestStaleLeaseAgeMs:null,deadLetterCount:1,deadLetterWindowMs:86400000,
+    lastDeliveredAt:'2026-09-20T11:58:00.000Z',healthCheckedAt:'2026-09-20T12:00:00.000Z'});
+  assert.equal(result.githubSchedule.category,'run_stale');
+  assert.equal(result.githubSchedule.alert,true);
+  const healthRequest=requests.find(item=>isHealthUrl(item.url));
+  assert.equal(healthRequest.url,'https://randori.example.test/api/cron/outbox-health');
+  assert.equal(healthRequest.request.method,'GET');
+  assert.equal(healthRequest.request.headers.authorization,'Bearer private-cron-secret');
+  assert.ok(healthRequest.request.signal instanceof AbortSignal);
+  assert.doesNotMatch(output,/private-cron-secret|private-watchdog-token|https?:\/\//);
+});
+
+test('CLI emits one bounded document and fails only on delivery alerts',async()=>{
   let healthyOutput='';
   const healthy=await main({argv:[],environment:environment(),clock:()=>NOW,
-    fetchImpl:async()=>response({total_count:1,workflow_runs:[run()]}),
+    fetchImpl:async url=>isHealthUrl(url)?response(health()):response({total_count:1,workflow_runs:[run()]}),
     stdout:{write(value){ healthyOutput+=value; }}});
   assert.equal(healthy.exitCode,0);
+  assert.equal(healthy.result.status,'healthy');
+  assert.deepEqual(healthy.result.warnings,[]);
   assert.deepEqual(JSON.parse(healthyOutput),healthy.result);
 
   let failedOutput='';
   const failed=await main({argv:[],environment:environment(),clock:()=>NOW,
-    fetchImpl:async()=>response({}, {ok:false,status:503}),
+    fetchImpl:async url=>isHealthUrl(url)
+      ?response({ok:false,error:'outbox health unavailable'},{ok:false,status:503})
+      :response({total_count:1,workflow_runs:[run()]}),
     stdout:{write(value){ failedOutput+=value; }}});
   assert.equal(failed.exitCode,1);
-  assert.equal(JSON.parse(failedOutput).category,'api_failure');
+  assert.equal(JSON.parse(failedOutput).category,'health_unavailable');
+  assert.equal(failed.result.githubSchedule.status,'healthy');
   assert.equal(failedOutput.trim().split('\n').length,1);
+
+  for(const [body,category] of [
+    [health({dueCount:1,oldestDueAgeMs:GRACE+1}),'delivery_stale'],
+    [health({processingStaleCount:1,oldestStaleLeaseAgeMs:GRACE+1}),'lease_stale'],
+  ]){
+    const stale=await main({argv:[],environment:environment(),clock:()=>NOW,
+      fetchImpl:async url=>isHealthUrl(url)?response(body):response({total_count:1,workflow_runs:[run()]}),
+      stdout:{write(){}}});
+    assert.equal(stale.exitCode,1);
+    assert.equal(stale.result.category,category);
+    assert.equal(stale.result.status,'alert');
+    assert.ok(stale.result.delivery);
+  }
+
+  const usage=await main({argv:['--force'],environment:environment(),clock:()=>NOW,
+    fetchImpl:async()=>{ throw new Error('must not fetch'); },stdout:{write(){}}});
+  assert.equal(usage.exitCode,1);
+  assert.equal(usage.result.category,'watchdog_failure');
+  assert.equal(usage.result.githubSchedule,null);
+
+  const badThreshold=await main({argv:[],environment:environment({WATCHDOG_DELIVERY_MAX_AGE_MS:'0'}),
+    clock:()=>'bad',fetchImpl:async()=>response(health()),stdout:{write(){}}});
+  assert.equal(badThreshold.exitCode,1);
+  assert.equal(badThreshold.result.checkedAt,'1970-01-01T00:00:00.000Z');
 });
 
-test('watchdog workflow is hourly, default-branch-only, read-only, and production-secret-free',async()=>{
+test('the GitHub schedule signal degrades to a warning when its own configuration is invalid',async()=>{
+  const execution=await main({argv:[],environment:environment({WATCHDOG_MAX_PAGES:'99'}),clock:()=>NOW,
+    fetchImpl:async url=>isHealthUrl(url)?response(health()):response({total_count:0,workflow_runs:[]}),
+    stdout:{write(){}}});
+  assert.equal(execution.exitCode,0);
+  assert.deepEqual(execution.result.warnings,['github_api_failure']);
+});
+
+test('delivery health fetch maps configuration, auth, transport, and shape failures to fixed categories',async()=>{
+  const ok=async()=>response(health());
+  for(const overrides of [{APP_URL:''},{APP_URL:'http://randori.example.test'},
+    {APP_URL:'https://randori.example.test/path'},{CRON_SECRET:''}]){
+    assert.deepEqual(await fetchOutboxDeliveryHealth(environment(overrides),{fetchImpl:ok}),
+      {category:'health_config_missing'});
+  }
+  for(const status of [401,403]){
+    assert.deepEqual(await fetchOutboxDeliveryHealth(environment(),{
+      fetchImpl:async()=>response('denied',{ok:false,status})}),{category:'health_unauthorized'});
+  }
+  assert.deepEqual(await fetchOutboxDeliveryHealth(environment(),{
+    fetchImpl:async()=>response('missing',{ok:false,status:404})}),{category:'health_unavailable'});
+  assert.deepEqual(await fetchOutboxDeliveryHealth(environment(),{
+    fetchImpl:async()=>{ throw new Error('private-cron-secret'); }}),{category:'health_unavailable'});
+  assert.deepEqual(await fetchOutboxDeliveryHealth(environment(),{
+    fetchImpl:async()=>({ok:true})}),{category:'malformed_health'});
+  assert.deepEqual(await fetchOutboxDeliveryHealth(environment(),{
+    fetchImpl:async()=>response('{nope')}),{category:'malformed_health'});
+  const fetched=await fetchOutboxDeliveryHealth(environment({APP_URL:'https://randori.example.test/'}),{
+    fetchImpl:async url=>{
+      assert.equal(url,'https://randori.example.test/api/cron/outbox-health');
+      return response(health());
+    }});
+  assert.deepEqual(fetched,{health:health()});
+
+  let aborted=false;
+  const timedOut=await fetchOutboxDeliveryHealth(environment({WATCHDOG_API_TIMEOUT_MS:'5'}),{
+    fetchImpl:async(_url,{signal})=>new Promise((_resolve,reject)=>{
+      signal.addEventListener('abort',()=>{ aborted=true; reject(new Error('timeout')); },{once:true});
+    })});
+  assert.equal(aborted,true);
+  assert.deepEqual(timedOut,{category:'health_unavailable'});
+});
+
+test('delivery health assessment rejects inconsistent documents and applies the age threshold',()=>{
+  const options={deliveryMaxAgeMs:GRACE};
+  assert.equal(assessOutboxDeliveryHealth(health(),options).ok,true);
+  assert.equal(assessOutboxDeliveryHealth(health({oldestDueAgeMs:GRACE,dueCount:3}),options).ok,true);
+  assert.equal(assessOutboxDeliveryHealth(health({processingStaleCount:1,oldestStaleLeaseAgeMs:GRACE}),options)
+    .warnings.includes('delivery_backlog'),true);
+  for(const bad of [null,[],health({ok:false}),health({checkedAt:'yesterday'}),health({dueCount:-1}),
+    health({dueCount:1}),health({oldestDueAgeMs:5}),health({processingStaleCount:2}),
+    health({oldestStaleLeaseAgeMs:1.5,processingStaleCount:1}),health({deadLetterCount:'1'}),
+    health({deadLetterWindowMs:null}),health({lastDeliveredAt:'never'})]){
+    assert.equal(assessOutboxDeliveryHealth(bad,options).category,'malformed_health',JSON.stringify(bad));
+  }
+  assert.equal(assessOutboxDeliveryHealth(health({lastDeliveredAt:null}),options).ok,true);
+  assert.throws(()=>assessOutboxDeliveryHealth(health(),{deliveryMaxAgeMs:0}),TypeError);
+});
+
+test('watchdog workflow is hourly, default-branch-only, read-only, and holds only the health credential',async()=>{
   const {readFile}=await import('node:fs/promises');
   const workflow=await readFile('.github/workflows/outbox-dispatch-watchdog.yml','utf8');
   assert.match(workflow,/cron: '37 \* \* \* \*'/);
   assert.match(workflow,/workflow_dispatch:/);
   assert.match(workflow,/actions: read/);
   assert.match(workflow,/contents: read/);
+  assert.match(workflow,/environment: production/);
+  assert.match(workflow,/APP_URL: \$\{\{ vars\.APP_URL \}\}/);
+  assert.match(workflow,/CRON_SECRET: \$\{\{ secrets\.CRON_SECRET \}\}/);
+  assert.match(workflow,/WATCHDOG_DELIVERY_MAX_AGE_MS: '900000'/);
   assert.match(workflow,/WATCHDOG_SCHEDULE_GRACE_MS: '900000'/);
   assert.match(workflow,/WATCHDOG_WORKER_DEADLINE_MS: '120000'/);
   assert.match(workflow,/WATCHDOG_MAX_PAGES: '2'/);
   assert.match(workflow,/node scripts\/github-outbox-dispatch-watchdog\.mjs/);
-  assert.doesNotMatch(workflow,
-    /environment:|secrets\.|vars\.|APP_URL|CRON_SECRET|TURSO_|RESEND_|\/api\/cron\/outbox|pull_request/);
+  assert.equal(workflow.match(/secrets\./g).length,1);
+  assert.equal(workflow.match(/vars\./g).length,1);
+  assert.doesNotMatch(workflow,/TURSO_|RESEND_|OUTBOX_DISPATCH_SECRET|\/api\/cron\/outbox|pull_request|\bcurl\b/);
 });

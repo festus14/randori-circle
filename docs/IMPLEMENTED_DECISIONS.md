@@ -2776,3 +2776,108 @@ protected migration workflow immediately after merge, not near the Sunday
 approve → accept. Recovery is disabling the flag (endpoints 404, capability
 hidden); rows continue to expire and purge weekly. Full contract in
 [`INVITE_REQUESTS.md`](INVITE_REQUESTS.md).
+
+## ID-67: Run an external outbox scheduler beside GitHub and alert on delivery health
+
+Status: implemented. Optional env var, no migration.
+
+**Context.** `outbox-dispatch` is scheduled `*/5`, but GitHub runs it about
+every three hours. Because of that, the run-cadence watchdog (ID-43) reported
+`run_stale` on every run. Pairing mail, reminders and retries could be hours
+late, while auth and invitation mail (ID-64) was unaffected.
+
+**Decision.** An outside scheduler (cron-job.org) calls `POST /api/cron/outbox`
+every five minutes. GitHub keeps running as a backup. Outbox claims are leased
+and idempotent, so the two dispatchers can run at the same time safely.
+
+- **Separate secret.** The external service authenticates with a new optional
+  `OUTBOX_DISPATCH_SECRET`, not `CRON_SECRET`. The app accepts it, with a
+  timing-safe compare and the same header forms, only on
+  `/api/cron/outbox` and `/api/cron/outbox-health`. Every other cron route
+  (`/api/cron/weekly`, which publishes pairings) still accepts only
+  `CRON_SECRET`. The app ignores a value shorter than 32 characters or equal
+  to `CRON_SECRET`. This fails closed for the extra secret only.
+- **Health endpoint.** A new read-only endpoint,
+  `GET /api/cron/outbox-health`, answers from one database-clock statement
+  and returns aggregate values only: the age of the oldest due
+  `pending`/`retry` event, the due count, the count and age of expired
+  `processing` leases, 24-hour dead letters, and the last delivery time.
+- **Watchdog.** `outbox-dispatch-watchdog` now alerts on delivery freshness.
+  It alerts when the oldest due event or expired lease is older than
+  15 minutes, or when the endpoint is unavailable, unauthorized, or malformed.
+  The GitHub run assessment is kept as a non-failing `github_*` warning.
+
+**Trade-off.** To read the health endpoint, the watchdog job now runs in the
+protected `production` environment and receives `vars.APP_URL` and
+`secrets.CRON_SECRET`. This reverses ID-43's secret-free boundary. The
+deployability gate lists those two values as the only production material the
+watchdog may reference, still rejects any other secret, variable, write
+permission or `curl`, and pins the new workflow and assessor digests.
+`CRON_SECRET` is used because it already lives in that environment. The
+external secret is kept out of GitHub on purpose.
+
+**Alternatives.** A managed queue or Vercel Pro cron would fix cadence but
+needs a paid plan or a larger migration. Giving cron-job.org `CRON_SECRET`
+would let a third party trigger pairing publication. A health check that does
+not use the database could not tell "GitHub is late" apart from "mail is late".
+
+**Rollout and recovery.** Merge. Set `OUTBOX_DISPATCH_SECRET` in Vercel
+Production, redeploy, and create the cron-job.org job described in
+[`OUTBOX_EXTERNAL_SCHEDULER.md`](OUTBOX_EXTERNAL_SCHEDULER.md). To recover,
+pause the job or remove the variable and redeploy. Delivery then falls back to
+GitHub, and the watchdog keeps alerting on real staleness.
+
+## ID-68: Invite several people at once with one shared email validator
+
+Status: candidate code-only increment; no migration, no flag.
+
+**Context.** Owners asked to paste a list of addresses and invite everyone in
+one step, and to have email validation enforced identically in the browser and
+on the server. Validation was a loose `x@y.z` regex repeated in five places
+with small differences, and the browser relied on `type=email`.
+
+**Decision.** `assets/email-validation.js` is a dependency-free ES module that
+the API imports and the browser loads as a module; it defines the canonical
+form (`trim()+toLowerCase()`, unchanged), conservative strict rules with
+stable reason codes, and the paste parser. The strict rules apply to every
+path that accepts a *new* address (owner invitations single and bulk,
+`insertOwnerInvitation`, invite-request intake, password sign-up); lookups of
+addresses already on record (sign-in, reset, activation resend, Google
+identity, invitation acceptance, outbox decoding) keep the identical canonical
+form with the original loose check, so nobody is locked out. A pre-existing
+invite request that the strict rules reject returns
+`409 invite_request_email_invalid` on approval. `POST /api/invitations` also
+accepts `{emails:[...]}` (1–50): a read-only classification step validates,
+de-duplicates after normalisation and finds existing members and live
+invitations of the selected circle; each remaining address then gets its own
+write transaction through the same `insertOwnerInvitation` + outbox path
+(audit row, `invitation-email/v1/{id}/1`) so one failure never blocks the
+others. Results come back per address in input order (`created`, `invalid`,
+`duplicate_in_request`, `already_member`, `already_invited`, `failed`).
+Owner-created invitations share a fixed-window quota of 200 per circle per 24
+hours in `auth_rate_limits`, reserved inside each transaction with a
+conditional upsert (rollback refunds) and checked up front for a batch (429 +
+`Retry-After`). Created events use the existing ID-64 post-commit attempt (≤8
+per request); the rest drain on the next scheduled outbox run. Addresses never
+reach logs or Sentry. The Circle card gains a keyboard-accessible disclosure
+with live preview, per-address results (copy link, resend, retry), and the
+un-sent addresses kept in the textarea.
+
+**Alternatives.** One transaction for the whole batch would let a single bad
+row or lock timeout discard valid invitations. A separate endpoint would add a
+route, rewrite and contract surface for no extra safety. Tightening
+`normalizeInvitationEmail` itself would change lookups for existing accounts
+and pending invitations. RFC 5322 quoted local parts and Unicode addresses
+(SMTPUTF8) were excluded: they add look-alike and deliverability risk for
+almost no real users; IDN domains work in punycode.
+
+**Residual risk.** A pending invitation or invite request created under the old
+rules with an address the strict rules reject can still be accepted
+(Google) but not used for password sign-up; such addresses are expected to be
+vanishingly rare. In a large batch, emails beyond the per-request inline cap
+wait for the scheduled outbox run (copy links are immediate).
+
+**Rollout and recovery.** Deploys with no migration or configuration. Recovery
+is a revert; invitations already created are normal invitations. Full contract
+in [`INVITATION_EMAIL_DELIVERY.md`](INVITATION_EMAIL_DELIVERY.md) ("Inviting
+several people at once").

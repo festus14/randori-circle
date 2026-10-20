@@ -411,3 +411,24 @@ test('identity status messages and tones', () => {
   assert.equal(ui.messageTone('Confirm your identity to continue.'), 'info');
   assert.equal(ui.messageTone("That password isn't right. Try again."), 'error');
 });
+
+test('sign-up applies the shared strict email rules once that module has loaded (ID-68)', async () => {
+  const fields = { email: 'a@b.c', emailValid: true, name: 'Ada', password: 'long-enough-password' };
+  assert.equal(ui.validateAuthFields({ mode: 'signup', ...fields }).ok, true, 'without the module the browser check decides');
+  const { default: rules } = await import('../../assets/email-validation.js');
+  globalThis.RandoriEmailValidation = rules;
+  try {
+    const signup = ui.validateAuthFields({ mode: 'signup', ...fields });
+    assert.deepEqual([signup.ok, signup.first, signup.errors.email],
+      [false, 'email', 'The ending of the domain doesn’t look right (like .com or .org).']);
+    assert.equal(ui.fieldProblem('email', { mode: 'signup', value: 'a..b@example.com', valid: true }),
+      'Dots can’t start, end, or repeat before the @.');
+    assert.equal(ui.validateAuthFields({ mode: 'signup', ...fields, email: ' Ada@Example.com ' }).body.email, 'ada@example.com');
+    // Sign-in and reset never block an existing account whose address predates the rules.
+    assert.equal(ui.validateAuthFields({ mode: 'signin', ...fields }).ok, true);
+    assert.equal(ui.validateAuthFields({ mode: 'reset', ...fields }).ok, true);
+    assert.equal(ui.fieldProblem('email', { mode: 'signin', value: 'a@b.c', valid: true }), '');
+  } finally {
+    delete globalThis.RandoriEmailValidation;
+  }
+});

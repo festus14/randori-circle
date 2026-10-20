@@ -855,3 +855,20 @@ test('client addresses are keyed by IPv6 /64 and IPv4-mapped addresses collapse 
   }
   assert.equal(rateLimitAddress(''),'unknown');
 });
+
+test('intake uses the shared strict rules and a legacy row the rules now reject cannot be approved (ID-68)',async()=>{
+  for(const email of ['a..b@example.test','a@b.c','jürgen@example.test','a@localhost']){
+    assert.equal(requests.validateInviteRequestInput({name:'Al',email}).fields.email,'Enter a valid email address.',email);
+  }
+  assert.equal(requests.validateInviteRequestInput({name:'Al',email:' Al+Prep@Example.Test '}).value.email,
+    'al+prep@example.test');
+
+  currentDb=await migratedDatabase();
+  // Stored before ID-68, when only the loose shape was required.
+  await requests.submitInviteRequest(currentDb,{name:'Legacy',email:'legacy@example.c'});
+  const [{id}]=await rows(`SELECT id FROM invite_requests WHERE email='legacy@example.c'`);
+  const refused=await decide({id,decision:'approve',expected_status:'pending'});
+  assert.deepEqual([refused.status,refused.body.code,refused.body.status],[409,'invite_request_email_invalid','pending']);
+  assert.equal((await rows(`SELECT COUNT(*) AS count FROM circle_invitations`))[0].count,0);
+  assert.equal((await decide({id,decision:'decline',expected_status:'pending'})).status,200,'the owner can still decline it');
+});

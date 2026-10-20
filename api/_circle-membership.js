@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getJwtSecret } from './_db.js';
 import { multiCircleControlPlaneEnabled } from './_active-circle.js';
+import { canonicalEmail, validateEmail } from '../assets/email-validation.js';
 
 export const INVITE_CLAIM_COOKIE='randori_invite_claim';
 export const INVITE_CLAIM_TTL_SECONDS=10*60;
@@ -19,11 +20,35 @@ export function circleMembershipEnabled(){
   return process.env.CIRCLE_MEMBERSHIP_ENABLED==='true';
 }
 
+/**
+ * Identity form of an address that is already on record (accounts,
+ * invitations, outbox envelopes, provider claims): the shared canonical
+ * `trim()+toLowerCase()` plus the original loose shape check. It is
+ * intentionally NOT the strict validator, so every existing account and
+ * pending invitation keeps hashing and matching exactly as before (ID-68).
+ * Paths that accept a *new* address use `validateNewEmail` instead; every
+ * strictly valid address passes this check unchanged.
+ */
 export function normalizeInvitationEmail(value){
   if(typeof value!=='string') return null;
-  const email=value.trim().toLowerCase();
+  const email=canonicalEmail(value);
   if(!email || email.length>254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return null;
   return email;
+}
+
+/**
+ * Strict rules from assets/email-validation.js (shared with the browser) for
+ * any address the server is asked to start using: owner invitations (single
+ * and bulk), invite requests, and password sign-up. Returns
+ * `{ok,email,reason}` with a stable reason code.
+ */
+export function validateNewEmail(value){
+  return validateEmail(value);
+}
+
+/** Strictly validated canonical address, or `null`. */
+export function normalizeNewInvitationEmail(value){
+  return validateEmail(value).email;
 }
 
 function hmacHex(domain,value){
