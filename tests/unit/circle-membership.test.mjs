@@ -8,7 +8,8 @@ import {afterEach,beforeEach,mock,test} from 'node:test';
 import {createClient} from '@libsql/client';
 import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
 import {MIGRATION_PLANS} from '../../db/migration-plan.js';
-import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {prepareMigrationConnection} from '../../db/migration-runner.js';
+import {copyMigratedDatabase} from '../support/migrated-db.mjs';
 import {CREDENTIAL_KEY_CONTROL_SEED_OPERATIONS} from '../../db/credential-key-control.js';
 import {createOutboxEventStatement} from '../../api/_outbox.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
@@ -136,13 +137,9 @@ async function createDatabase(){
 async function createCurrentDatabase(){
   const directory=mkdtempSync(join(tmpdir(),'randori-circle-current-'));
   temporaryDirectories.push(directory);
+  await copyMigratedDatabase(join(directory,'current.sqlite'));
   const db=createClient({url:pathToFileURL(join(directory,'current.sqlite')).href});
   await prepareMigrationConnection(db);
-  const state=await inspectMigrationState(db);
-  await applyMigrations(db,{
-    expectedStateFingerprint:state.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0},
-  });
   return db;
 }
 

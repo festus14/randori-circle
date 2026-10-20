@@ -21,26 +21,19 @@ import {
   runChatRetentionWorker,
   setChatRetentionControl,
 } from '../../api/_chat-retention.js';
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import {
-  applyMigrations,
-  inspectMigrationState,
-  prepareMigrationConnection,
-} from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 import { MAX_MESSAGES_PER_ROOM } from '../../api/_messages.js';
 
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const DIGEST_A='a'.repeat(64);
 const DIGEST_B='b'.repeat(64);
 const DEFAULT_SCOPE=Object.freeze({scopeKey:'circle:1',circleId:1,weekId:10,pairGroupId:20});
 
 async function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-chat-retention-'));
-  const path=join(directory,'test.sqlite');
+  const path=await copyMigratedDatabase(join(directory,'test.sqlite'));
   const db=createClient({url:`file:${path}`});
   await prepareMigrationConnection(db);
-  const state=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
   return {
     db,path,
     second(){ return createClient({url:`file:${path}`}); },

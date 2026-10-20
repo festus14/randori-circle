@@ -11,20 +11,22 @@ import {
   parseCircleArchive,
 } from '../../api/_circle-archive.js';
 import { listSessionCircleContexts } from '../../api/_active-circle.js';
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabaseSync, migratedTemplatePath } from '../support/migrated-db.mjs';
 
 const NOW=1_795_000_000;
 const SESSION_A='a'.repeat(64);
 const SESSION_B='b'.repeat(64);
 const SESSION_C='c'.repeat(64);
 const SESSION_D='d'.repeat(64);
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const CYCLE_KEY='e'.repeat(64);
+
+// Every test needs a migrated-to-latest database; copy one template per test.
+await migratedTemplatePath();
 
 function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-circle-archive-'));
-  const url=`file:${join(directory,'test.sqlite')}`;
+  const url=`file:${copyMigratedDatabaseSync(join(directory,'test.sqlite'))}`;
   const db=createClient({url});
   return {
     db,url,
@@ -33,11 +35,8 @@ function fixture(){
   };
 }
 
-async function migrate(db){
+async function prepare(db){
   await prepareMigrationConnection(db);
-  const before=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS});
-  await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS,
-    expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
 }
 
 async function seed(db,{includeStranded=false}={}){
@@ -146,7 +145,7 @@ test('archive input is exact and accepts only a public circle id plus context CA
 test('owner archive retains immutable data and atomically falls every selected session back',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepare(item.db); await seed(item.db);
     const retained=await retainedSnapshot(item.db);
     const result=await archiveSecondaryCircle(item.db,payload(),input(),{nowSeconds:NOW});
     assert.deepEqual(result,{ok:true,changed:true,
@@ -181,7 +180,7 @@ test('owner archive retains immutable data and atomically falls every selected s
 test('same owner replay is idempotent while stale context and cross-circle identities disclose nothing',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepare(item.db); await seed(item.db);
     const first=await archiveSecondaryCircle(item.db,payload(),input(),{nowSeconds:NOW});
     const replay=await archiveSecondaryCircle(item.db,payload(),input(),{nowSeconds:NOW});
     assert.equal(first.changed,true);
@@ -200,7 +199,7 @@ test('same owner replay is idempotent while stale context and cross-circle ident
 test('an active non-owner and a foreign owner receive the same unavailable result without mutation',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepare(item.db); await seed(item.db);
     const before=await retainedSnapshot(item.db);
     assert.deepEqual(await archiveSecondaryCircle(item.db,payload(2,SESSION_C),input('circle-secondary',7),{
       nowSeconds:NOW,
@@ -218,7 +217,7 @@ test('primary, last-circle, stale-context, and recent-auth safety fail before mu
   for(const scenario of ['primary','last','stale','recent']){
     const item=fixture();
     try{
-      await migrate(item.db); await seed(item.db,{includeStranded:scenario==='last'});
+      await prepare(item.db); await seed(item.db,{includeStranded:scenario==='last'});
       let archiveInput=input();
       if(scenario==='primary'){
         archiveInput=input('circle-primary',8);
@@ -253,7 +252,7 @@ test('primary, last-circle, stale-context, and recent-auth safety fail before mu
 test('concurrent duplicate archive requests converge on one audit and one context advance',async()=>{
   const item=fixture(); let second;
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepare(item.db); await seed(item.db);
     second=item.client(); await prepareMigrationConnection(second);
     const outcomes=await Promise.all([
       archiveSecondaryCircle(item.db,payload(),input(),{nowSeconds:NOW,maxAttempts:6,baseDelayMs:2}),
@@ -270,7 +269,7 @@ test('concurrent duplicate archive requests converge on one audit and one contex
 test('concurrent active owners converge after both selected sessions fall back',async()=>{
   const item=fixture(); let second;
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepare(item.db); await seed(item.db);
     await item.db.execute({sql:`INSERT INTO auth_recent_proofs
       (session_hash,user_id,authenticated_at,method) VALUES (?,3,?,'password')`,args:[SESSION_D,NOW-10]});
     second=item.client(); await prepareMigrationConnection(second);
@@ -296,7 +295,7 @@ test('concurrent active owners converge after both selected sessions fall back',
 test('an applied-but-throwing commit is not retried and the exact external replay converges',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepare(item.db); await seed(item.db);
     let transactionCount=0;
     const ambiguousDb={
       async transaction(mode){
@@ -328,7 +327,7 @@ test('pre-commit retry revalidates the live session and audit failure rolls back
   for(const scenario of ['retry','audit']){
     const item=fixture();
     try{
-      await migrate(item.db); await seed(item.db);
+      await prepare(item.db); await seed(item.db);
       const beforeArchiveState=await archiveStateSnapshot(item.db);
       let attempts=0;
       const guardedDb={

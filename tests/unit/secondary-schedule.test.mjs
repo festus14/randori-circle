@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabaseSync, migratedTemplatePath } from '../support/migrated-db.mjs';
 import {
   ensureSecondaryScheduleReadiness,
   mutateSecondarySchedule,
@@ -28,7 +28,6 @@ const CYCLE_A='a'.repeat(64);
 const CYCLE_B='b'.repeat(64);
 const GENERATION_A='11111111-1111-4111-8111-111111111111';
 const GENERATION_B='22222222-2222-4222-8222-222222222222';
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const ENV_KEYS=['CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED',
   'MULTI_CIRCLE_AVAILABILITY_ENABLED','SECONDARY_CIRCLE_COORDINATION_ENABLED',
   'SECONDARY_CIRCLE_SCHEDULING_ENABLED','SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED',
@@ -54,9 +53,12 @@ mock.module('../../api/_db.js',{exports:{
 }});
 const {default:dataHandler}=await import('../../api/data.js');
 
+await migratedTemplatePath();
+
+// Every fixture starts from a copy of the migrated-to-latest template.
 function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-secondary-schedule-'));
-  const url=`file:${join(directory,'test.sqlite')}`;
+  const url=`file:${copyMigratedDatabaseSync(join(directory,'test.sqlite'))}`;
   const db=createClient({url});
   return {db,url,close(){ db.close(); rmSync(directory,{recursive:true,force:true}); }};
 }
@@ -89,10 +91,9 @@ function databaseClockClient(delegate,readClock){
   };
 }
 
+// The fixture file is already migrated; only the per-connection pragmas remain.
 async function apply(db){
   await prepareMigrationConnection(db);
-  const before=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,retry:NO_RETRY});
 }
 
 async function seed(db){

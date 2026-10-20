@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {rmSync} from 'node:fs';
 import {afterEach,test} from 'node:test';
 
 import {createClient} from '@libsql/client';
@@ -18,7 +16,8 @@ import {
 } from '../../api/_pairing-email.js';
 import {runOutboxWorker} from '../../api/_outbox.js';
 import {resolvePairingCycle} from '../../api/_pairing-cycle.js';
-import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {prepareMigrationConnection} from '../../db/migration-runner.js';
+import {createMigratedDatabase} from '../support/migrated-db.mjs';
 
 const NOW=new Date('2026-09-20T08:15:00.000Z');
 const FLAGS=[
@@ -41,13 +40,10 @@ function enableSecondaryEmail(){
 }
 
 async function fixture(){
-  const directory=mkdtempSync(join(tmpdir(),'randori-secondary-email-'));
-  const db=createClient({url:`file:${join(directory,'database.sqlite')}`});
+  const {directory,url}=await createMigratedDatabase({prefix:'randori-secondary-email-'});
+  const db=createClient({url});
   resources.push(async()=>{ await db.close(); rmSync(directory,{recursive:true,force:true}); });
   await prepareMigrationConnection(db);
-  const state=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   return db;
 }
 
@@ -259,8 +255,7 @@ test('v2 parsing rejects unknown versions and non-exact payloads permanently',as
 });
 
 test('secondary notification failure rolls the publication back and a race converges on one event per member',async()=>{
-  const directory=mkdtempSync(join(tmpdir(),'randori-secondary-email-race-'));
-  const url=`file:${join(directory,'database.sqlite')}`;
+  const {directory,url}=await createMigratedDatabase({prefix:'randori-secondary-email-race-'});
   const setup=createClient({url});
   const first=createClient({url});
   const second=createClient({url});
@@ -269,9 +264,6 @@ test('secondary notification failure rolls the publication back and a race conve
     rmSync(directory,{recursive:true,force:true});
   });
   await prepareMigrationConnection(setup);
-  const state=await inspectMigrationState(setup);
-  await applyMigrations(setup,{expectedStateFingerprint:state.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await seedCircle(setup,{circleId:20,userIds:[1,2,3,4]});
   enableSecondaryEmail();
   await setup.execute(`CREATE TRIGGER reject_secondary_email BEFORE INSERT ON outbox_events

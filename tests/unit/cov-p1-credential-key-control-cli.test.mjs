@@ -8,16 +8,12 @@ import {after,before,mock,test} from 'node:test';
 
 import * as libsql from '@libsql/client';
 
-import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
-import {
-  applyMigrations,
-  inspectMigrationState,
-  prepareMigrationConnection,
-} from '../../db/migration-runner.js';
+import {copyMigratedDatabase} from '../support/migrated-db.mjs';
 
 const SCRIPT=fileURLToPath(new URL('../../scripts/credential-key-control.mjs',import.meta.url));
 const directory=mkdtempSync(join(tmpdir(),'randori-cov-key-control-cli-'));
-const localUrl=`file:${join(directory,'database.sqlite')}`;
+const localPath=join(directory,'database.sqlite');
+const localUrl=`file:${localPath}`;
 const connections=[];
 let main;
 
@@ -31,13 +27,7 @@ const RUNTIME=Object.freeze({GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_REF:'r
   TURSO_AUTH_TOKEN:'secret-turso-token-value'});
 
 before(async()=>{
-  const setup=libsql.createClient({url:localUrl});
-  await prepareMigrationConnection(setup);
-  const initial=await inspectMigrationState(setup,{migrations:EXECUTABLE_MIGRATIONS});
-  await applyMigrations(setup,{migrations:EXECUTABLE_MIGRATIONS,
-    expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
-  await setup.close();
+  await copyMigratedDatabase(localPath);
   // The CLI only ever connects to the validated remote URL; redirect that client
   // to the local migrated database and record what it was asked to connect to.
   mock.module('@libsql/client',{namedExports:{...libsql,createClient:config=>{

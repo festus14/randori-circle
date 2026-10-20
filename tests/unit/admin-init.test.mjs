@@ -15,6 +15,7 @@ import {
   inspectMigrationState,
   prepareMigrationConnection,
 } from '../../db/migration-runner.js';
+import {copyMigratedDatabase} from '../support/migrated-db.mjs';
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const NOW_SECONDS=1_800_000_000;
@@ -32,13 +33,20 @@ function sqlText(statement){
 async function databaseFixture({migrations=EXECUTABLE_MIGRATIONS}={}){
   const directory=mkdtempSync(join(tmpdir(),'randori-admin-init-'));
   resources.push(()=>rmSync(directory,{recursive:true,force:true}));
-  const db=createClient({url:`file:${join(directory,'database.sqlite')}`});
+  const path=join(directory,'database.sqlite');
+  // The latest schema comes from the shared migrated template; a version
+  // prefix (the stale-schema case) still migrates for real.
+  const latest=migrations===EXECUTABLE_MIGRATIONS;
+  if(latest) await copyMigratedDatabase(path);
+  const db=createClient({url:`file:${path}`});
   resources.push(()=>db.close());
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db,{migrations});
-  await applyMigrations(db,{
-    migrations,expectedStateFingerprint:initial.stateFingerprint,retry:NO_RETRY,
-  });
+  if(!latest){
+    const initial=await inspectMigrationState(db,{migrations});
+    await applyMigrations(db,{
+      migrations,expectedStateFingerprint:initial.stateFingerprint,retry:NO_RETRY,
+    });
+  }
   return db;
 }
 

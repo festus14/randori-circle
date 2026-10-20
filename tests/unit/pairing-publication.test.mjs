@@ -25,6 +25,7 @@ import {
   inspectMigrationState,
   prepareMigrationConnection,
 } from '../../db/migration-runner.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
 const NOW='2026-09-20T07:00:00.000Z';
 const APP_URL='https://randori.example.test';
@@ -41,13 +42,20 @@ afterEach(async()=>{
 
 async function createDatabase({migrations=EXECUTABLE_MIGRATIONS}={}){
   const directory=mkdtempSync(join(tmpdir(),'randori-pair-publication-'));
-  const url=`file:${join(directory,'pairing.sqlite')}`;
+  const path=join(directory,'pairing.sqlite');
+  const url=`file:${path}`;
+  // Latest-schema fixtures copy the migrated template; a version prefix still
+  // runs the real migration chain.
+  const latest=migrations===EXECUTABLE_MIGRATIONS;
+  if(latest) await copyMigratedDatabase(path);
   const db=createClient({url});
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db,{migrations});
-  await applyMigrations(db,{
-    expectedStateFingerprint:initial.stateFingerprint,migrations,retry:NO_RETRY,
-  });
+  if(!latest){
+    const initial=await inspectMigrationState(db,{migrations});
+    await applyMigrations(db,{
+      expectedStateFingerprint:initial.stateFingerprint,migrations,retry:NO_RETRY,
+    });
+  }
   let closed=false;
   cleanup.push(async()=>{
     if(!closed){ closed=true; await db.close(); }

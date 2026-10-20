@@ -21,7 +21,7 @@
 //     --out=DIR      keep the istanbul reports (json-summary, json, lcov) in DIR
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,6 +41,12 @@ export const EXCLUDE = [
   'scripts/ui-screenshots.mjs', // Playwright browser capture of production and a local runtime
 ];
 const MOCK_PARAM = 'node-test-mock';
+// node --test defaults to availableParallelism() - 1 files at once, which is 3
+// on the 4-vCPU CI runner. Many files spend part of their time waiting on
+// timers, child processes and local servers, so a few extra workers help:
+// in a 4-CPU container this step took 122 s at 3, 89 s at 6. Larger machines
+// keep the default.
+const TEST_CONCURRENCY = Math.max(availableParallelism() - 1, 6);
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);
@@ -80,7 +86,9 @@ function main() {
       .filter((name) => name.endsWith('.test.mjs'))
       .sort()
       .map((name) => join('tests', 'unit', name));
-    const testStatus = run(process.execPath, ['--experimental-test-module-mocks', '--test', ...testFiles], {
+    const testStatus = run(process.execPath, [
+      '--experimental-test-module-mocks', '--test', `--test-concurrency=${TEST_CONCURRENCY}`, ...testFiles,
+    ], {
       ...process.env,
       NODE_V8_COVERAGE: rawDir,
     });

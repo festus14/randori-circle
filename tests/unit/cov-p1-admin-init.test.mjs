@@ -10,14 +10,9 @@ import {
   initializeLocalPrimaryCircleData,
   initializePrimaryCircleData,
 } from '../../api/_admin-init.js';
-import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
-import {
-  applyMigrations,
-  inspectMigrationState,
-  prepareMigrationConnection,
-} from '../../db/migration-runner.js';
+import {prepareMigrationConnection} from '../../db/migration-runner.js';
+import {copyMigratedDatabase} from '../support/migrated-db.mjs';
 
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const NOW_SECONDS=1_800_000_000;
 const SESSION_HASH='b'.repeat(64);
 const UUID='22222222-2222-4222-8222-222222222222';
@@ -34,13 +29,10 @@ function sqlText(statement){
 async function databaseFixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-cov-admin-init-'));
   resources.push(()=>rmSync(directory,{recursive:true,force:true}));
-  const db=createClient({url:`file:${join(directory,'database.sqlite')}`});
+  const path=await copyMigratedDatabase(join(directory,'database.sqlite'));
+  const db=createClient({url:`file:${path}`});
   resources.push(()=>db.close());
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS});
-  await applyMigrations(db,{
-    migrations:EXECUTABLE_MIGRATIONS,expectedStateFingerprint:initial.stateFingerprint,retry:NO_RETRY,
-  });
   return db;
 }
 

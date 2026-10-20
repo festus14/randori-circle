@@ -14,8 +14,9 @@ import {
   publicBackupEvidenceResult,
 } from '../../db/backup-evidence.js';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { stableJson } from '../../db/stable-checksum.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
 const KEY=Buffer.from('evidence-key-alpha-32-bytes-value!','utf8');
 const REPO_COMMIT='0123456789abcdef0123456789abcdef01234567';
@@ -139,10 +140,9 @@ async function rejects(promise,code,pattern){
 }
 
 before(async()=>{
+  await copyMigratedDatabase(sourcePath);
   sourceDb=open(sourcePath);
   await prepareMigrationConnection(sourceDb);
-  const state=await inspectMigrationState(sourceDb);
-  await applyMigrations(sourceDb,{expectedStateFingerprint:state.stateFingerprint,retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await sourceDb.execute({sql:'INSERT INTO auth_rate_limits (key,attempts,expires_at) VALUES (?,?,?)',args:['k1',1n,2n]});
   await sourceDb.execute({sql:'INSERT INTO auth_rate_limits (key,attempts,expires_at) VALUES (?,?,?)',args:['k2',3n,4n]});
   source=await collectDatabaseEvidence(sourceDb,evidenceOptions());

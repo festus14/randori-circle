@@ -20,6 +20,7 @@ import {
 } from '../../db/migration-runner.js';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { SCHEMA_MANIFEST } from '../../db/schema-manifest.js';
+import { copyMigratedDatabaseSync, migratedTemplatePath } from '../support/migrated-db.mjs';
 
 const KEY_A=Buffer.from('evidence-key-alpha-32-bytes-value!','utf8');
 const KEY_B=Buffer.from('evidence-key-bravo-32-bytes-value!','utf8');
@@ -31,9 +32,14 @@ const NOW=Date.parse('2026-09-18T12:00:00.000Z');
 const PITR='2026-09-18T10:00:00.000Z';
 const FAST_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 
-function fixture(){
+await migratedTemplatePath();
+
+// `migrated` starts from a copy of the migrated-to-latest template; otherwise
+// the database is empty and the test runs the migrations it needs itself.
+function fixture({migrated=false}={}){
   const directory=mkdtempSync(join(tmpdir(),'randori-evidence-'));
   const path=join(directory,'database.sqlite');
+  if(migrated) copyMigratedDatabaseSync(path);
   const open=()=>createClient({url:`file:${path}`,intMode:'bigint'});
   const db=open();
   return {
@@ -133,11 +139,11 @@ function databaseProxy(db,onExecute){
 }
 
 test('matching source and isolated restore evidence verifies without exposing identities',async()=>{
-  const sourceItem=fixture();
+  const sourceItem=fixture({migrated:true});
   const restoreItem=fixture();
   let restoredDb;
   try{
-    await migrate(sourceItem.db);
+    await prepareMigrationConnection(sourceItem.db);
     await sourceItem.db.execute({
       sql:`INSERT INTO auth_accounts
         (id,email,password_hash,display_name,color,is_available,is_admin,is_demo)
@@ -268,9 +274,9 @@ test('an explicitly selected exact unmanaged prefix authenticates ledger absence
 });
 
 test('row count and equal-count row-content mismatches fail closed',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     const sourceEmpty=await collectDatabaseEvidence(item.db,evidenceOptions());
     await item.db.execute({
       sql:'INSERT INTO auth_rate_limits (key,attempts,expires_at) VALUES (?,?,?)',
@@ -299,9 +305,9 @@ test('row count and equal-count row-content mismatches fail closed',async()=>{
 });
 
 test('schema drift and incomplete migration state are rejected before evidence is emitted',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     await item.db.execute('CREATE TABLE unexpected_restore_data (id INTEGER PRIMARY KEY)');
     await rejectCode(
       collectDatabaseEvidence(item.db,evidenceOptions()),
@@ -316,9 +322,9 @@ test('schema drift and incomplete migration state are rejected before evidence i
 });
 
 test('present tolerated legacy tables are digested and cannot be lost silently',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     await item.db.execute('CREATE TABLE ai_monthly_usage (month TEXT PRIMARY KEY, calls INTEGER)');
     await item.db.execute({
       sql:'INSERT INTO ai_monthly_usage (month,calls) VALUES (?,?)',
@@ -345,9 +351,9 @@ test('present tolerated legacy tables are digested and cannot be lost silently',
 });
 
 test('AUTOINCREMENT allocator state is keyed and compared even when application rows match',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     await item.db.execute({
       sql:'INSERT INTO users (name,color) VALUES (?,?)',
       args:['temporary-user','blue'],
@@ -371,9 +377,9 @@ test('AUTOINCREMENT allocator state is keyed and compared even when application 
 });
 
 test('foreign-key violations and integrity-check failures are both fail closed',async()=>{
-  const foreignKeyItem=fixture();
+  const foreignKeyItem=fixture({migrated:true});
   try{
-    await migrate(foreignKeyItem.db);
+    await prepareMigrationConnection(foreignKeyItem.db);
     await foreignKeyItem.db.execute('PRAGMA foreign_keys=OFF');
     await foreignKeyItem.db.execute({
       sql:`INSERT INTO pairing_groups
@@ -387,9 +393,9 @@ test('foreign-key violations and integrity-check failures are both fail closed',
     );
   }finally{ foreignKeyItem.close(); }
 
-  const integrityItem=fixture();
+  const integrityItem=fixture({migrated:true});
   try{
-    await migrate(integrityItem.db);
+    await prepareMigrationConnection(integrityItem.db);
     const proxy={
       async transaction(mode){
         const transaction=await integrityItem.db.transaction(mode);
@@ -416,9 +422,9 @@ test('foreign-key violations and integrity-check failures are both fail closed',
 });
 
 test('wrong, reused, and improperly sized identity credentials are rejected',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     const source=await collectDatabaseEvidence(item.db,evidenceOptions());
     const restored=await collectDatabaseEvidence(item.db,restoreOptions());
     assert.throws(
@@ -443,9 +449,9 @@ test('wrong, reused, and improperly sized identity credentials are rejected',asy
 });
 
 test('wrong backup references and tampered evidence bindings are rejected',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     const source=await collectDatabaseEvidence(item.db,evidenceOptions());
     const restored=await collectDatabaseEvidence(item.db,restoreOptions());
     assert.throws(
@@ -468,9 +474,9 @@ test('wrong backup references and tampered evidence bindings are rejected',async
 });
 
 test('stale snapshots and stale signed evidence are rejected at their boundaries',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     await rejectCode(
       collectDatabaseEvidence(item.db,evidenceOptions({maxSnapshotAgeMs:105*60*1000-1})),
       'BACKUP_EVIDENCE_STALE_SNAPSHOT',
@@ -492,9 +498,9 @@ test('stale snapshots and stale signed evidence are rejected at their boundaries
 });
 
 test('a comparison cannot succeed when documented RPO or RTO targets are missed',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     const sourceRpo=await collectDatabaseEvidence(item.db,evidenceOptions({rpoTargetMs:60*60*1000}));
     const restoreRpo=await collectDatabaseEvidence(item.db,restoreOptions({rpoTargetMs:60*60*1000}));
     assert.throws(
@@ -518,9 +524,9 @@ test('a comparison cannot succeed when documented RPO or RTO targets are missed'
 });
 
 test('operator policy pins override matching but lax signed evidence policies',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     const lax={
       maxSnapshotAgeMs:6*60*60*1000,
       maxEvidenceAgeMs:6*60*60*1000,
@@ -540,9 +546,9 @@ test('operator policy pins override matching but lax signed evidence policies',a
 });
 
 test('HMAC key separation changes table, schema, identity, and envelope digests',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     const first=await collectDatabaseEvidence(item.db,evidenceOptions({hmacKey:KEY_A}));
     const second=await collectDatabaseEvidence(item.db,evidenceOptions({hmacKey:KEY_B}));
     assert.notEqual(first.bindingDigest,second.bindingDigest);
@@ -553,9 +559,9 @@ test('HMAC key separation changes table, schema, identity, and envelope digests'
 });
 
 test('canonical encoding distinguishes null, text, blob, cell boundaries, and large integers',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     await item.db.execute({
       sql:`INSERT INTO app_logs (id,level,source,message,meta_json)
         VALUES (?,?,?,?,?)`,
@@ -604,10 +610,10 @@ test('canonical encoding distinguishes null, text, blob, cell boundaries, and la
 });
 
 test('evidence is deterministic after closing and reopening the local libSQL database',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   let reopened;
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     await item.db.execute({
       sql:'INSERT INTO auth_rate_limits (key,attempts,expires_at) VALUES (?,?,?)',
       args:['restart-check',3n,1000n],
@@ -624,9 +630,9 @@ test('evidence is deterministic after closing and reopening the local libSQL dat
 });
 
 test('public result and error helpers whitelist output and redact raw failures',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     const evidence=await collectDatabaseEvidence(item.db,evidenceOptions());
     const publicResult=publicBackupEvidenceResult({
       ...evidence,
@@ -660,9 +666,9 @@ test('public result and error helpers whitelist output and redact raw failures',
 });
 
 test('configured row, cell, and duration bounds stop collection safely',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     await item.db.execute({
       sql:'INSERT INTO auth_rate_limits (key,attempts,expires_at) VALUES (?,?,?)',
       args:['bounded-row',1n,2n],
@@ -692,9 +698,9 @@ test('configured row, cell, and duration bounds stop collection safely',async()=
 });
 
 test('oversized cells are rejected by length preflight before their values are fetched',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     await item.db.execute({
       sql:'INSERT INTO app_logs (level,source,message) VALUES (?,?,?)',
       args:['info','memory-test','x'.repeat(64)],
@@ -718,9 +724,9 @@ test('oversized cells are rejected by length preflight before their values are f
 });
 
 test('value fetch pages are reduced so many near-limit cells stay under the hard page bound',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     for(let index=0;index<20;index+=1){
       await item.db.execute({
         sql:'INSERT INTO app_logs (level,source,message) VALUES (?,?,?)',
@@ -745,9 +751,9 @@ test('value fetch pages are reduced so many near-limit cells stay under the hard
 });
 
 test('malformed and numerically oversized preflight lengths fail without fetching values',async()=>{
-  const item=fixture();
+  const item=fixture({migrated:true});
   try{
-    await migrate(item.db);
+    await prepareMigrationConnection(item.db);
     await item.db.execute({sql:'INSERT INTO users (name,color) VALUES (?,?)',args:['one','blue']});
     for(const malformed of ['not-a-length',9007199254740993n]){
       let userValuesFetched=false;

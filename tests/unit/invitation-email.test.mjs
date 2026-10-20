@@ -25,11 +25,12 @@ import {
   openInvitationEmailCredential,
   sealInvitationEmailCredential,
 } from '../../api/_invitation-email.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import {
   adoptCredentialKeyControl,
   advanceCredentialKeyControl,
 } from '../support/credential-key-control.mjs';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
 const resources=[];
 const databasePaths=new WeakMap();
@@ -59,12 +60,10 @@ async function fixture(){
   configureProduction();
   const directory=mkdtempSync(join(tmpdir(),'randori-invitation-email-'));
   const databasePath=join(directory,'invitation.sqlite');
+  await copyMigratedDatabase(databasePath);
   const db=createClient({url:`file:${databasePath}`});
   databasePaths.set(db,databasePath);
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await adoptCredentialKeyControl(db,invitationKeyRing());
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin,is_demo)

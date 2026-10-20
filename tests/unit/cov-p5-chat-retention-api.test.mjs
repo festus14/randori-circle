@@ -3,9 +3,7 @@
 // not reach. Fault injection wraps a real migrated SQLite database so every
 // injected failure is checked against real side effects (rows kept, run state).
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { rmSync } from 'node:fs';
 import { test } from 'node:test';
 import { createClient } from '@libsql/client';
 
@@ -28,24 +26,18 @@ import {
   runChatRetentionWorker,
   setChatRetentionControl,
 } from '../../api/_chat-retention.js';
-import {
-  applyMigrations,
-  inspectMigrationState,
-  prepareMigrationConnection,
-} from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { createMigratedDatabase } from '../support/migrated-db.mjs';
 
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const DIGEST_A='a'.repeat(64);
 const DIGEST_B='b'.repeat(64);
 const SCOPE=Object.freeze({scopeKey:'circle:1',circleId:1,weekId:10,pairGroupId:20});
 const LOCAL_SCOPE=Object.freeze({scopeKey:'local',circleId:null,weekId:10,pairGroupId:20});
 
 async function fixture(){
-  const directory=mkdtempSync(join(tmpdir(),'randori-cov-p5-retention-'));
-  const db=createClient({url:`file:${join(directory,'test.sqlite')}`});
+  const {directory,url}=await createMigratedDatabase({prefix:'randori-cov-p5-retention-',filename:'test.sqlite'});
+  const db=createClient({url});
   await prepareMigrationConnection(db);
-  const state=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
   return {db,close(){ db.close(); rmSync(directory,{recursive:true,force:true}); }};
 }
 

@@ -6,8 +6,8 @@ import test from 'node:test';
 import { createClient } from '@libsql/client';
 import * as Y from 'yjs';
 
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabaseSync, migratedTemplatePath } from '../support/migrated-db.mjs';
 import {
   CODE_DOCUMENT_RETENTION_BATCH_LIMIT,
   CodeDocumentDataError,
@@ -21,23 +21,24 @@ import {
   readCodeProjectionForWorkspace,
 } from '../../api/_code-document.js';
 
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const IDENTITY={roomId:'week_10_pair_20',weekId:10,pairGroupId:20,
   questionSlug:'focus-block-rollup',questionVersion:1,language:'javascript'};
+
+await migratedTemplatePath();
 
 function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-code-document-'));
   const path=join(directory,'test.sqlite');
+  copyMigratedDatabaseSync(path);
   let db=createClient({url:`file:${path}`});
   return {get db(){ return db; },restart(){ db.close(); db=createClient({url:`file:${path}`}); return db; },
     client(){ return createClient({url:`file:${path}`}); },
     close(){ db.close(); rmSync(directory,{recursive:true,force:true}); }};
 }
 
-async function migrate(db){
+// fixture() copies the migrated template; each connection still needs its pragmas.
+async function prepareConnection(db){
   await prepareMigrationConnection(db);
-  const before=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,retry:NO_RETRY});
 }
 
 async function seed(db,{triad=false,ai=false,mixed=false,workspace=true}={}){
@@ -74,7 +75,7 @@ function input(update,{clientId='client_A1',clientSeq=1}={}){
 test('v20 bootstrap is server-serialized from the matching v3 workspace and survives restart',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepareConnection(item.db); await seed(item.db);
     const first=await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY,afterRevision:0});
     assert.equal(first.created,true); assert.equal(first.document.code,'return base;');
     assert.equal(first.document.revision,1); assert.match(first.document.version,/^[a-f0-9]{64}$/);
@@ -90,7 +91,7 @@ test('concurrent same-offset updates merge in either delivery order and duplicat
   for(const order of [[0,1],[1,0]]){
     const item=fixture();
     try{
-      await migrate(item.db); await seed(item.db);
+      await prepareConnection(item.db); await seed(item.db);
       const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
       const updates=[
         updateFromState(initial.state,text=>text.insert(7,'A')),
@@ -114,7 +115,7 @@ test('concurrent same-offset updates merge in either delivery order and duplicat
 test('simultaneous merges on independent database clients retry and preserve both edits',async()=>{
   const item=fixture(); let peer;
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepareConnection(item.db); await seed(item.db);
     peer=item.client(); await prepareMigrationConnection(peer);
     const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
     const left=updateFromState(initial.state,text=>text.insert(7,'A'));
@@ -132,7 +133,7 @@ test('simultaneous merges on independent database clients retry and preserve bot
 test('execution and workspace projection remain available during a cross-client writer',async()=>{
   const item=fixture(); let peer;
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepareConnection(item.db); await seed(item.db);
     const created=await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY});
     peer=item.client(); await prepareMigrationConnection(peer);
     for(const operation of [
@@ -162,7 +163,7 @@ test('execution and workspace projection remain available during a cross-client 
 test('overlapping delete and insert converge without whole-document overwrite',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepareConnection(item.db); await seed(item.db);
     const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
     const deletion=updateFromState(initial.state,text=>text.delete(7,4));
     const insertion=updateFromState(initial.state,text=>text.insert(7,'shared-'));
@@ -181,7 +182,7 @@ test('input bounds and corrupt stored state fail closed without mutation',async(
   }),CodeDocumentInputError);
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepareConnection(item.db); await seed(item.db);
     await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY});
     const hidden=new Y.Doc(); hidden.getMap('hidden').set('secret','private');
     await assert.rejects(()=>mergeAuthorizedCodeDocument(item.db,input(
@@ -203,7 +204,7 @@ test('authorization makes nonexistent, outsider, AI, triad, mixed-source, and co
   for(const [shape,viewerId] of [[{},9],[{ai:true},1],[{triad:true},1],[{mixed:true},1]]){
     const item=fixture();
     try{
-      await migrate(item.db); await seed(item.db,{...shape,workspace:false});
+      await prepareConnection(item.db); await seed(item.db,{...shape,workspace:false});
       assert.equal(await getAuthorizedCodeDocument(item.db,{viewerId,...IDENTITY}),null);
       assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM pair_code_documents`)).rows[0].c,0);
     }finally{ item.close(); }
@@ -213,7 +214,7 @@ test('authorization makes nonexistent, outsider, AI, triad, mixed-source, and co
 test('completion blocks writes and execution lookup binds the exact canonical version',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepareConnection(item.db); await seed(item.db);
     const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
     const exact=await readCanonicalCodeForExecution(item.db,{viewerId:1,room:IDENTITY,
       questionSlug:IDENTITY.questionSlug,questionVersion:1,language:'javascript',documentVersion:initial.version});
@@ -238,7 +239,7 @@ test('completion blocks writes and execution lookup binds the exact canonical ve
 test('expired documents are deleted before access and rebuilt without retaining stale CRDT content',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepareConnection(item.db); await seed(item.db);
     const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
     const update=updateFromState(initial.state,text=>text.insert(text.length,' private'));
     const privateDocument=(await mergeAuthorizedCodeDocument(item.db,input(update))).document;
@@ -258,7 +259,7 @@ test('expired documents are deleted before access and rebuilt without retaining 
 test('an expired document and rollback projection are purged before a direct mutation',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepareConnection(item.db); await seed(item.db);
     const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
     const privateUpdate=updateFromState(initial.state,text=>text.insert(text.length,' private'));
     const privateDocument=(await mergeAuthorizedCodeDocument(item.db,input(privateUpdate))).document;
@@ -285,7 +286,7 @@ test('an expired document and rollback projection are purged before a direct mut
 test('retention scrubs only an expired matching code projection and preserves board plus active siblings',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepareConnection(item.db); await seed(item.db);
     const javascript=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
     const privateUpdate=updateFromState(javascript.state,text=>text.insert(text.length,' secret'));
     const privateDocument=(await mergeAuthorizedCodeDocument(item.db,input(privateUpdate))).document;
@@ -314,7 +315,7 @@ test('retention scrubs only an expired matching code projection and preserves bo
 test('retention bounds each sweep and leaves the remaining backlog for a later sweep',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db,{workspace:false});
+    await prepareConnection(item.db); await seed(item.db,{workspace:false});
     const document=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
     await item.db.execute(`DELETE FROM pair_code_documents`);
     for(const version of [1,2,3]){

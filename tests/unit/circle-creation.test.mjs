@@ -11,17 +11,19 @@ import {
   createCircleAndSelect,
   parseCircleCreation,
 } from '../../api/_circle-creation.js';
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabaseSync, migratedTemplatePath } from '../support/migrated-db.mjs';
 
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const SESSION_A='a'.repeat(64);
 const SESSION_B='b'.repeat(64);
 const REQUEST='request_opaque_1234567890';
 
+// Every test needs a migrated-to-latest database; copy one template per test.
+await migratedTemplatePath();
+
 function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-circle-create-'));
-  const path=join(directory,'test.sqlite');
+  const path=copyMigratedDatabaseSync(join(directory,'test.sqlite'));
   const db=createClient({url:`file:${path}`});
   return {
     db,path,
@@ -30,10 +32,8 @@ function fixture(){
   };
 }
 
-async function migrate(db){
+async function prepare(db){
   await prepareMigrationConnection(db);
-  const before=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
 }
 
 async function seed(db,{secondUser=false}={}){
@@ -79,7 +79,7 @@ test('creation validation is exact, Unicode-safe, and bounded before persistence
 test('one transaction creates a secondary owner, receipt, audit, and monotonic selected context only',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepare(item.db); await seed(item.db);
     await item.db.execute({sql:`INSERT INTO auth_session_circle_contexts
       (session_hash,user_id,circle_id,context_version,updated_at) VALUES (?,?,1,7,?)`,
     args:[SESSION_A,1,Math.floor(Date.now()/1000)]});
@@ -122,7 +122,7 @@ test('identical concurrent requests converge while cross-tenant opaque IDs stay 
   const item=fixture();
   let second;
   try{
-    await migrate(item.db); await seed(item.db,{secondUser:true});
+    await prepare(item.db); await seed(item.db,{secondUser:true});
     const other=await createCircleAndSelect(item.db,payload(2,SESSION_B),input(),{randomUuid:()=>uuid(99)});
     assert.equal(other.created,true);
     second=item.client(); await prepareMigrationConnection(second);
@@ -142,7 +142,7 @@ test('identical concurrent requests converge while cross-tenant opaque IDs stay 
 test('a receipt is bound to the exact name, session, audit, and unchanged selected result',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepare(item.db); await seed(item.db);
     const first=await createCircleAndSelect(item.db,payload(),input(),{randomUuid:uuids()});
     const replay=await createCircleAndSelect(item.db,payload(),input(),{randomUuid:()=>{ throw new Error('must not generate'); }});
     assert.equal(replay.created,false);
@@ -163,7 +163,7 @@ test('a receipt is bound to the exact name, session, audit, and unchanged select
 test('live-session, ownership, and total-membership limits fail before any new circle',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepare(item.db); await seed(item.db);
     await item.db.execute({sql:`UPDATE auth_sessions SET revoked_at=? WHERE session_hash=?`,args:[Math.floor(Date.now()/1000),SESSION_A]});
     assert.equal((await createCircleAndSelect(item.db,payload(),input(),{randomUuid:uuids()})).reason,'session_changed');
     await item.db.execute({sql:`UPDATE auth_sessions SET revoked_at=NULL WHERE session_hash=?`,args:[SESSION_A]});
@@ -181,7 +181,7 @@ test('live-session, ownership, and total-membership limits fail before any new c
 test('the total active-membership ceiling prevents creating a circle that list cannot read',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepare(item.db); await seed(item.db);
     const statements=[];
     for(let id=2;id<=100;id+=1){
       statements.push({sql:`INSERT INTO circles
@@ -201,7 +201,7 @@ test('the total active-membership ceiling prevents creating a circle that list c
 test('an applied-but-throwing commit is never retried and external replay converges',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepare(item.db); await seed(item.db);
     let transactionCount=0;
     const ambiguousDb={
       async transaction(mode){
@@ -227,7 +227,7 @@ test('an applied-but-throwing commit is never retried and external replay conver
 test('a vetted pre-commit retry revalidates the exact live session before writing',async()=>{
   const item=fixture();
   try{
-    await migrate(item.db); await seed(item.db);
+    await prepare(item.db); await seed(item.db);
     let attempts=0;
     const retryingDb={
       async transaction(mode){
@@ -266,7 +266,7 @@ test('failure after each creation write rolls the whole transaction back',async(
     'INSERT INTO circle_creation_requests','INSERT INTO auth_session_circle_contexts']){
     const item=fixture();
     try{
-      await migrate(item.db); await seed(item.db);
+      await prepare(item.db); await seed(item.db);
       const failingDb={
         async transaction(mode){
           const transaction=await item.db.transaction(mode);

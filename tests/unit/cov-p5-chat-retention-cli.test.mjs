@@ -9,14 +9,10 @@ import { test } from 'node:test';
 import { createClient } from '@libsql/client';
 
 import { chatRetentionEvidenceBindingDigest } from '../../api/_chat-retention.js';
-import {
-  applyMigrations,
-  inspectMigrationState,
-  prepareMigrationConnection,
-} from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { runChatRetentionCli } from '../../scripts/chat-retention.mjs';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 // Pre-cutover (no circles) data keeps the migration state ready, so the CLI
 // paths are exercised with the local-runtime scope; circle scopes are covered
 // by tests/unit/cov-p5-chat-retention-api.test.mjs.
@@ -28,12 +24,9 @@ const LOCAL_ADOPT=Object.freeze({CHAT_RETENTION_ACTION:'adopt_scope',...SCOPE_EN
 async function fixture({migrate=true}={}){
   const directory=mkdtempSync(join(tmpdir(),'randori-cov-p5-retention-cli-'));
   const url=`file:${join(directory,'cli.sqlite')}`;
+  if(migrate) await copyMigratedDatabase(join(directory,'cli.sqlite'));
   const db=createClient({url});
-  if(migrate){
-    await prepareMigrationConnection(db);
-    const state=await inspectMigrationState(db);
-    await applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
-  }
+  if(migrate) await prepareMigrationConnection(db);
   const opened=[];
   const createDatabase=options=>{
     const client=createClient({url:options.url});
