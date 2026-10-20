@@ -3,7 +3,7 @@
 This increment lets an active member leave a primary circle and lets an active
 owner list, deactivate, reactivate, or transfer ownership to a member in that
 same circle. Owners can also add and remove co-owners, and app admins can grant
-and revoke app admin access (ID-68); see [Co-owners and app
+and revoke app admin access (ID-69); see [Co-owners and app
 admins](#co-owners-and-app-admins). The existing invitation screen remains the place where owners
 revoke pending invitations.
 

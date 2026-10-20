@@ -48,9 +48,18 @@
     return '';
   }
 
-  function emailProblem(email, emailValid) {
+  // Sign-up applies the shared strict rules (assets/email-validation.js, the
+  // same module the server uses) once that module has loaded. Sign-in and
+  // password reset keep the browser's own check so an existing account whose
+  // address predates those rules is never locked out client-side.
+  function emailProblem(email, emailValid, mode) {
     if (!email) return 'Enter your email address.';
     if (!emailValid) return 'Enter a valid email address.';
+    const rules = root.RandoriEmailValidation;
+    if (mode === 'signup' && rules) {
+      const verdict = rules.validateEmail(email);
+      if (!verdict.ok) return rules.emailProblemMessage(verdict.reason);
+    }
     return '';
   }
 
@@ -68,7 +77,7 @@
     const normalizedName = String(name ?? '').trim();
     const rawPassword = String(password ?? '');
     const errors = {};
-    const emailError = emailProblem(normalizedEmail, emailValid === true);
+    const emailError = emailProblem(normalizedEmail, emailValid === true, resolved);
     if (emailError) errors.email = emailError;
     if (resolved === 'signup') {
       const problem = nameProblem(normalizedName);
@@ -93,7 +102,7 @@
   function fieldProblem(field, { mode, value, valid } = {}) {
     const text = String(value ?? '');
     if (!text.trim()) return '';
-    if (field === 'email') return emailProblem(text.trim(), valid === true);
+    if (field === 'email') return emailProblem(text.trim(), valid === true, normalizedMode(mode));
     if (field === 'name') return normalizedMode(mode) === 'signup' ? nameProblem(text.trim()) : '';
     if (field === 'password') return passwordProblem(text, { mode: normalizedMode(mode) });
     return '';

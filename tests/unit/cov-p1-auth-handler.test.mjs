@@ -329,6 +329,9 @@ test('signup is disabled unless local signup or verified activation is configure
     [signupBody({password:'short'}),/10-72/],
     [signupBody({email:'not-an-email'}),/invalid email/],
     [signupBody({email:`${'a'.repeat(250)}@b.co`}),/invalid email/],
+    // New accounts use the shared strict rules (ID-68).
+    [signupBody({email:'a..b@example.test'}),/invalid email/],
+    [signupBody({email:'new@example.c'}),/invalid email/],
     [signupBody({name:' x '}),/display name/],
   ]){
     const rejected=await call({endpoint:'signup',body});

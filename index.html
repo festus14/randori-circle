@@ -2075,16 +2075,30 @@ a.btn{text-decoration:none}
             <div class="card-h"><h3 id="circleInvitesTitle" class="circle-card-title">Invitations</h3><span id="circleInvitesMeta" class="circle-card-meta"></span></div>
             <div class="card-b circle-card-body">
               <p class="small muted circle-help">Each invitation works once, only for the email you enter, and expires after 7 days. For privacy, the address is shown only in the browser that sent it.</p>
-              <form id="circleInviteForm" class="circle-invite-form">
+              <form id="circleInviteForm" class="circle-invite-form" novalidate>
                 <label class="small muted circle-field">Email address
-                  <input id="circleInviteEmail" data-testid="circle-invite-email" class="input" type="email" autocomplete="email" required placeholder="teammate@example.com" />
+                  <input id="circleInviteEmail" data-testid="circle-invite-email" class="input" type="email" autocomplete="email" spellcheck="false" maxlength="254" required placeholder="teammate@example.com" aria-describedby="circleInviteEmailError" />
                 </label>
                 <button id="circleInviteCreate" data-testid="circle-invite-create" class="btn" type="submit">Send invitation</button>
+                <p id="circleInviteEmailError" class="field-error circle-invite-error" data-testid="circle-invite-email-error" hidden></p>
               </form>
               <div class="circle-invite-result">
                 <div id="circleInviteStatus" class="small muted" role="status" aria-live="polite"></div>
                 <button id="circleInviteLink" data-testid="circle-invite-link" class="btn secondary sm" type="button" hidden>Copy invitation link</button>
               </div>
+              <details id="circleBulkInvite" class="circle-invite-history circle-bulk" data-testid="circle-bulk-invite">
+                <summary>Invite several people at once</summary>
+                <form id="circleBulkInviteForm" class="circle-bulk-form" novalidate aria-busy="false">
+                  <label for="circleBulkInviteInput" class="small muted">Paste emails</label>
+                  <textarea id="circleBulkInviteInput" data-testid="circle-bulk-invite-input" class="textarea" rows="4" spellcheck="false" autocomplete="off" aria-describedby="circleBulkInviteHint circleBulkInviteCount"></textarea>
+                  <p id="circleBulkInviteHint" class="small muted circle-help">Separate addresses with commas, semicolons, spaces or new lines. “Name &lt;email&gt;” from your mail app works too. Up to 50 at a time.</p>
+                  <p id="circleBulkInviteCount" class="small circle-bulk-count" data-testid="circle-bulk-invite-count"></p>
+                  <ul id="circleBulkInvitePreview" class="people circle-bulk-list" data-testid="circle-bulk-invite-preview" aria-label="Addresses found" hidden></ul>
+                  <div><button id="circleBulkInviteSubmit" data-testid="circle-bulk-invite-submit" class="btn" type="submit" disabled>Invite people</button></div>
+                </form>
+                <div id="circleBulkInviteStatus" class="small muted" data-testid="circle-bulk-invite-status" role="status" aria-live="polite"></div>
+                <ul id="circleBulkInviteResults" class="people circle-bulk-list" data-testid="circle-bulk-invite-results" aria-label="Invitation results" hidden></ul>
+              </details>
               <div id="circleInvites" data-testid="circle-invites" class="circle-invites"></div>
             </div>
           </section>
@@ -2479,6 +2493,8 @@ a.btn{text-decoration:none}
       </div>
     </section>
     <script src="/assets/circle-ui.js"></script>
+    <script type="module" src="/assets/email-validation.js"></script>
+    <script type="module" src="/assets/bulk-invite.js"></script>
   </main>
 </div>
 <!-- ---------- WP-A dialogs: confirm, prompt, sign-in and account security ---------- -->
@@ -5448,6 +5464,8 @@ async function refreshMe(){
   // recognise invitations they just sent. Memory only; cleared on any circle
   // or identity change.
   const circleInviteEmails=new Map();
+  // Bulk invite controller (assets/bulk-invite.js); mounted further below.
+  let bulkInviteController=null;
   let inviteRequestsState={requests:[],nextCursor:null,pendingCount:0,loading:false,request:0,pendingDecision:null};
   let circleRenderEpoch=0;
   let circleControlEpoch=0;
@@ -5527,6 +5545,7 @@ async function refreshMe(){
     resetOwnerInvites({allowRosterPreservation:false});
     clearLatestInvite();
     circleInviteEmails.clear();
+    bulkInviteController?.reset();
     if(circleTitle) circleTitle.textContent='Your circle';
     const circleNote=document.getElementById('circleAutoNote');
     if(circleNote) circleNote.textContent='Loading your private circle…';
@@ -5850,7 +5869,7 @@ async function refreshMe(){
     circleRosterLoading=false;
     circleRosterLoadEpoch=0;
     circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
-    if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId){ clearLatestInvite(); circleInviteEmails.clear(); }
+    if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId){ clearLatestInvite(); circleInviteEmails.clear(); bulkInviteController?.reset(); }
     if(circleOwnerPanel){ circleOwnerPanel.hidden=true; circleOwnerPanel.style.display='none'; }
     if(circleInvites) circleInvites.replaceChildren();
     if(circleInvitesMeta) circleInvitesMeta.textContent='';
@@ -6907,7 +6926,11 @@ async function refreshMe(){
     const button=document.getElementById('circleInviteCreate');
     const email=String(input?.value||'').trim();
     const userId=Number(me.id||me.uid);
-    if(!email) return;
+    // Same rules as the server (assets/email-validation.js); the server re-checks.
+    const emailRules=window.RandoriEmailValidation;
+    const verdict=emailRules?emailRules.validateEmail(email):{ok:!!email,reason:'empty'};
+    setCircleInviteEmailError(verdict.ok?'':(emailRules?emailRules.emailProblemMessage(verdict.reason):'Enter an email address.'));
+    if(!verdict.ok){ input?.focus(); return; }
     const operation=captureCircleControlOperation();
     if(!circleControlOperationMatches(operation)) return;
     circleInviteCreatePending=true;
@@ -6936,9 +6959,11 @@ async function refreshMe(){
         ?`Invitation email on its way to ${email}. You can also copy the link as a fallback.`
         :`Invitation ready for ${email}. Copy the link and send it privately.`;
       if(activeCircleRole==='owner') await loadOwnerInvitations(circleRenderEpoch);
-    }catch{
+    }catch(error){
       if(!circleControlOperationMatches(operation)) return;
-      if(circleInviteStatus) circleInviteStatus.textContent='Could not send the invitation. Check the email address and try again.';
+      if(circleInviteStatus) circleInviteStatus.textContent=Number(error?.http_status)===429
+        ?(window.RandoriBulkInvite?.bulkErrorMessage(error)||'You have reached today’s invitation limit. Try again later.')
+        :'Could not send the invitation. Check the email address and try again.';
     }finally{
       if(circleControlOperationMatches(operation)){
         circleInviteCreatePending=false;
@@ -6946,6 +6971,34 @@ async function refreshMe(){
       }
     }
   });
+  function setCircleInviteEmailError(message){
+    const input=document.getElementById('circleInviteEmail');
+    const error=document.getElementById('circleInviteEmailError');
+    if(input) input.setAttribute('aria-invalid',message?'true':'false');
+    if(error){ error.textContent=message; error.hidden=!message; }
+  }
+  document.getElementById('circleInviteEmail')?.addEventListener('input',()=>{
+    if(document.getElementById('circleInviteEmail')?.getAttribute('aria-invalid')==='true') setCircleInviteEmailError('');
+  });
+  // Bulk invitations (assets/bulk-invite.js, ID-68). The module loads after
+  // this script, so it mounts on its ready event; every request still goes
+  // through api() and the circle-context guards above.
+  function mountBulkInvite(){
+    if(bulkInviteController||!window.RandoriBulkInvite) return;
+    bulkInviteController=window.RandoriBulkInvite.mountBulkInvite({doc:document,host:{
+      origin:window.location.origin,
+      canInvite:()=>activeCircleRole==='owner'&&!!me,
+      capture:()=>captureCircleControlOperation(),
+      matches:(operation,result)=>circleControlOperationMatches(operation,result),
+      createMany:emails=>api('/api/invitations',{method:'POST',body:{emails}}),
+      resend:id=>api(`/api/invitations/${encodeURIComponent(id)}`,{method:'POST',body:{action:'resend'}}),
+      rememberEmail:(id,email)=>{ if(id&&email) circleInviteEmails.set(String(id).toLowerCase(),email); },
+      refresh:()=>activeCircleRole==='owner'?loadOwnerInvitations(circleRenderEpoch):Promise.resolve(),
+      copy:text=>navigator.clipboard.writeText(text),
+    }});
+  }
+  mountBulkInvite();
+  window.addEventListener('randori:bulk-invite-ready',mountBulkInvite);
   async function copyLatestInviteLink(){
     if(activeCircleRole!=='owner'||!latestInviteUrl) return;
     const operation=captureCircleControlOperation();

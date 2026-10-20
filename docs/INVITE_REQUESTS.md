@@ -102,7 +102,7 @@ Outbox event `inviterequest.email.requested`, version 1, payload
 `{circle_id, owner_user_id, digest_hour, template_version:1}`; idempotency key
 `invite-request-digest/v1/<circle>/<owner>/<hour>`, so each active non-demo
 owner receives at most one digest per hour. Every active non-demo owner is
-notified; there is no owner cap (ID-68). It is attempted immediately after
+notified; there is no owner cap (ID-69). It is attempted immediately after
 the public response (the `waitUntil` path from ID-64) and otherwise by the
 outbox cron. At delivery the handler re-reads current state and suppresses when
 the owner is no longer an active owner, has email notifications disabled

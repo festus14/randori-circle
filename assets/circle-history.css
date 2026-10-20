@@ -52,6 +52,19 @@
 .circle-invite-result:has(#circleInviteStatus:empty):has(#circleInviteLink[hidden]) { display: none; }
 .circle-context-card .card-b { gap: var(--space-2); }
 
+/* Single invite inline error and "Invite several people at once" (ID-68). */
+.circle-invite-error { flex: 1 1 100%; margin: 0; }
+.circle-bulk { display: grid; gap: var(--space-2); }
+.circle-bulk-form { display: grid; gap: var(--space-2); }
+.circle-bulk-form .textarea { width: 100%; min-height: 104px; font-family: inherit; }
+.circle-bulk-count { margin: 0; color: var(--color-text-secondary); }
+.circle-bulk-count:empty { display: none; }
+.circle-bulk-count[data-tone="warning"] { color: var(--color-warning, var(--warn)); }
+.circle-bulk-count[data-tone="danger"] { color: var(--color-danger); font-weight: var(--weight-emphasis); }
+.circle-bulk-list { display: grid; gap: var(--space-2); max-height: 320px; overflow-y: auto; }
+.circle-bulk-row { padding: var(--space-2) var(--space-3); }
+#circleBulkInviteStatus:empty { display: none; }
+
 /* Rows shared by members, invitations, invite requests and history. */
 .circle-view ul.people,
 .circle-view ol.people,
@@ -201,3 +214,9 @@
 /* Tall rows keep the avatar beside the name, not floating mid-row. */
 .circle-row > .circle-avatar,
 .circle-row > .circle-row-icon { align-self: start; }
+
+/* Bulk invite rows have no leading icon: text first, actions underneath. */
+.circle-bulk-row,
+.circle-side .circle-bulk-row { grid-template-columns: minmax(0, 1fr); }
+.circle-bulk-row .circle-row-actions,
+.circle-side .circle-bulk-row .circle-row-actions { grid-column: 1 / -1; justify-content: flex-start; }
