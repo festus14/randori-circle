@@ -275,9 +275,11 @@ test('timeout and poison events become bounded retry and dead-letter outcomes',a
   const {db}=await fixture();
   await enqueueOutboxEvent(db,event({deliveryTimeoutMs:100,maxAttempts:2}));
   await enqueueOutboxEvent(db,event({sequence:2,eventType:'unknown.event'}));
+  // A production-length lease keeps this about timeout/poison handling: on a
+  // CPU-starved runner the 1 s helper lease can expire before finalization.
   const result=await worker(db,{
     'test.notification':()=>new Promise(()=>{}),
-  });
+  },{leaseDurationMs:30_000});
   assert.equal(result.retried,1);
   assert.equal(result.deadLettered,1);
   const rows=(await db.execute('SELECT id,status,last_error_code FROM outbox_events ORDER BY id')).rows;
@@ -512,7 +514,8 @@ test('one finalization failure does not strand later sent events and heartbeats 
     db:faultDb,workerId:'isolated-finalization',
     handlers:{'alpha.notification':handler,'beta.notification':handler},
     eventTypes:['alpha.notification','beta.notification'],maxClaims:2,
-    deadlineAtMs:performance.now()+2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    // Generous wall-clock budget: the forced failure, not runner speed, decides the outcome.
+    deadlineAtMs:performance.now()+10_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
     leaseDurationMs:1000,heartbeatIntervalMs:10,
   });
   assert.equal(providerCalls,2);
