@@ -305,7 +305,9 @@ export function buildJsHarness(userCode, testSuite, resultPrefix) {
     try{
       if(!__randori_ready) throw new Error('submission did not load');
       __randori_context.__randori_args_json__=JSON.stringify(test.args);
-      const expression='JSON.stringify('+__randori_bundle.entrypoint+'(...JSON.parse(__randori_args_json__)))';
+      // A function that returns nothing (undefined) is a wrong answer, not a
+      // crash: serialise it as null so the case reads as a plain fail.
+      const expression='JSON.stringify(('+__randori_bundle.entrypoint+'(...JSON.parse(__randori_args_json__)))??null)';
       const serialized=__randori_vm.runInContext(expression,__randori_context,{timeout:1000});
       got=JSON.parse(serialized);
       ok=true;

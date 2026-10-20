@@ -5,11 +5,16 @@ import test from 'node:test';
 import {
   ICON_SPRITE,
   TOAST_DURATION_MS,
+  MEMBER_DEEP_LINK_VIEWS,
   PUBLIC_VIEW_IDS,
+  SOLO_VIEW_ID,
   createToastController,
+  deepLinkSignInCopy,
   hidesAppNavigation,
   installShell,
   isHomeActive,
+  memberDeepLinkView,
+  navigationState,
   normalizeTheme,
   renderConnectionBanner,
   renderThemeControl,
@@ -94,7 +99,7 @@ function fakeShellDocument({ dashboard = 'none', landing = 'none', profile = 'no
   const byId = { ...views, 'tab-home': home, themeToggle, toast, shellConnectionBanner: banner };
   return {
     views, home, tabs, themeToggle, use, toast, banner, documentElement,
-    getElementById: id => byId[id] || null,
+    getElementById: id => byId[id] || views[id] || null,
     querySelectorAll(selector) {
       if (selector === '.tabs .tab[data-tab]') return tabs;
       if (selector === '.tabs .tab') return [home, ...tabs];
@@ -309,16 +314,45 @@ test('installShell wires toast, theme, Home state, and connectivity without rout
   assert.ok(!doc.toast.classList.contains('show'));
 });
 
-test('anonymous visitors get no app navigation on the landing and recovery pages only', () => {
+test('only members get app navigation, on every surface and while identity loads', () => {
   assert.deepEqual([...PUBLIC_VIEW_IDS], ['view-landing', 'view-activation', 'view-password-reset', 'view-invite']);
-  assert.equal(hidesAppNavigation({ auth: 'anonymous', identity: 'resolved', publicSurface: true }), true);
-  assert.equal(hidesAppNavigation({ auth: 'anonymous', identity: 'pending', publicSurface: true }), false, 'identity still loading');
-  assert.equal(hidesAppNavigation({ auth: 'member', identity: 'resolved', publicSurface: true }), false);
-  assert.equal(hidesAppNavigation({ auth: 'anonymous', identity: 'resolved', publicSurface: false }), false, 'solo practice keeps tabs');
+  assert.equal(SOLO_VIEW_ID, 'view-code');
+  assert.equal(hidesAppNavigation({ auth: 'anonymous' }), true);
+  assert.equal(hidesAppNavigation({ auth: undefined }), true, 'before the first auth render');
+  assert.equal(hidesAppNavigation(), true);
+  assert.equal(hidesAppNavigation({ auth: 'member' }), false);
+
+  assert.deepEqual(navigationState({ auth: 'anonymous', publicSurface: true }), { nav: 'hidden', surface: 'public' });
+  assert.deepEqual(navigationState({ auth: 'anonymous', soloSurface: true }), { nav: 'hidden', surface: 'solo' });
+  assert.deepEqual(navigationState({ auth: 'anonymous' }), { nav: 'hidden', surface: 'app' }, 'deep link or unknown route');
+  assert.deepEqual(navigationState({ auth: 'member', soloSurface: true }), { nav: 'shown', surface: 'app' }, 'a member in the room is not solo');
+  assert.deepEqual(navigationState({ auth: 'member', publicSurface: true }), { nav: 'shown', surface: 'public' });
+  assert.deepEqual(navigationState(), { nav: 'hidden', surface: 'app' });
+});
+
+test('member deep links are recognised from view or tab and get sign-in copy', () => {
+  assert.deepEqual(Object.keys(MEMBER_DEEP_LINK_VIEWS), ['pair', 'board', 'history', 'circle']);
+  assert.equal(memberDeepLinkView('?view=pair'), 'pair');
+  assert.equal(memberDeepLinkView('?tab=history'), 'history');
+  assert.equal(memberDeepLinkView('view=circle'), 'circle');
+  assert.equal(memberDeepLinkView('?view=board&x=1'), 'board');
+  assert.equal(memberDeepLinkView('?view=code'), '', 'solo practice is not member-only');
+  assert.equal(memberDeepLinkView('?view=toString'), '', 'no prototype keys');
+  assert.equal(memberDeepLinkView(''), '');
+  assert.equal(memberDeepLinkView(undefined), '');
+  assert.deepEqual(deepLinkSignInCopy('pair'), {
+    title: 'Sign in to continue',
+    description: "Sign in to open Pairing. You'll go straight there.",
+  });
+  assert.match(deepLinkSignInCopy('circle').description, /your circle/);
+  assert.equal(deepLinkSignInCopy('code'), null);
+  assert.equal(deepLinkSignInCopy('__proto__'), null);
+  assert.equal(deepLinkSignInCopy(undefined), null);
 });
 
 test('syncPublicSurface marks the body from the visible view and auth state', () => {
   const doc = fakeShellDocument({ landing: 'block' });
+  doc.views['view-code'] = new FakeElement({ id: 'view-code', display: 'none' });
   doc.body = new FakeElement({ dataset: { auth: 'anonymous', identity: 'resolved' } });
   assert.equal(syncPublicSurface(doc), true);
   assert.equal(doc.body.dataset.surface, 'public');
@@ -328,12 +362,22 @@ test('syncPublicSurface marks the body from the visible view and auth state', ()
   assert.equal(syncPublicSurface(doc), false);
   assert.equal(doc.body.dataset.nav, 'shown');
 
+  // Signing out hides the tabs at once, whatever view is showing.
   doc.body.dataset.auth = 'anonymous';
   doc.views['view-landing'].style.display = 'none';
   doc.views['view-dashboard'].style.display = 'block';
+  assert.equal(syncPublicSurface(doc), true);
+  assert.equal(doc.body.dataset.surface, 'app');
+  assert.equal(doc.body.dataset.nav, 'hidden');
+
+  doc.views['view-dashboard'].style.display = 'none';
+  doc.views['view-code'].style.display = 'block';
+  assert.equal(syncPublicSurface(doc), true);
+  assert.equal(doc.body.dataset.surface, 'solo');
+
+  doc.body.dataset.auth = 'member';
   assert.equal(syncPublicSurface(doc), false);
   assert.equal(doc.body.dataset.surface, 'app');
-  assert.equal(doc.body.dataset.nav, 'shown');
   assert.equal(syncPublicSurface({}), false);
   assert.equal(syncPublicSurface(null), false);
 });
@@ -346,14 +390,20 @@ test('installShell observes body auth attributes so navigation follows sign-in',
     constructor(callback) { this.callback = callback; this.targets = []; observers.push(this); }
     observe(target, options) { this.targets.push({ target, options }); }
   }
-  installShell({ document: doc, window: { navigator: {}, addEventListener() {} }, MutationObserverImpl: FakeObserver });
-  assert.equal(doc.body.dataset.nav, 'shown', 'tabs stay while identity loads');
+  const shell = installShell({ document: doc, window: { navigator: {}, addEventListener() {} }, MutationObserverImpl: FakeObserver });
+  assert.equal(doc.body.dataset.nav, 'hidden', 'no member tabs while identity loads');
+  assert.equal(shell.memberDeepLinkView('?view=pair'), 'pair');
+  assert.equal(shell.deepLinkSignInCopy('history').title, 'Sign in to continue');
   const [navObserver] = observers;
   const bodyTarget = navObserver.targets.find(entry => entry.target === doc.body);
   assert.deepEqual(bodyTarget.options.attributeFilter, ['data-auth', 'data-identity']);
+  doc.body.dataset.auth = 'member';
   doc.body.dataset.identity = 'resolved';
   navObserver.callback();
-  assert.equal(doc.body.dataset.nav, 'hidden');
+  assert.equal(doc.body.dataset.nav, 'shown');
+  doc.body.dataset.auth = 'anonymous';
+  navObserver.callback();
+  assert.equal(doc.body.dataset.nav, 'hidden', 'sign-out hides the tabs immediately');
 });
 
 test('installShell tolerates missing globals, observers, and optional elements', () => {
@@ -381,4 +431,10 @@ test('index.html loads the shell module and keeps nav hooks stable', async () =>
     ['tab-home', 'tab-circle', 'tab-pair', 'tab-code', 'tab-board', 'tab-history']);
   assert.match(html, /@media\(max-width:599px\)\{[\s\S]*?\.tabs\{\s*position:fixed; left:0; right:0; bottom:0;/);
   assert.match(html, /body\[data-auth="member"\] \.shell\{display:grid; grid-template-columns:var\(--sidebar-w\)/);
+  // The navigation is hidden by default (before any script runs) and only a
+  // confirmed member shows it, so visitors never see a flash of member tabs.
+  assert.match(html, /body:not\(\[data-nav="shown"\]\) \.shell > nav\{display:none!important\}/);
+  assert.doesNotMatch(html, /<body[^>]*data-nav=/);
+  assert.match(html, /<div id="soloPracticeBar" class="rc-banner solo-bar" data-testid="solo-practice-bar">/);
+  assert.match(html, /<section id="view-boot" class="view boot-view" aria-busy="true" style="display:none">/);
 });

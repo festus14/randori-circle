@@ -862,6 +862,46 @@ markup in later packages.
   `catalogue-problem`, `catalogue-browse`, `catalogue-empty-filter` and their
   `-light` variants.
 
+### 9.6 What the final UX pass shipped (signed-out navigation)
+
+- **App navigation is for members only.** The tabs (and the phone bottom bar)
+  show only when `body[data-nav="shown"]`, which `assets/app-shell.js` sets only
+  for `data-auth="member"`. The CSS default is hidden
+  (`body:not([data-nav="shown"]) .shell > nav`). So visitors on the landing page,
+  `/invite`, `/verify`, `/reset-password` (with or without a token),
+  `/join/<room>` and unknown routes see only the logo, the theme toggle and
+  **Sign in**. Nothing flashes before scripts run or while `/api/auth/me` is in
+  flight, and the tabs go away as soon as a member signs out. This replaces
+  WP-O's narrower rule ("visitors on public pages, once identity settles").
+- **Solo practice** (`/?view=code`, visitor): `body[data-surface="solo"]` shows
+  the code view with no tabs and a prompt (`#soloPracticeBar`,
+  `data-testid="solo-practice-bar"`): "Exercises and test runs are for circle
+  members", with **Sign in** (`#soloSignIn`) and **Request an invite**
+  (`#soloRequestInvite`, shown only while invite requests are open). The
+  pair-only room controls (room select, Role, Join call, presence) are hidden
+  for visitors.
+- **Member deep links** (`/?view=pair|board|history|circle`, or `?tab=`): a
+  signed-out visitor gets the sign-in dialog titled "Sign in to continue"
+  ("Sign in to open Pairing. You'll go straight there."). The URL is kept,
+  so after signing in the router opens that view; members can now deep-link
+  to `?view=circle` too. `/join/<room>` keeps its "Sign in to join your
+  pairing room" dialog, shown over the landing page, which has no tabs.
+- **Returning members** (this browser last saw a signed-in account) see a
+  neutral `#view-boot` ("Loading your circle…") while identity is checked,
+  instead of a flash of the visitor landing page. First-time visitors still get
+  the landing page straight away.
+- **Fixes shipped with it:** the joined-after-cutoff Home hero confirms a saved
+  answer ("You're in for the week of 25 Oct") instead of asking again; an
+  already-agreed time no longer shows **Accept**; and a JavaScript function
+  that returns nothing is reported as a failed case, not a "runtime error".
+- Logic: `navigationState`, `memberDeepLinkView` and `deepLinkSignInCopy` in
+  `assets/app-shell.js` (unit-tested in `tests/unit/app-shell.test.mjs`). The
+  visible navigation for each state (every signed-out route, the join prompt,
+  solo practice, a deep link with return-to, identity loading, signed in, and
+  after sign-out) is asserted in `tests/e2e/signed-out-navigation.spec.ts` at
+  393×852 and 1440×900. Screenshots: `local-solo-practice`,
+  `local-deep-link-member-view` and `local-unknown-route` (plus `-light`).
+
 ## 10. Phased implementation plan
 
 ### 10.1 Global constraints for every package
