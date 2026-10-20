@@ -3,29 +3,61 @@
 Decision:
 [ID-43](IMPLEMENTED_DECISIONS.md#id-43-treat-only-scheduled-outbox-runs-as-freshness-evidence)
 
-Status: code complete and rebased onto the current rolling release; keep the
-pull request draft until final validation completes. No migration or production
-credential is required.
+Updated by
+[ID-67](IMPLEMENTED_DECISIONS.md#id-67-run-an-external-outbox-scheduler-beside-github-and-alert-on-delivery-health):
+the alert now depends on delivery health. GitHub run cadence is a
+non-failing warning.
 
 ## Purpose and authority
 
-`.github/workflows/outbox-dispatch.yml` is the only production notification
-worker. It is scheduled every five minutes, has a two-minute job timeout, and
-can also be run manually for recovery. A missing or unhealthy schedule can
-delay pairing, scheduling, invitation, activation, and password-reset mail even
-when the durable outbox and provider configuration are healthy.
+Two schedulers call `POST /api/cron/outbox`: the checked-in
+`.github/workflows/outbox-dispatch.yml` (every five minutes, best effort) and
+an external cron-job.org job ([setup](OUTBOX_EXTERNAL_SCHEDULER.md)). GitHub
+often delays the first one by hours. The question that matters is whether due
+mail is being delivered, not which scheduler delivered it.
 
 Since [ID-64](IMPLEMENTED_DECISIONS.md#id-64-deliver-auth-and-invitation-email-immediately-after-commit),
 password-reset, activation, invitation, and schedule mail is normally sent
-right after its request commits, so a delayed schedule mainly delays pairing
-mail and retries. The scheduler is still the only backstop, and its cadence
-and this watchdog's thresholds are unchanged.
+right after its request commits, so a stalled drain mainly delays pairing mail
+and retries.
 
-`.github/workflows/outbox-dispatch-watchdog.yml` checks that scheduler once per
-hour at minute 37 and can be run manually for diagnosis. It queries only the
-GitHub Actions history for `outbox-dispatch.yml`. It never calls the application,
-dispatches another workflow, reads a production environment, or receives an
-application, database, cron, or provider credential.
+`.github/workflows/outbox-dispatch-watchdog.yml` runs once per hour at minute
+37 and can be run manually for diagnosis. It runs in the protected
+`production` environment and receives only `vars.APP_URL` and
+`secrets.CRON_SECRET`. With those it sends one bounded `GET` to
+`/api/cron/outbox-health` (ten-second timeout, 2 MiB cap). It never drains the
+outbox, dispatches a workflow, or writes anything.
+
+## Delivery outcome (decides the alert)
+
+The threshold is `WATCHDOG_DELIVERY_MAX_AGE_MS` (15 minutes).
+
+| Category | Alert | Meaning |
+| --- | --- | --- |
+| `null` (`healthy`/`warning`) | no | Nothing due or leased is older than 15 minutes. |
+| `delivery_stale` | yes | `oldestDueAgeMs` is over 15 minutes: due `pending`/`retry` mail is not being drained. |
+| `lease_stale` | yes | `oldestStaleLeaseAgeMs` is over 15 minutes: an expired `processing` lease has not been reclaimed. |
+| `health_unavailable` | yes | Network failure, timeout, or any non-2xx except 401/403 (including 503: database unavailable, or 404: not deployed). |
+| `health_unauthorized` | yes | 401/403: `CRON_SECRET` in GitHub does not match Vercel. |
+| `malformed_health` | yes | The response was invalid JSON or an inconsistent aggregate document. |
+| `health_config_missing` | yes | `APP_URL` is not an HTTPS origin, or `CRON_SECRET` is empty. |
+| `watchdog_failure` | yes | Invalid watchdog configuration or usage. |
+
+These warnings never fail the job:
+
+- `dead_letters_recent`: at least one dead letter in the last 24 h.
+- `delivery_backlog`: due or expired-lease events exist but are still inside
+  the threshold.
+- `github_<category>`: the GitHub schedule assessment described below
+  alerted, for example `github_run_stale`.
+
+The output is one `randori.outbox-dispatch-watchdog.v2` JSON document with
+`ok`, `status`, `alert`, `category`, `checkedAt`, `deliveryMaxAgeMs`,
+`delivery` (the aggregate health fields), `warnings`, and `githubSchedule`
+(the secondary assessment). It never contains the app URL, secrets, payloads,
+or recipients.
+
+## GitHub schedule signal (secondary, non-failing)
 
 Only an initial (`run_attempt == 1`) `schedule` run on the repository default
 branch is authoritative. A `workflow_dispatch` run, feature-branch run, or
@@ -39,9 +71,10 @@ five-minute UTC slot and a freshness floor by subtracting the documented
 15-minute scheduling grace and rounding down to a five-minute slot. This makes
 the boundary deterministic while allowing ordinary GitHub schedule delay.
 
-The newest authoritative run determines the result:
+The newest authoritative run determines the `githubSchedule` result. Any alert
+category below becomes a `github_<category>` warning, not a failure:
 
-| Outcome | Alert | Meaning |
+| Outcome | Warning | Meaning |
 | --- | --- | --- |
 | `healthy` | no | The newest scheduled run succeeded in the current slot. |
 | `schedule_grace` | no | A prior scheduled run remains inside the accepted grace, or the newest run is still queued/running within its limit. |
@@ -78,22 +111,25 @@ category.
 The workflow has only `actions: read` and `contents: read`; checkout does not
 persist credentials and every action is commit-pinned. The deployability gate
 rejects removal or weakening of the watchdog, its exact fail-closed command,
-its bounds, the dispatcher's two-minute deadline, or the
-secret-free/non-mutating boundary. Reviewed SHA-256 digests bind both the
+its bounds, the dispatcher's two-minute deadline, any production reference
+other than `vars.APP_URL`/`secrets.CRON_SECRET`, or any write or mutating
+step. Reviewed SHA-256 digests bind both the
 workflow and assessor, so adding an unreviewed step or changing executable
 behavior requires an explicit contract update.
 
 ## Recovery and rollout
 
-For any alert:
+For a delivery alert:
 
-1. Inspect the named `outbox-dispatch` Actions run and repository scheduler
-   configuration.
-2. Fix the dispatcher or GitHub configuration; do not add production secrets
-   to the watchdog.
-3. Use the dispatcher's existing manual action to drain delayed durable work.
-4. Confirm the next genuine scheduled attempt succeeds. A manual run or rerun
-   intentionally does not restore watchdog health.
+1. `delivery_stale`/`lease_stale`: check the cron-job.org job history and the
+   latest `outbox-dispatch` run. Then run `outbox-dispatch` manually, or use
+   "Test run" in cron-job.org, to drain. If drains succeed but the age keeps
+   growing, look at provider errors and `outbox_invocation` logs.
+2. `health_unauthorized`/`health_config_missing`: make the `production`
+   environment's `APP_URL`/`CRON_SECRET` match Vercel.
+3. `health_unavailable`: check `/api/health/ready` and the database.
+4. Confirm the next hourly watchdog run is green. A `github_*` warning alone
+   needs no action while delivery is fresh.
 
 Deploying or reverting this watchdog changes no schema and no application data.
 Rollback removes or disables only the watchdog workflow; it must not disable,
@@ -101,16 +137,11 @@ dispatch, or modify the production worker or its durable outbox.
 
 ## Alternatives considered
 
-- A second secret-bearing scheduler could invoke production independently, but
-  it duplicates privileged configuration and can create correlated delivery or
-  double-invocation risk. Reconsider only after the primary scheduler is
-  operating and measured.
-- Calling the application health endpoint would test deployment reachability,
-  not whether GitHub schedules the worker, and would require another external
-  trust boundary.
+- Judging only GitHub run cadence (ID-43) alerted permanently, because GitHub
+  delays `*/5` schedules by hours, and it said nothing about mail sent by an
+  external scheduler.
 - Treating manual dispatch or rerun as fresh would make recovery convenient but
-  could conceal an indefinitely broken schedule.
+  could hide a schedule that is broken indefinitely. The GitHub signal still
+  ignores them.
 - An unbounded Actions-history scan adds latency and attack surface without
-  improving the decision because GitHub returns newest runs first.
-- Terminal-event retention is useful for database growth but needs a separate
-  retention/audit policy and does not detect stopped delivery.
+  improving the decision, because GitHub returns the newest runs first.
