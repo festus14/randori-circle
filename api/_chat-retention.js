@@ -51,7 +51,7 @@ function workerId(value){
 }
 
 function canonicalInstant(value,label){
-  if(typeof value!=='string'||new Date(value).toISOString()!==value){
+  if(typeof value!=='string'||Number.isNaN(Date.parse(value))||new Date(value).toISOString()!==value){
     throw new TypeError(`invalid ${label}`);
   }
   return value;
