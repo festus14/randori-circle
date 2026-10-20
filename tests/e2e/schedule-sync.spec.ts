@@ -952,7 +952,7 @@ test('legacy values remain removable and stale polling cannot cross pair or dash
 
   const legacyRow = page.getByTestId('schedule-proposal').filter({ hasText: legacyProposal });
   await expect(legacyRow).toBeVisible();
-  await expect(legacyRow).toContainText(/legacy proposal/i);
+  await expect(legacyRow).toContainText(/older format/i);
   await expect(legacyRow.getByTestId('schedule-accept')).toHaveCount(0);
   await expect(legacyRow.getByTestId('schedule-remove')).toHaveCount(1);
   await expect(page.getByTestId('schedule-area')).toContainText(legacyAgreement);
