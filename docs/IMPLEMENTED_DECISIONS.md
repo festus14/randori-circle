@@ -2776,3 +2776,53 @@ protected migration workflow immediately after merge, not near the Sunday
 approve → accept. Recovery is disabling the flag (endpoints 404, capability
 hidden); rows continue to expire and purge weekly. Full contract in
 [`INVITE_REQUESTS.md`](INVITE_REQUESTS.md).
+
+## ID-67: Run an external outbox scheduler beside GitHub and alert on delivery health
+
+Status: implemented. Optional env var, no migration.
+
+**Context.** `outbox-dispatch` is scheduled `*/5`, but GitHub runs it about
+every three hours. Because of that, the run-cadence watchdog (ID-43) reported
+`run_stale` on every run. Pairing mail, reminders and retries could be hours
+late, while auth and invitation mail (ID-64) was unaffected.
+
+**Decision.** An outside scheduler (cron-job.org) calls `POST /api/cron/outbox`
+every five minutes. GitHub keeps running as a backup. Outbox claims are leased
+and idempotent, so the two dispatchers can run at the same time safely.
+
+- **Separate secret.** The external service authenticates with a new optional
+  `OUTBOX_DISPATCH_SECRET`, not `CRON_SECRET`. The app accepts it, with a
+  timing-safe compare and the same header forms, only on
+  `/api/cron/outbox` and `/api/cron/outbox-health`. Every other cron route
+  (`/api/cron/weekly`, which publishes pairings) still accepts only
+  `CRON_SECRET`. The app ignores a value shorter than 32 characters or equal
+  to `CRON_SECRET`. This fails closed for the extra secret only.
+- **Health endpoint.** A new read-only endpoint,
+  `GET /api/cron/outbox-health`, answers from one database-clock statement
+  and returns aggregate values only: the age of the oldest due
+  `pending`/`retry` event, the due count, the count and age of expired
+  `processing` leases, 24-hour dead letters, and the last delivery time.
+- **Watchdog.** `outbox-dispatch-watchdog` now alerts on delivery freshness.
+  It alerts when the oldest due event or expired lease is older than
+  15 minutes, or when the endpoint is unavailable, unauthorized, or malformed.
+  The GitHub run assessment is kept as a non-failing `github_*` warning.
+
+**Trade-off.** To read the health endpoint, the watchdog job now runs in the
+protected `production` environment and receives `vars.APP_URL` and
+`secrets.CRON_SECRET`. This reverses ID-43's secret-free boundary. The
+deployability gate lists those two values as the only production material the
+watchdog may reference, still rejects any other secret, variable, write
+permission or `curl`, and pins the new workflow and assessor digests.
+`CRON_SECRET` is used because it already lives in that environment. The
+external secret is kept out of GitHub on purpose.
+
+**Alternatives.** A managed queue or Vercel Pro cron would fix cadence but
+needs a paid plan or a larger migration. Giving cron-job.org `CRON_SECRET`
+would let a third party trigger pairing publication. A health check that does
+not use the database could not tell "GitHub is late" apart from "mail is late".
+
+**Rollout and recovery.** Merge. Set `OUTBOX_DISPATCH_SECRET` in Vercel
+Production, redeploy, and create the cron-job.org job described in
+[`OUTBOX_EXTERNAL_SCHEDULER.md`](OUTBOX_EXTERNAL_SCHEDULER.md). To recover,
+pause the job or remove the variable and redeploy. Delivery then falls back to
+GitHub, and the watchdog keeps alerting on real staleness.
