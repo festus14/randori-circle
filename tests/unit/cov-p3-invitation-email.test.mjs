@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { rmSync } from 'node:fs';
 import { afterEach, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
@@ -19,8 +17,9 @@ import {
   sealInvitationEmailCredential,
 } from '../../api/_invitation-email.js';
 import { sealCredentialEnvelope } from '../../api/_key-rotation.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { adoptCredentialKeyControl } from '../support/credential-key-control.mjs';
+import { createMigratedDatabase } from '../support/migrated-db.mjs';
 
 const ENV_KEYS=['APP_URL','CIRCLE_MEMBERSHIP_ENABLED','INVITATION_EMAIL_ENCRYPTION_KEY',
   'INVITATION_EMAIL_ENCRYPTION_KEY_VERSION','INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS',
@@ -52,15 +51,12 @@ function configureProduction(){
 
 async function fixture({circleName='Randori Circle'}={}){
   configureProduction();
-  const directory=mkdtempSync(join(tmpdir(),'randori-cov-invitation-email-'));
-  const db=createClient({url:`file:${join(directory,'invitation.sqlite')}`});
+  const {directory,url}=await createMigratedDatabase({prefix:'randori-cov-invitation-email-',filename:'invitation.sqlite'});
+  const db=createClient({url});
   resources.push(async()=>{
     try{ db.close(); }finally{ rmSync(directory,{recursive:true,force:true}); }
   });
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await adoptCredentialKeyControl(db,invitationKeyRing());
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin,is_demo)

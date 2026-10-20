@@ -13,17 +13,15 @@ import {
   pairingSchemaV6Fingerprint,
   pairingSchemaV6Ready,
 } from '../../api/_pairing-readiness.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
-
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
 async function withDatabase(run){
   const directory=mkdtempSync(join(tmpdir(),'randori-cov-pairing-readiness-'));
+  await copyMigratedDatabase(join(directory,'test.sqlite'));
   const db=createClient({url:`file:${join(directory,'test.sqlite')}`});
   try{
     await prepareMigrationConnection(db);
-    const before=await inspectMigrationState(db);
-    await applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
     await run(db);
   }finally{
     db.close();

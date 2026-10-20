@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { rmSync } from 'node:fs';
 import { afterEach, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
@@ -26,12 +24,8 @@ import {
   createResendEmailSender,
   PAIRING_EMAIL_EVENT_TYPE,
 } from '../../api/_pairing-email.js';
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import {
-  applyMigrations,
-  inspectMigrationState,
-  prepareMigrationConnection,
-} from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { createMigratedDatabase } from '../support/migrated-db.mjs';
 
 const cleanup=[];
 const START='2020-09-20T08:00:00.000Z';
@@ -43,15 +37,9 @@ afterEach(async()=>{
 });
 
 async function fixture(clientCount=1){
-  const directory=mkdtempSync(join(tmpdir(),'randori-outbox-'));
-  const url=`file:${join(directory,'outbox.sqlite')}`;
+  const {directory,url}=await createMigratedDatabase({prefix:'randori-outbox-',filename:'outbox.sqlite'});
   const clients=Array.from({length:clientCount},()=>createClient({url}));
   for(const client of clients) await prepareMigrationConnection(client);
-  const initial=await inspectMigrationState(clients[0]);
-  await applyMigrations(clients[0],{
-    expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0},
-  });
   cleanup.push(async()=>{
     for(const client of clients) client.close();
     rmSync(directory,{recursive:true,force:true});

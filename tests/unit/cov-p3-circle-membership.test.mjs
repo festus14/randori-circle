@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { rmSync } from 'node:fs';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
@@ -33,7 +31,8 @@ import {
   validateLivePreparedClaim,
   validatePreparedInvitation,
 } from '../../api/_circle-membership.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { createMigratedDatabase } from '../support/migrated-db.mjs';
 
 const SECRET='cov-p3-circle-membership-secret-at-least-32-bytes';
 const ENV_KEYS=['JWT_SECRET','TURSO_DATABASE_URL','CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED'];
@@ -79,13 +78,10 @@ function liveClaim(overrides={}){
 }
 
 async function migratedDb(){
-  const directory=mkdtempSync(join(tmpdir(),'randori-cov-membership-'));
-  const db=createClient({url:`file:${join(directory,'membership.sqlite')}`});
+  const {directory,url}=await createMigratedDatabase({prefix:'randori-cov-membership-',filename:'membership.sqlite'});
+  const db=createClient({url});
   resources.push(async()=>{ try{ db.close(); }finally{ rmSync(directory,{recursive:true,force:true}); } });
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin,is_demo)
       VALUES (1,'owner@example.test','!owner','Owner','#111111',1,0),

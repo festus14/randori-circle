@@ -7,7 +7,8 @@ import { afterEach, beforeEach, mock, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
 
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 import { outboxStatementIdentity } from '../../api/_outbox-identity.js';
 import { adoptCredentialKeyControl } from '../support/credential-key-control.mjs';
 
@@ -89,11 +90,9 @@ function enableEmail(){
 async function database(){
   const directory=mkdtempSync(join(tmpdir(),'randori-bulk-invitations-'));
   directories.push(directory);
+  await copyMigratedDatabase(join(directory,'bulk.sqlite'));
   const db=createClient({url:`file:${join(directory,'bulk.sqlite')}`});
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin,is_demo)
       VALUES (1,'owner@example.test','!o','Owner','#111111',1,0),(2,'member@example.test','!m','Member','#222222',0,0),

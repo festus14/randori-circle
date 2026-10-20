@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { rmSync } from 'node:fs';
 import { afterEach, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
@@ -16,7 +14,8 @@ import {
   SCHEDULE_EMAIL_TEMPLATE_VERSION,
   SCHEDULE_REMINDER_LEAD_MS,
 } from '../../api/_schedule-email.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { createMigratedDatabase } from '../support/migrated-db.mjs';
 
 const cleanup=[];
 
@@ -25,12 +24,9 @@ afterEach(async()=>{
 });
 
 async function fixture(){
-  const directory=mkdtempSync(join(tmpdir(),'randori-schedule-email-'));
-  const db=createClient({url:`file:${join(directory,'schedule.sqlite')}`});
+  const {directory,url}=await createMigratedDatabase({prefix:'randori-schedule-email-',filename:'schedule.sqlite'});
+  const db=createClient({url});
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await db.batch([
     {sql:`INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
       VALUES (1,'alice@example.test','hash','Alice <Admin>','#111',0)`,args:[]},

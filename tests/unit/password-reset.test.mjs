@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {rmSync} from 'node:fs';
 import {afterEach,test} from 'node:test';
 
 import {createClient} from '@libsql/client';
@@ -21,9 +19,9 @@ import {
 } from '../../api/_password-reset.js';
 import {issueSession,verifyRequestAuth} from '../../api/_db.js';
 import {readRecentAuth,recordRecentAuth,requireRecentAuth} from '../../api/_recent-auth.js';
-import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
-import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {prepareMigrationConnection} from '../../db/migration-runner.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
+import {createMigratedDatabase} from '../support/migrated-db.mjs';
 
 // Committed-event identities are internal (used for post-commit delivery);
 // assert their count rather than random keys.
@@ -46,13 +44,9 @@ async function fixture({clients=1}={}){
   process.env.PASSWORD_RESET_ENABLED='true';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
   process.env.APP_URL='https://randori.example.test';
-  const directory=mkdtempSync(join(tmpdir(),'randori-password-reset-'));
-  const url=`file:${join(directory,'reset.sqlite')}`;
+  const {directory,url}=await createMigratedDatabase({prefix:'randori-password-reset-',filename:'reset.sqlite'});
   const databases=Array.from({length:clients},()=>createClient({url}));
   for(const db of databases) await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(databases[0]);
-  await applyMigrations(databases[0],{expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await adoptCredentialKeyControl(databases[0],passwordResetKeyRing());
   const passwordHash=await bcrypt.hash('old correct horse',4);
   await databases[0].execute({sql:`INSERT INTO auth_accounts

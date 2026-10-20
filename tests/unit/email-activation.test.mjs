@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { rmSync } from 'node:fs';
 import { afterEach, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
@@ -20,9 +18,9 @@ import {
   verifyEmailActivation,
 } from '../../api/_email-activation.js';
 import { createInvitationToken, hashInvitationEmail, hashInvitationToken } from '../../api/_circle-membership.js';
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
+import { createMigratedDatabase } from '../support/migrated-db.mjs';
 
 // Committed-event identities are internal (used for post-commit delivery);
 // assert their count rather than random keys.
@@ -43,15 +41,9 @@ async function fixture({clients=1}={}){
   process.env.EMAIL_PASSWORD_ACTIVATION_ENABLED='true';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.APP_URL='https://randori.example.test';
-  const directory=mkdtempSync(join(tmpdir(),'randori-email-activation-'));
-  const url=`file:${join(directory,'activation.sqlite')}`;
+  const {directory,url}=await createMigratedDatabase({prefix:'randori-email-activation-',filename:'activation.sqlite'});
   const databases=Array.from({length:clients},()=>createClient({url}));
   for(const db of databases) await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(databases[0]);
-  await applyMigrations(databases[0],{
-    expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0},
-  });
   await adoptCredentialKeyControl(databases[0],activationKeyRing());
   await databases[0].batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin)

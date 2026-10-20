@@ -18,10 +18,9 @@ import {
   verifyRequestAuth,
   verifySignedRequestAuth,
 } from '../../api/_db.js';
-import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
-import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {prepareMigrationConnection} from '../../db/migration-runner.js';
+import {copyMigratedDatabase} from '../support/migrated-db.mjs';
 
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const JWT_SECRET='durable-session-test-secret-at-least-thirty-two-bytes';
 const originalEnvironment={
   JWT_SECRET:process.env.JWT_SECRET,
@@ -40,12 +39,10 @@ afterEach(async()=>{
 
 async function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-auth-sessions-'));
-  const url=`file:${join(directory,'database.sqlite')}`;
+  const url=`file:${await copyMigratedDatabase(join(directory,'database.sqlite'))}`;
   const db=createClient({url});
   resources.push(async()=>{ await db.close(); rmSync(directory,{recursive:true,force:true}); });
   await prepareMigrationConnection(db);
-  const state=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS});
-  await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS,expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color) VALUES
       (1,'one@example.test','hash','One','#123456'),

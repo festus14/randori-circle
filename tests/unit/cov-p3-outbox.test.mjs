@@ -23,11 +23,8 @@ import {
   runOutboxWorker,
   settleBeforeDeadline,
 } from '../../api/_outbox.js';
-import {
-  applyMigrations,
-  inspectMigrationState,
-  prepareMigrationConnection,
-} from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
 const cleanup=[];
 const START='2020-09-20T08:00:00.000Z';
@@ -42,13 +39,9 @@ afterEach(async()=>{
 
 async function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-cov-outbox-'));
+  await copyMigratedDatabase(join(directory,'outbox.sqlite'));
   const db=createClient({url:`file:${join(directory,'outbox.sqlite')}`});
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db);
-  await applyMigrations(db,{
-    expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0},
-  });
   cleanup.push(async()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
   return db;
 }

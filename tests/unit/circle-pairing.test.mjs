@@ -18,16 +18,18 @@ import { availabilityCycleKey } from '../../api/_availability.js';
 import { buildFairPairing, pairKey } from '../../api/_pairing.js';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
 import { PairingRecoveryError } from '../../api/_pairing-recovery.js';
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabaseSync, migratedTemplatePath } from '../support/migrated-db.mjs';
 
 const NOW=new Date('2026-09-20T08:15:00.000Z');
 const SESSION_HASH='a'.repeat(64);
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 
+await migratedTemplatePath();
+
+// Every fixture starts from a copy of the migrated-to-latest template.
 function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-circle-pairing-'));
-  const url=`file:${join(directory,'test.sqlite')}`;
+  const url=`file:${copyMigratedDatabaseSync(join(directory,'test.sqlite'))}`;
   let db=createClient({url});
   return {
     get db(){ return db; },
@@ -38,8 +40,6 @@ function fixture(){
 
 async function prepare(db){
   await prepareMigrationConnection(db);
-  const before=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
 }
 
 async function seedAccount(db,id,{demo=0}={}){
@@ -438,7 +438,7 @@ test('cron scope enumeration is deterministic and rejects overflow before public
 
 test('concurrent owner and cron publication converge on one immutable claim',async()=>{
   const directory=mkdtempSync(join(tmpdir(),'randori-circle-pairing-race-'));
-  const url=`file:${join(directory,'test.sqlite')}`;
+  const url=`file:${copyMigratedDatabaseSync(join(directory,'test.sqlite'))}`;
   const setup=createClient({url});
   const ownerClient=createClient({url});
   const cronClient=createClient({url});
@@ -465,7 +465,7 @@ test('concurrent owner and cron publication converge on one immutable claim',asy
 
 test('concurrent owners converge on the same immutable publication',async()=>{
   const directory=mkdtempSync(join(tmpdir(),'randori-circle-pairing-owner-race-'));
-  const url=`file:${join(directory,'test.sqlite')}`;
+  const url=`file:${copyMigratedDatabaseSync(join(directory,'test.sqlite'))}`;
   const setup=createClient({url});
   const firstClient=createClient({url});
   const secondClient=createClient({url});

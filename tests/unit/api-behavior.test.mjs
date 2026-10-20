@@ -11,9 +11,9 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { availabilityCycleKey } from '../../api/_availability.js';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import {googleOAuthCookieHeader,googleProviderFetch} from '../support/google-oidc.mjs';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
 const realFetch = globalThis.fetch;
 const TEST_JWT_SECRET = 'unit-test-secret-at-least-thirty-two-characters';
@@ -3340,14 +3340,10 @@ test('promotion rejects ambiguous case-insensitive legacy identities before muta
 
 test('admin and demo operations run against a fully migrated SQLite database without runtime DDL',async()=>{
   const directory=mkdtempSync(join(tmpdir(),'randori-admin-operations-'));
+  await copyMigratedDatabase(join(directory,'operations.sqlite'));
   const client=createClient({url:pathToFileURL(join(directory,'operations.sqlite')).href});
   try{
     await prepareMigrationConnection(client);
-    const before=await inspectMigrationState(client);
-    await applyMigrations(client,{
-      expectedStateFingerprint:before.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,
-      retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0},
-    });
     await client.batch([
       `INSERT INTO auth_accounts
         (id,email,password_hash,display_name,color,is_available,is_admin,is_demo)
@@ -4358,14 +4354,10 @@ test('selected secondary owner publishes and reads coordination without legacy w
   process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED='true';
   process.env.SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED='true';
   const directory=mkdtempSync(join(tmpdir(),'randori-secondary-api-'));
+  await copyMigratedDatabase(join(directory,'pairing.sqlite'));
   const client=createClient({url:pathToFileURL(join(directory,'pairing.sqlite')).href});
   try{
     await prepareMigrationConnection(client);
-    const before=await inspectMigrationState(client);
-    await applyMigrations(client,{
-      expectedStateFingerprint:before.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,
-      retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0},
-    });
     await client.batch([
       `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
         VALUES (1,'admin@example.test','hash','Owner','#123456',0),

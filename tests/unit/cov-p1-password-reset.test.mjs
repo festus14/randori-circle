@@ -21,8 +21,9 @@ import {
   sealPasswordResetToken,
 } from '../../api/_password-reset.js';
 import {OutboxDeliveryError} from '../../api/_outbox.js';
-import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {prepareMigrationConnection} from '../../db/migration-runner.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
+import {copyMigratedDatabase} from '../support/migrated-db.mjs';
 
 const JWT_SECRET='cov-p1-password-reset-secret-at-least-thirty-two-bytes';
 const ENCRYPTION_KEY=Buffer.alloc(32,23).toString('base64url');
@@ -48,8 +49,9 @@ function baseEnv(){
   delete process.env.NODE_ENV;
 }
 
-async function emptyDatabase(){
+async function emptyDatabase({migrated=false}={}){
   const directory=mkdtempSync(join(tmpdir(),'randori-cov-p1-reset-'));
+  if(migrated) await copyMigratedDatabase(join(directory,'reset.sqlite'));
   const db=createClient({url:`file:${join(directory,'reset.sqlite')}`});
   resources.push(()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
   return db;
@@ -57,11 +59,8 @@ async function emptyDatabase(){
 
 async function fixture({adopt=true}={}){
   baseEnv();
-  const db=await emptyDatabase();
+  const db=await emptyDatabase({migrated:true});
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   if(adopt) await adoptCredentialKeyControl(db,passwordResetKeyRing());
   await db.execute({sql:`INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin)
     VALUES (1,?,?,?,?,0)`,args:['member@example.test',await bcrypt.hash('old correct horse',4),'Member','#123456']});

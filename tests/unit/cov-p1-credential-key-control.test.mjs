@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {rmSync} from 'node:fs';
 import {afterEach,test} from 'node:test';
 
 import {createClient} from '@libsql/client';
@@ -19,12 +17,7 @@ import {
   readCredentialKeyControlRows,
   inspectCredentialKeyControlReadiness,
 } from '../../db/credential-key-control.js';
-import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
-import {
-  applyMigrations,
-  inspectMigrationState,
-  prepareMigrationConnection,
-} from '../../db/migration-runner.js';
+import {prepareMigrationConnection} from '../../db/migration-runner.js';
 import {
   CredentialKeyControlCommandError,
   configuredPurposeRing,
@@ -32,8 +25,8 @@ import {
   runCredentialKeyControl,
   validateCredentialKeyControlRuntime,
 } from '../../scripts/credential-key-control.mjs';
+import {createMigratedDatabase} from '../support/migrated-db.mjs';
 
-const NO_RETRY={maxAttempts:1,baseDelayMs:0,maxDelayMs:0};
 const ENV_KEYS=['IDENTITY_EMAIL_HASH_KEY','IDENTITY_EMAIL_HASH_KEY_VERSION',
   'IDENTITY_EMAIL_HASH_PREVIOUS_KEYS','JWT_SECRET','EMAIL_VERIFICATION_ENCRYPTION_KEY'];
 const resources=[];
@@ -62,12 +55,9 @@ function row(overrides={}){
 }
 
 async function database(){
-  const directory=mkdtempSync(join(tmpdir(),'randori-cov-key-control-'));
-  const db=createClient({url:`file:${join(directory,'database.sqlite')}`});
+  const {directory,url}=await createMigratedDatabase({prefix:'randori-cov-key-control-'});
+  const db=createClient({url});
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS});
-  await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS,
-    expectedStateFingerprint:initial.stateFingerprint,retry:NO_RETRY});
   resources.push(async()=>{ await db.close(); rmSync(directory,{recursive:true,force:true}); });
   return db;
 }

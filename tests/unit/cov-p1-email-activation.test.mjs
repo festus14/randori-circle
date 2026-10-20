@@ -23,7 +23,8 @@ import {
 } from '../../api/_email-activation.js';
 import {createInvitationToken,hashInvitationEmail,hashInvitationToken} from '../../api/_circle-membership.js';
 import {OutboxDeliveryError} from '../../api/_outbox.js';
-import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {prepareMigrationConnection} from '../../db/migration-runner.js';
+import {copyMigratedDatabase} from '../support/migrated-db.mjs';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 
 const JWT_SECRET='cov-p1-email-activation-secret-at-least-thirty-two-bytes';
@@ -51,20 +52,19 @@ function baseEnv(){
   delete process.env.NODE_ENV;
 }
 
-async function emptyDatabase(){
+async function emptyDatabase({migrated=false}={}){
   const directory=mkdtempSync(join(tmpdir(),'randori-cov-p1-activation-'));
-  const db=createClient({url:`file:${join(directory,'activation.sqlite')}`});
+  const path=join(directory,'activation.sqlite');
+  if(migrated) await copyMigratedDatabase(path);
+  const db=createClient({url:`file:${path}`});
   resources.push(()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
   return db;
 }
 
 async function fixture({adopt=true}={}){
   baseEnv();
-  const db=await emptyDatabase();
+  const db=await emptyDatabase({migrated:true});
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   if(adopt) await adoptCredentialKeyControl(db,activationKeyRing());
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin)

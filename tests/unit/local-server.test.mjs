@@ -36,6 +36,7 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from '../../scripts/local-server.mjs';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
 const REPOSITORY_ROOT=fileURLToPath(new URL('../..',import.meta.url));
 const SILENT_LOGGER=Object.freeze({log(){},error(){}});
@@ -60,6 +61,18 @@ function temporaryDirectory(prefix='randori-local-server-'){
   writeFileSync(join(directory,'index.html'),readFileSync(join(REPOSITORY_ROOT,'index.html')));
   cleanup.push(()=>rmSync(directory,{recursive:true,force:true}));
   return directory;
+}
+
+// Pre-seed a local database file at the latest schema for tests whose subject
+// is not database preparation, so startup inspects a managed latest database
+// instead of re-running every migration. The preparation, adoption, path
+// guard, reset and full-journey tests keep starting from a fresh file and
+// still cover the migrate-on-start path.
+async function useMigratedLocalDatabase(directory,name='randori.sqlite'){
+  const databasePath=join(directory,'.local',name);
+  await copyMigratedDatabase(databasePath);
+  chmodSync(databasePath,0o600);
+  return databasePath;
 }
 
 function localEnvironment(databaseUrl,overrides={}){
@@ -882,6 +895,8 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
 
 test('different local databases use different session keys',async()=>{
   const directory=temporaryDirectory();
+  await useMigratedLocalDatabase(directory);
+  await useMigratedLocalDatabase(directory,'second.sqlite');
   const firstConfig=localConfig(directory).config;
   const secondDatabaseUrl=pathToFileURL(join(directory,'.local','second.sqlite')).href;
   const secondConfig=resolveLocalServerConfig({
@@ -916,6 +931,8 @@ test('different local databases use different session keys',async()=>{
 test('the process admits only one local runtime at a time',async()=>{
   const firstDirectory=temporaryDirectory();
   const secondDirectory=temporaryDirectory();
+  await useMigratedLocalDatabase(firstDirectory);
+  await useMigratedLocalDatabase(secondDirectory);
   const first=await startLocalDevelopmentServer({
     config:localConfig(firstDirectory).config,
     logger:SILENT_LOGGER,
@@ -937,6 +954,7 @@ test('the process admits only one local runtime at a time',async()=>{
 
 test('a failed start is terminal and releases its runtime lock',async()=>{
   const directory=temporaryDirectory();
+  await useMigratedLocalDatabase(directory);
   const blocker=createHttpServer();
   await new Promise(resolve=>blocker.listen(0,'127.0.0.1',resolve));
   cleanup.push(()=>new Promise(resolve=>blocker.close(resolve)));
@@ -952,6 +970,7 @@ test('a failed start is terminal and releases its runtime lock',async()=>{
 
 test('the adapter preserves route query, dynamic ids, redirects, cookies, status, and JSON semantics',async()=>{
   const directory=temporaryDirectory();
+  await useMigratedLocalDatabase(directory);
   const {config}=localConfig(directory);
   const seen=[];
   const handlers={
@@ -1012,6 +1031,7 @@ test('the adapter preserves route query, dynamic ids, redirects, cookies, status
 
 test('runtime environment disables ambient providers and restores the caller environment on close',async()=>{
   const directory=temporaryDirectory();
+  await useMigratedLocalDatabase(directory);
   const databaseUrl=pathToFileURL(join(directory,'.local','randori.sqlite')).href;
   const envTarget={
     NODE_ENV:'test',
@@ -1094,6 +1114,7 @@ test('runtime environment disables ambient providers and restores the caller env
 
 test('request parsing rejects wrong methods, malformed JSON, oversized bodies, and unknown APIs',async()=>{
   const directory=temporaryDirectory();
+  await useMigratedLocalDatabase(directory);
   const {config}=localConfig(directory);
   let authCalls=0;
   const runtime=registerRuntime(await startLocalDevelopmentServer({
@@ -1169,6 +1190,7 @@ test('request parsing rejects wrong methods, malformed JSON, oversized bodies, a
 
 test('static serving supports SPA navigation without exposing repository files or traversal targets',async()=>{
   const directory=temporaryDirectory();
+  await useMigratedLocalDatabase(directory);
   mkdirSync(join(directory,'assets'));
   writeFileSync(
     join(directory,'assets','calendar-export.js'),
@@ -1220,6 +1242,7 @@ test('static serving supports SPA navigation without exposing repository files o
 
 test('unexpected handler failures are redacted and graceful close drains work then becomes idempotent',async()=>{
   const directory=temporaryDirectory();
+  await useMigratedLocalDatabase(directory);
   const {config,databasePath}=localConfig(directory);
   let release;
   let started;

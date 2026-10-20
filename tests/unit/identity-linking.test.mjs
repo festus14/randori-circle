@@ -19,12 +19,12 @@ import {
   unlinkGoogleCredential,
   unlinkPasswordCredential,
 } from '../../api/_identity-linking.js';
-import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
-import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {prepareMigrationConnection} from '../../db/migration-runner.js';
 import {
   adoptCredentialKeyControl,
   advanceCredentialKeyControl,
 } from '../support/credential-key-control.mjs';
+import {copyMigratedDatabase} from '../support/migrated-db.mjs';
 
 const resources=[];
 const NOW=1_800_000_000;
@@ -44,13 +44,10 @@ async function fixture(){
   process.env.IDENTITY_EMAIL_HASH_KEY_VERSION='1';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
   const directory=mkdtempSync(join(tmpdir(),'randori-identity-linking-'));
-  const databaseUrl=`file:${join(directory,'database.sqlite')}`;
+  const databaseUrl=`file:${await copyMigratedDatabase(join(directory,'database.sqlite'))}`;
   const db=createClient({url:databaseUrl});
   Object.defineProperty(db,'testDatabaseUrl',{value:databaseUrl});
   await prepareMigrationConnection(db);
-  const state=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await adoptCredentialKeyControl(db,identityEmailHashConfiguration());
   resources.push(()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
   return db;

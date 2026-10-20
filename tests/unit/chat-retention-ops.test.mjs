@@ -6,14 +6,8 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { createClient } from '@libsql/client';
 
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import {
-  applyMigrations,
-  inspectMigrationState,
-  prepareMigrationConnection,
-} from '../../db/migration-runner.js';
-
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
 test('the protected retention workflow is manual, serialized, latest-main only, and count-only',()=>{
   const workflow=readFileSync('.github/workflows/chat-retention.yml','utf8');
@@ -47,11 +41,10 @@ test('pair chat renders the visible private-beta retention policy',()=>{
 test('the status command emits one sanitized document without scope, content, URL, or SQL',async()=>{
   const directory=mkdtempSync(join(tmpdir(),'randori-retention-cli-'));
   const path=join(directory,'retention.sqlite');
+  await copyMigratedDatabase(path);
   const db=createClient({url:`file:${path}`});
   try{
     await prepareMigrationConnection(db);
-    const before=await inspectMigrationState(db);
-    await applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
     await db.execute(`INSERT INTO pair_messages
       (id,week_id,pair_group_id,sender_id,message,created_at)
       VALUES (73491,81234,92345,63412,'highly-private-content','not-a-time')`);
