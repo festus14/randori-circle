@@ -64,10 +64,11 @@ export function syncHomeTab(doc) {
 // App navigation (the tabs and the phone bottom bar) is for members only.
 // Every member destination needs an account, so a visitor would only be
 // bounced to sign-in by it. Visitors keep the logo, theme toggle and Sign in.
-// The navigation stays hidden until a member is confirmed (`data-auth` is set
-// to "member" only after /api/auth/me answers with a user). That means
-// nothing flashes while the identity check is in flight, and the tabs go
-// away as soon as the member signs out.
+// The navigation is hidden by default and shows for a confirmed member
+// (`data-auth="member"`, set only after /api/auth/me answers with a user), or
+// for a returning member while that check is in flight. A visitor therefore
+// never sees member tabs, even before scripts run, and the tabs go away as
+// soon as the member signs out.
 //
 // The body gets two attributes:
 //   data-nav:     "shown" for members, "hidden" for everyone else.
@@ -77,12 +78,16 @@ export function syncHomeTab(doc) {
 export const PUBLIC_VIEW_IDS = Object.freeze(['view-landing', 'view-activation', 'view-password-reset', 'view-invite']);
 export const SOLO_VIEW_ID = 'view-code';
 
-export function hidesAppNavigation({ auth } = {}) {
-  return auth !== 'member';
+// A returning member (this browser last saw a signed-in account) keeps the
+// navigation while their identity check is in flight, so they can move
+// around straight away; a visitor never has that cached account.
+export function hidesAppNavigation({ auth, identity, returning } = {}) {
+  if (auth === 'member') return false;
+  return !(identity === 'pending' && returning === 'true');
 }
 
-export function navigationState({ auth, publicSurface = false, soloSurface = false } = {}) {
-  const hidden = hidesAppNavigation({ auth });
+export function navigationState({ auth, identity, returning, publicSurface = false, soloSurface = false } = {}) {
+  const hidden = hidesAppNavigation({ auth, identity, returning });
   const surface = publicSurface ? 'public' : (hidden && soloSurface ? 'solo' : 'app');
   return { nav: hidden ? 'hidden' : 'shown', surface };
 }
@@ -115,6 +120,8 @@ export function syncPublicSurface(doc) {
   if (!body) return false;
   const state = navigationState({
     auth: body.dataset.auth,
+    identity: body.dataset.identity,
+    returning: body.dataset.returning,
     publicSurface: PUBLIC_VIEW_IDS.some(id => isDisplayed(doc.getElementById(id))),
     soloSurface: isDisplayed(doc.getElementById(SOLO_VIEW_ID)),
   });
@@ -217,7 +224,7 @@ export function installShell({
     for (const tab of doc.querySelectorAll('.tabs .tab')) {
       navObserver.observe(tab, { attributes: true, attributeFilter: ['class'] });
     }
-    if (doc.body) navObserver.observe(doc.body, { attributes: true, attributeFilter: ['data-auth', 'data-identity'] });
+    if (doc.body) navObserver.observe(doc.body, { attributes: true, attributeFilter: ['data-auth', 'data-identity', 'data-returning'] });
     const themeObserver = new MutationObserverImpl(() => renderThemeControl(themeButton, currentTheme()));
     themeObserver.observe(doc.documentElement, { attributes: true, attributeFilter: ['class'] });
   }

@@ -871,7 +871,10 @@ markup in later packages.
   `/invite`, `/verify`, `/reset-password` (with or without a token),
   `/join/<room>` and unknown routes see only the logo, the theme toggle and
   **Sign in**. Nothing flashes before scripts run or while `/api/auth/me` is in
-  flight, and the tabs go away as soon as a member signs out. This replaces
+  flight, and the tabs go away as soon as a member signs out. A returning
+  member (`body[data-returning="true"]`: this browser still has the cached
+  profile, which is removed on sign-out and on a failed check) keeps the
+  navigation while the check runs, so early navigation still works. This replaces
   WP-O's narrower rule ("visitors on public pages, once identity settles").
 - **Solo practice** (`/?view=code`, visitor): `body[data-surface="solo"]` shows
   the code view with no tabs and a prompt (`#soloPracticeBar`,
@@ -891,9 +894,9 @@ markup in later packages.
   instead of a flash of the visitor landing page. First-time visitors still get
   the landing page straight away.
 - **Fixes shipped with it:** the joined-after-cutoff Home hero confirms a saved
-  answer ("You're in for the week of 25 Oct") instead of asking again; an
-  already-agreed time no longer shows **Accept**; and a JavaScript function
-  that returns nothing is reported as a failed case, not a "runtime error".
+  answer ("You're in for the week of 25 Oct") instead of asking again; and a
+  JavaScript function that returns nothing is reported as a failed case (never
+  coerced to `null`), not a "runtime error".
 - Logic: `navigationState`, `memberDeepLinkView` and `deepLinkSignInCopy` in
   `assets/app-shell.js` (unit-tested in `tests/unit/app-shell.test.mjs`). The
   visible navigation for each state (every signed-out route, the join prompt,

@@ -3855,9 +3855,14 @@ async function refreshMe(){
     const effectiveSignedIn = !!me;
     if(document.body){
       document.body.dataset.auth=effectiveSignedIn?'member':'anonymous';
-      // Visitors lose app navigation on public pages only once identity has
-      // settled (signed out, or the check failed), never while it is loading.
-      document.body.dataset.identity=authIdentityHydrated||authIdentityHydrationUnavailable?'resolved':'pending';
+      const identityPending=!(authIdentityHydrated||authIdentityHydrationUnavailable);
+      document.body.dataset.identity=identityPending?'pending':'resolved';
+      // A browser that last saw a signed-in account (the cached profile is
+      // removed on sign-out and on a failed identity check) keeps member
+      // navigation while /api/auth/me is in flight; visitors never get it.
+      let returning=false;
+      if(identityPending&&!effectiveSignedIn){ try{ returning=!!localStorage.getItem(ME_KEY); }catch{} }
+      document.body.dataset.returning=returning?'true':'false';
     }
     const circleTab=document.querySelector('[data-tab="circle"]');
     if(circleTab) circleTab.style.display=effectiveSignedIn?'':'none';
@@ -11056,7 +11061,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         const detail=scheduleNode('div',{className:'home-proposal-detail'});
         const elapsed=!proposal.legacy&&proposal.instant&&Date.parse(proposal.instant)<=renderedAt;
         const mine=homeUi()?.proposalIsMine?.(proposal.proposed_by,scheduleActorId())===true;
-        const agreedProposal=!proposal.legacy&&!!schedule.agreed_time&&proposal.instant===schedule.agreed_time;
         if(proposal.legacy){
           detail.append(scheduleNode('span',{className:'home-proposal-time',text:proposal.value||'Legacy schedule text'}));
           detail.append(scheduleNode('span',{className:'small muted',text:'Legacy proposal · not directly acceptable'}));
@@ -11067,6 +11071,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           when.append(time);
           const rel=elapsed?null:scheduleRelative(proposal.instant,renderedAt); if(rel) when.append(' ',rel);
           detail.append(when);
+          const agreedProposal=!!schedule.agreed_time&&proposal.instant===schedule.agreed_time;
           detail.append(scheduleNode('span',{className:'small muted',text:`Proposed by ${scheduleProposerLabel(proposal.proposed_by)}${agreedProposal?' · agreed':(mine&&!elapsed?' · waiting for your partner':'')}`}));
           if(elapsed){
             const expired=scheduleNode('span',{className:'small muted',text:'Expired · remove it or propose a future time',testId:'schedule-expired-label'});
@@ -11074,9 +11079,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           }
         }
         const actions=scheduleNode('div',{className:'home-proposal-actions'});
-        // The proposer waits for their partner; only the other member accepts,
-        // and a time that is already agreed has nothing left to accept.
-        if(!proposal.legacy&&proposal.instant&&!elapsed&&!mine&&!agreedProposal){
+        // The proposer waits for their partner; only the other member accepts.
+        if(!proposal.legacy&&proposal.instant&&!elapsed&&!mine){
           const accept=scheduleIconButton('Accept','i-check',{className:'btn sm',testId:'schedule-accept'});
           accept.dataset.scheduleAction='accept'; accept.dataset.proposalId=proposal.proposal_id;
           accept.setAttribute('aria-label',`Accept ${localScheduleTime(proposal.instant)}`);
@@ -12039,7 +12043,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       try{ likelyMember=!!localStorage.getItem(ME_KEY); }catch{}
       if(!identitySettled&&likelyMember){
         const boot=document.getElementById('view-boot');
-        if(boot){ boot.style.display='block'; return; }
+        if(boot){
+          // Remember the pair link so the settled route can still prompt.
+          if(joinRoom) window._randori_pending_join_room=joinRoom;
+          boot.style.display='block';
+          return;
+        }
       }
       if(viewLanding) viewLanding.style.display='block';
       if(tabsEl) tabsEl.style.display='flex';

@@ -121,7 +121,7 @@ test('a member deep link asks a visitor to sign in, then opens that view', async
   await expect(page.locator('#tab-pair')).toHaveClass(/active/);
 });
 
-test('no member tabs flash while the identity check is in flight', async ({ page }) => {
+test('a returning member gets a neutral loading view, not the visitor landing page, while identity loads', async ({ page }) => {
   let releaseMe: (() => void) | undefined;
   const meGate = new Promise<void>(resolve => { releaseMe = resolve; });
   await mockApi(page, {
@@ -133,8 +133,10 @@ test('no member tabs flash while the identity check is in flight', async ({ page
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#view-boot')).toBeVisible();
   await expect(page.locator('#view-landing')).toBeHidden();
-  await expect(page.locator('body')).not.toHaveAttribute('data-nav', 'shown');
-  await expect(primaryNavigation(page)).toBeHidden();
+  // Their navigation stays usable while the check runs (see
+  // ui-shell-accessibility's early-navigation tests).
+  await expect(page.locator('body')).toHaveAttribute('data-returning', 'true');
+  await expect(primaryNavigation(page)).toBeVisible();
 
   releaseMe?.();
   await expect(page.locator('#view-dashboard')).toBeVisible();
@@ -142,7 +144,7 @@ test('no member tabs flash while the identity check is in flight', async ({ page
   await expect(primaryNavigation(page)).toBeVisible();
 });
 
-test('a first-time visitor sees the landing page at once while the identity check runs', async ({ page }) => {
+test('a visitor sees the landing page and no member tabs while the identity check runs', async ({ page }) => {
   let releaseMe: (() => void) | undefined;
   const meGate = new Promise<void>(resolve => { releaseMe = resolve; });
   await mockApi(page, {
@@ -151,6 +153,8 @@ test('a first-time visitor sees the landing page at once while the identity chec
   await resetClientState(page);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#view-landing')).toBeVisible();
+  await expect(page.locator('body')).toHaveAttribute('data-identity', 'pending');
+  await expect(page.locator('body')).toHaveAttribute('data-nav', 'hidden');
   await expect(primaryNavigation(page)).toBeHidden();
   releaseMe?.();
   await settledIdentity(page);

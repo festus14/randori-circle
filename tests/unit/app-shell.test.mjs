@@ -321,6 +321,12 @@ test('only members get app navigation, on every surface and while identity loads
   assert.equal(hidesAppNavigation({ auth: undefined }), true, 'before the first auth render');
   assert.equal(hidesAppNavigation(), true);
   assert.equal(hidesAppNavigation({ auth: 'member' }), false);
+  // A returning member keeps navigation only while identity is pending.
+  assert.equal(hidesAppNavigation({ auth: 'anonymous', identity: 'pending', returning: 'true' }), false);
+  assert.equal(hidesAppNavigation({ auth: 'anonymous', identity: 'resolved', returning: 'true' }), true);
+  assert.equal(hidesAppNavigation({ auth: 'anonymous', identity: 'pending', returning: 'false' }), true, 'a visitor while loading');
+  assert.equal(hidesAppNavigation({ identity: 'pending' }), true);
+  assert.deepEqual(navigationState({ auth: 'anonymous', identity: 'pending', returning: 'true', soloSurface: true }), { nav: 'shown', surface: 'app' });
 
   assert.deepEqual(navigationState({ auth: 'anonymous', publicSurface: true }), { nav: 'hidden', surface: 'public' });
   assert.deepEqual(navigationState({ auth: 'anonymous', soloSurface: true }), { nav: 'hidden', surface: 'solo' });
@@ -396,9 +402,15 @@ test('installShell observes body auth attributes so navigation follows sign-in',
   assert.equal(shell.deepLinkSignInCopy('history').title, 'Sign in to continue');
   const [navObserver] = observers;
   const bodyTarget = navObserver.targets.find(entry => entry.target === doc.body);
-  assert.deepEqual(bodyTarget.options.attributeFilter, ['data-auth', 'data-identity']);
-  doc.body.dataset.auth = 'member';
+  assert.deepEqual(bodyTarget.options.attributeFilter, ['data-auth', 'data-identity', 'data-returning']);
+  doc.body.dataset.returning = 'true';
+  navObserver.callback();
+  assert.equal(doc.body.dataset.nav, 'shown', 'returning member while identity loads');
   doc.body.dataset.identity = 'resolved';
+  doc.body.dataset.returning = 'false';
+  navObserver.callback();
+  assert.equal(doc.body.dataset.nav, 'hidden', 'the check said signed out');
+  doc.body.dataset.auth = 'member';
   navObserver.callback();
   assert.equal(doc.body.dataset.nav, 'shown');
   doc.body.dataset.auth = 'anonymous';
