@@ -226,7 +226,7 @@ test('deployability rejects an unsafe or incomplete outbox scheduler',()=>{
   ));
 });
 
-test('the outbox watchdog is hourly, bounded, read-only, and secret-free',()=>{
+test('the outbox watchdog is hourly, bounded, read-only, and limited to the health credential',()=>{
   const contract=currentContract();
   assert.deepEqual(validateDeploymentContract(contract),[]);
   assert.match(contract.outboxWatchdogWorkflow,/cron:\s*['"]37 \* \* \* \*['"]/);
@@ -234,9 +234,13 @@ test('the outbox watchdog is hourly, bounded, read-only, and secret-free',()=>{
   assert.match(contract.outboxWatchdogWorkflow,/contents:\s*read/);
   assert.match(contract.outboxWatchdogWorkflow,/WATCHDOG_WORKER_DEADLINE_MS:\s*'120000'/);
   assert.match(contract.outboxWatchdogWorkflow,/scripts\/github-outbox-dispatch-watchdog\.mjs/);
-  assert.doesNotMatch(contract.outboxWatchdogWorkflow,
-    /environment:|secrets\.|vars\.|APP_URL|CRON_SECRET|\/api\/cron\/outbox|pull_request_target/);
+  assert.match(contract.outboxWatchdogWorkflow,/^    environment: production$/m);
+  assert.deepEqual(contract.outboxWatchdogWorkflow.match(/(?:secrets|vars)\.[A-Z_]+/g),
+    ['vars.APP_URL','secrets.CRON_SECRET']);
+  assert.doesNotMatch(contract.outboxWatchdogWorkflow,/\/api\/cron\/outbox|pull_request_target|TURSO_|RESEND_/);
 });
+
+const UNSAFE_WATCHDOG='outbox watchdog must remain read-only, non-mutating, and limited to its reviewed health credential';
 
 test('deployability rejects a weakened or privileged outbox watchdog',()=>{
   const missing=cloneContract();
@@ -259,7 +263,7 @@ test('deployability rejects a weakened or privileged outbox watchdog',()=>{
     'contents: read','contents: write\n  environment: production\n  CRON_SECRET: ${{ secrets.CRON_SECRET }}',
   );
   errors=validateDeploymentContract(privileged);
-  assert.ok(errors.includes('outbox watchdog must remain secret-free, read-only, and non-mutating'));
+  assert.ok(errors.includes(UNSAFE_WATCHDOG));
   assert.ok(errors.includes('outbox watchdog must have read-only contents access'));
 
   const mutableAction=cloneContract();
@@ -296,7 +300,7 @@ test('deployability rejects a weakened or privileged outbox watchdog',()=>{
     'continue-on-error: true\n        run: node scripts/github-outbox-dispatch-watchdog.mjs',
   );
   errors=validateDeploymentContract(continued);
-  assert.ok(errors.includes('outbox watchdog must remain secret-free, read-only, and non-mutating'));
+  assert.ok(errors.includes(UNSAFE_WATCHDOG));
   assert.ok(errors.includes('outbox watchdog assessment step must retain its exact fail-closed shape'));
 
   const extraShell=cloneContract();
@@ -306,6 +310,22 @@ test('deployability rejects a weakened or privileged outbox watchdog',()=>{
   );
   assert.ok(validateDeploymentContract(extraShell).includes(
     'outbox watchdog workflow must match its reviewed immutable contract'));
+
+  for(const [from,to] of [
+    ['          CRON_SECRET: ${{ secrets.CRON_SECRET }}\n',
+      '          CRON_SECRET: ${{ secrets.CRON_SECRET }}\n          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}\n'],
+    ['secrets.CRON_SECRET','secrets.TURSO_AUTH_TOKEN'],
+    ['vars.APP_URL','vars.OTHER_URL'],
+  ]){
+    const widened=cloneContract();
+    widened.outboxWatchdogWorkflow=widened.outboxWatchdogWorkflow.replace(from,to);
+    assert.ok(validateDeploymentContract(widened).includes(UNSAFE_WATCHDOG),to);
+  }
+
+  const unprotected=cloneContract();
+  unprotected.outboxWatchdogWorkflow=unprotected.outboxWatchdogWorkflow.replace('    environment: production\n','');
+  assert.ok(validateDeploymentContract(unprotected).includes(
+    'outbox watchdog must read delivery health through the protected production environment'));
 
   const replacedAssessor=cloneContract();
   replacedAssessor.outboxWatchdogScript='process.exitCode=0;\n';

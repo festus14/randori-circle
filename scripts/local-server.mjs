@@ -716,7 +716,7 @@ function apiRoute(pathname,query){
   const opsEndpoints=new Map([
     ['/api/settings/availability','availability'],['/api/admin/reshuffle','reshuffle'],
     ['/api/pairing/run','pairing-run'],
-    ['/api/cron/weekly','weekly'],['/api/cron/outbox','outbox'],
+    ['/api/cron/weekly','weekly'],['/api/cron/outbox','outbox'],['/api/cron/outbox-health','outbox-health'],
     ['/api/admin/outbox/replay','outbox-replay'],['/api/admin/demo-seed','demo-seed'],
     ['/api/admin/demo-shuffle','demo-shuffle'],['/api/admin/demo-reset','demo-reset'],
     ['/api/notifications/prefs','notifications-prefs'],
