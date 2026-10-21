@@ -761,9 +761,49 @@ test('elapsed schedules stay recoverable and authoritative expiry errors refetch
   }
 });
 
+test('a proposal for the time already agreed offers no Accept; a different time does', async ({ page }) => {
+  const agreedInstant = '2098-10-06T17:30:00.000Z';
+  const otherInstant = '2098-10-07T17:30:00.000Z';
+  const store = new ScheduleStore([roomA]);
+  store.seed(roomA, {
+    proposals: [{
+      proposal_id: opaqueId(7_201), value: agreedInstant, instant: agreedInstant,
+      proposed_by: userB.id, legacy: false,
+    }],
+    agreed_time: agreedInstant,
+    legacy_agreed_time: null,
+  });
+  await openDashboard(page, userA, store, () => roomA);
+  const agreedRow = page.getByTestId('schedule-proposal').filter({ has: page.locator(`time[datetime="${agreedInstant}"]`) });
+  await expect(agreedRow).toContainText('· agreed');
+  await expect(page.getByTestId('schedule-accept')).toHaveCount(0);
+  await expect(agreedRow.getByTestId('schedule-remove')).toBeEnabled();
+  await expect(page.getByTestId('schedule-calendar-export')).toBeVisible();
+
+  // The partner suggests another time: only that row can be accepted.
+  store.seed(roomA, {
+    proposals: [
+      { proposal_id: opaqueId(7_201), value: agreedInstant, instant: agreedInstant, proposed_by: userB.id, legacy: false },
+      { proposal_id: opaqueId(7_202), value: otherInstant, instant: otherInstant, proposed_by: userB.id, legacy: false },
+    ],
+    agreed_time: agreedInstant,
+    legacy_agreed_time: null,
+  });
+  await refreshSchedule(page);
+  const otherRow = page.getByTestId('schedule-proposal').filter({ has: page.locator(`time[datetime="${otherInstant}"]`) });
+  await expect(otherRow.getByTestId('schedule-accept')).toBeVisible();
+  await expect(agreedRow.getByTestId('schedule-accept')).toHaveCount(0);
+  await expect(page.getByTestId('schedule-accept')).toHaveCount(1);
+});
+
 test('schedule controls cross the elapsed boundary without a data change and stale timers stay scoped', async ({ page }) => {
   const observedAt = Date.now();
+  // The agreed session and the partner's counter-proposal both pass within
+  // the first boundary. Accept is offered only for a time that is not the
+  // agreed one, so the counter-proposal carries it.
+  const agreedInstant = new Date(observedAt + 1_500).toISOString();
   const boundaryInstant = new Date(observedAt + 2_000).toISOString();
+  const laterAgreedInstant = new Date(observedAt + 30 * 60 * 1_000).toISOString();
   const laterInstant = new Date(observedAt + 60 * 60 * 1_000).toISOString();
   await page.clock.install({ time: observedAt });
   const store = new ScheduleStore([roomA, roomB]);
@@ -772,7 +812,7 @@ test('schedule controls cross the elapsed boundary without a data change and sta
       proposal_id: opaqueId(7_101), value: boundaryInstant, instant: boundaryInstant,
       proposed_by: userB.id, legacy: false,
     }],
-    agreed_time: boundaryInstant,
+    agreed_time: agreedInstant,
     legacy_agreed_time: null,
   });
   store.seed(roomB, {
@@ -780,7 +820,7 @@ test('schedule controls cross the elapsed boundary without a data change and sta
       proposal_id: opaqueId(7_102), value: laterInstant, instant: laterInstant,
       proposed_by: userB.id, legacy: false,
     }],
-    agreed_time: laterInstant,
+    agreed_time: laterAgreedInstant,
     legacy_agreed_time: null,
   });
   let authorizedRoom = roomA;
@@ -802,13 +842,15 @@ test('schedule controls cross the elapsed boundary without a data change and sta
   await expect(draft).toBeFocused();
   await expect(page.getByTestId('schedule-boundary-status')).toContainText(/controls updated.*time elapsed/i);
 
+  // After the past session the partner proposes a new time. A focused Accept
+  // that expires hands focus to the expired label.
   const focusedBoundaryInstant = new Date(observedAt + 4_000).toISOString();
   store.seed(roomA, {
     proposals: [{
       proposal_id: opaqueId(7_103), value: focusedBoundaryInstant, instant: focusedBoundaryInstant,
       proposed_by: userB.id, legacy: false,
     }],
-    agreed_time: focusedBoundaryInstant,
+    agreed_time: agreedInstant,
     legacy_agreed_time: null,
   });
   await refreshSchedule(page);
@@ -825,7 +867,7 @@ test('schedule controls cross the elapsed boundary without a data change and sta
       proposal_id: opaqueId(7_104), value: staleBoundaryInstant, instant: staleBoundaryInstant,
       proposed_by: userB.id, legacy: false,
     }],
-    agreed_time: staleBoundaryInstant,
+    agreed_time: agreedInstant,
     legacy_agreed_time: null,
   });
   await refreshSchedule(page);
@@ -845,7 +887,7 @@ test('schedule controls cross the elapsed boundary without a data change and sta
   await expect(page.getByTestId('schedule-past-agreement')).toHaveCount(0);
   await expect(page.getByTestId('schedule-accept')).toBeVisible();
   await expect(page.getByTestId('schedule-calendar-export')).toBeVisible();
-  expect((await scheduleSnapshot(page))?.agreed_time).toBe(laterInstant);
+  expect((await scheduleSnapshot(page))?.agreed_time).toBe(laterAgreedInstant);
 });
 
 test('a stale same-version proposal refreshes without losing either member draft or update', async ({ browser }) => {

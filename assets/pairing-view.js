@@ -9,30 +9,20 @@
 // Loaded as a classic script (before the application script) so renderers can
 // call it synchronously; node tests import the same file as an ES module.
 (function installPairingView(root) {
-  const ISO_WEEK = /^(\d{4})-W(\d{2})$/;
   const MINUTE = 60 * 1000;
   const HOUR = 60 * MINUTE;
   const DAY = 24 * HOUR;
-
-  function weekNumber(cycleId) {
-    const match = ISO_WEEK.exec(String(cycleId || ''));
-    if (!match) return null;
-    const week = Number(match[2]);
-    return week >= 1 && week <= 53 ? week : null;
-  }
-
-  function weekLabel(cycleId, { capitalize = false } = {}) {
-    const week = weekNumber(cycleId);
-    if (week === null) return capitalize ? 'This cycle' : 'this cycle';
-    return `${capitalize ? 'Week' : 'week'} ${week}`;
-  }
+  // Cycle copy uses one date style everywhere ("Week of 25 Oct", "Sun 25 Oct,
+  // 18:00 BST"), the same as assets/onboarding-flow.js and
+  // assets/home-dashboard.js. Callers can still pass a locale.
+  const DISPLAY_LOCALE = 'en-GB';
 
   function validInstant(value) {
     const millis = typeof value === 'number' ? value : Date.parse(value);
     return Number.isFinite(millis) ? new Date(millis) : null;
   }
 
-  function format(value, timeZone, options, locale) {
+  function format(value, timeZone, options, locale = DISPLAY_LOCALE) {
     const instant = validInstant(value);
     if (!instant) return 'an unknown time';
     try {
@@ -42,12 +32,22 @@
     }
   }
 
-  // "Mon, 21 Sep 2026" (order follows the viewer's locale).
+  // "2026-W39" is an implementation key; people read "the week of 25 Oct",
+  // taken from the cycle's start in the cycle's own time zone. Without a
+  // valid start the copy falls back to "this cycle".
+  function weekLabel(cycle, { capitalize = false, locale } = {}) {
+    const start = validInstant(cycle && typeof cycle === 'object' ? cycle.startsAt : null);
+    if (!start) return capitalize ? 'This cycle' : 'this cycle';
+    const day = format(start, cycle.timeZone, { day: 'numeric', month: 'short' }, locale);
+    return capitalize ? `Week of ${day}` : `the week of ${day}`;
+  }
+
+  // "Mon 21 Sep 2026".
   function formatDay(value, timeZone, locale) {
     return format(value, timeZone, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }, locale);
   }
 
-  // "Sun, 20 Sep, 18:00 BST" (year omitted; the cycle dates carry it).
+  // "Sun 20 Sep, 18:00 BST" (year omitted; the cycle dates carry it).
   function formatMoment(value, timeZone, locale) {
     return format(value, timeZone, {
       weekday: 'short', day: 'numeric', month: 'short',
@@ -102,8 +102,8 @@
     return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.18 ? '#0B0D12' : '#FFFFFF';
   }
 
-  function decisionCopy(value) {
-    const week = weekLabel(value.cycle.cycleId);
+  function decisionCopy(value, locale) {
+    const week = weekLabel(value.cycle, { locale });
     const choice = value.isAvailable ? 'in' : 'skipping';
     if (value.source === 'user') {
       if (!value.editable) return `Saved choice: you're ${choice} for ${week}. The cutoff has passed.`;
@@ -187,14 +187,14 @@
     const left = countdown(cycle.cutoffAt, now);
     const cutoff = `Decide by ${formatMoment(cycle.cutoffAt, cycle.timeZone, locale)} (${cycle.timeZone})`;
     let cutoffText = `${cutoff}.`;
-    if (!value.editable) cutoffText = `The cutoff for ${weekLabel(cycle.cycleId)} has passed.`;
+    if (!value.editable) cutoffText = `The cutoff for ${weekLabel(cycle, { locale })} has passed.`;
     else if (left.text) cutoffText = `${cutoff} · ${left.text}.`;
     return {
       visible: true,
       busy: !!(loading || saving),
-      title: `Are you in for ${weekLabel(cycle.cycleId)}?`,
+      title: `Are you in for ${weekLabel(cycle, { locale })}?`,
       badge: badgeFor(value, saving, shownValue),
-      decision: decisionCopy(value),
+      decision: decisionCopy(value, locale),
       cycleText: `Upcoming cycle starts ${formatDay(cycle.startsAt, cycle.timeZone, locale)} and ends ${formatDay(cycle.endsAt, cycle.timeZone, locale)}.`,
       cutoffText,
       cutoffUrgent: value.editable && left.urgent,
@@ -216,7 +216,7 @@
 
   function savedToast(value) {
     if (!value) return 'Availability saved';
-    const week = weekLabel(value.cycle?.cycleId);
+    const week = weekLabel(value.cycle);
     return value.isAvailable ? `You're in for ${week}` : `Skipping ${week}`;
   }
 
@@ -272,9 +272,9 @@
 
   // Member-facing status for the current cycle's pairs card.
   function pairsStatusView(kind, {
-    cycleId = '', publication = null, allowed = false, upcoming = null, online = true, locale,
+    cycle = null, publication = null, allowed = false, upcoming = null, online = true, locale,
   } = {}) {
-    const week = weekLabel(cycleId, { capitalize: true });
+    const week = weekLabel(cycle, { capitalize: true, locale });
     switch (kind) {
       case 'load-error':
         return {
@@ -333,10 +333,10 @@
     }
   }
 
-  function publishedMeta({ cycleId = '', count = 0, startsAt = null, timeZone = '', locale } = {}) {
+  // "Week of 21 Sep · 3 pairs". The week label already names the start day.
+  function publishedMeta({ count = 0, startsAt = null, timeZone = '', locale } = {}) {
     const total = Number.isSafeInteger(count) && count > 0 ? count : 0;
-    const since = startsAt ? ` · started ${formatDay(startsAt, timeZone, locale)}` : '';
-    return `${weekLabel(cycleId, { capitalize: true })} · ${plural(total, 'pair')}${since}`;
+    return `${weekLabel({ startsAt, timeZone }, { capitalize: true, locale })} · ${plural(total, 'pair')}`;
   }
 
   // Normalize one published pair into display members. Names are returned as
@@ -372,7 +372,6 @@
   }
 
   root._randori_pairing_view = Object.freeze({
-    weekNumber,
     weekLabel,
     roomLabel,
     formatDay,

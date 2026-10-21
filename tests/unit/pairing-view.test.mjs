@@ -56,17 +56,20 @@ test('the module installs one frozen global and the page loads it before the app
   assert.ok(html.indexOf('/assets/pairing-view.js') < html.indexOf('function renderAvailability()'));
 });
 
-test('ISO cycle ids become human week labels', () => {
-  assert.equal(view.weekNumber('2026-W39'), 39);
-  assert.equal(view.weekNumber('2026-W01'), 1);
-  assert.equal(view.weekNumber('2026-W54'), null);
-  assert.equal(view.weekNumber('2026-W00'), null);
-  assert.equal(view.weekNumber('nope'), null);
-  assert.equal(view.weekNumber(undefined), null);
-  assert.equal(view.weekLabel('2026-W39'), 'week 39');
-  assert.equal(view.weekLabel('2026-W39', { capitalize: true }), 'Week 39');
-  assert.equal(view.weekLabel(''), 'this cycle');
+test('cycles become human week labels from their start date, never ISO week numbers', () => {
+  assert.equal(view.weekNumber, undefined);
+  assert.match(view.weekLabel(cycle()), /^the week of 20 Sept?$/);
+  assert.match(view.weekLabel(cycle(), { capitalize: true }), /^Week of 20 Sept?$/);
+  // The start is read in the cycle's own time zone, not the browser's.
+  assert.match(view.weekLabel(cycle({ startsAt: '2026-10-24T23:30:00.000Z', timeZone: 'Europe/London' })), /^the week of 25 Oct$/);
+  assert.match(view.weekLabel(cycle({ startsAt: '2026-10-24T23:30:00.000Z', timeZone: 'UTC' })), /^the week of 24 Oct$/);
+  assert.match(view.weekLabel(cycle({ startsAt: '2026-10-24T23:30:00.000Z', timeZone: 'Not/AZone' })), /^the week of 2[45] Oct$/);
+  assert.equal(view.weekLabel(cycle(), { capitalize: true, locale: 'en-US' }), 'Week of Sep 20');
+  assert.doesNotMatch(view.weekLabel(cycle()), /W39|39/);
+  assert.equal(view.weekLabel(cycle({ startsAt: 'nope' })), 'this cycle');
+  assert.equal(view.weekLabel('2026-W39'), 'this cycle');
   assert.equal(view.weekLabel(null, { capitalize: true }), 'This cycle');
+  assert.equal(view.weekLabel(undefined), 'this cycle');
 });
 
 test('dates format in the cycle time zone without raw ISO strings', () => {
@@ -154,9 +157,9 @@ test('a saved choice is a dated, explicit decision with a cutoff countdown', () 
     signedIn: true, value: availability(), now: beforeCutoff, locale: LOCALE,
   });
   assert.equal(model.visible, true);
-  assert.equal(model.title, 'Are you in for week 39?');
+  assert.match(model.title, /^Are you in for the week of 20 Sept?\?$/);
   assert.deepEqual(model.badge, { text: "Saved · You're in", tone: 'success' });
-  assert.match(model.decision, /^Saved choice: you're in for week 39\./);
+  assert.match(model.decision, /^Saved choice: you're in for the week of 20 Sept?\./);
   assert.match(model.cycleText, /^Upcoming cycle starts .*2026 and ends .*2026\.$/);
   assert.match(model.cutoffText, /^Decide by .*18:00.* \(Europe\/London\) · 2 days 2 hours left\.$/);
   assert.equal(model.cutoffUrgent, false);
@@ -171,7 +174,7 @@ test('skipping is saved per cycle and the badge stays neutral', () => {
     signedIn: true, value: availability({ isAvailable: false }), now: beforeCutoff, locale: LOCALE,
   });
   assert.deepEqual(model.badge, { text: 'Saved · Skipping', tone: 'neutral' });
-  assert.match(model.decision, /skipping week 39\. Only this cycle is affected/);
+  assert.match(model.decision, /skipping the week of 20 Sept?\. Only this cycle is affected/);
   assert.equal(model.skip.pressed, true);
   assert.equal(model.available.pressed, false);
 });
@@ -210,7 +213,7 @@ test('a closed cycle disables both choices and explains why', () => {
   assert.deepEqual(model.badge, { text: 'Closed · Saved', tone: 'neutral' });
   assert.equal(model.available.disabled, true);
   assert.equal(model.skip.disabled, true);
-  assert.equal(model.cutoffText, 'The cutoff for week 39 has passed.');
+  assert.match(model.cutoffText, /^The cutoff for the week of 20 Sept? has passed\.$/);
   assert.match(model.decision, /The cutoff has passed/);
   assert.equal(model.cutoffUrgent, false);
 });
@@ -274,8 +277,8 @@ test('notices and errors surface as status text', () => {
 });
 
 test('saved toasts use week labels', () => {
-  assert.equal(view.savedToast(availability()), "You're in for week 39");
-  assert.equal(view.savedToast(availability({ isAvailable: false })), 'Skipping week 39');
+  assert.match(view.savedToast(availability()), /^You're in for the week of 20 Sept?$/);
+  assert.match(view.savedToast(availability({ isAvailable: false })), /^Skipping the week of 20 Sept?$/);
   assert.equal(view.savedToast(null), 'Availability saved');
 });
 
@@ -372,32 +375,36 @@ test('pairs status copy matches each failure and never shows cached pairs', () =
 });
 
 test('unpublished pairs explain the schedule for members and owners', () => {
+  const current = cycle({ cycleId: '2026-W38', startsAt: '2026-09-13T17:00:00.000Z', endsAt: '2026-09-20T17:00:00.000Z', state: 'current' });
   const upcoming = cycle({ cutoffAt: '2026-09-27T17:00:00.000Z' });
-  const none = view.pairsStatusView('unpublished', { cycleId: '2026-W38', upcoming, locale: LOCALE });
-  assert.match(none.meta, /^Week 38 · pairs not published yet · next cutoff /);
+  const none = view.pairsStatusView('unpublished', { cycle: current, upcoming, locale: LOCALE });
+  assert.match(none.meta, /^Week of 13 Sept? · pairs not published yet · next cutoff Sun 27 Sept?, 18:00 BST$/);
   assert.equal(none.body, 'No pairings have been published for the current cycle.');
-  const noNext = view.pairsStatusView('unpublished', { cycleId: '2026-W38' });
-  assert.equal(noNext.meta, 'Week 38 · pairs not published yet');
+  const noNext = view.pairsStatusView('unpublished', { cycle: current });
+  assert.match(noNext.meta, /^Week of 13 Sept? · pairs not published yet$/);
+  assert.equal(view.pairsStatusView('unpublished').meta, 'This cycle · pairs not published yet');
 
-  const pending = view.pairsStatusView('unpublished', { cycleId: '2026-W38', publication: publication(), locale: LOCALE });
-  assert.match(pending.meta, /^Week 38 · pairs publish .*18:00/);
+  const pending = view.pairsStatusView('unpublished', { cycle: current, publication: publication(), locale: LOCALE });
+  assert.match(pending.meta, /^Week of 13 Sept? · pairs publish .*18:00/);
   assert.match(pending.body, /publish automatically/);
 
   const overdueOwner = view.pairsStatusView('unpublished', {
-    cycleId: '2026-W38', allowed: true, publication: publication({ state: 'overdue' }),
+    cycle: current, allowed: true, publication: publication({ state: 'overdue' }),
   });
   assert.equal(overdueOwner.tone, 'warning');
   assert.match(overdueOwner.meta, /publication is late/);
   assert.match(overdueOwner.body, /not published automatically.*Publish now in Owner tools/);
 
-  const overdueMember = view.pairsStatusView('unpublished', { cycleId: '2026-W38', publication: publication({ state: 'overdue' }) });
+  const overdueMember = view.pairsStatusView('unpublished', { cycle: current, publication: publication({ state: 'overdue' }) });
   assert.match(overdueMember.body, /circle owner can publish it now/);
 });
 
-test('published meta counts pairs with a friendly start date', () => {
-  assert.match(view.publishedMeta({ cycleId: '2026-W38', count: 3, startsAt: '2026-09-13T17:00:00.000Z', timeZone: 'Europe/London', locale: LOCALE }),
-    /^Week 38 · 3 pairs · started .*2026$/);
-  assert.equal(view.publishedMeta({ cycleId: '2026-W38', count: 1 }), 'Week 38 · 1 pair');
+test('published meta counts pairs under the week of their start date', () => {
+  assert.match(view.publishedMeta({ count: 3, startsAt: '2026-09-13T17:00:00.000Z', timeZone: 'Europe/London', locale: LOCALE }),
+    /^Week of 13 Sept? · 3 pairs$/);
+  // The start day is read in the cycle's zone: 23:30 UTC is already Monday in Auckland.
+  assert.match(view.publishedMeta({ count: 1, startsAt: '2026-09-13T23:30:00.000Z', timeZone: 'Pacific/Auckland' }), /^Week of 14 Sept? · 1 pair$/);
+  assert.equal(view.publishedMeta({ count: 1 }), 'This cycle · 1 pair');
   assert.equal(view.publishedMeta({ count: -2 }), 'This cycle · 0 pairs');
   assert.equal(view.publishedMeta(), 'This cycle · 0 pairs');
 });

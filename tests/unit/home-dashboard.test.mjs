@@ -90,6 +90,15 @@ test('cycleWeekLabel replaces ISO week keys with a readable week start', () => {
   assert.equal(home.cycleWeekLabel(null), '');
 });
 
+test('Home week labels use the same day-month style as the setup guide, in the cycle zone', () => {
+  // No locale passed: the label matches assets/onboarding-flow.js weekOf().
+  assert.equal(home.cycleWeekLabel({ startsAt: '2026-10-25T08:00:00.000Z', timeZone: 'Europe/London' }), 'Week of 25 Oct');
+  assert.equal(home.cycleWeekLabel({ startsAt: '2026-10-25T20:00:00.000Z', timeZone: 'Pacific/Kiritimati' }), 'Week of 26 Oct');
+  assert.equal(home.cycleWeekPhrase({ startsAt: '2026-10-25T08:00:00.000Z', timeZone: 'Europe/London' }), 'the week of 25 Oct');
+  assert.equal(home.cycleWeekPhrase({ cycleId: '2026-W44' }), 'this cycle');
+  assert.equal(home.cycleWeekPhrase(null), 'this cycle');
+});
+
 test('proposalIsMine recognises self markers and the viewer id only', () => {
   assert.equal(home.proposalIsMine('self', 7), true);
   assert.equal(home.proposalIsMine('partner', 7), false);
@@ -193,7 +202,7 @@ test('nextStep explains legacy agreements', () => {
 test('pairStateCopy keeps stable titles and avoids internal jargon', () => {
   const states = ['stale', 'future', 'pending', 'overdue', 'unpublished', 'unavailable', 'missed', 'partner_unavailable', 'error', 'mystery'];
   for (const state of states) {
-    const copy = home.pairStateCopy(state, { week: 'Week of Oct 19', nextCutoff: 'Sun, Oct 25, 08:00 GMT' });
+    const copy = home.pairStateCopy(state, { week: 'the week of 19 Oct', nextCutoff: 'Sun 25 Oct, 08:00 GMT' });
     assert.ok(copy.title && copy.message, state);
     assert.doesNotMatch(copy.message, /snapshot|durable|idempotent|eligibility|\d{4}-W\d{2}/i, state);
     assert.equal(typeof copy.availability, 'boolean');
@@ -211,7 +220,9 @@ test('pairStateCopy surfaces the one recovery action per state', () => {
   assert.equal(home.pairStateCopy('missed', { nextCutoff: 'Sun' }).availability, true);
   assert.match(home.pairStateCopy('missed', { nextCutoff: 'Sun' }).message, /before Sun/);
   assert.doesNotMatch(home.pairStateCopy('unavailable').message, /before/);
-  assert.match(home.pairStateCopy('unavailable').message, /this week/);
+  assert.match(home.pairStateCopy('unavailable').message, /You’re skipping this cycle\./);
+  // The week phrase reads naturally mid-sentence (no "Pairs for Week of …").
+  assert.match(home.pairStateCopy('unpublished', { week: 'the week of 19 Oct' }).message, /^Pairs for the week of 19 Oct haven’t been published yet\./);
   assert.equal(home.pairStateCopy('error').retry, true);
   assert.match(home.pairStateCopy('error').title, /temporarily unavailable/);
   assert.equal(home.pairStateCopy('overdue', { canPublishNow: true }).title, 'This week’s pairing needs publishing');

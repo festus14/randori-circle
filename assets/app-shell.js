@@ -70,13 +70,22 @@ export function syncHomeTab(doc) {
 // never sees member tabs, even before scripts run, and the tabs go away as
 // soon as the member signs out.
 //
-// The body gets two attributes:
-//   data-nav:     "shown" for members, "hidden" for everyone else.
-//   data-surface: "public" on the landing and recovery pages; "solo" when a
-//                 visitor opens the code view (/?view=code), which shows a
-//                 sign-in / request-an-invite prompt; "app" otherwise.
+// The body gets three attributes:
+//   data-nav:        "shown" for members, "hidden" for everyone else.
+//   data-surface:    "public" on the landing and recovery pages; "solo" when a
+//                    visitor opens the code view (/?view=code), which shows a
+//                    sign-in / request-an-invite prompt; "app" otherwise.
+//   data-onboarding: "flow" while the setup stepper (#view-profile-setup in
+//                    its onboarding or guide mode) is showing, "none" otherwise.
+//                    The phone bottom bar hides for the stepper; Edit profile
+//                    (data-mode="edit") keeps it.
 export const PUBLIC_VIEW_IDS = Object.freeze(['view-landing', 'view-activation', 'view-password-reset', 'view-invite']);
 export const SOLO_VIEW_ID = 'view-code';
+export const SETUP_VIEW_ID = 'view-profile-setup';
+
+export function onboardingFlowState({ setupVisible = false, setupMode = '' } = {}) {
+  return setupVisible && setupMode !== 'edit' ? 'flow' : 'none';
+}
 
 // A returning member (this browser last saw a signed-in account) keeps the
 // navigation while their identity check is in flight, so they can move
@@ -127,6 +136,9 @@ export function syncPublicSurface(doc) {
   });
   if (body.dataset.surface !== state.surface) body.dataset.surface = state.surface;
   if (body.dataset.nav !== state.nav) body.dataset.nav = state.nav;
+  const setup = doc.getElementById(SETUP_VIEW_ID);
+  const onboarding = onboardingFlowState({ setupVisible: isDisplayed(setup), setupMode: setup?.dataset?.mode || '' });
+  if (body.dataset.onboarding !== onboarding) body.dataset.onboarding = onboarding;
   return state.nav === 'hidden';
 }
 
@@ -217,10 +229,13 @@ export function installShell({
   const sync = () => { syncPublicSurface(doc); return syncHomeTab(doc); };
   if (typeof MutationObserverImpl === 'function') {
     const navObserver = new MutationObserverImpl(sync);
-    for (const id of ['view-dashboard', 'view-profile-setup', SOLO_VIEW_ID, ...PUBLIC_VIEW_IDS]) {
+    for (const id of ['view-dashboard', SOLO_VIEW_ID, ...PUBLIC_VIEW_IDS]) {
       const view = doc.getElementById(id);
       if (view) navObserver.observe(view, { attributes: true, attributeFilter: ['style', 'hidden'] });
     }
+    // The setup view also switches between the stepper and Edit profile.
+    const setup = doc.getElementById(SETUP_VIEW_ID);
+    if (setup) navObserver.observe(setup, { attributes: true, attributeFilter: ['style', 'hidden', 'data-mode'] });
     for (const tab of doc.querySelectorAll('.tabs .tab')) {
       navObserver.observe(tab, { attributes: true, attributeFilter: ['class'] });
     }
