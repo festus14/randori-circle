@@ -297,7 +297,10 @@ deliberately enabling those optional providers. Sentry is environment-scoped
 runtime, `NODE_ENV=test` or CI, and previews stay silent unless
 `SENTRY_ENABLE_PREVIEW=true` is set for the Preview environment. The browser
 loader in `index.html` reports only from `https://randori-circle-self.vercel.app`;
-update its `PRODUCTION_ORIGIN` together with `APP_URL`. After saving, redeploy the
+update its `PRODUCTION_ORIGIN` together with `APP_URL`. The same origin check
+makes the browser logger send only signed-in, redacted `warn`/`error` entries
+to `/api/logs` (ID-72); they appear in the admin logs panel and are kept 30
+days. After saving, redeploy the
 latest production deployment (Deployments → ⋯ → Redeploy); Vercel reads
 variables only at build/deploy time.
 

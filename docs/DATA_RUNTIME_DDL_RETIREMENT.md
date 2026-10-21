@@ -35,6 +35,10 @@ and secondary-circle flows retain their narrower existing readiness guards.
 - Concurrent requests for one client and contract share one in-flight probe.
 - Diagnostic logging is best effort. If `app_logs` is unavailable, it falls
   back to process/Sentry reporting and does not attempt schema repair.
+- Client log ingest (`POST /api/logs`) stores only `warn` and `error` in
+  Vercel production and redacts every entry; `app_logs` rows older than 30
+  days are purged by the outbox cron
+  ([ID-72](IMPLEMENTED_DECISIONS.md#id-72-turn-on-production-client-error-logging-warnerror-signed-in-with-app_logs-retention)).
 
 ## Subsequent admin-init boundary
 

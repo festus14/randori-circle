@@ -28,7 +28,7 @@ material is `vars.APP_URL` and `secrets.CRON_SECRET`, which it uses to read
 `/api/cron/outbox-health` (ID-67).
 
 It also pins the live `execution-smoke` workflow and its assessor
-(`scripts/github-execution-smoke.mjs`) by digest (ID-72, issue #249). The gate
+(`scripts/github-execution-smoke.mjs`) by digest (ID-74, issue #249). The gate
 requires exactly three triggers: `deployment_status`, one daily schedule, and
 `workflow_dispatch`. It rejects any `pull_request` or `pull_request_target`
 trigger. Deployment runs must be limited to successful `Production`

@@ -28,6 +28,7 @@ import {
   secondaryScheduleIdentity,
 } from './_secondary-schedule.js';
 import { scheduleNotificationEvents } from './_schedule-email.js';
+import { clientLogLevelAccepted, redactLogRoute, redactLogText, redactLogValue } from './_client-log-policy.js';
 import { deliverCommittedOutboxEvents, outboxEventsFromStatements } from './_outbox-immediate.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, messageInsertStatement, messageLimitStateStatement, MessageDataError, MessageInputError, messageReadStatement, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
@@ -726,25 +727,31 @@ async function handleLogs(req,res){
     const allowedLevels = new Set(['info','warn','error','success','debug']);
     let inserted=0;
     for(const entry of batch.slice(0,20)){ // cap 20 per request
+      if(!entry||typeof entry!=='object') continue;
       let lvl = String(entry.level||'info').toLowerCase();
       if(!allowedLevels.has(lvl)) lvl='info';
+      // ID-72: Vercel production stores client warn/error only. The browser
+      // already keeps the other levels local there; this covers any client.
+      if(!clientLogLevelAccepted(lvl)) continue;
       const requestedSource = String(entry.source||'client').slice(0,20);
       // The runner namespace is a server-side coordination boundary. Never let
       // browser telemetry create rows that can be mistaken for leases or quota
       // records, even when an authenticated client supplies those names.
       let src = requestedSource==='runner' ? 'client' : requestedSource;
-      let ev = entry.event ? String(entry.event).slice(0,80) : null;
+      let ev = entry.event ? redactLogText(entry.event).slice(0,80) : null;
       if(ev && (ev==='execute_attempt' || ev.startsWith('execute_lease_'))){
         ev=`client_${ev}`.slice(0,80);
       }
-      let msg = String(entry.message||'').slice(0,2000);
+      // ID-72: the same redaction as the browser logger (URL fragments,
+      // secret-looking pairs, bearer tokens, JWTs, emails) as a backstop.
+      let msg = redactLogText(entry.message||'').slice(0,2000);
       if(!msg) continue;
       let metaStr=null;
       try{
-        if(entry.meta!=null) metaStr = typeof entry.meta==='string' ? String(entry.meta).slice(0,8000) : JSON.stringify(entry.meta).slice(0,8000);
-        else if(entry.meta_json) metaStr = String(entry.meta_json).slice(0,8000);
+        if(entry.meta!=null) metaStr = typeof entry.meta==='string' ? redactLogText(entry.meta).slice(0,8000) : JSON.stringify(redactLogValue(entry.meta)).slice(0,8000);
+        else if(entry.meta_json) metaStr = redactLogText(entry.meta_json).slice(0,8000);
       }catch{}
-      let route = entry.route ? String(entry.route).slice(0,300) : null;
+      let route = entry.route ? redactLogRoute(entry.route).slice(0,300) : null;
       if(!route){
         try{ route = (req.url||'').toString().slice(0,300); }catch{}
       }

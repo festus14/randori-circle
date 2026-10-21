@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { mockApi, resetClientState } from './helpers';
 
 test('the checked-out app boots without JavaScript exceptions and its tabs navigate', async ({ page }) => {
@@ -94,4 +94,94 @@ test('browser tests never load the production telemetry SDK', async ({ page }) =
   });
   // The loader is requested once the page is idle (after load), not while it parses.
   await expect.poll(() => telemetryFailures).toEqual(['net::ERR_NAME_NOT_RESOLVED']);
+});
+
+// ID-72: the client logger installs everywhere, including production. This
+// runs the checked-out app on the production origin (requests to it are
+// served from the local test server) so the production send policy is used.
+const PRODUCTION_ORIGIN = 'https://randori-circle-self.vercel.app';
+type ClientLogEntry = { level: string; event: string; message: string; route: string; meta?: Record<string, unknown> };
+type LoggerWindow = typeof window & {
+  _randori_log?: {
+    log?: unknown;
+    queue: ClientLogEntry[];
+    flush(): void;
+  } & Record<'info' | 'warn' | 'error' | 'success' | 'debug', (event: string, message: string) => void>;
+  _randori_auth?: { me?: { id?: number } | null; identitySettled?: boolean };
+};
+
+async function serveProductionOrigin(page: Page, baseURL: string) {
+  await page.route(`${PRODUCTION_ORIGIN}/**`, async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.startsWith('/api/')) return route.fallback();
+    const response = await page.request.get(new URL(url.pathname + url.search, baseURL).href);
+    return route.fulfill({ response });
+  });
+}
+
+function sentEntries(bodies: unknown[]): ClientLogEntry[] {
+  return bodies.flatMap(body => ((body as { logs?: ClientLogEntry[] }).logs || [body as ClientLogEntry]));
+}
+
+test('on the production origin the client logger sends nothing for visitors and only redacted warn/error for members', async ({ page, baseURL }) => {
+  const member = { id: 1, email: 'member@example.test', name: 'Member', display_name: 'Member', is_admin: false };
+  const logBodies: unknown[] = [];
+  let signedIn = false;
+  await mockApi(page, {
+    '/api/auth/me': () => signedIn ? { ok: true, user: member } : { _status: 401, ok: false, error: 'authentication required' },
+    '/api/profile': { ok: true, user: member },
+    '/api/logs': request => {
+      logBodies.push(request.postDataJSON());
+      return { ok: true, inserted: 1 };
+    },
+  });
+  await serveProductionOrigin(page, String(baseURL));
+  await resetClientState(page);
+
+  // A visitor: the real logger is installed (no production placeholder), but
+  // nothing is queued or sent while signed out.
+  await page.goto(`${PRODUCTION_ORIGIN}/`, { waitUntil: 'domcontentloaded' });
+  await expect.poll(() => page.evaluate(() => (window as LoggerWindow)._randori_auth?.identitySettled)).toBe(true);
+  expect(await page.evaluate(() => (window as typeof window & { __randoriSentry?: unknown }).__randoriSentry)).toEqual({
+    environment: 'production', enabled: false, productionOrigin: PRODUCTION_ORIGIN,
+  });
+  expect(await page.evaluate(() => typeof (window as LoggerWindow)._randori_log?.log)).toBe('function');
+  await page.evaluate(() => {
+    const log = (window as LoggerWindow)._randori_log!;
+    log.error('e2e_probe', 'visitor error');
+    log.flush();
+  });
+  expect(await page.evaluate(() => (window as LoggerWindow)._randori_log!.queue.length)).toBe(0);
+  await page.waitForTimeout(500);
+  expect(logBodies).toEqual([]);
+
+  // A member: info, success and debug stay in the browser; warn and error are
+  // sent, redacted, with the route but never the fragment.
+  signedIn = true;
+  // The session cookie lets the member fixtures answer, keeping boot noise low.
+  await page.context().addCookies([{ name: 'randori_session', value: 'local-e2e-session', url: PRODUCTION_ORIGIN, httpOnly: true, sameSite: 'Lax' }]);
+  const secret = 'S'.repeat(43);
+  await page.goto(`${PRODUCTION_ORIGIN}/?view=history#e2e-fragment-${secret}`, { waitUntil: 'domcontentloaded' });
+  await expect.poll(() => page.evaluate(() => (window as LoggerWindow)._randori_auth?.me?.id)).toBe(1);
+  const route = await page.evaluate(secretValue => {
+    const log = (window as LoggerWindow)._randori_log!;
+    log.info('e2e_probe', 'info stays in the browser');
+    log.success('e2e_probe', 'success stays in the browser');
+    log.debug('e2e_probe', 'debug stays in the browser');
+    log.warn('e2e_probe', 'warn for member@example.test at /reset?token=abc123');
+    log.error('e2e_probe', `error at ${location.origin}/invite#invite=${secretValue}`);
+    log.flush();
+    return location.pathname + location.search;
+  }, secret);
+  await expect.poll(() => sentEntries(logBodies).filter(entry => entry.event === 'e2e_probe').map(entry => entry.level)).toEqual(['warn', 'error']);
+  const [warn, error] = sentEntries(logBodies).filter(entry => entry.event === 'e2e_probe');
+  expect(warn.message).toBe('warn for [email] at /reset?token=[redacted]');
+  expect(error.message).toBe(`error at ${PRODUCTION_ORIGIN}/invite`);
+  expect(warn.route).toBe(route);
+  expect(warn.route).not.toContain('#');
+  expect(warn.meta).not.toHaveProperty('href');
+  const wire = JSON.stringify(logBodies);
+  expect(wire).not.toContain(secret);
+  expect(wire).not.toContain('member@example.test');
+  expect(wire).not.toContain('e2e-fragment');
 });

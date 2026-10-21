@@ -2570,6 +2570,71 @@ test('client telemetry cannot forge runner leases or execution quota rows', asyn
   assert.equal(quotaInsert.args[2],'client_execute_attempt');
 });
 
+test('production client log ingest keeps warn/error, redacts entries, and reads stay admin-only (ID-72)', async () => {
+  const secret='S'.repeat(43);
+  const post=body=>invoke(dataHandler,{
+    method:'POST',url:'/api/logs',query:{endpoint:'logs'},headers:{'x-test-auth':'user'},body,
+  });
+  process.env.VERCEL_ENV='production';
+  const ingest=await post({logs:[
+    {level:'info',event:'probe',message:'info stays in the browser in production'},
+    {level:'success',event:'probe',message:'success too'},
+    {level:'debug',event:'probe',message:'debug too'},
+    {level:'bogus',event:'probe',message:'unknown levels become info'},
+    null,
+    'not an entry',
+    {level:'warn',event:'probe',message:`warn for jane@example.test at /reset#token=${secret}`,
+      route:`/invite?token=abc#invite=${secret}`,meta:{href:`https://x.test/#invite=${secret}`,inviteToken:secret}},
+    {level:'error',event:'probe',message:'error with a string meta',meta:'Authorization: Bearer abc.def'},
+    {level:'error',event:'probe',message:'error with meta_json',meta_json:'{"token":"abc"}'},
+  ]});
+  assert.equal(ingest.status,200);
+  assert.equal(ingest.body.inserted,3);
+  const inserts=executed.filter(call=>call.sql.includes('INSERT INTO app_logs'));
+  assert.deepEqual(inserts.map(call=>call.args[0]),['warn','error','error']);
+  const [warn,stringMeta,jsonMeta]=inserts;
+  assert.equal(warn.args[1],'client');
+  assert.equal(warn.args[3],'warn for [email] at /reset');
+  assert.deepEqual(JSON.parse(warn.args[4]),{href:'https://x.test/',inviteToken:'[redacted]'});
+  assert.equal(warn.args[5],2);
+  assert.equal(warn.args[6],'/invite?token=[redacted]');
+  assert.equal(stringMeta.args[4],'Authorization: Bearer [redacted]');
+  assert.equal(jsonMeta.args[4],'{"token":"[redacted]"}');
+  assert.equal(JSON.stringify(inserts).includes(secret),false);
+  assert.equal(JSON.stringify(inserts).includes('jane@example.test'),false);
+
+  process.env.VERCEL_ENV='preview';
+  executed.length=0;
+  const preview=await post({level:'info',event:'probe',message:'previews keep every level'});
+  assert.equal(preview.body.inserted,1);
+
+  executeHandler=(sql,args)=>{
+    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=?')){
+      return rows([args[0]===1
+        ?{id:1,email:'admin@example.test',is_admin:1}
+        :{id:2,email:'user@example.test',is_admin:0}]);
+    }
+    if(sql.includes('FROM app_logs')&&sql.includes('ORDER BY id DESC')) return rows([{
+      id:9,level:'error',source:'client',event:'probe',message:'client error',meta_json:'{"route":"/"}',
+      user_id:2,route:'/',ua:'agent',ip:'',created_at:'2026-10-20 12:00:00',
+    }]);
+    return rows();
+  };
+  const read=headers=>invoke(dataHandler,{
+    method:'GET',url:'/api/logs?limit=30&level=error&source=client',
+    query:{endpoint:'logs',limit:'30',level:'error',source:'client'},headers,
+  });
+  assert.equal((await read({})).status,401);
+  assert.equal((await read({'x-test-auth':'user'})).status,403);
+  executed.length=0;
+  const admin=await read({'x-test-auth':'admin'});
+  assert.equal(admin.status,200);
+  assert.deepEqual(admin.body.logs.map(log=>[log.source,log.level,log.message,log.meta]),[['client','error','client error',{route:'/'}]]);
+  const select=executed.find(call=>call.sql.includes('FROM app_logs')&&call.sql.includes('ORDER BY id DESC'));
+  assert.match(select.sql,/WHERE level=\? AND source=\?/);
+  assert.deepEqual(select.args,['error','client',30]);
+});
+
 test('declared and streamed oversized Piston responses fail closed before run persistence', async () => {
   const question=listPublicExercises()[0];
   executeHandler=sql=>sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')?rows([{id:204}]):rows();
