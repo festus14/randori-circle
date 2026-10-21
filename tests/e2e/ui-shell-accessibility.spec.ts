@@ -649,8 +649,9 @@ test('reminder type badges follow only the confirmed preference and keep it when
         return { ok: true, prefs: { user_id: member.id, email_enabled: true },
           reminders: { availability_cutoff: true, agree_time: true, session_soon: false, controlled_by: 'email_enabled' } };
       }
+      const emailEnabled = JSON.parse(request.postData() || '{}').email_enabled === true;
       return saveOk
-        ? { ok: true, prefs: { user_id: member.id, email_enabled: false, sms_enabled: false, phone: null, email: null } }
+        ? { ok: true, prefs: { user_id: member.id, email_enabled: emailEnabled, sms_enabled: false, phone: null, email: null } }
         : { _status: 503, error: 'notification preferences unavailable' };
     },
   });
@@ -672,10 +673,15 @@ test('reminder type badges follow only the confirmed preference and keep it when
   await expect(badges).toHaveText(['On', 'On']);
 
   saveOk = true;
+  await expect(reminder).toBeEnabled();
   await reminder.check();
-  await reminder.uncheck();
   await expect(status).toHaveAttribute('data-state', 'saved');
+  await expect(status).toContainText('the reminders below');
+  await expect(badges).toHaveText(['On', 'On']);
+  await expect(reminder).toBeEnabled();
+  await reminder.uncheck();
   await expect(status).toContainText('Email reminders are off');
+  await expect(status).toHaveAttribute('data-state', 'saved');
   await expect(badges).toHaveText(['Off', 'Off']);
 });
 
