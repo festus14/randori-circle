@@ -81,13 +81,15 @@ test('fragment invitation is scrubbed before third-party code and prepared exact
   await expect.poll(() => prepareBodies.length).toBe(1);
   expect(prepareBodies).toEqual([{ token }]);
   // Telemetry loads once the page is idle, well after the scrub; poll until
-  // the substituted third-party script has run.
+  // the substituted third-party script has run. By then the app has already
+  // taken (and removed) the preparation handle while parsing, so third-party
+  // code cannot reach it at all.
   await expect.poll(() => page.evaluate(() => (window as typeof window & {
     __thirdPartyInviteProbe?: { location: string; legacyAccessor: string; preparationType: string; leaked: boolean };
   }).__thirdPartyInviteProbe), { timeout: 12_000 }).toEqual({
     location: expect.not.stringContaining(token),
     legacyAccessor: 'undefined',
-    preparationType: 'object',
+    preparationType: 'undefined',
     leaked: false,
   });
   expect(await page.locator('html').textContent()).not.toContain(token);

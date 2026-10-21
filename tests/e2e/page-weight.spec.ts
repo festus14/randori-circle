@@ -9,23 +9,29 @@ import { mockApi, resetClientState } from './helpers';
 const EDITOR_ASSET = /cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net|unpkg\.com|\/assets\/crdt-editor\.js/;
 const TELEMETRY_HOST = /sentry-cdn\.com|sentry\.io/;
 
-type Entry = { url: string; type: string; bytes: number; failed: boolean; at: number };
+type Entry = { url: string; type: string; bytes: number; failed: boolean; at: number; beforeLoad: boolean };
 
+// Each request is stamped with whether it started before the page's load
+// event (CDP delivers both events in order), and sized when it settles.
 function recordRequests(page: Page) {
   const entries: Entry[] = [];
   const started = Date.now();
+  let loaded = false;
+  page.on('load', () => { loaded = true; });
+  const pending = new Map<object, Entry>();
+  page.on('request', request => {
+    const entry = { url: request.url(), type: request.resourceType(), bytes: 0, failed: false, at: Date.now() - started, beforeLoad: !loaded };
+    pending.set(request, entry);
+    entries.push(entry);
+  });
   page.on('requestfinished', async request => {
+    const entry = pending.get(request);
     const sizes = await request.sizes().catch(() => null);
-    entries.push({
-      url: request.url(),
-      type: request.resourceType(),
-      bytes: sizes ? sizes.responseBodySize + sizes.responseHeadersSize : 0,
-      failed: false,
-      at: Date.now() - started,
-    });
+    if (entry && sizes) entry.bytes = sizes.responseBodySize + sizes.responseHeadersSize;
   });
   page.on('requestfailed', request => {
-    entries.push({ url: request.url(), type: request.resourceType(), bytes: 0, failed: true, at: Date.now() - started });
+    const entry = pending.get(request);
+    if (entry) entry.failed = true;
   });
   return entries;
 }
@@ -52,7 +58,7 @@ test('an anonymous landing page loads no editor, CRDT or telemetry code before i
   const entries = recordRequests(page);
   await page.goto('/', { waitUntil: 'load' });
   await expect(page.locator('#view-landing')).toBeVisible();
-  const atLoad = summary(entries, String(baseURL));
+  const atLoad = summary(entries.filter(entry => entry.beforeLoad), String(baseURL));
   // Long enough for the old DOMContentLoaded + 450 ms Monaco start and an
   // idle-time Sentry load.
   await page.waitForTimeout(5_000);
