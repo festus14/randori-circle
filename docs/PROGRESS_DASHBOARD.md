@@ -1,7 +1,7 @@
 # Personal progress dashboard
 
 Status: implemented behind `PROGRESS_DASHBOARD_ENABLED` (default off), no
-migration. Issue #293, decision ID-72. The visual design is provisional
+migration. Issue #293, decision ID-73. The visual design is provisional
 (`needs-design`).
 
 ## Product contract

@@ -1,4 +1,4 @@
-// Personal progress dashboard (issue #293, decision ID-72).
+// Personal progress dashboard (issue #293, decision ID-73).
 //
 // Every number is computed per request from the signed-in member's own
 // existing records: their non-demo primary pairings with the completion

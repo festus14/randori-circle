@@ -1,4 +1,4 @@
-// Personal progress in History (issue #293, ID-72), behind
+// Personal progress in History (issue #293, ID-73), behind
 // PROGRESS_DASHBOARD_ENABLED. The visual design is provisional (needs-design).
 //
 // index.html imports this module on demand, only after /api/history says the

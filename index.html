@@ -179,12 +179,9 @@ try{
     try{ return enabled&&String(window.location.origin)===PRODUCTION_ORIGIN?event:null; }catch(e){ return null; }
   }
   window.__randoriSentry=Object.freeze({environment:environment,enabled:enabled,productionOrigin:PRODUCTION_ORIGIN});
-  // When the loader ran synchronously here, the augment step created this
-  // placeholder in production before the client logger script ran, and the
-  // logger skips installing when window._randori_log exists. Keep that
-  // behavior now that the loader runs later: turning the client logger on in
-  // production (more /api/logs writes) is a separate decision.
-  if(enabled&&!window._randori_log) window._randori_log={_lastEvent:''};
+  // ID-72: no window._randori_log placeholder here any more. It used to stop
+  // the client logger from installing in production; the logger now installs
+  // everywhere and applies its own production send policy.
   window.sentryOnLoad=function(){
     try{
       window.Sentry.init({
@@ -211,13 +208,33 @@ try{
   function keep(event){
     if(early.length<20) early.push(event&&event.type==='unhandledrejection'?event.reason:(event&&(event.error||event.message)));
   }
+  // Forward logger.log() errors and warnings to Sentry. Patches the real
+  // logger once, whichever runs first: this step calls it when Sentry is
+  // ready, and the logger script calls window.__randoriPatchLogger after it
+  // installs. A missing or placeholder logger (no log function) is skipped.
+  function patchLogger(){
+    var logger=window._randori_log;
+    if(!logger||typeof logger.log!=='function'||logger._sentryPatched) return;
+    var base=logger.log.bind(logger);
+    var redact=typeof logger._redact==='function'?logger._redact:String;
+    logger.log=function(level,eventName,msg,meta){
+      try{ base(level,eventName,msg,meta); }catch{}
+      try{
+        logger._lastEvent=eventName||'';
+        if(level==='error' && window.Sentry){
+          Sentry.captureMessage(String(redact(msg)).slice(0,500), {level:'error', tags:{event:eventName||'unknown', source:'client'}});
+        } else if(level==='warn' && window.Sentry){
+          Sentry.captureMessage(String(redact(msg)).slice(0,500), {level:'warning', tags:{event:eventName||'unknown'}});
+        }
+      }catch{}
+    };
+    logger._sentryPatched=true;
+  }
   function augment(){
     // Augment the scoped SDK with Randori context + logger forwarding (production origin only)
     try{
       if(window.Sentry&&window.__randoriSentry&&window.__randoriSentry.enabled){
         window._sentryReady=true;
-        // expose last event for tagging
-        if(!window._randori_log) window._randori_log={_lastEvent:''};
         // attach beforeSend to add route/event tags if not already set by loader
         try{
           Sentry.addEventProcessor(function(event){
@@ -228,23 +245,8 @@ try{
             }catch{} return event;
           });
         }catch{}
-        // forward logger errors to Sentry (keeps our table as source of truth)
-        var origLog = window._randori_log && window._randori_log.log;
-        if(window._randori_log && typeof window._randori_log.log==='function' && !window._randori_log._sentryPatched){
-          var base = window._randori_log.log.bind(window._randori_log);
-          window._randori_log.log = function(level,eventName,msg,meta){
-            try{ base(level,eventName,msg,meta); }catch{}
-            try{
-              window._randori_log._lastEvent = eventName||'';
-              if(level==='error' && window.Sentry){
-                Sentry.captureMessage(String(msg).slice(0,500), {level:'error', tags:{event:eventName||'unknown', source:'client'}});
-              } else if(level==='warn' && window.Sentry){
-                Sentry.captureMessage(String(msg).slice(0,500), {level:'warning', tags:{event:eventName||'unknown'}});
-              }
-            }catch{}
-          };
-          window._randori_log._sentryPatched=true;
-        }
+        window.__randoriPatchLogger=patchLogger;
+        patchLogger();
         early.splice(0).forEach(function(error){
           try{
             if(error instanceof Error) Sentry.captureException(error,{tags:{event:'early_error'}});
@@ -1691,22 +1693,101 @@ a.btn{text-decoration:none}
 }
 </style>
 
-<script>
-/* Randori Logger — client batcher, flushed to /api/logs. Sentry/Better Stack ready */
+<script id="randoriClientLogger">
+/* Randori client logger (ID-72). Every entry is redacted first, then mirrored
+   to the console and added as a Sentry breadcrumb. An entry is queued for
+   POST /api/logs only when all of these hold:
+   - on the production origin it is warn or error (info, success and debug
+     stay local); previews and local runs queue every level;
+   - it belongs to a signed-in member: nothing is queued while signed out, the
+     queue is flushed only while its identity is signed in, and signing out
+     or switching user clears it. Entries from before /api/auth/me settles
+     belong to whoever it settles as;
+   - the same level+event+message was not queued in the last minute, and
+     fewer than 50 entries were queued on this page.
+   The logger creates no Sentry events itself: the SDK reports uncaught errors
+   and call sites capture their own, so Sentry volume is unchanged. */
 (function(){
-  if(window._randori_log) return;
+  const existing=window._randori_log;
+  if(existing&&typeof existing.log==='function') return;
+  const LEVELS=['info','warn','error','success','debug'];
+  const PRODUCTION_LEVELS=['warn','error'];
+  // The per-page cap also bounds the queue while nobody is signed in yet.
+  const MAX_QUEUED_PER_PAGE=50, BATCH_SIZE=20, DEDUPE_MS=60000;
   const q=[];
-  let flushing=false, lastFlush=0;
-  let _lastEvent=null;
-  function getRoute(){ try{ return location.pathname + location.search; }catch{ return '/'; } }
-  function baseMeta(extra){
-    const m={};
-    try{ m.ua=navigator.userAgent.slice(0,300); }catch{}
-    try{ m.href=location.href.slice(0,500); }catch{}
-    try{ m.route=getRoute(); }catch{}
-    try{ m.ts=new Date().toISOString(); }catch{}
-    if(extra && typeof extra==='object'){ for(const k in extra) if(!(k in m)) m[k]=extra[k]; }
-    return m;
+  const queuedAt=new Map();
+  let flushing=false, lastFlush=0, queuedThisPage=0, owner=null;
+  let _lastEvent=existing&&existing._lastEvent||null;
+
+  // Redaction. Keep these patterns identical to api/_client-log-policy.js;
+  // tests/unit/client-logger.test.mjs runs both over one corpus.
+  const TOKEN=/[^\s"'<>()\\]+/g;
+  const LINE_COL=/(?::\d+){1,2}$/;
+  const SECRET_PAIR=/(^|[^a-z0-9_])((?:[a-z0-9]+[_-])?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|auth|authorization|cookie|otp|credential)s?)=([^\s&#"'<>,;()\\]+)/gi;
+  const SECRET_JSON=/("(?:[a-z0-9]+[_-])?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|auth|authorization|cookie|otp|credential)s?"\s*:\s*)"(?:[^"\\]|\\.)*"/gi;
+  const AUTH_SCHEME=/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
+  const JWT=/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g;
+  const EMAIL=/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,63}/g;
+  const SECRET_KEY=/token|secret|passw|pwd|authorization|cookie|credential|signature|invite|session|^(?:code|key|sig|auth|otp)$/i;
+  // A fragment is dropped from any token with a '/' before its '#', keeping a
+  // trailing stack-frame :line:col.
+  function stripFragment(token){
+    const hash=token.indexOf('#');
+    if(hash<1||token.lastIndexOf('/',hash)===-1) return token;
+    const lineCol=token.slice(hash).match(LINE_COL);
+    return token.slice(0,hash)+(lineCol?lineCol[0]:'');
+  }
+  function redactText(value){
+    return String(value==null?'':value).slice(0,8000)
+      .replace(TOKEN,stripFragment)
+      .replace(SECRET_PAIR,'$1$2=[redacted]')
+      .replace(SECRET_JSON,'$1"[redacted]"')
+      .replace(AUTH_SCHEME,'$1 [redacted]')
+      .replace(JWT,'[jwt]')
+      .replace(EMAIL,'[email]');
+  }
+  function redactValue(value,depth){
+    if(typeof value==='string') return redactText(value);
+    if(value==null||typeof value==='number'||typeof value==='boolean') return value;
+    if(value instanceof Error) return redactText(value.stack||String(value));
+    if(typeof value!=='object') return redactText(value);
+    if(depth>=4) return '[truncated]';
+    if(Array.isArray(value)) return value.slice(0,20).map(item=>redactValue(item,depth+1));
+    const copy={};
+    for(const key of Object.keys(value).slice(0,30)) copy[key]=SECRET_KEY.test(key)?'[redacted]':redactValue(value[key],depth+1);
+    return copy;
+  }
+  // Pathname and search only: the fragment never leaves the page.
+  function getRoute(){ try{ return redactText(location.pathname+location.search).slice(0,300); }catch{ return '/'; } }
+  function production(){ try{ return window.__randoriSentry.environment==='production'; }catch{ return false; } }
+  // 'u:<id>' signed in, 'anon' signed out, null while /api/auth/me is unsettled.
+  function identity(){
+    try{
+      const auth=window._randori_auth;
+      const me=auth&&auth.me;
+      if(me){ const id=me.id!=null?me.id:me.uid; return id!=null&&id!==''?'u:'+id:null; }
+      return auth&&auth.identitySettled===true?'anon':null;
+    }catch{ return null; }
+  }
+  function syncOwner(current){
+    if(current===null||current===owner) return;
+    // A first identity adopts what was queued while it was unknown; any
+    // later change, and signing out, drops the queue.
+    if(owner!==null||current==='anon') q.length=0;
+    owner=current;
+  }
+  function admit(entry){
+    if(production()&&PRODUCTION_LEVELS.indexOf(entry.level)===-1) return false;
+    syncOwner(identity());
+    if(owner==='anon') return false;
+    const now=Date.now();
+    const key=entry.level+'|'+entry.event+'|'+entry.message;
+    if(queuedAt.has(key)&&now-queuedAt.get(key)<DEDUPE_MS) return false;
+    if(queuedThisPage>=MAX_QUEUED_PER_PAGE) return false;
+    queuedAt.set(key,now);
+    queuedThisPage+=1;
+    q.push(entry);
+    return true;
   }
   function consoleMirror(level, msg){
     try{
@@ -1717,79 +1798,61 @@ a.btn{text-decoration:none}
       else console.log(pre, msg);
     }catch{}
   }
-  function forwardToSentry(level, event, message, meta){
-    try{
-      if(!window.Sentry || !window._sentryReady) return;
-      _lastEvent=event||null;
-      const tags={event: event||'app', source:'client', route:getRoute()};
-      const extra=meta||{};
-      if(level==='error'){
-        if(extra && extra.stack && typeof extra.stack==='string'){
-          // create synthetic error
-          const err=new Error(String(message).slice(0,500));
-          err.name=String(event||'ClientError');
-          Sentry.captureException(err, {tags, extra});
-        }else{
-          Sentry.captureMessage(String(message).slice(0,800), {level:'error', tags, extra});
-        }
-      }else if(level==='warn'){
-        Sentry.captureMessage(String(message).slice(0,800), {level:'warning', tags, extra});
-      }
-    }catch(e){ try{ console.warn('sentry forward fail', e.message);}catch{} }
-  }
-  function enqueue(level, event, message, meta){
-    const lvl=(level||'info').toLowerCase();
-    const allowed=['info','warn','error','success','debug'];
-    const lv=allowed.includes(lvl)?lvl:'info';
-    const entry={level:lv, source:'client', event: event? String(event).slice(0,80):'app', message: String(message||'').slice(0,2000), meta: meta? baseMeta(typeof meta==='object'? meta:{extra:meta}): baseMeta(), route:getRoute(), ts: new Date().toISOString()};
-    q.push(entry);
-    _lastEvent=event||null;
-    if(q.length>100) q.shift();
-    consoleMirror(lv, (event? '['+event+'] ':'')+message);
-    // Sentry forward (non-blocking)
-    forwardToSentry(lv, event, message, meta);
-    // immediate flush on error
-    if(lv==='error' || event==='monaco_load_fail' || event==='js_exception' || event==='unhandled_rejection'){
-      setTimeout(flush, 200);
-    } else if(Date.now()-lastFlush>3000 && q.length>=3){
-      setTimeout(flush, 400);
-    }
-    // breadcrumbs
+  function breadcrumb(level, event, message, route){
     try{
       if(window.Sentry && window.Sentry.addBreadcrumb){
-        Sentry.addBreadcrumb({category:'randori', message: String(event||'')+': '+String(message).slice(0,200), level: lv==='error'?'error': (lv==='warn'?'warning':'info'), data:{event, route:getRoute()}});
+        Sentry.addBreadcrumb({category:'randori', message: event+': '+message.slice(0,200), level: level==='error'?'error': (level==='warn'?'warning':'info'), data:{event, route}});
       }
     }catch{}
+  }
+  function enqueue(level, event, message, meta){
+    const lvl=String(level||'info').toLowerCase();
+    const lv=LEVELS.indexOf(lvl)!==-1?lvl:'info';
+    const ev=event?redactText(event).slice(0,80):'app';
+    const msg=redactText(message).slice(0,2000);
+    const route=getRoute();
+    const ts=new Date().toISOString();
+    const extra=meta==null?{}:(typeof meta==='object'&&!Array.isArray(meta)&&!(meta instanceof Error)?meta:{extra:meta});
+    const entry={level:lv, source:'client', event:ev, message:msg, meta:Object.assign(redactValue(extra,0),{route,ts}), route, ts};
+    _lastEvent=event||null;
+    consoleMirror(lv, (event? '['+ev+'] ':'')+msg);
+    breadcrumb(lv, ev, msg, route);
+    if(admit(entry)){
+      if(lv==='error') setTimeout(flush, 200);
+      else if(Date.now()-lastFlush>3000 && q.length>=3) setTimeout(flush, 400);
+    }
     return entry;
   }
-  async function flush(){
+  function flush(){
     if(flushing||!q.length) return;
+    const current=identity();
+    syncOwner(current);
+    // Only to the identity that owns the queue, and only while signed in.
+    if(!current||current==='anon'||!q.length) return;
     flushing=true; lastFlush=Date.now();
-    const batch=q.splice(0,20);
+    const batch=q.splice(0,BATCH_SIZE);
     try{
-      const headers={'content-type':'application/json'};
       // fire-and-forget
-      fetch('/api/logs',{method:'POST', credentials:'same-origin', headers, body: JSON.stringify(batch.length===1? batch[0]: {logs: batch})}).catch(()=>{});
+      fetch('/api/logs',{method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify(batch.length===1? batch[0]: {logs: batch})}).catch(()=>{});
     }catch{}
     flushing=false;
     if(q.length) setTimeout(flush, 1500);
   }
   // interval flush
   setInterval(flush, 5000);
-  // global error handlers
+  // Global handlers queue uncaught errors for /api/logs. The Sentry SDK (and
+  // the early-error buffer before it loads) reports them to Sentry.
   window.addEventListener('error', (e)=>{
     try{
-      const msg = (e.message||'js_exception').slice(0,800) + ' @ ' + (e.filename||'')+':'+(e.lineno||'')+':'+(e.colno||'');
+      const msg = String(e.message||'js_exception').slice(0,800) + ' @ ' + (e.filename||'')+':'+(e.lineno||'')+':'+(e.colno||'');
       enqueue('error','js_exception', msg, {stack: e.error && e.error.stack ? String(e.error.stack).slice(0,2000) : '', filename:e.filename});
-      try{ if(window.Sentry && e.error) Sentry.captureException(e.error, {tags:{event:'js_exception', filename:e.filename}}); else if(window.Sentry) Sentry.captureMessage(msg,{level:'error',tags:{event:'js_exception'}}); }catch{}
     }catch{}
   });
   window.addEventListener('unhandledrejection', (e)=>{
     try{
       const reason = e.reason || {};
-      const msg = (reason.message||String(reason)||'unhandled_rejection').slice(0,800);
+      const msg = String(reason.message||String(reason)||'unhandled_rejection').slice(0,800);
       enqueue('error','unhandled_rejection', msg, {stack: reason.stack? String(reason.stack).slice(0,2000):''});
-      try{ if(window.Sentry){ if(reason && reason.stack) Sentry.captureException(reason, {tags:{event:'unhandled_rejection'}}); else Sentry.captureMessage(msg,{level:'error',tags:{event:'unhandled_rejection'}}); } }catch{}
     }catch{}
   });
   // safe wrapper util exposed globally
@@ -1802,18 +1865,22 @@ a.btn{text-decoration:none}
       }catch{}
     }
   }
+  function record(level){
+    return (event,msg,meta)=>{ try{ _lastEvent=event; window._randori_log._lastEvent=event; }catch{} return enqueue(level,event,msg,meta); };
+  }
 
   window._randori_log={
     _q:q,
-    _lastEvent:null,
-    log:(level,event,msg,meta)=>{ try{_lastEvent=event;}catch{}; try{ window._randori_log._lastEvent=event; }catch{}; return enqueue(level,event,msg,meta); },
-    info:(event,msg,meta)=>{ try{_lastEvent=event; window._randori_log._lastEvent=event;}catch{}; return enqueue('info',event,msg,meta); },
-    warn:(event,msg,meta)=>{ try{_lastEvent=event; window._randori_log._lastEvent=event;}catch{}; return enqueue('warn',event,msg,meta); },
-    error:(event,msg,meta)=>{ try{_lastEvent=event; window._randori_log._lastEvent=event;}catch{}; return enqueue('error',event,msg,meta); },
-    success:(event,msg,meta)=>{ try{_lastEvent=event; window._randori_log._lastEvent=event;}catch{}; return enqueue('success',event,msg,meta); },
-    debug:(event,msg,meta)=>{ try{_lastEvent=event; window._randori_log._lastEvent=event;}catch{}; return enqueue('debug',event,msg,meta); },
+    _lastEvent:_lastEvent,
+    log:(level,event,msg,meta)=>{ try{ _lastEvent=event; window._randori_log._lastEvent=event; }catch{} return enqueue(level,event,msg,meta); },
+    info:record('info'),
+    warn:record('warn'),
+    error:record('error'),
+    success:record('success'),
+    debug:record('debug'),
     flush,
     safe,
+    _redact:redactText,
     get queue(){ return q.slice(); },
     get _lastEventVal(){ return _lastEvent; }
   };
@@ -1821,6 +1888,8 @@ a.btn{text-decoration:none}
   try{ window._log=window._randori_log.log; }catch{}
   // expose safe globally for inline try-catch sugar
   try{ window._randori_safe=safe; }catch{}
+  // The Sentry augment step may already have run; let it patch this logger.
+  try{ if(typeof window.__randoriPatchLogger==='function') window.__randoriPatchLogger(); }catch{}
 })();
 </script>
 <script>
@@ -2190,7 +2259,7 @@ a.btn{text-decoration:none}
         </section>
         <details id="dashDiagnostics" class="home-diagnostics" hidden>
           <summary>Owner diagnostics</summary>
-          <div id="logsArea" class="home-logs" style="display:none"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:var(--font-mono); font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
+          <div id="logsArea" class="home-logs" style="display:none"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsSourceSel" class="select" aria-label="Log source" style="font-size:11px; padding:4px 8px"><option value="" selected>all sources</option><option value="client">client</option><option value="server">server</option></select><select id="logsLevelSel" class="select" aria-label="Log level" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:var(--font-mono); font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Client warn/error entries (signed-in members, redacted) and server logs, kept 30 days — auto every 20s, filter by source and level.</div></div>
         </details>
       </div>
     </section>
@@ -13715,6 +13784,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const area=document.getElementById('logsArea');
   const listEl=document.getElementById('logsList');
   const levelSel=document.getElementById('logsLevelSel');
+  const sourceSel=document.getElementById('logsSourceSel');
   const refreshBtn=document.getElementById('logsRefresh');
   const clearBtn=document.getElementById('logsClear');
   async function fetchLogs(){
@@ -13722,7 +13792,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!isAdmin()){ area.style.display='none'; return; }
     // Evaluate admin via me or try fetch — server will 403 if not admin; we hide quietly
     const lvl=levelSel? levelSel.value : '';
-    const qs = lvl? '?level='+encodeURIComponent(lvl)+'&limit=30' : '?limit=30';
+    const src=sourceSel? sourceSel.value : '';
+    const qs = '?limit=30'+(lvl? '&level='+encodeURIComponent(lvl) : '')+(src? '&source='+encodeURIComponent(src) : '');
     try{
       const r=await fetch('/api/logs'+qs,{credentials:'same-origin'});
       const j=await r.json().catch(()=>({}));
@@ -13754,6 +13825,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   refreshBtn && refreshBtn.addEventListener('click', ()=>{ fetchLogs(); try{ window._randori_log&&window._randori_log.info('logs_widget','manual refresh'); }catch{} });
   clearBtn && clearBtn.addEventListener('click', ()=>{ if(listEl) listEl.innerHTML='<span class="small muted">Cleared view (DB intact)</span>'; });
   levelSel && levelSel.addEventListener('change', ()=> fetchLogs());
+  sourceSel && sourceSel.addEventListener('change', ()=> fetchLogs());
   // auto-show/poll if admin
   setTimeout(()=>{ if(isAdmin()){ area && (area.style.display='block'); fetchLogs(); } }, 1200);
   setInterval(()=>{ if(isAdmin() && area && area.style.display!=='none'){ fetchLogs(); } }, 20000);
