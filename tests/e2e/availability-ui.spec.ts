@@ -14,6 +14,15 @@ const user = {
   interview_focus: 'both',
 };
 
+// Cycle copy names the week by its start date in the cycle's zone ("the week
+// of 20 Sept"), never by ISO week number. 2026-W39 starts Sun 20 Sep 08:00 BST
+// and 2026-W40 starts Sun 27 Sep. en-GB may abbreviate September as "Sep" or
+// "Sept" depending on the browser's CLDR data.
+const weekStartDay: Record<string, number> = { '2026-W39': 20, '2026-W40': 27 };
+function availabilityTitle(cycleId = '2026-W39') {
+  return new RegExp(`^Are you in for the week of ${weekStartDay[cycleId]} Sept?\\?$`);
+}
+
 function availability({
   cycleId = '2026-W39',
   cycleKey,
@@ -86,7 +95,7 @@ test('availability stays hidden until an authoritative state is ready', async ({
     await expect(page.getByTestId('availability-card')).toBeHidden();
     releaseAvailability();
     await expect(page.getByTestId('availability-card')).toBeVisible();
-    await expect(page.locator('#availTitle')).toHaveText('Are you in for week 39?');
+    await expect(page.locator('#availTitle')).toHaveText(availabilityTitle());
   } finally {
     releaseAvailability();
   }
@@ -114,7 +123,7 @@ test('availability is loaded from its cycle API and posts the exact versioned bo
   const availableButton = page.locator('#availAvailable');
   const skipButton = page.locator('#availSkip');
   await expect(card).toBeVisible();
-  await expect(page.locator('#availTitle')).toHaveText('Are you in for week 39?');
+  await expect(page.locator('#availTitle')).toHaveText(availabilityTitle());
   await expect(page.getByTestId('availability-cycle')).toContainText('Upcoming cycle starts');
   await expect(page.getByTestId('availability-cycle')).toContainText('2026');
   await expect(page.getByTestId('availability-cutoff')).toContainText('Europe/London');
@@ -151,7 +160,7 @@ test('the cycle decision shows a dated cutoff and stays truthful while offline',
   await resetClientState(page, true);
   await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
 
-  await expect(page.locator('#availTitle')).toHaveText('Are you in for week 39?');
+  await expect(page.locator('#availTitle')).toHaveText(availabilityTitle());
   await expect(page.locator('#availLabel')).toHaveText("Saved · You're in");
   await expect(page.locator('#availLabel')).toHaveAttribute('data-tone', 'success');
   await expect(page.getByTestId('availability-cutoff')).toContainText('Decide by');
@@ -401,7 +410,7 @@ test('availability revalidates on resume and automatically advances after its cu
   })).toBe(3);
 
   serverAvailability = availability({ cycleId: '2026-W40', isAvailable: true, version: 0 });
-  await expect(page.locator('#availTitle')).toHaveText('Are you in for week 40?', { timeout: 8000 });
+  await expect(page.locator('#availTitle')).toHaveText(availabilityTitle('2026-W40'), { timeout: 8000 });
   await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('#availSkip')).toHaveAttribute('aria-pressed', 'false');
 });
@@ -444,7 +453,7 @@ test('invalid availability envelopes fail closed and expose a working retry', as
   await expect(page.locator('#availRetry')).toBeVisible();
   returnValid = true;
   await page.locator('#availRetry').click();
-  await expect(page.locator('#availTitle')).toHaveText('Are you in for week 39?');
+  await expect(page.locator('#availTitle')).toHaveText(availabilityTitle());
   await expect(page.locator('#availRetry')).toBeHidden();
 });
 
@@ -582,7 +591,7 @@ for (const scenario of [
     await expect(page.locator('#availLabel')).toHaveText('Saving: skip…');
     releasePost?.();
 
-    await expect(page.locator('#availTitle')).toHaveText(`Are you in for week ${Number(scenario.cycleId.slice(-2))}?`);
+    await expect(page.locator('#availTitle')).toHaveText(availabilityTitle(scenario.cycleId));
     await expect(skipButton).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('#availExplan')).toContainText(scenario.message);
     await page.evaluate(async () => {
@@ -911,7 +920,7 @@ test('profile saves no availability field and links to the cycle-specific contro
   await expect(page.getByTestId('availability-card')).toBeVisible();
   await expect(page.locator('#availAvailable')).toBeFocused();
   await expect(page.locator('#availActions')).toHaveAttribute('aria-labelledby', 'availTitle');
-  await expect(page.locator('#availTitle')).toHaveText('Are you in for week 39?');
+  await expect(page.locator('#availTitle')).toHaveText(availabilityTitle());
 });
 
 test('the circle roster does not label legacy account flags as cycle availability', async ({ page }) => {

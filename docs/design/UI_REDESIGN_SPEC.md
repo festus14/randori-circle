@@ -909,6 +909,28 @@ markup in later packages.
   393×852 and 1440×900. Screenshots: `local-solo-practice`,
   `local-deep-link-member-view` and `local-unknown-route` (plus `-light`).
 
+### 9.7 Fixes deferred from the final UX pass
+
+- **Human week labels.** Availability, pairing, Home and the setup guide name a
+  cycle by its start date in the cycle's time zone: "Are you in for the week of
+  25 Oct?", "Week of 25 Oct · 3 pairs". ISO week numbers ("week 39") are gone.
+  Without a valid start the copy says "this cycle". All of these use the same
+  day-month style (`en-GB`), whatever the browser locale. Cycle instants
+  (cutoffs, publication, cycle start) use one format, "Sun 25 Oct, 08:00 GMT"
+  (`formatMoment` in `assets/pairing-view.js`). Schedule times in the member's
+  own zone keep the browser locale.
+- **Setup guide after the cutoff.** When `/api/my-pair` already reports a newer
+  current cycle than the upcoming cycle availability last reported, the guide
+  shows that pair, which is the same observation the Home hero renders, and
+  re-reads availability once. It no longer shows "Pairing status unknown" beside
+  a paired hero. Older observations are still ignored. Overlapping cycles are
+  still unknown.
+- **Onboarding on phones.** The bottom tab bar is hidden while the setup stepper
+  shows (`#view-profile-setup` in `onboarding` or `guide` mode, which sets
+  `body[data-onboarding="flow"]`). Edit profile keeps it.
+- **Agreed time.** A proposal for the time already agreed shows "· agreed" and
+  no Accept. Only a different time can be accepted.
+
 ## 10. Phased implementation plan
 
 ### 10.1 Global constraints for every package

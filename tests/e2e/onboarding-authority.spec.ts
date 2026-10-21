@@ -450,6 +450,69 @@ test('an availability rollover rejects the old pair and reacquires the new publi
   await expect(page.locator('#chkPair')).toContainText(`Current assignment published for ${await weekPhrase(page, value.upcoming)}`);
 });
 
+test('after the cutoff the setup guide shows the pair the Home hero shows, even before availability rolls over', async ({ page }) => {
+  const value = cycles();
+  let currentAvailability = availability('user');
+  let availabilityReads = 0;
+  const pairFor = (current: ReturnType<typeof cycles>['current'], upcoming: ReturnType<typeof cycles>['upcoming'], pairId: number) => ({
+    ok: true,
+    paired: true,
+    pairing_status: 'paired',
+    workspace_available: false,
+    coordination_only: true,
+    week_id: pairId,
+    current_cycle: current,
+    upcoming_cycle: upcoming,
+    publication_state: publicationState(current, 'published'),
+    week: { id: pairId, week_label: current.cycleId },
+    pair: { id: pairId, pg_id: pairId, topic: 'both' },
+    partner: { id: 2, name: `Partner ${pairId}`, color: '#9cc0b5', tz: 'UTC', interview_focus: 'both' },
+  });
+  let pair = pairFor(value.current, value.upcoming, 51);
+  await openAsMember(page, {
+    '/api/settings/availability': () => { availabilityReads += 1; return structuredClone(currentAvailability); },
+    '/api/my-pair': () => structuredClone(pair),
+  });
+  await expect(page.locator('#chkPair')).toContainText(`Current assignment published for ${await weekPhrase(page, value.current)}`);
+
+  // The cutoff passes. The server already publishes the new current cycle,
+  // but this availability read still reports the old upcoming cycle (the two
+  // reads straddled the boundary).
+  const nextStarts = Date.parse(value.upcoming.endsAt);
+  const nextUpcoming = {
+    ...value.upcoming,
+    cycleId: '2100-W01',
+    startsAt: new Date(nextStarts).toISOString(),
+    endsAt: new Date(nextStarts + 7 * 86_400_000).toISOString(),
+    cutoffAt: new Date(nextStarts).toISOString(),
+  };
+  pair = pairFor({ ...value.upcoming, state: 'current' }, nextUpcoming, 52);
+  const readsBefore = availabilityReads;
+  await page.evaluate(() => window._randori_journey?.showDashboard?.());
+
+  await expect(page.locator('#dashPartnerName')).toHaveText('Partner 52');
+  const newPairWeek = await weekPhrase(page, value.upcoming);
+  await expect(page.locator('#chkPair')).toHaveAttribute('data-state', 'done');
+  await expect(page.locator('#chkPair')).toContainText(`Current assignment published for ${newPairWeek}`);
+  await expect(page.locator('#onboardChecklist')).not.toContainText('Pairing status unknown');
+  // The newer pair made the guide re-read availability for the new cycle.
+  await expect.poll(() => availabilityReads).toBeGreaterThan(readsBefore);
+  await expect(page.locator('#chkPair')).not.toHaveAttribute('data-state', 'error');
+
+  // Availability catches up: the guide moves to the next cycle and the pair
+  // item still matches the hero.
+  currentAvailability = {
+    ok: true,
+    availability: { ...currentAvailability.availability, cycleKey: 'b'.repeat(64), cycle: nextUpcoming },
+  };
+  await page.evaluate(() => window._randori_availability?.refresh?.());
+  await expect.poll(() => page.evaluate(() => window._randori_onboarding_authority?.snapshot.scope?.targetCycleKey)).toBe('b'.repeat(64));
+  await expect(page.locator('#chkAvail')).toContainText(`Availability saved for ${await weekPhrase(page, nextUpcoming)}`);
+  await expect(page.locator('#chkPair')).toHaveAttribute('data-state', 'done');
+  await expect(page.locator('#chkPair')).toContainText(`Current assignment published for ${newPairWeek}`);
+  await expect(page.locator('#dashPartnerName')).toHaveText('Partner 52');
+});
+
 test('pair and workspace completion ignore stale room storage and require exact authorized hydration', async ({ page }) => {
   const roomId = 'week_41_pair_73';
   const value = cycles();

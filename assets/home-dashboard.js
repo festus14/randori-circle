@@ -62,8 +62,12 @@
     }
   }
 
-  // "2026-W44" is an implementation key; people read "Week of 26 Oct".
-  function cycleWeekLabel(cycle, { locale = undefined } = {}) {
+  // "2026-W44" is an implementation key; people read "Week of 26 Oct". The
+  // date style matches the availability card and the setup guide
+  // (assets/pairing-view.js, assets/onboarding-flow.js), whatever the browser
+  // locale, so Home never mixes "Oct 26" with "26 Oct".
+  const WEEK_LABEL_LOCALE = 'en-GB';
+  function cycleWeekLabel(cycle, { locale = WEEK_LABEL_LOCALE } = {}) {
     const time = toTime(cycle?.startsAt);
     if (time === null) return '';
     const options = { month: 'short', day: 'numeric' };
@@ -71,6 +75,12 @@
     try { day = new Intl.DateTimeFormat(locale, { ...options, timeZone: cycle.timeZone || undefined }).format(new Date(time)); }
     catch { day = new Intl.DateTimeFormat(locale, options).format(new Date(time)); }
     return `Week of ${day}`;
+  }
+
+  // The same label inside a sentence: "the week of 26 Oct", or "this cycle".
+  function cycleWeekPhrase(cycle, options) {
+    const label = cycleWeekLabel(cycle, options);
+    return label ? `the week of ${label.slice('Week of '.length)}` : 'this cycle';
   }
 
   function proposalIsMine(proposedBy, meId) {
@@ -150,10 +160,11 @@
 
   // Copy for the hero when there is no verified current pair. Titles are
   // stable test anchors; messages avoid internal terms such as snapshots.
+  // `week` is an in-sentence phrase from cycleWeekPhrase ("the week of 26 Oct").
   function pairStateCopy(state, {
     week = '', nextCutoff = '', scheduled = '', recovery = '', startsAt = '', canPublishNow = false,
   } = {}) {
-    const thisWeek = week || 'this week';
+    const thisWeek = week || 'this cycle';
     const availabilityHint = nextCutoff ? ` Set your availability before ${nextCutoff} to be paired next week.` : '';
     const copies = {
       stale: {
@@ -258,6 +269,7 @@
     STARTING_SOON_MS,
     applyNextStep,
     cycleWeekLabel,
+    cycleWeekPhrase,
     formatInstant,
     installDiagnostics,
     nextStep,

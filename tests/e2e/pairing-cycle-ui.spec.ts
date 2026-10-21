@@ -249,7 +249,13 @@ test('owner tools show publication truth and a failed reread never claims public
   await expect(page.locator('#pairOwnerPanel')).toBeVisible();
   await expect(page.locator('#pairOwnerBadge')).toHaveText('Published');
   await expect(page.locator('#newWeekBtn')).toBeHidden();
-  await expect(page.locator('#currentWeekMeta')).toContainText('Week 38 · 1 pair');
+  // The week is named by its start date in the cycle's zone, never "Week 38".
+  const weekLabel = await page.evaluate(
+    cycle => (window as any)._randori_pairing_view.weekLabel(cycle, { capitalize: true }),
+    currentCycle,
+  );
+  expect(weekLabel).toMatch(/^Week of \d{1,2} [A-Z][a-z]{2,3}$/);
+  await expect(page.locator('#currentWeekMeta')).toHaveText(`${weekLabel} · 1 pair`);
   await expect(page.locator('#pairsList .cycle-pair.is-mine')).toContainText('Current Owner (you)');
   await expect(page.locator('#pairsList .cycle-pair.is-mine')).toContainText('Your pair');
   await expect(page.locator('#pairDiagnostics')).toBeHidden();

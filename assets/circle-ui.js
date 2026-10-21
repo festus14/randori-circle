@@ -388,7 +388,8 @@
   // Cycle keys such as "2026-W44" are storage identifiers; people read
   // "Week of 26 Oct". The week's start date wins, then the ISO week number,
   // then any other server label. `week_id` is a row id and is never shown.
-  function pairingWeekLabel(item, { locale = undefined, now = Date.now() } = {}) {
+  // Day-month order matches Home and Pairing ("Week of 26 Oct").
+  function pairingWeekLabel(item, { locale = 'en-GB', now = Date.now() } = {}) {
     const start = parseInstant(item?.week_start);
     if (start !== null) {
       const date = new Date(start);
