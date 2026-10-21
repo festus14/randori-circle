@@ -80,10 +80,11 @@ test('fragment invitation is scrubbed before third-party code and prepared exact
   await expect(page.getByTestId('invite-continue')).toBeEnabled();
   await expect.poll(() => prepareBodies.length).toBe(1);
   expect(prepareBodies).toEqual([{ token }]);
-  const thirdPartyProbe = await page.evaluate(() => (window as typeof window & {
+  // Telemetry loads once the page is idle, well after the scrub; poll until
+  // the substituted third-party script has run.
+  await expect.poll(() => page.evaluate(() => (window as typeof window & {
     __thirdPartyInviteProbe?: { location: string; legacyAccessor: string; preparationType: string; leaked: boolean };
-  }).__thirdPartyInviteProbe);
-  expect(thirdPartyProbe).toEqual({
+  }).__thirdPartyInviteProbe), { timeout: 12_000 }).toEqual({
     location: expect.not.stringContaining(token),
     legacyAccessor: 'undefined',
     preparationType: 'object',
