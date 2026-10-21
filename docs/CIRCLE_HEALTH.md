@@ -2,7 +2,7 @@
 
 Status: implemented behind `CIRCLE_HEALTH_ENABLED` (default off). No
 migration, no new table, no new index. Issue #292, decision
-[ID-72](IMPLEMENTED_DECISIONS.md#id-72-show-owners-aggregate-circle-health-from-existing-tables-behind-a-flag).
+[ID-73](IMPLEMENTED_DECISIONS.md#id-73-show-owners-aggregate-circle-health-from-existing-tables-behind-a-flag).
 The visual design is provisional (`needs-design`).
 
 ## What it is
