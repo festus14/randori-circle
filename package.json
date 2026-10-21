@@ -42,7 +42,7 @@
     "test:unit": "node --experimental-test-module-mocks --test tests/unit/*.test.mjs",
     "test:migrations": "node --experimental-test-module-mocks --test tests/unit/migration-*.test.mjs tests/unit/db-migrate-cli.test.mjs",
     "test:deployability": "node --test tests/unit/deployability-contract.test.mjs",
-    "test:coverage": "node tests/support/coverage.mjs --lines=93 --branches=81 --functions=98",
+    "test:coverage": "node tests/support/coverage.mjs --lines=97 --branches=92 --functions=99",
     "test:coverage:report": "node tests/support/coverage.mjs --report",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
