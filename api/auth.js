@@ -327,6 +327,9 @@ async function handleCapabilities(req,res){
       recentAuthMaxAgeSeconds:10*60,
       identityManagement,
       ...(inviteRequests?{inviteRequests:true}:{}),
+      // Issue #310: advertised only while the flag is on. The diagnostics API
+      // still authorizes every request as a global administrator.
+      ...(process.env.ADMIN_DIAGNOSTICS_ENABLED==='true'?{adminDiagnostics:true}:{}),
       ...(circleMembershipEnabled()&&process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED==='true'
         ?{multiCircleControlPlane:true}:{}),
       ...(multiCircleAvailabilityEnabled()?{multiCircleAvailability:true}:{}),

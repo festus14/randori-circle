@@ -32,6 +32,7 @@ import {
   settleBeforeDeadline,
 } from './_outbox.js';
 import { readOutboxDeliveryHealth } from './_outbox-health.js';
+import { handleAdminDiagnosticsRequest } from './_admin-diagnostics.js';
 import {
   emailActivationKeyRotationStatus,
 } from './_email-activation.js';
@@ -1112,6 +1113,10 @@ async function handleOps(req,res,{isWeeklyDue=pairingCronIsDue}={}){
         return sendMultiCircleFeatureUnavailable(res);
       }
     }catch{ return res.status(503).json({error:'circle context unavailable'}); }
+  }
+  // Issue #310: admin-only diagnostics, a 404 unless ADMIN_DIAGNOSTICS_ENABLED=true.
+  if (ep==='admin-diagnostics' || pathLower.includes('/admin/diagnostics')){
+    return handleAdminDiagnosticsRequest(req,res,{verifyRequestAuth,getClient});
   }
   if (ep==='notifications-prefs' || ep==='notifications' || ep==='prefs' || ep.includes('notification') || pathLower.includes('notifications') || pathLower.includes('notif') ) return handleNotificationPrefs(req,res);
   if (availabilityRequest) return handleAvailability(req,res);

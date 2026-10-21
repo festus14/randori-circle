@@ -213,6 +213,10 @@
       "destination": "/api/ops?endpoint=outbox-replay"
     },
     {
+      "source": "/api/admin/diagnostics",
+      "destination": "/api/ops?endpoint=admin-diagnostics"
+    },
+    {
       "source": "/api/admin/demo-seed",
       "destination": "/api/ops?endpoint=demo-seed"
     },

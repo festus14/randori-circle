@@ -17,7 +17,7 @@ const PASSWORD='correct-horse-battery';
 const PASSWORD_HASH=bcrypt.hashSync(PASSWORD,4);
 const ENV_KEYS=['NODE_ENV','ALLOW_OPEN_SIGNUP','SIGNUP_ALLOWLIST','CIRCLE_MEMBERSHIP_ENABLED',
   'MULTI_CIRCLE_CONTROL_PLANE_ENABLED','IDENTITY_MANAGEMENT_ENABLED','RANDORI_LOCAL_RUNTIME',
-  'RANDORI_LOCAL_FIRST_USER_ADMIN','TURSO_AUTH_TOKEN','TURSO_DATABASE_URL'];
+  'RANDORI_LOCAL_FIRST_USER_ADMIN','TURSO_AUTH_TOKEN','TURSO_DATABASE_URL','ADMIN_DIAGNOSTICS_ENABLED'];
 
 let S;
 const ok=async()=>{};
@@ -312,6 +312,14 @@ test('capabilities advertise every ready feature and rollout flag',async()=>{
   assert.equal((await call({endpoint:'capabilities',method:'GET'})).body.registrationMode,'local_invite');
   S.localIdentity=false; S.activation.config=null; S.localRuntime=true; process.env.ALLOW_OPEN_SIGNUP='true';
   assert.equal((await call({endpoint:'capabilities',method:'GET'})).body.registrationMode,'local_open');
+});
+
+test('capabilities advertise admin diagnostics only while ADMIN_DIAGNOSTICS_ENABLED is exactly true (#310)',async()=>{
+  assert.equal('adminDiagnostics' in (await call({endpoint:'capabilities',method:'GET'})).body.capabilities,false);
+  process.env.ADMIN_DIAGNOSTICS_ENABLED='1';
+  assert.equal('adminDiagnostics' in (await call({endpoint:'capabilities',method:'GET'})).body.capabilities,false);
+  process.env.ADMIN_DIAGNOSTICS_ENABLED='true';
+  assert.equal((await call({endpoint:'capabilities',method:'GET'})).body.capabilities.adminDiagnostics,true);
 });
 
 // --- signup ---
