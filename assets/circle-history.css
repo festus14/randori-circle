@@ -221,3 +221,73 @@
 .circle-side .circle-bulk-row { grid-template-columns: minmax(0, 1fr); }
 .circle-bulk-row .circle-row-actions,
 .circle-side .circle-bulk-row .circle-row-actions { grid-column: 1 / -1; justify-content: flex-start; }
+
+/* Personal progress in History (issue 293, ID-72; provisional design, needs-design).
+   Tokens only. Charts are aria-hidden SVG; the summaries and the table carry the meaning. */
+.history-progress[hidden] { display: none; }
+.progress-body { display: grid; gap: var(--space-4); }
+.progress-tiles {
+  display: grid; gap: var(--space-3); margin: 0;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+}
+.progress-tile {
+  display: grid; gap: var(--space-1); padding: var(--space-3);
+  border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-raised);
+}
+.progress-tile dt { margin: 0; }
+.progress-tile-value {
+  margin: 0; font-size: var(--text-lg); line-height: var(--leading-lg); font-weight: var(--weight-heading);
+  color: var(--color-text); font-variant-numeric: tabular-nums;
+}
+.progress-note, .progress-empty { margin: 0; color: var(--color-text-secondary); }
+.progress-charts { display: grid; gap: var(--space-4); }
+@media (min-width: 768px) { .progress-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.progress-figure { margin: 0; display: grid; gap: var(--space-2); min-width: 0; }
+.progress-figcaption { display: grid; gap: var(--space-1); }
+.progress-summary { margin: 0; }
+.progress-chart { display: block; width: 100%; height: auto; max-height: 96px; }
+.progress-week { stroke-width: 2; }
+.progress-week--completed { fill: var(--color-success); stroke: var(--color-success); }
+.progress-week--in_progress { fill: var(--color-action-subtle); stroke: var(--color-action); }
+.progress-week--paused { fill: var(--color-surface-active); stroke: var(--color-control-border); stroke-dasharray: 3 2; }
+.progress-week--not_completed { fill: transparent; stroke: var(--color-border-strong); }
+.progress-bar--verified { fill: var(--color-action-subtle); stroke: var(--color-action); stroke-width: 1; }
+.progress-bar--passed { fill: var(--color-success); }
+.progress-role--candidate { fill: var(--color-action); }
+.progress-role--interviewer { fill: var(--color-success); }
+.progress-legend {
+  list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3);
+}
+.progress-legend li { display: inline-flex; align-items: center; gap: var(--space-1); }
+.progress-swatch {
+  width: 12px; height: 12px; flex: none; border-radius: var(--radius-xs); border: 2px solid var(--color-border-strong);
+}
+.progress-swatch--completed, .progress-swatch--passed { background: var(--color-success); border-color: var(--color-success); }
+.progress-swatch--in_progress, .progress-swatch--verified { background: var(--color-action-subtle); border-color: var(--color-action); }
+.progress-swatch--paused { background: var(--color-surface-active); border-style: dashed; border-color: var(--color-control-border); }
+.progress-details > summary {
+  cursor: pointer; min-height: var(--tap-min); display: flex; align-items: center;
+  font-size: var(--text-sm); font-weight: var(--weight-emphasis); color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+}
+.progress-details > summary:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.progress-table { margin-top: var(--space-2); }
+.progress-table th[scope="row"] { font-weight: var(--weight-emphasis); color: var(--color-text); background: transparent; }
+.progress-section { display: grid; gap: var(--space-2); min-width: 0; }
+.progress-section > p { margin: 0; }
+.progress-coverage {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+}
+.progress-coverage-row {
+  display: grid; gap: var(--space-1); padding: var(--space-2) var(--space-3); min-width: 0;
+  border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-raised);
+}
+.progress-coverage-row[data-state="untouched"] { background: transparent; }
+.progress-coverage-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-2); }
+.progress-coverage-head b { font-size: var(--text-sm); overflow-wrap: anywhere; }
+.progress-meter { width: 100%; height: 6px; accent-color: var(--color-success); }
+@media (forced-colors: active) {
+  .progress-week, .progress-bar, .progress-role, .progress-swatch { forced-color-adjust: auto; }
+  .progress-tile, .progress-coverage-row { border-color: CanvasText; }
+}

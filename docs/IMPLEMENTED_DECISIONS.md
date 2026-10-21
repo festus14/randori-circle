@@ -3032,3 +3032,56 @@ owner sets `REMINDERS_ENABLED=true` (and optionally
 `REMINDERS_SESSION_SOON_ENABLED=true`) in Vercel Production and redeploys. To
 recover, unset the flag and redeploy; queued reminders drain as suppressed.
 Contract: [`REMINDERS.md`](REMINDERS.md).
+
+## ID-72: Compute each member's progress on request from their own records, behind a flag
+
+Status: implemented behind `PROGRESS_DASHBOARD_ENABLED` (default off); no
+migration. Issue #293 (post-MVP roadmap #312). Final layout and copy are
+pending (`needs-design`).
+
+**Context.** History listed past pairings, but a member could not see whether
+they were keeping the weekly habit the product is built around, which patterns
+they had covered, or how their runs were going. Completion receipts (ID-55),
+attested runs, explicit availability decisions and shared session controls
+already hold every fact needed.
+
+**Decision.**
+- `GET /api/progress` returns the signed-in member's completed sessions,
+  current and longest weekly streak, a 12-week series of session status and
+  verified runs, catalogue coverage by pattern (`type`) and topic (`tags`)
+  including untouched ones, and interview-role balance when shared session
+  controls exist. A `feedback` seam waits for #290.
+- Only the session chooses whose records are read. `user_id` is accepted only
+  so a request for anyone else is an explicit `404 progress not found`; owners
+  and admins get the same answer.
+- Counts reuse the existing projections: unanimous receipts as History, recap
+  and `/api/stats` count them (non-demo, like `your_sessions`), and the recap's
+  attestation check for runs. A real-runtime test compares the numbers.
+- Streak rules v1: a week counts when every participant of a partnered session
+  confirmed it. "Skip this cycle", solo (odd member out) and unpaired weeks
+  pause; the current unconfirmed week is neutral; a finished partnered week
+  without unanimous receipts (including none) ends the streak. Weeks are
+  pairing cycles in `PAIRING_TIME_ZONE`, stepped by local calendar so DST weeks
+  stay consecutive.
+- Reads are one clock query plus one read batch of five bounded statements
+  (pairings `LIMIT 261`, their receipts and controls, skip decisions
+  `LIMIT 260`, newest runs `LIMIT 501` through `idx_runs_user`). No table,
+  index, cache or job.
+- History learns the flag from `progress: {enabled: true}` on `/api/history`
+  and only then imports `assets/progress-view.js`. Charts are aria-hidden SVG
+  with design tokens, each with a text summary and a shared weeks table.
+
+**Deferred.** The optional weekly summary line in the pairing email (it needs
+per-recipient progress reads inside the outbox budget and a preference rule)
+and feedback trends (#290).
+
+**Alternatives.** Precomputing weekly rows (a migration and a second truth
+source that can drift from receipts). A separate tab (the spec puts past
+cycles and recaps in History). A chart library (weight, CSP and theming for
+four small charts). Breaking the streak on any week without a session (shames
+members who said they were away or had no partner).
+
+**Rollout and recovery.** Merge with the flag unset; nothing changes. The
+owner sets `PROGRESS_DASHBOARD_ENABLED=true` in Vercel Production and redeploys;
+unsetting it restores the previous behaviour. Contract:
+[`PROGRESS_DASHBOARD.md`](PROGRESS_DASHBOARD.md).
