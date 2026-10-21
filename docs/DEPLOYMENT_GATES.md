@@ -27,6 +27,24 @@ read-only GitHub permissions and fixed time/page bounds. Its only production
 material is `vars.APP_URL` and `secrets.CRON_SECRET`, which it uses to read
 `/api/cron/outbox-health` (ID-67).
 
+It also pins the live `execution-smoke` workflow and its assessor
+(`scripts/github-execution-smoke.mjs`) by digest (ID-72, issue #249). The gate
+requires exactly three triggers: `deployment_status`, one daily schedule, and
+`workflow_dispatch`. It rejects any `pull_request` or `pull_request_target`
+trigger. Deployment runs must be limited to successful `Production`
+deployments created by `vercel[bot]`, and other events must come from the
+default branch. Permissions must stay `contents: read`, actions must be pinned
+to reviewed commits, the job must be serialized and time-bounded, and the
+fail-closed step shape must not change. Its only production material is
+`vars.APP_URL` and `secrets.CRON_SECRET` in the `production` environment.
+
+The creator check is required. GitHub records a lowercase `production`
+deployment for every job that uses the environment, and expression comparison
+ignores case. Without the check, this job's own deployment would trigger it
+again.
+
+This is a post-deploy signal, not a merge gate. It is never a required check.
+
 Required checks run on the pinned `ubuntu-24.04` image rather than the floating
 `ubuntu-latest`. The optional `ubuntu-26-canary` check collects Ubuntu 26
 evidence and is not required; see `docs/UBUNTU_RUNNER_PINNING.md`.

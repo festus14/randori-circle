@@ -57,6 +57,11 @@ Expected failures until setup finishes:
   ready) or because due mail is older than 15 minutes.
 - `Turso backup restore watchdog` (hourly :47) fails because no Monday
   rehearsal has succeeded since the 2026-09-21 activation epoch.
+- `execution-smoke` (daily 07:29 UTC and after each Vercel Production deploy)
+  fails with `config_missing` until `production` has `APP_URL` and
+  `CRON_SECRET`, then with `misconfigured` until Vercel has
+  `EXECUTION_PROVIDER`, then with `unavailable` until the database is ready
+  (section 10.0).
 
 ## 1. Who does what
 
@@ -348,7 +353,13 @@ For each environment, set **Deployment branches → Selected branches → `main`
 
 Do not add a required reviewer; it runs every five minutes. The hourly
 `outbox-dispatch-watchdog` uses the same two values to read
-`/api/cron/outbox-health`.
+`/api/cron/outbox-health`, and `execution-smoke` uses them to call
+`POST /api/cron/execution-smoke` (section 10).
+
+Vercel creates its GitHub deployments by commit SHA, so `deployment_status`
+runs have no branch ref. If **Selected branches → `main`** blocks those runs,
+`execution-smoke` still runs daily and on demand from `main`, but loses its
+post-deploy run. Check the first post-deploy run after adding the policy.
 
 ### `turso-migration-rehearsal` (existing): PITR rehearsal
 
@@ -515,6 +526,58 @@ add `NODE_USE_ENV_PROXY=1`). After intentionally changing an auth flag, either
 update the defaults in `scripts/production-smoke.mjs` or pass
 `SMOKE_EXPECTED_CAPABILITIES='{"googleOAuth":false}'` (use `null` to skip a key).
 
+### 10.0 Live execution smoke (`execution-smoke`)
+
+CI mocks the execution provider, so it cannot see a provider outage or
+retirement (#248). The `execution-smoke` workflow covers that gap. It runs
+after each successful Vercel Production deployment (deployments created by
+`vercel[bot]` only), daily at 07:29 UTC, and on demand. It calls
+`POST /api/cron/execution-smoke` with `CRON_SECRET`. `OUTBOX_DISPATCH_SECRET`
+is rejected.
+
+The route runs one fixed trivial JavaScript program and one fixed trivial
+Python program through `api/_execution.js` with the production
+`EXECUTION_PROVIDER` settings. It checks for the exact expected output and
+returns only this:
+
+```json
+{"ok":true,"checkedAt":"…","languages":{
+  "javascript":{"status":"ok","durationMs":812},
+  "python":{"status":"ok","durationMs":905}}}
+```
+
+Each `status` is one of `ok`, `provider_error`, `timeout`, `misconfigured` or
+`throttled`. The response never contains program output, provider URLs,
+tokens or error text.
+
+- **Throttling.** A real run is claimed atomically in `app_logs` against the
+  database clock, under the server-only `runner` source. The route allows at
+  most one real run every 30 minutes and two in any rolling 24 hours. Inside
+  that window it returns `throttled` with the cached result's `lastStatus`,
+  `durationMs`, `checkedAt` and `ageSeconds`.
+- **Budget.** Each real run creates two sandboxes, so the hard ceiling is about
+  62 runs (124 sandbox creations) a month. That is 2.5% of the Hobby allowance
+  of 5,000. In practice it is one daily run plus at most one post-deploy run
+  on deploy days.
+- **Misconfiguration.** A missing or invalid provider is reported as
+  `misconfigured` immediately, without a claim or any sandbox use.
+- **No throttle store.** If the database is unavailable, the route returns
+  `503` and never executes.
+
+The job passes when each language is `ok`, or `throttled` with a cached
+result of `ok` (or none recorded yet). Anything else fails the run with an
+`::error` annotation that names only the bounded categories:
+`execution_failed`, `unauthorized`, `unavailable`, `malformed_response`,
+`config_missing` or `smoke_failure`. GitHub emails the failure, the same way
+it does for the outbox and backup watchdogs.
+
+**Evidence for #248 and #9.** After setting `EXECUTION_PROVIDER` and
+redeploying, open the post-deploy `execution-smoke` run, or trigger it with
+**Run workflow** on `main` (the throttle may return the cached result). A
+JSON line with `"status":"healthy"` and both languages `ok` is the
+authoritative live JavaScript and Python result that #248 asks for. Record
+the run URL on #248.
+
 `npm run smoke:execution` is deliberately not in CI. The Vercel Sandbox SDK
 authenticates with the project's `VERCEL_OIDC_TOKEN`, which only exists inside
 Vercel functions or after `vercel env pull` (needs a Vercel login or a
@@ -583,7 +646,8 @@ gh run list --workflow outbox-dispatch.yml --limit 3
 
 `outbox-dispatch` and its watchdog turn green once the database is ready. The
 backup watchdog turns green after the next successful Monday 03:17 UTC
-rehearsal.
+rehearsal. `execution-smoke` turns green once the database is ready and
+`EXECUTION_PROVIDER` works.
 
 If Google stays false, check that `APP_URL` exactly matches the origin, the
 Production scoping, `IDENTITY_MANAGEMENT_ENABLED=false`, and that you
