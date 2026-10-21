@@ -108,8 +108,10 @@ production migration procedure.
 
 - Rehearse these templates and suppression paths through a staging Resend
   domain; automated tests intentionally never call an external provider.
-- Define product timing for additional reminders (for example one hour before)
-  from usage data before adding more events.
+- The optional one-hour reminder, the availability-cutoff reminder, and the
+  agree-a-time nudge are implemented behind `REMINDERS_ENABLED` as a separate
+  `reminder.email.requested` type (issue #287, [REMINDERS.md](REMINDERS.md)).
+  This document's 24-hour reminder is unchanged.
 
 SMS remains a possible future channel, but it is deliberately outside issue
 #50 and is not a closure criterion for this email-notification slice.
