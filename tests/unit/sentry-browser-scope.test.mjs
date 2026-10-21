@@ -182,10 +182,24 @@ test('outside production early errors are dropped, not reported', () => {
   assert.deepEqual(page.captured, []);
 });
 
-test('production keeps the logger placeholder the synchronous loader used to create', () => {
-  const { window } = runConfig(`${PRODUCTION_ORIGIN}/`);
-  assert.deepEqual(Object.keys(window._randori_log), ['_lastEvent']);
-  assert.equal(window._randori_log._lastEvent, '');
-  const { window: preview } = runConfig('https://randori-circle-git-feature-festus14.vercel.app/');
-  assert.equal(preview._randori_log, undefined);
+test('no environment creates a logger placeholder, so the client logger installs in production too (ID-72)', () => {
+  for (const href of [`${PRODUCTION_ORIGIN}/`, 'https://randori-circle-git-feature-festus14.vercel.app/', 'http://127.0.0.1:4173/']) {
+    const { window } = runConfig(href);
+    assert.equal(window._randori_log, undefined, href);
+  }
+  assert.doesNotMatch(configScript(), /_randori_log\s*=/);
+});
+
+test('the Sentry step skips a missing or placeholder logger instead of creating one', () => {
+  for (const logger of [undefined, { _lastEvent: '' }]) {
+    const page = runLoader({ enabled: true, logger });
+    page.fire('load');
+    page.idleCallbacks[0].callback();
+    page.window.Sentry = page.sentry;
+    page.appended[0].onload();
+    assert.equal(page.window._sentryReady, true);
+    assert.equal(typeof page.window.__randoriPatchLogger, 'function');
+    assert.equal(page.window._randori_log, logger);
+    assert.equal(logger?._sentryPatched, undefined);
+  }
 });

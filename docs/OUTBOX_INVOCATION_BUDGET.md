@@ -57,6 +57,13 @@ skipped when an earlier stage already reports a deadline. An incomplete metrics 
 `metrics_complete: false` and `null` backlog/dead-letter values rather than a
 false zero. `logging_complete` makes best-effort telemetry equally explicit.
 
+After the delivery round and before the backlog read, the invocation runs the
+`app_logs` retention step
+([ID-72](IMPLEMENTED_DECISIONS.md#id-72-turn-on-production-client-error-logging-warnerror-signed-in-with-app_logs-retention)):
+at most once an hour by the database clock, at most 1000 rows older than 30
+days. It starts only when its 2-second budget fits before the finalization
+reserve, so it never delays delivery, the backlog read or the invocation log.
+
 Primary room mail (v1) and secondary dashboard-only pairing mail (v2) share
 the `pairing.email.requested` type. Adding secondary delivery therefore does
 not add a sixth scheduler lane or weaken the one-per-type first round. The v2
@@ -128,7 +135,10 @@ The cron response and `outbox_invocation` log contain only:
 - global budget, claim limit, claimed count, and deadline-reached flag;
 - per-type claimed, delivered, suppressed, retried, newly dead-lettered, and
   lease-lost counts;
-- per-type current actionable backlog and dead-letter count.
+- per-type current actionable backlog and dead-letter count;
+- `app_logs_retention`: `{ran, purged, more}` from the hourly `app_logs`
+  purge, `{ran:false, timed_out:true}` or `{ran:false, failed:true}` when it
+  did not finish, or `null` when it was skipped because its budget did not fit.
 
 `metrics_complete` distinguishes an exact post-run backlog from a deadline-
 bounded response where those two gauges are `null`.
