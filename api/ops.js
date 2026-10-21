@@ -48,6 +48,12 @@ import {
 } from './_invitation-email.js';
 import {identityEmailKeyRotationStatus} from './_identity-linking.js';
 import { localRuntimeRequest } from './_local-runtime.js';
+import {
+  enqueueDueReminders,
+  REMINDER_EMAIL_EVENT_TYPE,
+  reminderPreferenceDescriptor,
+  remindersEnabled,
+} from './_reminders.js';
 import { configuredOutboxBaseUrl, OUTBOX_DELIVERY_TYPES, outboxDeliveryPlan } from './_outbox-delivery.js';
 import {
   ensureDemoResetReadiness,
@@ -69,6 +75,9 @@ import {
 export const OUTBOX_CRON_BUDGET_MS=45_000;
 export const OUTBOX_CRON_FINALIZATION_RESERVE_MS=5_000;
 export const OUTBOX_CRON_MAX_CLAIMS=8;
+// Issue #287: the reminder due-check gets its own slice of the preparation
+// window so a slow query can never hold back the delivery rounds.
+export const OUTBOX_REMINDER_DUE_CHECK_BUDGET_MS=5_000;
 const OUTBOX_CRON_MIN_DISPATCH_WINDOW_MS=100;
 
 function codeDocumentSchemaNotInstalled(error){
@@ -110,8 +119,12 @@ async function handleNotificationPrefs(req,res){
     const uid=payload.id||payload.uid;
     try{
       const rs=await db.execute({sql:"SELECT user_id,email_enabled,sms_enabled,phone,email,updated_at FROM user_notification_prefs WHERE user_id=?", args:[uid]});
-      if(rs.rows.length) return res.json({ok:true, prefs:rs.rows[0]});
-      return res.json({ok:true, prefs:{user_id:uid,email_enabled:1,sms_enabled:0,phone:null}});
+      // Issue #287: advertised only while REMINDERS_ENABLED is on, so the
+      // response is unchanged when the feature is off.
+      const reminders=reminderPreferenceDescriptor();
+      const extra=reminders?{reminders}:{};
+      if(rs.rows.length) return res.json({ok:true, prefs:rs.rows[0], ...extra});
+      return res.json({ok:true, prefs:{user_id:uid,email_enabled:1,sms_enabled:0,phone:null}, ...extra});
     }catch(e){ return res.status(500).json({error:"fetch failed"}); }
   }
   if(req.method==="POST" || req.method==="PUT"){
@@ -414,6 +427,7 @@ function unavailableDeliverySummary(type,status){
   if(type===INVITATION_EMAIL_EVENT_TYPE) return 'invitation email delivery unavailable';
   if(type===PASSWORD_RESET_EVENT_TYPE) return 'password reset email delivery unavailable';
   if(type===INVITE_REQUEST_EVENT_TYPE) return 'invite request notification delivery unavailable';
+  if(type===REMINDER_EMAIL_EVENT_TYPE) return 'reminder email delivery unavailable';
   return 'activation email delivery unavailable';
 }
 
@@ -436,10 +450,21 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
   maxClaims=OUTBOX_CRON_MAX_CLAIMS,
   finalizationReserveMs=OUTBOX_CRON_FINALIZATION_RESERVE_MS,
   minimumDispatchWindowMs=OUTBOX_CRON_MIN_DISPATCH_WINDOW_MS,
+  reminderDueCheckBudgetMs=OUTBOX_REMINDER_DUE_CHECK_BUDGET_MS,
 }={}){
   const preparationDeadline=deadlineAtMs-finalizationReserveMs-minimumDispatchWindowMs;
+  // Issue #287: the reminder due-check runs inside the timeboxed preparation so
+  // a newly due reminder can be claimed in this invocation. It makes no
+  // database access while REMINDERS_ENABLED is off, and a failure or timeout
+  // is reported without blocking delivery of other mail.
+  let reminders=null;
   const preparation=await settleBeforeDeadline(async()=>{
     await migrateLegacyPairingEmails(db,{limit:maxClaims});
+    if(remindersEnabled()){
+      const dueCheck=await settleBeforeDeadline(()=>enqueueDueReminders(db),
+        Math.min(preparationDeadline,performance.now()+reminderDueCheckBudgetMs)).catch(()=>null);
+      reminders=dueCheck?.completed?dueCheck.value:{enabled:true,failed:true};
+    }
     return outboxDeliveryPlan(db,baseUrl,req);
   },preparationDeadline);
   const plan=preparation.completed?preparation.value:{
@@ -474,7 +499,11 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
   const metrics={budget_ms:OUTBOX_CRON_BUDGET_MS,max_claims:maxClaims,
     deadline_reached:deadlineReached,metrics_complete:metricRead.completed,
     legacy_reconciliation_complete:preparation.completed,logging_complete:false,
-    claimed:invocation.claimed,types,key_rotation:metricRead.completed?metricRead.value.keyRotation:null};
+    claimed:invocation.claimed,types,key_rotation:metricRead.completed?metricRead.value.keyRotation:null,
+    ...(remindersEnabled()?{reminders_enqueued:reminders&&!reminders.failed?{
+      availability_cutoff:reminders.availability_cutoff,agree_time:reminders.agree_time,
+      session_soon:reminders.session_soon,
+    }:null}:{})};
   if(!metrics.deadline_reached&&performance.now()<deadlineAtMs){
     const logged=await settleBeforeDeadline(()=>logServerOps(
       invocation.retried||invocation.deadLettered||invocation.leaseLost?'warn':'success',

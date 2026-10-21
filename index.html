@@ -1187,6 +1187,12 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .onboarding-colors .color-dot[aria-pressed="true"]{box-shadow:0 0 0 2px var(--card), 0 0 0 4px var(--color-action)}
 .onboarding-row{display:flex; justify-content:space-between; align-items:center; gap:var(--space-3); padding:var(--space-3) var(--space-4); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--bg-3); min-width:0}
 .onboarding-row b{font-size:var(--text-sm)}
+/* Issue #287 reminder types (final design pending, needs-design). */
+.remind-types{margin-top:var(--space-2)}
+.remind-type-list{list-style:none; margin:var(--space-1) 0 0; padding:0; display:grid; gap:var(--space-1)}
+.remind-type-list li{display:flex; align-items:baseline; gap:var(--space-2); font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-2)}
+.remind-type-list li[hidden]{display:none}
+.remind-type-list .rc-badge{flex:none; min-width:3ch; text-align:center}
 .onboarding-actions{display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:var(--space-2)}
 .onboarding-actions .onboarding-actions-spacer{margin-right:auto}
 #view-profile-setup:not([data-mode="edit"]) .onboarding-edit-only{display:none}
@@ -2084,7 +2090,7 @@ a.btn{text-decoration:none}
           <div class="card-b onboarding-body">
             <ol id="setupTimeline" class="rc-timeline" aria-labelledby="setupNextTitle"></ol>
             <div id="psRemindFlowHost">
-              <div id="psRemindRow" class="onboarding-row" data-state="loading" aria-busy="true"><div><b>Email reminders</b><p class="field-help">Get an email when you’re paired.</p><div id="psRemindStatus" class="small request-status" data-state="loading" role="status" aria-live="polite">Checking your reminder preference…</div></div><label class="chip" style="cursor:pointer; display:inline-flex; align-items:center; gap:var(--space-2)"><input id="psRemindEmail" type="checkbox" checked aria-describedby="psRemindStatus"/> Email</label></div>
+              <div id="psRemindRow" class="onboarding-row" data-state="loading" aria-busy="true"><div><b>Email reminders</b><p class="field-help">Get an email when you’re paired.</p><div id="psRemindStatus" class="small request-status" data-state="loading" role="status" aria-live="polite">Checking your reminder preference…</div><div id="psRemindTypes" class="remind-types" data-testid="reminder-types" hidden><p class="field-help">The Email setting also sends these reminders:</p><ul class="remind-type-list"><li data-reminder="availability_cutoff"><span class="rc-badge" data-reminder-state>On</span> <span><b>Availability cutoff.</b> About 24 hours before the Sunday cutoff, if you haven’t chosen for the next cycle.</span></li><li data-reminder="agree_time"><span class="rc-badge" data-reminder-state>On</span> <span><b>Agree a time.</b> If your pair hasn’t agreed a session time 3 days after pairing.</span></li><li data-reminder="session_soon" hidden><span class="rc-badge" data-reminder-state>On</span> <span><b>1 hour before.</b> A short reminder before an agreed session.</span></li></ul></div></div><label class="chip" style="cursor:pointer; display:inline-flex; align-items:center; gap:var(--space-2)"><input id="psRemindEmail" type="checkbox" checked aria-describedby="psRemindStatus"/> Email</label></div>
             </div>
             <div class="onboarding-actions"><button id="setupNextBack" class="btn ghost onboarding-actions-spacer" type="button">Back</button><button id="setupFinish" class="btn" type="button">Go to Home</button></div>
           </div>
@@ -4917,6 +4923,30 @@ async function refreshMe(){
       const emailEnabled=exactEmailPreference(result.prefs.email_enabled);
       return emailEnabled===null?null:{emailEnabled};
     };
+    // Issue #287: the server lists reminder types only while REMINDERS_ENABLED
+    // is on. Every type follows the Email checkbox (per-type toggles need a
+    // schema change and are deferred), so this list shows state, not controls.
+    const reminderTypes=document.getElementById('psRemindTypes');
+    let reminderDescriptor=null;
+    const renderReminderTypes=()=>{
+      if(!reminderTypes) return;
+      reminderTypes.hidden=!reminderDescriptor;
+      if(!reminderDescriptor) return;
+      const on=psEmail?.checked!==false;
+      reminderTypes.querySelectorAll('[data-reminder]').forEach(item=>{
+        item.hidden=reminderDescriptor[item.dataset.reminder]!==true;
+        const badge=item.querySelector('[data-reminder-state]');
+        if(badge){ badge.textContent=on?'On':'Off'; badge.dataset.tone=on?'success':''; }
+      });
+    };
+    const acceptReminderDescriptor=result=>{
+      const value=result?.reminders;
+      reminderDescriptor=value&&typeof value==='object'&&!Array.isArray(value)
+        ?{availability_cutoff:value.availability_cutoff===true,agree_time:value.agree_time===true,
+          session_soon:value.session_soon===true}:null;
+      renderReminderTypes();
+    };
+    psEmail?.addEventListener('change',renderReminderTypes);
     const setReminderState=(state,message)=>{
       window._randori_ui_state?.setRequestState?.(row,status,state,message);
       if(psEmail) psEmail.disabled=!authIdentityHydrated||state==='loading'||state==='saving';
@@ -4957,6 +4987,7 @@ async function refreshMe(){
         const saved=exactPreferenceEnvelope(result,userId);
         if(saved===null) throw new Error('preference response invalid');
         psEmail.checked=saved.emailEnabled;
+        renderReminderTypes();
         setReminderState('saved',psEmail.checked
           ?'Preference saved. We’ll try to email you when you’re paired.'
           :'Preference saved. Email reminders are off.');
@@ -4972,12 +5003,14 @@ async function refreshMe(){
       const userId=Number(me?.id||me?.uid)||null;
       if(!authIdentityHydrated){
         hydratedUserId=null;
+        acceptReminderDescriptor(null);
         ++preferenceEpoch;
         setReminderState('loading','Checking your account session…');
         return;
       }
       if(!userId){
         hydratedUserId=null;
+        acceptReminderDescriptor(null);
         ++preferenceEpoch;
         setReminderState('local',browserOnlyMessage());
         return;
@@ -4993,6 +5026,7 @@ async function refreshMe(){
         const saved=exactPreferenceEnvelope(j,userId);
         if(saved!==null){
           if(psEmail) psEmail.checked=saved.emailEnabled;
+          acceptReminderDescriptor(j);
           try{
             localStorage.setItem('randori-reminder-email', saved.emailEnabled?'1':'0');
           }catch{}

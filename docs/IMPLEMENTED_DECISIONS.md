@@ -2,7 +2,7 @@
 
 Status: accepted through the current rolling release
 
-Last reviewed: 2026-10-18
+Last reviewed: 2026-10-20
 
 Scope: current rolling release and independently reviewed candidate increments
 
@@ -2969,3 +2969,66 @@ the provider's reason was lost.
 recorded as `other` with the status and error name still available. Dead
 letters from before this change keep the bare `PROVIDER_REJECTED` reason and
 are not counted.
+
+## ID-71: Send reminders from the outbox cron behind a flag, without a migration
+
+Status: implemented behind `REMINDERS_ENABLED` (default off); no migration.
+Issue #287 (post-MVP roadmap #312, Wave 1). Final email and settings design is
+pending (`needs-design`).
+
+**Context.** Randori already sent pairing, schedule and 24-hour session
+reminder emails. Members were not reminded before the Sunday availability
+cutoff, and pairs that never agreed a time were not nudged, which is where the
+weekly loop most often stalls. The outbox cron now runs every five minutes
+(ID-67), so time-based reminders no longer need a new scheduler.
+
+**Decision.**
+- One new outbox event type, `reminder.email.requested` v1, with three kinds:
+  `availability_cutoff` (from 24 hours before the upcoming cutoff, to members
+  with no explicit decision), `agree_time` (72 hours after the current cycle's
+  pairing, while no time is agreed) and `session_soon` (one hour before an
+  agreed session, behind the extra `REMINDERS_SESSION_SOON_ENABLED` flag).
+  Primary and secondary circles are covered; secondary mail links only to the
+  dashboard, primary pair mail links to the room, and the cutoff reminder links
+  to `/?view=pair`. No email contains a token.
+- Reminders are queued by a bounded due-check inside the existing
+  `/api/cron/outbox` preparation step (at most 50 per kind per invocation,
+  skipped by `NOT EXISTS` on the stable idempotency key, with its own 5-second
+  slice so a slow check cannot hold back other mail) and delivered in the same
+  invocation. No Vercel cron was added. The fair dispatcher now has seven
+  types, still under its eight-claim cap.
+- Payloads carry only identifiers (and a SHA-256 fingerprint of the agreed
+  instant for `session_soon`). The handler re-reads current state at send time
+  and suppresses with `DECISION_MADE`, `CUTOFF_PASSED`, `TIME_AGREED`,
+  `CYCLE_ENDED`, `SESSION_CHANGED`, `SESSION_CLEARED`, `SESSION_ELAPSED`,
+  `MEMBER_REMOVED`, `EMAIL_DISABLED`, `RECIPIENT_INVALID` or
+  `REMINDERS_DISABLED`. The idempotency key is the provider idempotency key,
+  so retries and dead-letter replays cannot send twice. Provider failures use
+  the bounded `status:name:reason` audit reason (ID-70).
+- Times are shown in the recipient's profile timezone with its name, falling
+  back to UTC, and every email says reminders can arrive a few minutes late.
+- Preferences reuse `user_notification_prefs.email_enabled`, checked at enqueue
+  and at send. While the flag is on, `GET /api/notifications/prefs` adds a
+  `reminders` object and the email reminder row lists the covered types as
+  On/Off with the Email checkbox. The handler is always registered so queued
+  reminders drain as `suppressed` if the flag is turned off.
+
+**Deferred.** Per-type toggles (issue defaults on, on, off). They need a
+schema change, and any migration makes `/api/health/ready` return 503 until it
+is applied in production, so merging would no longer be invisible. Until a
+managed migration and an owner-approved protected apply, the one-hour reminder
+is opt-in per deployment, not per member. Final templates and settings design
+are pending.
+
+**Alternatives.** A per-type preference table now (needs a production
+migration window before merge is safe). Enqueueing reminder rows when pairing
+or schedules change (the cutoff reminder has no triggering write, and stale far-
+future rows need the same send-time checks anyway). A separate cron route
+(more schedules and secrets than one due-check in the existing worker). One
+event type per kind (three more fair-dispatch lanes for low volume).
+
+**Rollout and recovery.** Merge with both flags unset; nothing changes. The
+owner sets `REMINDERS_ENABLED=true` (and optionally
+`REMINDERS_SESSION_SOON_ENABLED=true`) in Vercel Production and redeploys. To
+recover, unset the flag and redeploy; queued reminders drain as suppressed.
+Contract: [`REMINDERS.md`](REMINDERS.md).

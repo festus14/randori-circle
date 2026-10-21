@@ -63,6 +63,16 @@ not add a sixth scheduler lane or weaken the one-per-type first round. The v2
 payload contains only publication, circle, user, and result-kind identifiers;
 dispatch resolves and revalidates current delivery data before provider access.
 
+Reminders (issue #287, [REMINDERS.md](REMINDERS.md)) add one seventh type,
+`reminder.email.requested`, for all three reminder kinds. Seven types still fit
+under the eight-claim cap, so every type keeps a first-round claim. Reminders
+are queued by a bounded due-check (at most 50 new intents per kind) inside the
+same timeboxed preparation step as the legacy pairing bridge, with its own
+5-second slice, so a slow due-check is abandoned (reported as
+`reminders_enqueued: null`) rather than holding back the delivery rounds. While `REMINDERS_ENABLED`
+is off the due-check makes no query; the handler stays registered so any queued
+reminder drains as `suppressed`.
+
 libSQL does not expose per-statement cancellation. A statement admitted before
 the cutoff can therefore settle after the application deadline; the worker
 does not intentionally start or await further work after its allotted window.
