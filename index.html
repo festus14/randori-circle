@@ -163,7 +163,9 @@ try{
      calls window.sentryOnLoad before it initialises, so this config decides the
      environment and whether anything is sent. Only the canonical production
      origin reports; previews, localhost, the local runtime and automated
-     browsers are tagged but disabled. Keep the origin in sync with APP_URL. -->
+     browsers are tagged but disabled. Keep the origin in sync with APP_URL.
+     The loader (and the SDK bundle it pulls in) is fetched after the page has
+     loaded and the browser is idle, so it never delays first paint. -->
 <script id="randoriSentryConfig">
 (function(){
   var PRODUCTION_ORIGIN='https://randori-circle-self.vercel.app';
@@ -177,6 +179,12 @@ try{
     try{ return enabled&&String(window.location.origin)===PRODUCTION_ORIGIN?event:null; }catch(e){ return null; }
   }
   window.__randoriSentry=Object.freeze({environment:environment,enabled:enabled,productionOrigin:PRODUCTION_ORIGIN});
+  // When the loader ran synchronously here, the augment step created this
+  // placeholder in production before the client logger script ran, and the
+  // logger skips installing when window._randori_log exists. Keep that
+  // behavior now that the loader runs later: turning the client logger on in
+  // production (more /api/logs writes) is a separate decision.
+  if(enabled&&!window._randori_log) window._randori_log={_lastEvent:''};
   window.sentryOnLoad=function(){
     try{
       window.Sentry.init({
@@ -190,48 +198,86 @@ try{
   };
 })();
 </script>
-<script src="https://js-de.sentry-cdn.com/b4aa012a94edbcd36c8c92ef1aaeddfa.min.js" crossorigin="anonymous"></script>
-<script>
+<script id="randoriSentryLoader" type="text/plain" data-src="https://js-de.sentry-cdn.com/b4aa012a94edbcd36c8c92ef1aaeddfa.min.js"></script>
+<script id="randoriSentryLoad">
 (function(){
-  // Augment the scoped SDK with Randori context + logger forwarding (production origin only)
-  try{
-    if(window.Sentry&&window.__randoriSentry&&window.__randoriSentry.enabled){
-      window._sentryReady=true;
-      // expose last event for tagging
-      if(!window._randori_log) window._randori_log={_lastEvent:''};
-      // attach beforeSend to add route/event tags if not already set by loader
-      try{
-        Sentry.addEventProcessor(function(event){
+  // The inert tag above names the loader; the local runtime strips it, and
+  // then nothing is fetched.
+  var tag=document.getElementById('randoriSentryLoader');
+  var src=tag&&tag.getAttribute('data-src');
+  // Errors raised before the loader arrives are kept (at most 20) and reported
+  // once it has, so boot errors are not lost by loading it later.
+  var early=[];
+  function keep(event){
+    if(early.length<20) early.push(event&&event.type==='unhandledrejection'?event.reason:(event&&(event.error||event.message)));
+  }
+  function augment(){
+    // Augment the scoped SDK with Randori context + logger forwarding (production origin only)
+    try{
+      if(window.Sentry&&window.__randoriSentry&&window.__randoriSentry.enabled){
+        window._sentryReady=true;
+        // expose last event for tagging
+        if(!window._randori_log) window._randori_log={_lastEvent:''};
+        // attach beforeSend to add route/event tags if not already set by loader
+        try{
+          Sentry.addEventProcessor(function(event){
+            try{
+              const last = window._randori_log && window._randori_log._lastEvent;
+              if(last){ event.tags = event.tags||{}; event.tags.randori_event=last; }
+              event.tags = event.tags||{}; event.tags.app='randori-circle'; event.environment = window.__randoriSentry.environment;
+            }catch{} return event;
+          });
+        }catch{}
+        // forward logger errors to Sentry (keeps our table as source of truth)
+        var origLog = window._randori_log && window._randori_log.log;
+        if(window._randori_log && typeof window._randori_log.log==='function' && !window._randori_log._sentryPatched){
+          var base = window._randori_log.log.bind(window._randori_log);
+          window._randori_log.log = function(level,eventName,msg,meta){
+            try{ base(level,eventName,msg,meta); }catch{}
+            try{
+              window._randori_log._lastEvent = eventName||'';
+              if(level==='error' && window.Sentry){
+                Sentry.captureMessage(String(msg).slice(0,500), {level:'error', tags:{event:eventName||'unknown', source:'client'}});
+              } else if(level==='warn' && window.Sentry){
+                Sentry.captureMessage(String(msg).slice(0,500), {level:'warning', tags:{event:eventName||'unknown'}});
+              }
+            }catch{}
+          };
+          window._randori_log._sentryPatched=true;
+        }
+        early.splice(0).forEach(function(error){
           try{
-            const last = window._randori_log && window._randori_log._lastEvent;
-            if(last){ event.tags = event.tags||{}; event.tags.randori_event=last; }
-            event.tags = event.tags||{}; event.tags.app='randori-circle'; event.environment = window.__randoriSentry.environment;
-          }catch{} return event;
-        });
-      }catch{}
-      // forward logger errors to Sentry (keeps our table as source of truth)
-      var origLog = window._randori_log && window._randori_log.log;
-      if(window._randori_log && typeof window._randori_log.log==='function' && !window._randori_log._sentryPatched){
-        var base = window._randori_log.log.bind(window._randori_log);
-        window._randori_log.log = function(level,eventName,msg,meta){
-          try{ base(level,eventName,msg,meta); }catch{}
-          try{
-            window._randori_log._lastEvent = eventName||'';
-            if(level==='error' && window.Sentry){
-              Sentry.captureMessage(String(msg).slice(0,500), {level:'error', tags:{event:eventName||'unknown', source:'client'}});
-            } else if(level==='warn' && window.Sentry){
-              Sentry.captureMessage(String(msg).slice(0,500), {level:'warning', tags:{event:eventName||'unknown'}});
-            }
+            if(error instanceof Error) Sentry.captureException(error,{tags:{event:'early_error'}});
+            else if(error!=null) Sentry.captureMessage(String(error).slice(0,500),{level:'error',tags:{event:'early_error'}});
           }catch{}
-        };
-        window._randori_log._sentryPatched=true;
+        });
+        console.log('[sentry] DE loader ready');
+      } else {
+        window._sentryReady=false;
+        if(window.__randoriSentry&&window.__randoriSentry.enabled) console.warn('sentry loader failed to create window.Sentry');
       }
-      console.log('[sentry] DE loader ready');
-    } else {
-      window._sentryReady=false;
-      if(window.__randoriSentry&&window.__randoriSentry.enabled) console.warn('sentry loader failed to create window.Sentry');
-    }
-  }catch(e){ console.warn('sentry augment fail',e); window._sentryReady=false; }
+    }catch(e){ console.warn('sentry augment fail',e); window._sentryReady=false; }
+  }
+  if(!src){ augment(); return; }
+  window.addEventListener('error',keep);
+  window.addEventListener('unhandledrejection',keep);
+  function load(){
+    var script=document.createElement('script');
+    script.src=src;
+    script.crossOrigin='anonymous';
+    script.onload=script.onerror=function(){
+      window.removeEventListener('error',keep);
+      window.removeEventListener('unhandledrejection',keep);
+      augment();
+    };
+    document.head.appendChild(script);
+  }
+  function whenIdle(){
+    if(typeof window.requestIdleCallback==='function') window.requestIdleCallback(load,{timeout:3000});
+    else setTimeout(load,1);
+  }
+  if(document.readyState==='complete') whenIdle();
+  else window.addEventListener('load',whenIdle,{once:true});
 })();
 </script>
 
@@ -13710,11 +13756,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 })();
 </script>
 
-<!-- Monaco + Prettier IDE layer — CDN, no extra Vercel function, Hobby-safe, resilient fallback chain -->
-<link rel="preconnect" href="https://cdnjs.cloudflare.com">
-<link rel="preconnect" href="https://cdn.jsdelivr.net">
-<!-- Prettier (four unpkg scripts) loads on the first "Format code", not for every visitor. -->
-<script id="monacoLoader" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js" onerror="window.__monacoLoaderFailed=1"></script>
+<!-- Monaco + Prettier IDE layer — CDN, no extra Vercel function, Hobby-safe, resilient fallback chain.
+     Nothing here downloads for a visitor who never opens the code view: the
+     Monaco loader and assets/crdt-editor.js load when the code view or a pair
+     room first opens, and Prettier (four unpkg scripts) on the first "Format code". -->
 <script>
 // Monaco IDE task — replace textarea with Monaco, keep textarea as hidden mirror for legacy runCode/AI paths
 (function(){
@@ -14019,8 +14064,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         // initial lint
         setTimeout(updateLintFromMarkers, 800);
 
-        // No "editor ready" toast: Monaco loads on every page, including the
-        // dashboard, and an unsolicited toast covered controls there.
+        // No "editor ready" toast: an unsolicited toast covered room controls.
 
       }catch(e){
         console.error('monaco init error',e);
@@ -14095,9 +14139,68 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   wireStarterActions();
 
-  // start after DOM + a tick to allow other IIFEs to set up CODE_KEY
-  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', ()=> setTimeout(initMonaco, 450)); }
-  else setTimeout(initMonaco, 450);
+  // Editor assets load on demand. The landing page, Home and the other views
+  // never need Monaco (~700 KB gzipped from the CDN) or the CRDT bundle
+  // (~300 KB), so both wait until the code view or a pair room first opens.
+  // Monaco still starts no earlier than DOMContentLoaded + 450 ms, so the other
+  // IIFEs have set up CODE_KEY and the room state first.
+  const CRDT_BUNDLE='/assets/crdt-editor.js';
+  let crdtLoad=null;
+  function loadCrdtBundle(){
+    if(window._randori_crdt) return Promise.resolve(true);
+    if(crdtLoad) return crdtLoad;
+    crdtLoad=new Promise(resolve=>{
+      const script=document.createElement('script');
+      script.src=CRDT_BUNDLE;
+      script.onload=()=>resolve(true);
+      // A failed fetch can be retried by the next room or code-view open.
+      script.onerror=()=>{ script.remove(); crdtLoad=null; resolve(false); };
+      document.head.appendChild(script);
+    });
+    return crdtLoad;
+  }
+  let monacoWanted=false, domSettled=false, monacoStarted=false;
+  function startMonaco(){
+    if(monacoStarted||!monacoWanted||!domSettled) return;
+    monacoStarted=true;
+    // The local runtime uses the plain editor; a page that already has an AMD
+    // loader (tests stub one) needs no script.
+    if(LOCAL_RUNTIME||(window.require&&window.require.config)){ initMonaco(); return; }
+    const script=document.createElement('script');
+    script.id='monacoLoader';
+    script.src=MONACO_CDN_PRIMARY+'/loader.min.js';
+    script.onload=()=>initMonaco();
+    script.onerror=()=>{ window.__monacoLoaderFailed=1; initMonaco(); };
+    document.head.appendChild(script);
+  }
+  function codeViewShown(){
+    const view=document.getElementById('view-code');
+    return !!view&&!view.hidden&&view.style.display!=='none';
+  }
+  function editorWanted(){
+    void loadCrdtBundle();
+    monacoWanted=true;
+    startMonaco();
+  }
+  function watchCodeView(){
+    if(codeViewShown()){ editorWanted(); return; }
+    const view=document.getElementById('view-code');
+    if(!view||typeof MutationObserver!=='function') return;
+    const observer=new MutationObserver(()=>{
+      if(!codeViewShown()) return;
+      observer.disconnect();
+      editorWanted();
+    });
+    observer.observe(view,{attributes:true,attributeFilter:['style','hidden']});
+  }
+  // A pair room can start hydrating before its view is painted.
+  window.addEventListener('randori:room-change',()=>{ void loadCrdtBundle(); });
+  window.addEventListener('randori:workspace-hydrated',()=>{ void loadCrdtBundle(); });
+  if(window._randori_authorized_room) void loadCrdtBundle();
+  watchCodeView();
+  const settle=()=>setTimeout(()=>{ domSettled=true; startMonaco(); },450);
+  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', settle); }
+  else settle();
 
   // expose format for global console
   window._randori_format = formatCode;
@@ -14108,7 +14211,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 <script type="module" src="/assets/calendar-export.js"></script>
 <script type="module" src="/assets/app-shell.js"></script>
 <script type="module" src="/assets/room-layout.js"></script>
-<script src="/assets/crdt-editor.js" defer></script>
 <script type="module">
 // --- Pillar 3 Fix: rewired AI frontend (Groq router + anon demo + quota + loader/toast) ---
 (function(){

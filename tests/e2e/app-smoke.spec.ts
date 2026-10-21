@@ -92,5 +92,6 @@ test('browser tests never load the production telemetry SDK', async ({ page }) =
     enabled: false,
     productionOrigin: 'https://randori-circle-self.vercel.app',
   });
-  expect(telemetryFailures).toEqual(['net::ERR_NAME_NOT_RESOLVED']);
+  // The loader is requested once the page is idle (after load), not while it parses.
+  await expect.poll(() => telemetryFailures).toEqual(['net::ERR_NAME_NOT_RESOLVED']);
 });

@@ -220,7 +220,12 @@ export async function setCode(page: Page, code: string) {
     if (monaco && typeof monaco.getValue === 'function') return true;
 
     const textarea = document.querySelector<HTMLTextAreaElement>('#editor');
-    return Boolean(textarea && getComputedStyle(textarea).display !== 'none');
+    // Monaco is only requested once the code view opens. While that view is
+    // hidden (a pair room hydrated from Home), the textarea is the editor the
+    // code document binds to.
+    const codeView = document.getElementById('view-code');
+    const codeViewHidden = !codeView || getComputedStyle(codeView).display === 'none';
+    return Boolean(textarea && (codeViewHidden || getComputedStyle(textarea).display !== 'none'));
   });
 
   await page.evaluate(value => {
