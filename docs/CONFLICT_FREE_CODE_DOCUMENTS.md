@@ -21,6 +21,14 @@ API shim, so no second Monaco runtime enters the bundle. `npm run check:crdt`
 rebuilds in memory and rejects source/bundle drift. The textarea fallback
 applies a bounded single-splice diff to that same type.
 
+The page does not load the bundle for every visitor. `index.html` injects it
+the first time the code view opens or a pair room changes or hydrates
+(`randori:room-change`, `randori:workspace-hydrated`). Activation reads the
+current workspace state, so a bundle that arrives after hydration still
+attaches. Until it loads, the v3 workspace owns the code, exactly as it does
+before the selection checkpoint is acknowledged. The Monaco loader is injected
+the same way, and the textarea fallback still covers a CDN failure.
+
 ## Authority and merge protocol
 
 `GET/POST /api/code-document` accept only a canonical room and exact active

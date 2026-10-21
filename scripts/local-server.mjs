@@ -54,14 +54,13 @@ const LOCAL_EXTERNAL_ASSET_TAGS=Object.freeze([
   '<link rel="preconnect" href="https://fonts.googleapis.com">',
   '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
   '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">',
-  '<script src="https://js-de.sentry-cdn.com/b4aa012a94edbcd36c8c92ef1aaeddfa.min.js" crossorigin="anonymous"></script>',
-  '<link rel="preconnect" href="https://cdnjs.cloudflare.com">',
-  '<link rel="preconnect" href="https://cdn.jsdelivr.net">',
+  // index.html loads Sentry from this inert tag after the page is idle; with
+  // the tag stripped, nothing is fetched.
+  '<script id="randoriSentryLoader" type="text/plain" data-src="https://js-de.sentry-cdn.com/b4aa012a94edbcd36c8c92ef1aaeddfa.min.js"></script>',
   '<script src="https://unpkg.com/prettier@3.3.3/standalone.js" onerror="console.warn(\'prettier standalone failed\')"></script>',
   '<script src="https://unpkg.com/prettier@3.3.3/plugins/babel.js" onerror="console.warn(\'prettier babel failed\')"></script>',
   '<script src="https://unpkg.com/prettier@3.3.3/plugins/estree.js" onerror="console.warn(\'prettier estree failed\')"></script>',
   '<script src="https://unpkg.com/prettier@3.3.3/plugins/typescript.js" onerror="console.warn(\'prettier ts failed\')"></script>',
-  '<script id="monacoLoader" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js" onerror="window.__monacoLoaderFailed=1"></script>',
 ]);
 const MIME_TYPES=Object.freeze({
   '.css':'text/css; charset=utf-8',
