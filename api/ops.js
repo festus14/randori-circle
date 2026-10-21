@@ -18,6 +18,7 @@ import {
   SECONDARY_PAIRING_CACHE_CONTROL,
 } from './_circle-pairing.js';
 import { purgeExpiredCodeDocuments } from './_code-document.js';
+import { runAppLogRetention } from './_app-log-retention.js';
 import { inviteRequestSchemaNotInstalled, runInviteRequestRetention } from './_invite-request-config.js';
 import { INVITE_REQUEST_EVENT_TYPE } from './_invite-request-notification.js';
 import {
@@ -79,6 +80,8 @@ export const OUTBOX_CRON_MAX_CLAIMS=8;
 // Issue #287: the reminder due-check gets its own slice of the preparation
 // window so a slow query can never hold back the delivery rounds.
 export const OUTBOX_REMINDER_DUE_CHECK_BUDGET_MS=5_000;
+// ID-72: app_logs retention runs after the delivery round with this budget.
+export const OUTBOX_APP_LOG_RETENTION_BUDGET_MS=2_000;
 const OUTBOX_CRON_MIN_DISPATCH_WINDOW_MS=100;
 
 function codeDocumentSchemaNotInstalled(error){
@@ -452,6 +455,7 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
   finalizationReserveMs=OUTBOX_CRON_FINALIZATION_RESERVE_MS,
   minimumDispatchWindowMs=OUTBOX_CRON_MIN_DISPATCH_WINDOW_MS,
   reminderDueCheckBudgetMs=OUTBOX_REMINDER_DUE_CHECK_BUDGET_MS,
+  appLogRetentionBudgetMs=OUTBOX_APP_LOG_RETENTION_BUDGET_MS,
 }={}){
   const preparationDeadline=deadlineAtMs-finalizationReserveMs-minimumDispatchWindowMs;
   // Issue #287: the reminder due-check runs inside the timeboxed preparation so
@@ -476,6 +480,19 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
     db,workerId:`outbox-${randomUUID()}`,handlers:plan.handlers,eventTypes,
     maxClaims,deadlineAtMs,finalizationReserveMs,minimumDispatchWindowMs,
   }):emptyOutboxInvocation(eventTypes,{deadlineReached:!preparation.completed,maxClaims});
+  // ID-72: app_logs retention (throttled to once an hour inside the module)
+  // starts only after delivery, so it can never delay mail, and only when its
+  // whole budget still fits before the finalization reserve. A slow or failed
+  // purge is reported and retried by a later invocation.
+  let appLogRetention=null;
+  const retentionDeadline=performance.now()+appLogRetentionBudgetMs;
+  if(preparation.completed&&!invocation.deadlineReached
+    &&retentionDeadline<=deadlineAtMs-finalizationReserveMs){
+    appLogRetention=await settleBeforeDeadline(()=>runAppLogRetention(db),retentionDeadline).then(
+      settled=>settled.completed?settled.value:{ran:false,timed_out:true},
+      ()=>({ran:false,failed:true}),
+    );
+  }
   const metricRead=preparation.completed&&!invocation.deadlineReached
     ?await settleBeforeDeadline(async()=>({outbox:await readOutboxMetrics(db),
       keyRotation:await outboxKeyRotationStatuses(db,{local:plan.local})}),deadlineAtMs)
@@ -501,6 +518,7 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
     deadline_reached:deadlineReached,metrics_complete:metricRead.completed,
     legacy_reconciliation_complete:preparation.completed,logging_complete:false,
     claimed:invocation.claimed,types,key_rotation:metricRead.completed?metricRead.value.keyRotation:null,
+    app_logs_retention:appLogRetention,
     ...(remindersEnabled()?{reminders_enqueued:reminders&&!reminders.failed?{
       availability_cutoff:reminders.availability_cutoff,agree_time:reminders.agree_time,
       session_soon:reminders.session_soon,
