@@ -200,13 +200,13 @@ function currentCycleId(now,timeZone){
  */
 export function buildCircleHealth(cycles,{
   scope,now=Date.now(),timeZone,completionTracked=true,
-  window=CIRCLE_HEALTH_WINDOW,lookback=CIRCLE_HEALTH_LOOKBACK,minimum=CIRCLE_HEALTH_MIN_CELL,
+  windowCycles=CIRCLE_HEALTH_WINDOW,lookbackCycles=CIRCLE_HEALTH_LOOKBACK,minimum=CIRCLE_HEALTH_MIN_CELL,
 }={}){
   const keysByCycle=cycles.map(cycle=>new Set(cycle.groups.filter(group=>!group.solo).flatMap(pairKeys)));
   const current=currentCycleId(now,timeZone);
-  const visible=cycles.slice(0,window).map((cycle,index)=>{
+  const visible=cycles.slice(0,windowCycles).map((cycle,index)=>{
     const seen=new Set();
-    for(const keys of keysByCycle.slice(index+1,index+1+lookback)) for(const key of keys) seen.add(key);
+    for(const keys of keysByCycle.slice(index+1,index+1+lookbackCycles)) for(const key of keys) seen.add(key);
     const raw=aggregateCycle(cycle,seen,{completionTracked});
     const result=suppressCycleMetrics(raw,{minimum,completionTracked});
     return Object.freeze({
@@ -220,8 +220,8 @@ export function buildCircleHealth(cycles,{
   return Object.freeze({
     version:CIRCLE_HEALTH_VERSION,
     scope,
-    window_cycles:window,
-    lookback_cycles:lookback,
+    window_cycles:windowCycles,
+    lookback_cycles:lookbackCycles,
     min_cell_size:minimum,
     completion_tracked:completionTracked,
     attendance_outcomes_tracked:ATTENDANCE_OUTCOMES_TRACKED,
