@@ -3032,3 +3032,62 @@ owner sets `REMINDERS_ENABLED=true` (and optionally
 `REMINDERS_SESSION_SOON_ENABLED=true`) in Vercel Production and redeploys. To
 recover, unset the flag and redeploy; queued reminders drain as suppressed.
 Contract: [`REMINDERS.md`](REMINDERS.md).
+
+## ID-72: Show owners aggregate circle health from existing tables behind a flag
+
+Status: implemented behind `CIRCLE_HEALTH_ENABLED` (default off); no
+migration. Issue #292 (post-MVP roadmap #312, Wave 3). Final design is
+pending (`needs-design`).
+
+**Context.** The README's first next step is to measure completed sessions,
+but an owner could not see where members drop off: at availability, at
+scheduling, or at the session. There is no product analytics, and a
+third-party tracker would conflict with a private circle.
+
+**Decision.**
+- `GET /api/circle/health` (rewrite to `/api/ops?endpoint=circle-health`)
+  returns, for the selected circle's last 8 published cycles, member counts
+  for available, paired, agreed a time, completed (primary circles only) and
+  solo, the median hours from publication to the agreed session time, and the
+  repeat-pair rate against the 8 cycles before. Cancellations and no-shows are
+  in the contract as `not_tracked` until #291.
+- Everything is computed per request with read-only statements over the
+  existing publication, schedule, completion-receipt (ID-55) and v13/v16
+  secondary tables: no table, cache row, index or migration. One `read` batch
+  gives a single snapshot; the owner check is its first statement and a guard
+  CTE inside every data statement. Any active owner of the unarchived circle
+  may read it (ID-69); members, demoted or inactive owners, archived circles
+  and other circles get 403.
+- Small-cell suppression runs on the server before the response is built: a
+  cycle with 1 or 2 available members is withheld; any count of 1 or 2
+  members is hidden; funnel counts are also hidden when their difference from
+  another shown funnel count is 1 or 2; rates and medians need at least 3
+  members on every side. The response has no ids, names or emails.
+- The flag gates the route (404 with no storage access), the `circleHealth`
+  capability and the owner card. The card loads only while the Circle view is
+  on screen and keeps one copy per circle context for 5 minutes.
+
+**Read budget.** Every statement uses an existing index except the primary
+group read: `pairing_groups` has no `week_id` index, so that read scans the
+table, as `/api/stats` and history already do. A `pairing_groups(week_id)`
+index is left for a future managed migration rather than added here.
+
+**Residual risk.** Numbers for the in-progress cycle change as pairs act, so
+comparing two views can show that some pair just acted (not which one).
+
+**Deferred.** "Time to agree" (when the pair agreed, not the session time)
+needs an agreement timestamp; `pair_schedules.updated_at` changes on later
+proposals. Cancellations and no-shows wait for #291. Trends beyond 8 cycles,
+per-member views (out of scope) and a server-side cache.
+
+**Alternatives.** A nightly aggregate table (a migration, a scheduler and
+stale numbers for little saving at this size). An in-memory cache across
+requests (cannot be invalidated on demotion and is per serverless instance).
+Client-side events (out of scope and a privacy cost). Suppressing only cells
+of 1 or 2 without complements (a hidden value could be recovered by
+subtraction).
+
+**Rollout and recovery.** Merge with the flag unset; nothing changes. Agree
+the threshold with the owner, then set `CIRCLE_HEALTH_ENABLED=true` in Vercel
+Production and redeploy. To recover, unset the flag and redeploy; there is no
+stored state. Contract: [`CIRCLE_HEALTH.md`](CIRCLE_HEALTH.md).

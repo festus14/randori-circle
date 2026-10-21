@@ -718,7 +718,7 @@ function apiRoute(pathname,query){
     ['/api/cron/weekly','weekly'],['/api/cron/outbox','outbox'],['/api/cron/outbox-health','outbox-health'],
     ['/api/admin/outbox/replay','outbox-replay'],['/api/admin/demo-seed','demo-seed'],
     ['/api/admin/demo-shuffle','demo-shuffle'],['/api/admin/demo-reset','demo-reset'],
-    ['/api/notifications/prefs','notifications-prefs'],
+    ['/api/notifications/prefs','notifications-prefs'],['/api/circle/health','circle-health'],
   ]);
   if(opsEndpoints.has(pathname)){
     query.endpoint=opsEndpoints.get(pathname);

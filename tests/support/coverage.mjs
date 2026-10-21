@@ -32,7 +32,9 @@ const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   // WP-O onboarding flow and WP-S app shell.
   'assets/onboarding-flow.js', 'assets/app-shell.js',
   // Shared email rules and the bulk invite UI (ID-68).
-  'assets/email-validation.js', 'assets/bulk-invite.js'];
+  'assets/email-validation.js', 'assets/bulk-invite.js',
+  // Owner circle health panel (issue #292).
+  'assets/circle-health.js'];
 // Operator tools that cannot run under unit tests; see
 // docs/testing/COVERAGE_BASELINE.md ("Excluded from scope"). Their pure
 // decision logic lives in sibling modules that are measured.
