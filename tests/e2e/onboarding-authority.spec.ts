@@ -490,7 +490,7 @@ test('after the cutoff the setup guide shows the pair the Home hero shows, even 
   const readsBefore = availabilityReads;
   await page.evaluate(() => window._randori_journey?.showDashboard?.());
 
-  await expect(page.locator('#dashPartnerName')).toHaveText('Partner 52');
+  await expect(page.getByTestId('secondary-pair-card')).toContainText('Partner 52');
   const newPairWeek = await weekPhrase(page, value.upcoming);
   await expect(page.locator('#chkPair')).toHaveAttribute('data-state', 'done');
   await expect(page.locator('#chkPair')).toContainText(`Current assignment published for ${newPairWeek}`);
@@ -510,7 +510,7 @@ test('after the cutoff the setup guide shows the pair the Home hero shows, even 
   await expect(page.locator('#chkAvail')).toContainText(`Availability saved for ${await weekPhrase(page, nextUpcoming)}`);
   await expect(page.locator('#chkPair')).toHaveAttribute('data-state', 'done');
   await expect(page.locator('#chkPair')).toContainText(`Current assignment published for ${newPairWeek}`);
-  await expect(page.locator('#dashPartnerName')).toHaveText('Partner 52');
+  await expect(page.getByTestId('secondary-pair-card')).toContainText('Partner 52');
 });
 
 test('pair and workspace completion ignore stale room storage and require exact authorized hydration', async ({ page }) => {
