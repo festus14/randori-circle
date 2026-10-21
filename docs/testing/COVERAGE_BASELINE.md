@@ -1,15 +1,40 @@
 # Unit test coverage baseline
 
+## Current baseline and CI gate
+
+Measured 2026-10-20 on `main` (as of 01e6365) (Node 24.15.0, 2182 unit tests,
+183 test files) with `npm run test:coverage:report`. The e2e CI job on the
+same commit (ubuntu-24.04) reported identical totals. Scope: `api/*.js`,
+`db/*.js`, `scripts/*.mjs` (112 files, after the two exclusions below). All
+five test-writing packages (P1 to P5) have landed, and no file in scope is
+below 80% on any metric.
+
+| Metric | Measured | CI gate (`npm run test:coverage`) |
+|---|---|---|
+| Lines | **97.93%** (41657/42536) | 97 |
+| Branches | **93.02%** (20843/22405) | 92 |
+| Functions | **99.38%** (2098/2111) | 99 |
+
+The gate is set to the measured totals rounded down to a whole percent.
+Branches get about one extra point of headroom because they move most when new
+code lands. Raise the gate the same way when coverage rises. Do not lower it
+to get a PR through: add tests instead, or explain the drop in the PR.
+
+The rest of this document records the original 2026-10-19 baseline, the
+measurement fix and the test-writing packages that followed it.
+
+## Original baseline (2026-10-19)
+
 Measured 2026-10-19 on `main` (as of 5992fe0) (Node 24.15.0, 1135 unit tests, 114 test files)
 with `npm run test:coverage:report`. Scope: `api/*.js`, `db/*.js`,
 `scripts/*.mjs` (99 files). The owner's target is **80% lines, branches and
-functions**; this document is the starting point for the test-writing packages
-below. The CI gate (`npm run test:coverage`) is pinned to the current true
-totals rounded down and will be ratcheted to 80 once the packages land.
+functions**; this section was the starting point for the test-writing packages
+below. The CI gate was pinned to the true totals rounded down at the time
+(89/78/97), then ratcheted to 93/81/98 after P5 and to 97/92/99 above.
 
-## True totals
+### True totals
 
-| Metric | Old (built-in, wrong) | True (c8 merge) | CI gate now | Target |
+| Metric | Old (built-in, wrong) | True (c8 merge) | CI gate then | Target |
 |---|---|---|---|---|
 | Lines | 61.59% | **89.98%** (35532/39487) | 89 | 80 |
 | Branches | 78.10% | **78.16%** (12658/16193) | 78 | 80 |
@@ -86,8 +111,9 @@ path) were hit 9 times and 141–142 were hit 187 times.
 Options: `--report` prints the per-file table; `--out=DIR` keeps
 `coverage-summary.json`, `coverage-final.json` and `lcov.info` in DIR.
 
-Ratchet: when a package lands, raise the thresholds in `package.json`
-`test:coverage` to the new totals rounded down, then to 80/80/80.
+Ratchet: when coverage rises, raise the thresholds in `package.json`
+`test:coverage` to the new totals rounded down (branches minus about one
+point). The current gate is in "Current baseline and CI gate" above.
 
 ## Excluded from scope
 
