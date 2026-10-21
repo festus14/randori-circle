@@ -19,8 +19,9 @@ const NOW = Date.parse('2026-09-22T06:00:00.000Z');
 const ACTIVATION = '2026-09-21T03:17:00.000Z';
 const MAX_AGE = 8 * 24 * 60 * 60 * 1000;
 const STUCK_AFTER = 90 * 60 * 1000;
-const GRACE = 2 * 60 * 60 * 1000;
-const DEADLINE = 3.5 * 60 * 60 * 1000;
+const GRACE = 8 * 60 * 60 * 1000;
+const DEADLINE = GRACE + STUCK_AFTER;
+const DAY = 24 * 60 * 60 * 1000;
 const COMMIT = 'a'.repeat(40);
 const DIGEST = 'b'.repeat(64);
 const TOKEN = 'private-watchdog-token';
@@ -76,7 +77,11 @@ function apiEnvironment(overrides = {}) {
 
 test('assessment parameters are validated before any run is considered', () => {
   assert.throws(() => assessScheduledRuns([], runOptions({ slotDeadlineMs: GRACE })), /schedule deadline is invalid/);
-  assert.throws(() => assessScheduledRuns([], runOptions({ slotDeadlineMs: 5 * 60 * 60 * 1000 })), /schedule deadline is invalid/);
+  // A missing, failed, or unfinished drill must alert within one day of its slot (#324).
+  assert.equal(assessScheduledRuns([], runOptions({ slotDeadlineMs: DAY })).category, 'run_missing');
+  assert.throws(() => assessScheduledRuns([], runOptions({ slotDeadlineMs: DAY + 1 })), /schedule deadline is invalid/);
+  assert.throws(() => assessScheduledRuns([], runOptions({ slotGraceMs: DAY + 1, slotDeadlineMs: DAY })),
+    /schedule grace is invalid/);
   assert.throws(() => assessScheduledRuns([], runOptions({ maxRunAgeMs: '0' })), /maximum run age is invalid/);
   assert.throws(() => assessScheduledRuns([], runOptions({ clock: () => Number.NaN })), /watchdog clock is invalid/);
   assert.throws(() => assessScheduledRuns([], runOptions({ activationAt: 42 })), /control activation epoch is invalid/);

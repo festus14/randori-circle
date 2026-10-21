@@ -17,6 +17,11 @@ const NOW=Date.parse('2026-09-22T06:00:00.000Z');
 const ACTIVATION='2026-09-21T03:17:00.000Z';
 const MAX_AGE=8*24*60*60*1000;
 const STUCK_AFTER=90*60*1000;
+const HOUR=60*60*1000;
+// The reviewed policy committed in the watchdog workflow (#324): an eight-hour
+// slot grace for GitHub's late schedules and a deadline 90 minutes after it.
+const GRACE=8*HOUR;
+const DEADLINE=GRACE+STUCK_AFTER;
 const COMMIT='a'.repeat(40);
 const DIGEST='b'.repeat(64);
 const resources=[];
@@ -36,8 +41,18 @@ function run(overrides={}){
 
 function runOptions(overrides={}){
   return {defaultBranch:'main',maxRunAgeMs:MAX_AGE,stuckAfterMs:STUCK_AFTER,
-    slotGraceMs:2*60*60*1000,slotDeadlineMs:3.5*60*60*1000,
+    slotGraceMs:GRACE,slotDeadlineMs:DEADLINE,
     activationAt:ACTIVATION,clock:()=>NOW,...overrides};
+}
+
+function policyEnvironment(){
+  return {
+    GITHUB_REPOSITORY:'festus14/randori-circle',WATCHDOG_DEFAULT_BRANCH:'main',
+    GITHUB_API_URL:'https://api.github.com',GITHUB_TOKEN:'private-watchdog-token',
+    WATCHDOG_CONTROL_ACTIVATION_AT:ACTIVATION,
+    WATCHDOG_MAX_RUN_AGE_MS:String(MAX_AGE),WATCHDOG_STUCK_AFTER_MS:String(STUCK_AFTER),
+    WATCHDOG_SLOT_GRACE_MS:String(GRACE),WATCHDOG_SLOT_DEADLINE_MS:String(DEADLINE),
+  };
 }
 
 function discovery(){
@@ -117,27 +132,27 @@ test('activation is schedule-aligned and fails closed without post-activation ev
   }
 });
 
-test('the current Monday slot is required immediately after its bounded grace',()=>{
+test('the current Monday slot is required immediately after its eight-hour grace',()=>{
   const previous=run();
-  const beforeGrace=assessScheduledRuns([previous],runOptions({
-    clock:()=>Date.parse('2026-09-28T04:30:00.000Z'),
-  }));
-  assert.equal(beforeGrace.candidate,true);
-  assert.equal(beforeGrace.expectedAt,'2026-09-21T03:17:00.000Z');
+  for(const at of ['2026-09-28T10:47:00.000Z','2026-09-28T11:16:59.999Z']){
+    const beforeGrace=assessScheduledRuns([previous],runOptions({clock:()=>Date.parse(at)}));
+    assert.equal(beforeGrace.candidate,true,at);
+    assert.equal(beforeGrace.expectedAt,'2026-09-21T03:17:00.000Z',at);
+  }
 
-  const missed=assessScheduledRuns([previous],runOptions({
-    clock:()=>Date.parse('2026-09-28T05:47:00.000Z'),
-  }));
-  assert.equal(missed.category,'run_missing');
-  assert.equal(missed.expectedAt,'2026-09-28T03:17:00.000Z');
+  for(const at of ['2026-09-28T11:17:00.000Z','2026-09-28T11:47:00.000Z']){
+    const missed=assessScheduledRuns([previous],runOptions({clock:()=>Date.parse(at)}));
+    assert.equal(missed.category,'run_missing',at);
+    assert.equal(missed.expectedAt,'2026-09-28T03:17:00.000Z',at);
+  }
 });
 
 test('a prior post-activation success stays verifiable through a later slot grace',()=>{
-  const graceNow=Date.parse('2026-09-28T04:30:00.000Z');
+  const graceNow=Date.parse('2026-09-28T10:47:00.000Z');
   const priorSuccess=run();
   const currentRun=run({
     id:124,run_attempt:1,status:'in_progress',conclusion:null,
-    created_at:'2026-09-28T03:17:00Z',updated_at:'2026-09-28T03:17:00Z',
+    created_at:'2026-09-28T09:30:00Z',updated_at:'2026-09-28T09:30:00Z',
   });
   const selected=assessScheduledRuns([currentRun,priorSuccess],runOptions({clock:()=>graceNow}));
   assert.equal(selected.candidate,true);
@@ -174,27 +189,146 @@ test('a stale prior-success alert retains the reviewed activation epoch',()=>{
 
 test('a grace-edge run cannot reset the absolute current-slot deadline',()=>{
   const graceEdge=run({id:124,run_attempt:1,status:'in_progress',conclusion:null,
-    created_at:'2026-09-21T05:17:00Z',updated_at:'2026-09-21T05:17:00Z'});
+    created_at:'2026-09-21T11:17:00Z',updated_at:'2026-09-21T11:17:00Z'});
   const observing=assessScheduledRuns([graceEdge],runOptions({
-    clock:()=>Date.parse('2026-09-21T05:47:00.000Z'),
+    clock:()=>Date.parse('2026-09-21T11:47:00.000Z'),
   }));
   assert.equal(observing.status,'observing');
   assert.equal(observing.alert,false);
 
   const stuck=assessScheduledRuns([graceEdge],runOptions({
-    clock:()=>Date.parse('2026-09-21T06:47:00.000Z'),
+    clock:()=>Date.parse('2026-09-21T12:47:00.000Z'),
   }));
   assert.equal(stuck.category,'run_stuck');
 });
 
-test('an arbitrarily late run still alerts on the last watchdog tick before four hours',()=>{
+test('an arbitrarily late run still alerts at the absolute 12:47 UTC slot deadline',()=>{
   const late=run({id:125,run_attempt:1,status:'in_progress',conclusion:null,
-    created_at:'2026-09-21T06:46:00Z',updated_at:'2026-09-21T06:46:00Z'});
+    created_at:'2026-09-21T12:46:00Z',updated_at:'2026-09-21T12:46:00Z'});
   const result=assessScheduledRuns([late],runOptions({
-    clock:()=>Date.parse('2026-09-21T06:47:00.000Z'),
+    clock:()=>Date.parse('2026-09-21T12:47:00.000Z'),
   }));
   assert.equal(result.category,'run_stuck');
   assert.equal(result.expectedAt,'2026-09-21T03:17:00.000Z');
+});
+
+// #324: GitHub started the Monday 03:17 UTC drill about 5h40m late. These
+// ticks run the whole discover-download-verify chain against the reviewed policy.
+function drill(id,createdAt,minutes,conclusion='success'){
+  const created=Date.parse(createdAt);
+  return {id,created,finished:created+minutes*60*1000,conclusion};
+}
+
+function iso(milliseconds){
+  return new Date(milliseconds).toISOString();
+}
+
+function githubRun(item,now){
+  if(now<item.created) return null;
+  const done=now>=item.finished;
+  return run({id:item.id,run_attempt:1,status:done?'completed':'in_progress',
+    conclusion:done?item.conclusion:null,created_at:iso(item.created),
+    updated_at:iso(done?item.finished:item.created)});
+}
+
+async function watchdogTick(at,drills){
+  const now=typeof at==='number'?at:Date.parse(at);
+  const fetchImpl=async url=>{
+    const artifactRun=Number(/\/actions\/runs\/(\d+)\/artifacts\?/.exec(url)?.[1]);
+    const value=artifactRun?{artifacts:drills
+      .filter(item=>item.id===artifactRun&&item.conclusion==='success'&&now>=item.finished)
+      .map(item=>({id:item.id+1000,name:`turso-backup-monitor-${item.id}-1`,expired:false,
+        created_at:iso(item.finished)}))}
+      :{workflow_runs:drills.map(item=>githubRun(item,now)).filter(Boolean)};
+    return {ok:true,async json(){ return value; }};
+  };
+  const discovered=await discoverAuthoritativeEvidence(policyEnvironment(),{fetchImpl,clock:()=>now});
+  if(discovered.status!=='candidate') return discovered;
+  const selected=drills.find(item=>item.id===discovered.runId);
+  return verifyDownloadedMonitor(monitorSummary({runId:selected.id,runAttempt:1,
+    checkedAt:iso(selected.finished-1000)}),discovered,
+  {maxRunAgeMs:MAX_AGE,activationAt:ACTIVATION,clock:()=>now});
+}
+
+function hourlyTicks(from,to){
+  const ticks=[];
+  for(let at=Date.parse(from);at<=Date.parse(to);at+=HOUR) ticks.push(at);
+  return ticks;
+}
+
+const SLOT=Date.parse('2026-09-28T03:17:00.000Z');
+const PRIOR=drill(123,'2026-09-21T03:17:00.000Z',20);
+
+test('a drill GitHub starts up to about eight hours late, then completes, never alerts',async()=>{
+  for(const [delayMinutes,minutes] of [
+    [340,80], // the observed 5h40m delay, still running at the next tick
+    [480,85], // exactly eight hours late, running across the 11:47 tick
+    [509,25], // 8h29m: the latest start the first post-grace tick still sees
+  ]){
+    const late=drill(124,iso(SLOT+delayMinutes*60*1000),minutes);
+    for(const at of hourlyTicks('2026-09-28T03:47:00.000Z','2026-09-29T03:47:00.000Z')){
+      const result=await watchdogTick(at,[PRIOR,late]);
+      assert.equal(result.alert,false,`${delayMinutes}m late at ${iso(at)}: ${result.category}`);
+      assert.ok(['healthy','observing'].includes(result.status),`${iso(at)}: ${result.status}`);
+    }
+    const settled=await watchdogTick('2026-09-29T03:47:00.000Z',[PRIOR,late]);
+    assert.equal(settled.status,'healthy');
+    assert.equal(settled.runId,124);
+    assert.equal(settled.expectedAt,'2026-09-28T03:17:00.000Z');
+  }
+});
+
+test('a drill still absent after the eight-hour grace raises run_missing the same Monday',async()=>{
+  const lastInGrace=await watchdogTick('2026-09-28T10:47:00.000Z',[PRIOR]);
+  assert.equal(lastInGrace.status,'healthy');
+  assert.equal(lastInGrace.runId,123);
+
+  const missing=await watchdogTick('2026-09-28T11:47:00.000Z',[PRIOR]);
+  assert.equal(missing.category,'run_missing');
+  assert.equal(missing.expectedAt,'2026-09-28T03:17:00.000Z');
+  assert.ok(Date.parse(missing.checkedAt)-SLOT<24*HOUR);
+  for(const at of hourlyTicks('2026-09-28T12:47:00.000Z','2026-09-29T02:47:00.000Z')){
+    assert.equal((await watchdogTick(at,[PRIOR])).category,'run_missing',iso(at));
+  }
+});
+
+test('a late drill that fails raises run_failed, even while the prior week is in grace',async()=>{
+  for(const [createdAt,firstTick] of [
+    ['2026-09-28T08:57:00.000Z','2026-09-28T09:47:00.000Z'],
+    ['2026-09-28T11:17:00.000Z','2026-09-28T11:47:00.000Z'],
+  ]){
+    const failed=drill(124,createdAt,20,'failure');
+    for(const at of hourlyTicks(firstTick,'2026-09-29T02:47:00.000Z')){
+      const result=await watchdogTick(at,[PRIOR,failed]);
+      assert.equal(result.category,'run_failed',`${createdAt} at ${iso(at)}`);
+      assert.equal(result.runId,124);
+    }
+  }
+});
+
+test('the week rollover keeps the prior slot only until the new slot grace expires',async()=>{
+  const prior=drill(130,'2026-12-28T03:17:00.000Z',20);
+  for(const at of [
+    '2027-01-03T23:47:00.000Z', // Sunday, before the new slot
+    '2027-01-04T03:16:59.999Z', // Monday, one millisecond before the new slot
+    '2027-01-04T03:17:00.000Z', // the new slot itself, inside its grace
+    '2027-01-04T11:16:59.999Z', // the last instant of grace, 7d8h after the prior run
+  ]){
+    const result=await watchdogTick(at,[prior]);
+    assert.equal(result.status,'healthy',at);
+    assert.equal(result.runId,130,at);
+    assert.equal(result.expectedAt,'2026-12-28T03:17:00.000Z',at);
+  }
+
+  const missing=await watchdogTick('2027-01-04T11:17:00.000Z',[prior]);
+  assert.equal(missing.category,'run_missing');
+  assert.equal(missing.expectedAt,'2027-01-04T03:17:00.000Z');
+
+  const late=drill(131,'2027-01-04T10:00:00.000Z',20);
+  const healthy=await watchdogTick('2027-01-04T11:47:00.000Z',[prior,late]);
+  assert.equal(healthy.status,'healthy');
+  assert.equal(healthy.runId,131);
+  assert.equal(healthy.expectedAt,'2027-01-04T03:17:00.000Z');
 });
 
 test('artifact assessment requires one exact, fresh, unexpired monitor artifact',()=>{
@@ -273,8 +407,8 @@ test('discovery queries only scheduled default-branch runs and binds the exact a
     GITHUB_API_URL:'https://api.github.com',GITHUB_TOKEN:'private-watchdog-token',
     WATCHDOG_CONTROL_ACTIVATION_AT:ACTIVATION,
     WATCHDOG_MAX_RUN_AGE_MS:String(MAX_AGE),WATCHDOG_STUCK_AFTER_MS:String(STUCK_AFTER),
-    WATCHDOG_SLOT_GRACE_MS:String(2*60*60*1000),
-    WATCHDOG_SLOT_DEADLINE_MS:String(3.5*60*60*1000),
+    WATCHDOG_SLOT_GRACE_MS:String(GRACE),
+    WATCHDOG_SLOT_DEADLINE_MS:String(DEADLINE),
   },{fetchImpl,clock:()=>NOW});
   assert.equal(result.status,'candidate');
   assert.equal(result.repoCommit,COMMIT);
@@ -294,8 +428,8 @@ test('pre-activation discovery reports setup without querying GitHub',async()=>{
     GITHUB_API_URL:'https://api.github.com',GITHUB_TOKEN:'private-watchdog-token',
     WATCHDOG_CONTROL_ACTIVATION_AT:ACTIVATION,
     WATCHDOG_MAX_RUN_AGE_MS:String(MAX_AGE),WATCHDOG_STUCK_AFTER_MS:String(STUCK_AFTER),
-    WATCHDOG_SLOT_GRACE_MS:String(2*60*60*1000),
-    WATCHDOG_SLOT_DEADLINE_MS:String(3.5*60*60*1000),
+    WATCHDOG_SLOT_GRACE_MS:String(GRACE),
+    WATCHDOG_SLOT_DEADLINE_MS:String(DEADLINE),
   },{fetchImpl:async()=>{ requests+=1; throw new Error('must not fetch'); },
     clock:()=>Date.parse('2026-09-20T17:00:00.000Z')});
   assert.equal(result.status,'setup_pending');
@@ -318,8 +452,8 @@ test('pre-activation CLI persists a non-ready setup artifact without alerting',a
       GITHUB_API_URL:'https://api.github.com',GITHUB_TOKEN:'private-watchdog-token',
       WATCHDOG_CONTROL_ACTIVATION_AT:ACTIVATION,
       WATCHDOG_MAX_RUN_AGE_MS:String(MAX_AGE),WATCHDOG_STUCK_AFTER_MS:String(STUCK_AFTER),
-      WATCHDOG_SLOT_GRACE_MS:String(2*60*60*1000),
-      WATCHDOG_SLOT_DEADLINE_MS:String(3.5*60*60*1000),
+      WATCHDOG_SLOT_GRACE_MS:String(GRACE),
+      WATCHDOG_SLOT_DEADLINE_MS:String(DEADLINE),
     },
     fetchImpl:async()=>{ throw new Error('must not fetch'); },stdout:{write(){}},
     clock:()=>Date.parse('2026-09-20T17:00:00.000Z'),
@@ -345,8 +479,8 @@ test('discovery API failures become fixed alerts without leaking credentials or 
       WATCHDOG_DEFAULT_BRANCH:'main',GITHUB_API_URL:'https://api.github.com',
       GITHUB_TOKEN:'private-watchdog-token',WATCHDOG_CONTROL_ACTIVATION_AT:ACTIVATION,
       WATCHDOG_MAX_RUN_AGE_MS:String(MAX_AGE),
-      WATCHDOG_STUCK_AFTER_MS:String(STUCK_AFTER),WATCHDOG_SLOT_GRACE_MS:String(2*60*60*1000),
-      WATCHDOG_SLOT_DEADLINE_MS:String(3.5*60*60*1000),
+      WATCHDOG_STUCK_AFTER_MS:String(STUCK_AFTER),WATCHDOG_SLOT_GRACE_MS:String(GRACE),
+      WATCHDOG_SLOT_DEADLINE_MS:String(DEADLINE),
     },
     fetchImpl:async()=>{ throw new Error(privateError); },stdout:{write(){}},clock:()=>NOW,
   });
@@ -385,8 +519,8 @@ test('watchdog workflow is independent, read-only, hourly, and production-secret
   assert.match(rehearsal,/cron: '17 3 \* \* 1'/);
   assert.equal((rehearsal.match(/REHEARSAL_RPO_TARGET_MS: '1800000'/g)||[]).length,2);
   assert.equal((rehearsal.match(/REHEARSAL_RTO_TARGET_MS: '900000'/g)||[]).length,2);
-  assert.match(workflow,/WATCHDOG_SLOT_GRACE_MS: '7200000'/);
-  assert.match(workflow,/WATCHDOG_SLOT_DEADLINE_MS: '12600000'/);
+  assert.match(workflow,new RegExp(`WATCHDOG_SLOT_GRACE_MS: '${GRACE}'`));
+  assert.match(workflow,new RegExp(`WATCHDOG_SLOT_DEADLINE_MS: '${DEADLINE}'`));
   assert.equal((workflow.match(
     /WATCHDOG_CONTROL_ACTIVATION_AT: '2026-09-21T03:17:00\.000Z'/g)||[]).length,2);
   assert.match(workflow,/group: turso-backup-restore-watchdog/);
