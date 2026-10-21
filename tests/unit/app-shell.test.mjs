@@ -7,6 +7,7 @@ import {
   TOAST_DURATION_MS,
   MEMBER_DEEP_LINK_VIEWS,
   PUBLIC_VIEW_IDS,
+  SETUP_VIEW_ID,
   SOLO_VIEW_ID,
   createToastController,
   deepLinkSignInCopy,
@@ -16,6 +17,7 @@ import {
   memberDeepLinkView,
   navigationState,
   normalizeTheme,
+  onboardingFlowState,
   renderConnectionBanner,
   renderThemeControl,
   syncHomeTab,
@@ -386,6 +388,49 @@ test('syncPublicSurface marks the body from the visible view and auth state', ()
   assert.equal(doc.body.dataset.surface, 'app');
   assert.equal(syncPublicSurface({}), false);
   assert.equal(syncPublicSurface(null), false);
+});
+
+test('the setup stepper marks the body so the phone bottom bar can hide; Edit profile does not', () => {
+  assert.equal(SETUP_VIEW_ID, 'view-profile-setup');
+  assert.equal(onboardingFlowState({ setupVisible: true, setupMode: 'onboarding' }), 'flow');
+  assert.equal(onboardingFlowState({ setupVisible: true, setupMode: 'guide' }), 'flow');
+  assert.equal(onboardingFlowState({ setupVisible: true, setupMode: 'edit' }), 'none');
+  assert.equal(onboardingFlowState({ setupVisible: false, setupMode: 'onboarding' }), 'none');
+  assert.equal(onboardingFlowState(), 'none');
+
+  const doc = fakeShellDocument({ profile: 'block' });
+  doc.body = new FakeElement({ dataset: { auth: 'member', identity: 'resolved' } });
+  doc.views['view-profile-setup'].dataset.mode = 'onboarding';
+  syncPublicSurface(doc);
+  assert.equal(doc.body.dataset.onboarding, 'flow');
+  assert.equal(doc.body.dataset.nav, 'shown', 'tablet and desktop keep their tabs');
+  doc.views['view-profile-setup'].dataset.mode = 'edit';
+  syncPublicSurface(doc);
+  assert.equal(doc.body.dataset.onboarding, 'none');
+  doc.views['view-profile-setup'].dataset.mode = 'guide';
+  doc.views['view-profile-setup'].style.display = 'none';
+  doc.views['view-dashboard'].style.display = 'block';
+  syncPublicSurface(doc);
+  assert.equal(doc.body.dataset.onboarding, 'none');
+});
+
+test('installShell follows the setup view mode as well as its visibility', () => {
+  const doc = fakeShellDocument({ profile: 'block' });
+  doc.body = new FakeElement({ dataset: { auth: 'member', identity: 'resolved' } });
+  doc.views['view-profile-setup'].dataset.mode = 'edit';
+  const observers = [];
+  class FakeObserver {
+    constructor(callback) { this.callback = callback; this.targets = []; observers.push(this); }
+    observe(target, options) { this.targets.push({ target, options }); }
+  }
+  installShell({ document: doc, window: { navigator: {}, addEventListener() {} }, MutationObserverImpl: FakeObserver });
+  assert.equal(doc.body.dataset.onboarding, 'none');
+  const [navObserver] = observers;
+  const setupTarget = navObserver.targets.find(entry => entry.target === doc.views['view-profile-setup']);
+  assert.deepEqual(setupTarget.options.attributeFilter, ['style', 'hidden', 'data-mode']);
+  doc.views['view-profile-setup'].dataset.mode = 'onboarding';
+  navObserver.callback();
+  assert.equal(doc.body.dataset.onboarding, 'flow');
 });
 
 test('installShell observes body auth attributes so navigation follows sign-in', () => {

@@ -58,8 +58,11 @@ the dashboard's last fenced pairing observation and replays it once a refresh
 re-establishes the cycle scope, so the guide cannot sit on "Checking current
 pairing…" (or report "unknown") beside a pair the Home hero already shows. When
 that observation belongs to a newer cycle than the availability owner's
-upcoming cycle, availability is revalidated once before anything is reported
-as unknown. Workspace
+upcoming cycle (the cutoff has passed), the guide shows it, because it is the
+same fenced observation the hero renders, and availability is re-read once. When
+availability rolls over, the normal rollover reacquires the pair for the new
+scope. An observation for an older cycle is ignored, and only overlapping
+cycles are reported as unknown. Workspace
 completion is recomputed at render time from the current published room and the
 authenticated workspace hydrator; it is not persisted separately.
 

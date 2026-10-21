@@ -200,6 +200,36 @@ test.describe('anonymous visitors on a phone', () => {
   });
 });
 
+test.describe('new members on a phone', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test('the onboarding stepper hides the bottom tab bar; Home and Edit profile keep it', async ({ page }) => {
+    await firstRunMember(page);
+    const bottomBar = page.locator('.tabs');
+
+    await expect(page.locator('#view-profile-setup')).toBeVisible();
+    await expect(page.locator('#view-profile-setup')).toHaveAttribute('data-mode', 'onboarding');
+    await expect(page.locator('body')).toHaveAttribute('data-onboarding', 'flow');
+    await expect(bottomBar).toBeHidden();
+    expect(await page.evaluate(() => Number.parseFloat(getComputedStyle(document.body).paddingBottom))).toBe(0);
+
+    await page.locator('#psSkip').click();
+    await expect(page.locator('#setupStepAvailability')).toBeVisible();
+    await expect(bottomBar).toBeHidden();
+    await page.locator('#setupAvailabilityNext').click();
+    await page.locator('#setupFinish').click();
+
+    await expect(page.locator('#view-dashboard')).toBeVisible();
+    await expect(page.locator('body')).toHaveAttribute('data-onboarding', 'none');
+    await expect(bottomBar).toBeVisible();
+
+    await page.locator('#dashProfileBtn').click();
+    await expect(page.locator('#view-profile-setup')).toHaveAttribute('data-mode', 'edit');
+    await expect(page.locator('#view-profile-setup')).toBeVisible();
+    await expect(bottomBar).toBeVisible();
+  });
+});
+
 test('members keep the app navigation', async ({ page }) => {
   await mockApi(page, {
     '/api/auth/me': { ok: true, user: { ...newMember, tz: 'Europe/London' } },

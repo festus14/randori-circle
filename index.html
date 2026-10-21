@@ -1225,6 +1225,10 @@ body:not([data-nav="shown"]) .shell > nav{display:none!important}
 @media(max-width:599px){
   body:not([data-nav="shown"]){padding-bottom:0}
   body:not([data-nav="shown"]) .room{--room-offset:calc(var(--topbar-h) + var(--space-4) + 88px + env(safe-area-inset-bottom))}
+  /* The setup stepper is a focused flow with its own Back / Continue: no
+     bottom tab bar on phones. Edit profile (data-mode="edit") keeps it. */
+  body[data-onboarding="flow"] .shell > nav{display:none!important}
+  body[data-onboarding="flow"]{padding-bottom:0}
 }
 /* A visitor on /?view=code: say what needs an account, and hide the
    pair-only room controls that do nothing without one. */
@@ -3502,11 +3506,15 @@ async function refreshMe(){
       updatedAt:typeof availability.updatedAt==='string'?availability.updatedAt:null,
     });
   }
+  // Cycle instants (cutoffs, publication, cycle start) share one format with
+  // the availability card: "Sun 25 Oct, 08:00 GMT" (assets/pairing-view.js).
   function formatAvailabilityInstant(value,timeZone){
     const instant=new Date(value);
     if(!Number.isFinite(instant.getTime())) return 'Unknown time';
+    const shared=window._randori_pairing_view?.formatMoment;
+    if(typeof shared==='function') return shared(instant.getTime(),timeZone);
     try{
-      return new Intl.DateTimeFormat(undefined,{
+      return new Intl.DateTimeFormat('en-GB',{
         timeZone,weekday:'short',year:'numeric',month:'short',day:'numeric',
         hour:'2-digit',minute:'2-digit',timeZoneName:'short',
       }).format(instant);
@@ -3828,7 +3836,7 @@ async function refreshMe(){
       const status=document.getElementById('availExplan');
       if(status&&!availabilityState.error&&!availabilityState.notice){
         status.style.display='block';
-        status.textContent=`Choose your availability for ${window._randori_pairing_view?.weekLabel?.(current.cycle.cycleId)||'the next cycle'}.`;
+        status.textContent=`Choose your availability for ${window._randori_pairing_view?.weekLabel?.(current.cycle)||'the next cycle'}.`;
       }
       try{ window._randori_log?.info?.('availability','navigation_ready',{source:String(source).slice(0,32)}); }catch{}
       return true;
@@ -7515,7 +7523,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(cloudCur){
       const cycle=envelope?.current_cycle;
       meta.textContent=window._randori_pairing_view?.publishedMeta?.({
-        cycleId:cloudCur.week_label,count:Array.isArray(cloudCur.pairs)?cloudCur.pairs.length:0,
+        count:Array.isArray(cloudCur.pairs)?cloudCur.pairs.length:0,
         startsAt:cycle?.startsAt||cloudCur.week_start||null,timeZone:cycle?.timeZone||'',
       })||'';
       return;
@@ -7713,7 +7721,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!cloudWeek){
         renderSignedInRoomSelect();
         renderPairsStatus(container,'unpublished',{
-          cycleId:currentCycleId,publication:publicationState,
+          cycle:response.current_cycle,publication:publicationState,
           allowed:publicationState?.can_publish_now===true,upcoming:response?.upcoming_cycle||null,
         });
         return;
@@ -10279,7 +10287,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         publication.recovery_at,publication.time_zone||current?.timeZone,
       )||'':'';
     const copy=homeUi()?.pairStateCopy?.(state,{
-      week:homeUi()?.cycleWeekLabel?.(current)||'',
+      week:homeUi()?.cycleWeekPhrase?.(current)||'',
       nextCutoff,scheduled,recovery,
       startsAt:dashboardCycleInstant(current,'startsAt'),
       canPublishNow:publication?.can_publish_now===true,
@@ -10304,12 +10312,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const retry=document.getElementById('dashRetry'); if(retry) retry.hidden=!copy.retry;
     // The hero already carries the title; the subtitle names the week instead
     // of repeating it.
-    const sub=document.getElementById('dashSub'); if(sub) sub.textContent=homeUi()?.cycleWeekLabel?.(current)||'This week';
+    const sub=document.getElementById('dashSub'); if(sub) sub.textContent=homeUi()?.cycleWeekLabel?.(current)||'This cycle';
     window._randori_pairing_recovery?.updateControls?.();
   }
 
   function dashboardPairedSubtitle(state,data){
-    const week=homeUi()?.cycleWeekLabel?.(data?.current_cycle||data?.cycle)||'This week';
+    const week=homeUi()?.cycleWeekLabel?.(data?.current_cycle||data?.cycle)||'This cycle';
     if(state==='solo') return `${week} · solo practice`;
     const partner=String(data?.partner?.name||'').trim();
     return partner?`${week} · paired with ${partner.slice(0,80)}`:`${week} · paired`;
@@ -11102,6 +11110,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         const detail=scheduleNode('div',{className:'home-proposal-detail'});
         const elapsed=!proposal.legacy&&proposal.instant&&Date.parse(proposal.instant)<=renderedAt;
         const mine=homeUi()?.proposalIsMine?.(proposal.proposed_by,scheduleActorId())===true;
+        // A proposal for the time already agreed has nothing left to accept.
+        const agreedProposal=!proposal.legacy&&!!proposal.instant&&!!schedule.agreed_time&&proposal.instant===schedule.agreed_time;
         if(proposal.legacy){
           detail.append(scheduleNode('span',{className:'home-proposal-time',text:proposal.value||'Legacy schedule text'}));
           detail.append(scheduleNode('span',{className:'small muted',text:'Legacy proposal · not directly acceptable'}));
@@ -11112,7 +11122,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           when.append(time);
           const rel=elapsed?null:scheduleRelative(proposal.instant,renderedAt); if(rel) when.append(' ',rel);
           detail.append(when);
-          const agreedProposal=!!schedule.agreed_time&&proposal.instant===schedule.agreed_time;
           detail.append(scheduleNode('span',{className:'small muted',text:`Proposed by ${scheduleProposerLabel(proposal.proposed_by)}${agreedProposal?' · agreed':(mine&&!elapsed?' · waiting for your partner':'')}`}));
           if(elapsed){
             const expired=scheduleNode('span',{className:'small muted',text:'Expired · remove it or propose a future time',testId:'schedule-expired-label'});
@@ -11120,8 +11129,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           }
         }
         const actions=scheduleNode('div',{className:'home-proposal-actions'});
-        // The proposer waits for their partner; only the other member accepts.
-        if(!proposal.legacy&&proposal.instant&&!elapsed&&!mine){
+        // The proposer waits for their partner; only the other member accepts,
+        // and only a time that is not already the agreed one.
+        if(!proposal.legacy&&proposal.instant&&!elapsed&&!mine&&!agreedProposal){
           const accept=scheduleIconButton('Accept','i-check',{className:'btn sm',testId:'schedule-accept'});
           accept.dataset.scheduleAction='accept'; accept.dataset.proposalId=proposal.proposal_id;
           accept.setAttribute('aria-label',`Accept ${localScheduleTime(proposal.instant)}`);
@@ -16167,26 +16177,29 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       state.phase='error'; render(); return false;
     }
     const target=Date.parse(state.scope.targetCycleStartsAt);
-    if(Date.parse(pairing.cycle.endsAt)!==target){
-      // The server's current cycle has moved past the upcoming cycle the
-      // availability owner last reported (its cutoff passed). Revalidate
-      // availability once; its rollover reacquires the pair for the new
-      // scope. Only a mismatch that survives revalidation is unknown.
-      if(Date.parse(pairing.cycle.startsAt)>=target&&!observation.revalidated){
-        observation.revalidated=true;
-        Promise.resolve(window._randori_availability?.refresh?.()).catch(()=>null).then(()=>{
-          if(state.lastPairing===observation) applyPairing(observation);
-        });
-        return false;
-      }
-      if(Date.parse(pairing.cycle.endsAt)<target){
-        // An older cycle's observation: stale, not an error.
-        if(state.lastPairing===observation) state.lastPairing=null;
-        return false;
-      }
+    const pairStarts=Date.parse(pairing.cycle.startsAt);
+    const pairEnds=Date.parse(pairing.cycle.endsAt);
+    if(pairEnds<target){
+      // An older cycle's observation: stale, not an error.
+      if(state.lastPairing===observation) state.lastPairing=null;
+      return false;
+    }
+    if(pairEnds!==target&&pairStarts<target){
+      // Overlapping cycles cannot both be right: the pairing is unknown.
       state.lastPairing=null;
       state.pairing={status:'error',value:null};
       state.phase='error'; render(); return false;
+    }
+    if(pairEnds!==target&&!observation.revalidated){
+      // The cutoff passed: the server already reports a newer current cycle
+      // than the upcoming cycle availability last reported. This is the same
+      // fenced /api/my-pair observation the Home hero renders, so the guide
+      // shows it too, instead of "Pairing status unknown" beside a paired
+      // hero. Availability is re-read once; when it rolls over, the normal
+      // cycle rollover reacquires the pair for the new scope. If that read
+      // is still behind, the availability owner retries after the cutoff.
+      observation.revalidated=true;
+      void Promise.resolve(window._randori_availability?.refresh?.()).catch(()=>null);
     }
     state.pairing={status:'ready',value:pairing};
     state.phase=[state.profile.status,state.availability.status].includes('error')?'error':'ready';
