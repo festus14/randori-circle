@@ -27,14 +27,22 @@ export const SESSION_SOON_LEAD_MS=60*60*1000;
 // The due-check looks slightly past the lead so a five-minute scheduler can
 // queue the reminder before it is due; `not_before` keeps it on time.
 export const SESSION_SOON_LOOKAHEAD_MS=SESSION_SOON_LEAD_MS+5*60*1000;
+// A session closer than this gets no short-notice reminder: the pair has just
+// agreed it, or delivery ran late, and the email would arrive too late to help.
+export const SESSION_SOON_MIN_LEAD_MS=15*60*1000;
 export const REMINDER_ENQUEUE_LIMIT=50;
 export const REMINDER_KINDS=Object.freeze(['availability_cutoff','agree_time','session_soon']);
 
 const MAX_CIRCLES=100;
 const CYCLE_KEY_PATTERN=/^[a-f0-9]{64}$/;
 const EMAIL_PATTERN=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const ERROR_CODE_PATTERN=/^[A-Z][A-Z0-9_]{0,63}$/;
+// Due-check order: the time-critical kind first, so a failure or slow query in
+// a later kind cannot delay it.
+const DUE_CHECK_ORDER=Object.freeze(['session_soon','agree_time','availability_cutoff']);
 const PAYLOAD_KEYS=Object.freeze({
   availability_cutoff:['circle_id','cycle_key','kind','recipient_user_id','template_version'],
+  'availability_cutoff:local':['cycle_key','kind','recipient_user_id','scope','template_version'],
   'agree_time:primary':['kind','pair_group_id','recipient_user_id','scope','template_version','week_id'],
   'agree_time:secondary':['group_id','kind','publication_id','recipient_user_id','scope','template_version'],
   'session_soon:primary':['instant_fingerprint','kind','pair_group_id','recipient_user_id','scope',
@@ -90,7 +98,8 @@ export function reminderInstantFingerprint(value){
 function reminderKey(payload){
   const user=payload.recipient_user_id;
   if(payload.kind==='availability_cutoff'){
-    return `reminder-email/v1/availability-cutoff/${payload.circle_id}/${payload.cycle_key}/${user}`;
+    const scope=payload.scope==='local'?'local':payload.circle_id;
+    return `reminder-email/v1/availability-cutoff/${scope}/${payload.cycle_key}/${user}`;
   }
   const pair=payload.scope==='primary'
     ?`primary/${payload.week_id}/${payload.pair_group_id}`
@@ -119,13 +128,13 @@ function validatePayload(payload){
     throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
   }
   const kind=String(payload.kind);
-  const shape=kind==='availability_cutoff'?kind:`${kind}:${String(payload.scope)}`;
+  const shape=kind==='availability_cutoff'&&!Object.hasOwn(payload,'scope')?kind:`${kind}:${String(payload.scope)}`;
   const expected=PAYLOAD_KEYS[shape];
   if(!expected||!exactKeys(payload,expected)||payload.template_version!==REMINDER_TEMPLATE_VERSION
     ||!positiveInteger(payload.recipient_user_id)){
     throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
   }
-  const ids=kind==='availability_cutoff'?[payload.circle_id]
+  const ids=kind==='availability_cutoff'?(payload.scope==='local'?[]:[payload.circle_id])
     :payload.scope==='primary'?[payload.week_id,payload.pair_group_id]:[payload.publication_id,payload.group_id];
   if(!ids.every(positiveInteger)
     ||(kind==='availability_cutoff'&&!CYCLE_KEY_PATTERN.test(String(payload.cycle_key)))
@@ -146,11 +155,35 @@ function parseEvent(event){
 // Due-check (enqueue)
 // ---------------------------------------------------------------------------
 
-const ACTIVE_PRIMARY_MEMBER=`EXISTS (
-  SELECT 1 FROM circle_memberships membership
-  JOIN circles circle ON circle.id=membership.circle_id
-  WHERE membership.user_id=account.id AND membership.status='active'
-    AND circle.is_primary=1 AND circle.archived_at IS NULL)`;
+function activePrimaryMember(userExpression){
+  return `EXISTS (SELECT 1 FROM circle_memberships membership
+    JOIN circles circle ON circle.id=membership.circle_id
+    WHERE membership.user_id=${userExpression} AND membership.status='active'
+      AND circle.is_primary=1 AND circle.archived_at IS NULL)`;
+}
+
+// Every member of the primary pair is an auth participant of the week, a real
+// (non-demo) account and, outside the membership-free local runtime, still an
+// active primary-circle member. A partner who left suppresses the reminder.
+function pairMembersQualified(localScope){
+  return `(SELECT COUNT(*) FROM pairing_participants member_participant
+      JOIN auth_accounts member ON member.id=member_participant.user_id AND COALESCE(member.is_demo,0)=0
+      WHERE member_participant.week_id=pair.week_id AND member_participant.source='auth'
+        AND member_participant.user_id IN (pair.user_a_id,pair.user_b_id,pair.user_c_id)
+        ${localScope?'':`AND ${activePrimaryMember('member.id')}`})
+    =(CASE WHEN pair.user_c_id IS NULL THEN 2 ELSE 3 END)`;
+}
+
+function humanPrimaryPair(localScope){
+  return `COALESCE(pair.is_ai_pair,0)=0 AND pair.user_a_id<>pair.user_b_id AND ${pairMembersQualified(localScope)}`;
+}
+
+function sqliteInstant(value){
+  const text=String(value??'');
+  const iso=/(?:Z|[+-]\d\d:\d\d)$/u.test(text)?text.replace(' ','T'):`${text.replace(' ','T')}Z`;
+  const epoch=Date.parse(iso);
+  return Number.isFinite(epoch)?epoch:null;
+}
 
 async function insertIntents(db,intents){
   if(!intents.length) return 0;
@@ -158,10 +191,46 @@ async function insertIntents(db,intents){
   return results.reduce((sum,result)=>sum+Number(result?.rowsAffected||0),0);
 }
 
-async function availabilityCutoffIntents(db,{now,timeZone,limit}){
+/**
+ * The published primary weeks of the current and previous cycle, read first
+ * with one indexed lookup so the per-pair queries only run for a known week.
+ */
+async function primaryWeeks(db,{now,timeZone}){
+  const current=resolvePairingCycle({now,timeZone,state:'current'});
+  const previous=resolvePairingCycle({now:new Date(Date.parse(current.startsAt)-1),timeZone,state:'current'});
+  const result=await db.execute({
+    sql:`SELECT week.id,week.week_label,run.created_at FROM pairing_weeks week
+      JOIN pairing_week_runs run ON run.week_id=week.id AND run.week_label=week.week_label
+      WHERE week.week_label IN (?,?) AND COALESCE(week.is_demo,0)=0`,
+    args:[current.cycleId,previous.cycleId],
+  });
+  const byLabel=new Map(result.rows.map(row=>[String(row.week_label),row]));
+  return {current:byLabel.get(current.cycleId)||null,previous:byLabel.get(previous.cycleId)||null};
+}
+
+async function availabilityCutoffIntents(db,{now,timeZone,limit,localScope}){
   const cycle=resolvePairingCycle({now,timeZone,state:'upcoming'});
   const cutoff=Date.parse(cycle.cutoffAt);
   if(now.getTime()<cutoff-AVAILABILITY_CUTOFF_LEAD_MS||now.getTime()>=cutoff) return [];
+  if(localScope){
+    // Mirrors the availability endpoint in a membership-free local runtime:
+    // decisions live under the `local` scope and every real account takes part.
+    const cycleKey=availabilityCycleKey({kind:'local'},cycle);
+    const members=await db.execute({
+      sql:`SELECT account.id AS user_id FROM auth_accounts account
+        LEFT JOIN user_notification_prefs preference ON preference.user_id=account.id
+        WHERE COALESCE(account.is_demo,0)=0 AND COALESCE(preference.email_enabled,1)<>0
+          AND NOT EXISTS (SELECT 1 FROM pairing_cycle_availability decision
+            WHERE decision.scope_key='local' AND decision.cycle_key=? AND decision.user_id=account.id
+              AND decision.decision_source='user')
+          AND NOT EXISTS (SELECT 1 FROM outbox_events queued WHERE queued.idempotency_key=
+            ('reminder-email/v1/availability-cutoff/local/'||?||'/'||account.id))
+        ORDER BY account.id LIMIT ?`,
+      args:[cycleKey,cycleKey,limit],
+    });
+    return members.rows.map(row=>({payload:{kind:'availability_cutoff',scope:'local',cycle_key:cycleKey,
+      recipient_user_id:Number(row.user_id)},notBefore:null}));
+  }
   const circles=await db.execute({
     sql:`SELECT id FROM circles WHERE archived_at IS NULL AND (is_primary=1 OR ?=1)
       ORDER BY is_primary DESC,id LIMIT ?`,
@@ -198,50 +267,43 @@ async function availabilityCutoffIntents(db,{now,timeZone,limit}){
   return intents;
 }
 
-const PRIMARY_GROUP_IS_HUMAN=`COALESCE(pair.is_ai_pair,0)=0 AND pair.user_a_id<>pair.user_b_id
-  AND NOT EXISTS (SELECT 1 FROM auth_accounts member
-    WHERE member.id IN (pair.user_a_id,pair.user_b_id,pair.user_c_id) AND COALESCE(member.is_demo,0)=1)
-  AND (SELECT COUNT(*) FROM pairing_participants member_participant
-    WHERE member_participant.week_id=pair.week_id AND member_participant.source='auth'
-      AND member_participant.user_id IN (pair.user_a_id,pair.user_b_id,pair.user_c_id))
-    =(CASE WHEN pair.user_c_id IS NULL THEN 2 ELSE 3 END)`;
-
+// The pairs CTE is materialized once and then expanded to its two or three
+// members; callers bind the pair filter's arguments first.
 function primaryRecipientSql(pairsSql){
-  return `WITH pairs AS (${pairsSql}),
+  return `WITH pairs AS MATERIALIZED (${pairsSql}),
     recipients AS (
       SELECT week_id,group_id,agreed_time,user_a_id AS user_id FROM pairs
       UNION SELECT week_id,group_id,agreed_time,user_b_id FROM pairs
       UNION SELECT week_id,group_id,agreed_time,user_c_id FROM pairs WHERE user_c_id IS NOT NULL)
     SELECT recipient.week_id,recipient.group_id,recipient.agreed_time,recipient.user_id
     FROM recipients recipient
-    JOIN auth_accounts account ON account.id=recipient.user_id
-    LEFT JOIN user_notification_prefs preference ON preference.user_id=account.id
-    WHERE COALESCE(preference.email_enabled,1)<>0 AND ${ACTIVE_PRIMARY_MEMBER}`;
+    LEFT JOIN user_notification_prefs preference ON preference.user_id=recipient.user_id
+    WHERE COALESCE(preference.email_enabled,1)<>0`;
 }
 
-async function agreeTimeIntents(db,{now,timeZone,limit}){
+async function agreeTimeIntents(db,{now,timeZone,limit,localScope,weeks}){
   const intents=[];
-  const cycle=resolvePairingCycle({now,timeZone,state:'current'});
   const pairedBefore=new Date(now.getTime()-AGREE_TIME_NUDGE_DELAY_MS).toISOString();
-  const primary=await db.execute({
-    sql:`${primaryRecipientSql(`SELECT pair.week_id,pair.id AS group_id,NULL AS agreed_time,
-        pair.user_a_id,pair.user_b_id,pair.user_c_id
-      FROM pairing_weeks week
-      JOIN pairing_week_runs run ON run.week_id=week.id AND run.week_label=week.week_label
-      JOIN pairing_groups pair ON pair.week_id=week.id
-      LEFT JOIN pair_schedules schedule ON schedule.week_id=pair.week_id AND schedule.pair_group_id=pair.id
-      WHERE week.week_label=? AND COALESCE(week.is_demo,0)=0
-        AND julianday(run.created_at)<=julianday(?)
-        AND COALESCE(schedule.agreed_time,'')=''
-        AND ${PRIMARY_GROUP_IS_HUMAN}`)}
-      AND NOT EXISTS (SELECT 1 FROM outbox_events queued WHERE queued.idempotency_key=
-        ('reminder-email/v1/agree-time/primary/'||recipient.week_id||'/'||recipient.group_id||'/'||recipient.user_id))
-    ORDER BY recipient.group_id,recipient.user_id LIMIT ?`,
-    args:[cycle.cycleId,pairedBefore,limit],
-  });
-  for(const row of primary.rows){
-    intents.push({payload:{kind:'agree_time',scope:'primary',week_id:Number(row.week_id),
-      pair_group_id:Number(row.group_id),recipient_user_id:Number(row.user_id)},notBefore:null});
+  const week=weeks.current;
+  const pairedAt=week?sqliteInstant(week.created_at):null;
+  // No query at all until the current week's pairing is 72 hours old.
+  if(pairedAt!==null&&pairedAt<=Date.parse(pairedBefore)){
+    const primary=await db.execute({
+      sql:`${primaryRecipientSql(`SELECT pair.week_id,pair.id AS group_id,NULL AS agreed_time,
+          pair.user_a_id,pair.user_b_id,pair.user_c_id
+        FROM pairing_groups pair
+        LEFT JOIN pair_schedules schedule ON schedule.week_id=pair.week_id AND schedule.pair_group_id=pair.id
+        WHERE pair.week_id=? AND COALESCE(schedule.agreed_time,'')=''
+          AND ${humanPrimaryPair(localScope)}`)}
+        AND NOT EXISTS (SELECT 1 FROM outbox_events queued WHERE queued.idempotency_key=
+          ('reminder-email/v1/agree-time/primary/'||recipient.week_id||'/'||recipient.group_id||'/'||recipient.user_id))
+      ORDER BY recipient.group_id,recipient.user_id LIMIT ?`,
+      args:[Number(week.id),limit],
+    });
+    for(const row of primary.rows){
+      intents.push({payload:{kind:'agree_time',scope:'primary',week_id:Number(row.week_id),
+        pair_group_id:Number(row.group_id),recipient_user_id:Number(row.user_id)},notBefore:null});
+    }
   }
   if(secondaryCircleSchedulingEnabled()&&intents.length<limit){
     const instant=now.toISOString();
@@ -266,6 +328,8 @@ async function agreeTimeIntents(db,{now,timeZone,limit}){
 
 // Current-cycle, non-solo secondary groups expanded to both members, each an
 // active non-demo member of the unarchived secondary circle with email on.
+// Secondary schedules belong to their publication, so (like the secondary
+// 24-hour reminder) they are only reminded while it is current.
 function secondaryRecipientSql(filterSql,{agreedTime=false}={}){
   return `WITH recipients AS (
       SELECT publication.id AS publication_id,group_row.id AS group_id,publication.circle_id,
@@ -303,13 +367,13 @@ async function withoutQueued(db,intents,limit){
   return intents.filter((_,index)=>!existing.has(keys[index])).slice(0,limit);
 }
 
-async function sessionSoonIntents(db,{now,limit}){
+async function sessionSoonIntents(db,{now,limit,localScope,weeks}){
   // The key includes a fingerprint computed here, so already-queued keys are
-  // filtered after the read; the read over-fetches so they cannot starve
-  // newer sessions in the same window.
+  // filtered after the read. Candidates are the earliest sessions first and
+  // over-fetched, so queued ones cannot starve a later session in the window.
   const candidates=limit*4;
   const intents=[];
-  const from=now.toISOString();
+  const from=new Date(now.getTime()+SESSION_SOON_MIN_LEAD_MS).toISOString();
   const until=new Date(now.getTime()+SESSION_SOON_LOOKAHEAD_MS).toISOString();
   // Legacy free-text agreements never match the normalized-instant check.
   const collect=(rows,scope)=>{
@@ -324,47 +388,72 @@ async function sessionSoonIntents(db,{now,limit}){
       intents.push({payload,notBefore:new Date(Date.parse(instant)-SESSION_SOON_LEAD_MS).toISOString()});
     }
   };
-  const primary=await db.execute({
-    sql:`${primaryRecipientSql(`SELECT pair.week_id,pair.id AS group_id,schedule.agreed_time,
-        pair.user_a_id,pair.user_b_id,pair.user_c_id
-      FROM pair_schedules schedule
-      JOIN pairing_groups pair ON pair.id=schedule.pair_group_id AND pair.week_id=schedule.week_id
-      JOIN pairing_weeks week ON week.id=pair.week_id AND COALESCE(week.is_demo,0)=0
-      WHERE schedule.agreed_time>? AND schedule.agreed_time<=? AND ${PRIMARY_GROUP_IS_HUMAN}`)}
-    ORDER BY recipient.group_id,recipient.user_id LIMIT ?`,
-    args:[from,until,candidates],
-  });
-  collect(primary.rows,'primary');
+  // Primary schedules are not cycle-bound: a pair from the previous week can
+  // agree a time after the Sunday boundary, so both weeks are in scope.
+  const weekIds=[weeks.current,weeks.previous].filter(Boolean).map(week=>Number(week.id));
+  if(weekIds.length){
+    const primary=await db.execute({
+      sql:`${primaryRecipientSql(`SELECT pair.week_id,pair.id AS group_id,schedule.agreed_time,
+          pair.user_a_id,pair.user_b_id,pair.user_c_id
+        FROM pair_schedules schedule
+        JOIN pairing_groups pair ON pair.id=schedule.pair_group_id AND pair.week_id=schedule.week_id
+        WHERE schedule.week_id IN (${weekIds.map(()=>'?').join(',')})
+          AND schedule.agreed_time>? AND schedule.agreed_time<=? AND ${humanPrimaryPair(localScope)}`)}
+      ORDER BY recipient.agreed_time,recipient.group_id,recipient.user_id LIMIT ?`,
+      args:[...weekIds,from,until,candidates],
+    });
+    collect(primary.rows,'primary');
+  }
   if(secondaryCircleSchedulingEnabled()){
+    const instant=now.toISOString();
     const secondary=await db.execute({
       sql:`${secondaryRecipientSql(`AND schedule.agreed_time>? AND schedule.agreed_time<=?`,{agreedTime:true})}
-        ORDER BY recipient.group_id,recipient.user_id LIMIT ?`,
-      args:[from,from,from,until,candidates],
+        ORDER BY recipient.agreed_time,recipient.group_id,recipient.user_id LIMIT ?`,
+      args:[instant,instant,from,until,candidates],
     });
     collect(secondary.rows,'secondary');
   }
   return withoutQueued(db,intents,limit);
 }
 
+function dueCheckErrorCode(error){
+  const code=String(error?.code||'').toUpperCase();
+  return ERROR_CODE_PATTERN.test(code)?code:'QUERY_FAILED';
+}
+
 /**
  * Bounded, idempotent due-check run from the outbox cron. Each kind creates at
  * most `limit` new intents per call; repeated calls never duplicate because
- * every intent has a stable idempotency key. Returns counts only.
+ * every intent has a stable idempotency key. Kinds run independently: one
+ * failing kind reports a bounded error code (and a null count) without
+ * stopping the others. Returns counts and error codes only.
  */
-export async function enqueueDueReminders(db,{now=()=>new Date(),timeZone,limit=REMINDER_ENQUEUE_LIMIT}={}){
+export async function enqueueDueReminders(db,{now=()=>new Date(),timeZone,limit=REMINDER_ENQUEUE_LIMIT,
+  localScope=false}={}){
   const counts={availability_cutoff:0,agree_time:0,session_soon:0};
-  if(!remindersEnabled()) return Object.freeze({enabled:false,...counts});
+  if(!remindersEnabled()) return Object.freeze({enabled:false,...counts,errors:{}});
   if(!db||typeof db.execute!=='function'||typeof db.batch!=='function'){
     throw new TypeError('reminder database client required');
   }
   const bound=Number.isSafeInteger(limit)&&limit>0&&limit<=REMINDER_ENQUEUE_LIMIT?limit:REMINDER_ENQUEUE_LIMIT;
   const instant=readClock(now);
-  counts.availability_cutoff=await insertIntents(db,await availabilityCutoffIntents(db,{now:instant,timeZone,limit:bound}));
-  counts.agree_time=await insertIntents(db,await agreeTimeIntents(db,{now:instant,timeZone,limit:bound}));
-  if(sessionSoonRemindersEnabled()){
-    counts.session_soon=await insertIntents(db,await sessionSoonIntents(db,{now:instant,limit:bound}));
+  const options={now:instant,timeZone,limit:bound,localScope:localScope===true};
+  const errors={};
+  let weeks=null;
+  const builders={
+    session_soon:async()=>sessionSoonIntents(db,{...options,weeks:weeks??=await primaryWeeks(db,options)}),
+    agree_time:async()=>agreeTimeIntents(db,{...options,weeks:weeks??=await primaryWeeks(db,options)}),
+    availability_cutoff:()=>availabilityCutoffIntents(db,options),
+  };
+  for(const kind of DUE_CHECK_ORDER){
+    if(kind==='session_soon'&&!sessionSoonRemindersEnabled()) continue;
+    try{ counts[kind]=await insertIntents(db,await builders[kind]()); }
+    catch(error){
+      counts[kind]=null;
+      errors[kind]=dueCheckErrorCode(error);
+    }
   }
-  return Object.freeze({enabled:true,...counts});
+  return Object.freeze({enabled:true,...counts,errors:Object.freeze(errors)});
 }
 
 // ---------------------------------------------------------------------------
@@ -390,14 +479,22 @@ function recipientProblem(row){
   return null;
 }
 
-async function resolveAvailabilityCutoff(db,payload,now,timeZone){
+async function resolveAvailabilityCutoff(db,payload,now,timeZone,localScope){
+  const local=payload.scope==='local';
+  if(local!==localScope) return {suppressed:'SCOPE_CHANGED'};
   const cycle=resolvePairingCycle({now,timeZone,state:'upcoming'});
-  const cycleKey=availabilityCycleKey({kind:'circle',circleId:payload.circle_id},cycle);
-  if(cycleKey!==payload.cycle_key) return {suppressed:'CUTOFF_PASSED'};
-  const result=await db.execute({
-    sql:`SELECT ${RECIPIENT_COLUMNS},circle.name AS circle_name,circle.is_primary,
-        (SELECT decision.decision_source FROM pairing_cycle_availability decision
-          WHERE decision.scope_key=? AND decision.cycle_key=? AND decision.user_id=account.id) AS decision_source
+  const scope=local?{kind:'local'}:{kind:'circle',circleId:payload.circle_id};
+  if(availabilityCycleKey(scope,cycle)!==payload.cycle_key) return {suppressed:'CUTOFF_PASSED'};
+  const decision=`(SELECT decision.decision_source FROM pairing_cycle_availability decision
+    WHERE decision.scope_key=? AND decision.cycle_key=? AND decision.user_id=account.id) AS decision_source`;
+  const result=await db.execute(local?{
+    sql:`SELECT ${RECIPIENT_COLUMNS},NULL AS circle_name,1 AS is_primary,${decision}
+      FROM auth_accounts account
+      LEFT JOIN user_notification_prefs preference ON preference.user_id=account.id
+      WHERE account.id=? LIMIT 2`,
+    args:['local',payload.cycle_key,payload.recipient_user_id],
+  }:{
+    sql:`SELECT ${RECIPIENT_COLUMNS},circle.name AS circle_name,circle.is_primary,${decision}
       FROM circle_memberships membership
       JOIN circles circle ON circle.id=membership.circle_id AND circle.archived_at IS NULL
       JOIN auth_accounts account ON account.id=membership.user_id
@@ -418,11 +515,12 @@ async function resolveAvailabilityCutoff(db,payload,now,timeZone){
   return {row,cutoffAt:cycle.cutoffAt,primary:Number(row.is_primary)===1};
 }
 
-async function resolvePrimaryPair(db,payload,now,timeZone){
-  const cycle=resolvePairingCycle({now,timeZone,state:'current'});
+async function resolvePrimaryPair(db,payload,now,timeZone,localScope){
   const result=await db.execute({
-    sql:`SELECT ${RECIPIENT_COLUMNS},week.week_label,schedule.agreed_time,
-        pair.user_a_id,pair.user_b_id,pair.user_c_id,pair.is_ai_pair
+    sql:`SELECT ${RECIPIENT_COLUMNS},week.week_label,schedule.agreed_time,pair.is_ai_pair,
+        pair.user_a_id=pair.user_b_id AS is_solo,
+        ${localScope?'1':activePrimaryMember('account.id')} AS recipient_active,
+        ${pairMembersQualified(localScope)} AS members_qualified
       FROM pairing_groups pair
       JOIN pairing_weeks week ON week.id=pair.week_id AND COALESCE(week.is_demo,0)=0
       JOIN pairing_participants participant ON participant.week_id=pair.week_id
@@ -431,17 +529,22 @@ async function resolvePrimaryPair(db,payload,now,timeZone){
       LEFT JOIN user_notification_prefs preference ON preference.user_id=account.id
       LEFT JOIN pair_schedules schedule ON schedule.week_id=pair.week_id AND schedule.pair_group_id=pair.id
       WHERE pair.id=? AND pair.week_id=? AND ? IN (pair.user_a_id,pair.user_b_id,pair.user_c_id)
-        AND ${ACTIVE_PRIMARY_MEMBER}
       LIMIT 2`,
     args:[payload.recipient_user_id,payload.pair_group_id,payload.week_id,payload.recipient_user_id],
   });
   const rows=result.rows;
-  if(rows.length!==1) return {suppressed:'MEMBER_REMOVED'};
+  if(rows.length!==1||Number(rows[0].recipient_active)!==1) return {suppressed:'MEMBER_REMOVED'};
   const row=rows[0];
   const problem=recipientProblem(row);
   if(problem) return {suppressed:problem};
-  if(Number(row.is_ai_pair)===1) return {suppressed:'PAIR_INVALID'};
-  if(String(row.week_label)!==cycle.cycleId) return {suppressed:'CYCLE_ENDED'};
+  if(Number(row.is_ai_pair)===1||Number(row.is_solo)===1) return {suppressed:'PAIR_INVALID'};
+  if(Number(row.members_qualified)!==1) return {suppressed:'PARTNER_REVOKED'};
+  // Only the nudge is about this cycle's pairing. Schedules outlive the
+  // boundary, so a session reminder relies on the agreed-time checks instead.
+  if(payload.kind==='agree_time'
+    &&String(row.week_label)!==resolvePairingCycle({now,timeZone,state:'current'}).cycleId){
+    return {suppressed:'CYCLE_ENDED'};
+  }
   return {row,link:`/join/${canonicalRoomId(payload.week_id,payload.pair_group_id)}`,circleName:null};
 }
 
@@ -475,16 +578,16 @@ async function resolveSecondaryPair(db,payload,now){
   const row=rows[0];
   const problem=recipientProblem(row);
   if(problem) return {suppressed:problem};
-  if(row.partner_status!=='active'||Number(row.partner_is_demo)===1) return {suppressed:'MEMBER_REMOVED'};
+  if(row.partner_status!=='active'||Number(row.partner_is_demo)===1) return {suppressed:'PARTNER_REVOKED'};
   return {row,link:'/?view=dashboard',circleName:circleLabel(row.circle_name)};
 }
 
-async function resolvePair(db,payload,now,timeZone){
+async function resolvePair(db,payload,now,timeZone,localScope){
   if(payload.scope==='secondary'){
     if(!secondaryCircleSchedulingEnabled()) return {suppressed:'SECONDARY_SCHEDULING_DISABLED'};
     return resolveSecondaryPair(db,payload,now);
   }
-  return resolvePrimaryPair(db,payload,now,timeZone);
+  return resolvePrimaryPair(db,payload,now,timeZone,localScope);
 }
 
 export function formatReminderInstant(value,timeZone){
@@ -524,7 +627,7 @@ export function renderReminderEmail({kind,origin,link,circleName=null,instant=nu
       +`<p><a href="${href}">${circle?'Open the Randori dashboard':'Open your private pairing room'}</a></p>${footer}`,
   });
   return Object.freeze({
-    subject:`${prefix}Your Randori session starts in about an hour`,
+    subject:`${prefix}Your Randori session starts soon`,
     html:`<h2>Session starting soon${circle?` in ${circle}`:''}</h2>`
       +`<p>Your session starts at <b>${when}</b>.</p>`
       +`<p><a href="${href}">${circle?'Open the Randori dashboard':'Open your private pairing room'}</a></p>${footer}`,
@@ -546,7 +649,7 @@ function providerError(error){
   return new OutboxDeliveryError('PROVIDER_FAILED',{retryable:true,cause:error,providerReason});
 }
 
-export function createReminderEmailHandler({db,baseUrl,send,now=()=>new Date(),timeZone}={}){
+export function createReminderEmailHandler({db,baseUrl,send,now=()=>new Date(),timeZone,localScope=false}={}){
   if(!db||typeof db.execute!=='function'||typeof send!=='function'){
     throw new TypeError('reminder email database and provider are required');
   }
@@ -561,13 +664,13 @@ export function createReminderEmailHandler({db,baseUrl,send,now=()=>new Date(),t
     let resolved;
     let content;
     if(payload.kind==='availability_cutoff'){
-      resolved=await resolveAvailabilityCutoff(db,payload,instantNow,timeZone);
+      resolved=await resolveAvailabilityCutoff(db,payload,instantNow,timeZone,localScope===true);
       if(resolved.suppressed) return suppressed(resolved.suppressed);
       const circleName=resolved.primary?null:circleLabel(resolved.row.circle_name);
       content=renderReminderEmail({kind:payload.kind,origin,link:'/?view=pair',circleName,
         instant:resolved.cutoffAt,timeZone:resolved.row.recipient_tz});
     }else{
-      resolved=await resolvePair(db,payload,instantNow,timeZone);
+      resolved=await resolvePair(db,payload,instantNow,timeZone,localScope===true);
       if(resolved.suppressed) return suppressed(resolved.suppressed);
       const agreed=resolved.row.agreed_time===null||resolved.row.agreed_time===undefined
         ?'':String(resolved.row.agreed_time);
@@ -578,7 +681,9 @@ export function createReminderEmailHandler({db,baseUrl,send,now=()=>new Date(),t
         instant=normalizeScheduleInstant(agreed);
         if(!instant||instant!==agreed) return suppressed('SESSION_CLEARED');
         if(reminderInstantFingerprint(instant)!==payload.instant_fingerprint) return suppressed('SESSION_CHANGED');
-        if(instantNow.getTime()>=Date.parse(instant)) return suppressed('SESSION_ELAPSED');
+        const lead=Date.parse(instant)-instantNow.getTime();
+        if(lead<=0) return suppressed('SESSION_ELAPSED');
+        if(lead<SESSION_SOON_MIN_LEAD_MS) return suppressed('SESSION_IMMINENT');
       }
       content=renderReminderEmail({kind:payload.kind,origin,link:resolved.link,circleName:resolved.circleName,
         instant,timeZone:resolved.row.recipient_tz});

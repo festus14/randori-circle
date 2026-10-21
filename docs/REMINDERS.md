@@ -11,12 +11,22 @@ Final email and settings design is pending (`needs-design`).
 | Kind | When it is queued | Recipients | Link | Suppressed at send when |
 | --- | --- | --- | --- | --- |
 | `availability_cutoff` | From 24 hours before the upcoming cycle cutoff (Sunday 08:00 in `PAIRING_TIME_ZONE`) until the cutoff | Active, non-demo members of the primary circle (and of secondary circles when `MULTI_CIRCLE_AVAILABILITY_ENABLED`) with no explicit (`source: user`) decision for that cycle | `/?view=pair` | A decision was saved, the cutoff passed (the upcoming cycle key changed), the member left, the account became demo, or email is off |
-| `agree_time` | 72 hours after the current cycle's pairing was published, until the cycle ends | Every human member of a non-AI, non-solo pair with no agreed time | Primary: `/join/<room>`; secondary: `/?view=dashboard` | A time was agreed, the cycle ended, the recipient or partner left, or email is off |
-| `session_soon` | Up to 65 minutes before an agreed session; `not_before` is one hour before it | Every human member of the pair | Primary: `/join/<room>`; secondary: `/?view=dashboard` | The time was cleared or changed, the session started, a member left, email is off, or `REMINDERS_SESSION_SOON_ENABLED` is off |
+| `agree_time` | 72 hours after the current cycle's pairing was published, until the cycle ends | Every member of a non-AI, non-solo pair with no agreed time, when every member is still an active, real member | Primary: `/join/<room>`; secondary: `/?view=dashboard` | A time was agreed, the cycle ended (`CYCLE_ENDED`), the recipient left (`MEMBER_REMOVED`), a partner left or became demo (`PARTNER_REVOKED`), or email is off |
+| `session_soon` | Between 65 and 15 minutes before an agreed session; `not_before` is one hour before it | Every member of the pair, under the same all-members rule | Primary: `/join/<room>`; secondary: `/?view=dashboard` | The time was cleared or changed, the session started (`SESSION_ELAPSED`) or is under 15 minutes away (`SESSION_IMMINENT`), the recipient or a partner left, email is off, or `REMINDERS_SESSION_SOON_ENABLED` is off |
 
 The existing accepted-session reminder 24 hours ahead
 ([schedule notifications](SCHEDULE_NOTIFICATIONS.md)) is unchanged; the
-one-hour reminder is an addition.
+one-hour reminder is an addition. Its subject is "Your Randori session starts
+soon" and the body gives the exact time, so a reminder sent between 15 and 65
+minutes ahead is never wrong about the lead.
+
+Primary schedules are not tied to the pairing cycle: a pair from week 38 can
+agree a time on Sunday after the 08:00 boundary into week 39. The one-hour
+reminder therefore relies only on the agreed-time fingerprint and the elapsed
+and 15-minute checks, never on `CYCLE_ENDED`, and its due-check reads pairs of
+the current and the previous week. Only the nudge, which is about this cycle's
+pairing, ends with the cycle. Secondary schedules belong to their publication
+and, like the secondary 24-hour reminder, are only reminded while it is current.
 
 Times in the email are shown in the recipient's profile timezone
 (`auth_accounts.tz`) with the zone name, falling back to UTC when it is unset
@@ -40,6 +50,9 @@ the provider is called. While the flag is on, the email reminder row under
 notification preferences lists the reminder types it covers and shows them as
 On or Off with the Email checkbox.
 
+The badges show the account's confirmed preference: they change only after a
+save succeeds and stay as they were if it fails.
+
 Per-type toggles (issue default: on, on, off) are **deferred**. They need new
 columns or a table, and any migration makes `/api/health/ready` fail until it
 is applied in production (see the v21 rollout in
@@ -59,7 +72,7 @@ deployment through `REMINDERS_SESSION_SOON_ENABLED`, not per member.
 - Idempotency keys are stable and are also the provider idempotency key:
 
   ```text
-  reminder-email/v1/availability-cutoff/{circle}/{cycleKey}/{user}
+  reminder-email/v1/availability-cutoff/{circle|local}/{cycleKey}/{user}
   reminder-email/v1/agree-time/primary/{week}/{pair}/{user}
   reminder-email/v1/agree-time/secondary/{publication}/{group}/{user}
   reminder-email/v1/session-soon/{primary|secondary}/{week|publication}/{pair|group}/{fingerprint}/{user}
@@ -75,9 +88,41 @@ deployment through `REMINDERS_SESSION_SOON_ENABLED`, not per member.
   `/api/cron/outbox`, before the claim rounds, so a newly due reminder can be
   delivered in the same invocation. It creates at most 50 intents per kind per
   invocation and is skipped by `NOT EXISTS` on the idempotency key once
-  queued. It has its own 5-second slice of the preparation window; a failure
-  or timeout is reported as `outbox.reminders_enqueued: null` and does not
-  block other mail. No new Vercel cron was added.
+  queued (for `session_soon`, whose key holds a fingerprint, queued keys are
+  filtered after an over-fetching read ordered by agreed time, so they cannot
+  starve a later session). No new Vercel cron was added.
+- Kinds run in the order `session_soon`, `agree_time`, `availability_cutoff`
+  and fail independently. A failing kind reports a bounded error code (the
+  libSQL code such as `SQLITE_BUSY`, otherwise `QUERY_FAILED`) in
+  `outbox.reminder_errors` and a `null` count in `outbox.reminders_enqueued`;
+  the other kinds still run. The whole check has its own 5-second slice of the
+  preparation window (`DUE_CHECK_TIMEOUT`, or `DUE_CHECK_FAILED` for an
+  unusable client). Any reminder error logs the `outbox_invocation` row at
+  `warn` level, and other mail is still delivered.
+- Cost per five-minute run: one indexed lookup of the current and previous
+  primary week (`pairing_weeks` by label joined to its run). The nudge query
+  runs only once the current week's pairing is 72 hours old, and both pair
+  queries are scoped to those week ids with the pairs CTE `MATERIALIZED`, so
+  pairs are scanned once per query rather than once per member slot.
+- Local runtime: reminders read availability under the same scope the
+  availability endpoint writes. The bundled dev server enables circle
+  membership, so that is the primary circle's `circle:{id}` scope, as in
+  production (the golden path saves a choice in the browser and checks that it
+  stops the cutoff reminder). A strict local runtime with membership disabled
+  uses the `local` scope and skips membership checks, exactly as the endpoint
+  does.
+
+## Known limits
+
+- All three kinds share one fair-dispatch lane (one claim per round), so a
+  large backlog of one kind can delay the others by a few rounds. This only
+  matters for large circles and is left as is.
+- Re-enabling `REMINDERS_ENABLED` mid-cycle does not resend reminders that
+  were drained as `suppressed` (`REMINDERS_DISABLED`) while it was off: their
+  idempotency keys already exist. New reminders queue normally.
+- The one-hour reminder is opt-in per deployment, not per member (see
+  Preferences); `REMINDERS_SESSION_SOON_ENABLED` stays off until per-type
+  toggles exist.
 
 ## Volume
 
@@ -103,10 +148,17 @@ Recovery: unset `REMINDERS_ENABLED` and redeploy. Queued reminders drain as
 ## Verification
 
 - `tests/unit/reminders.test.mjs`: cycle-boundary timing (24-hour window,
-  cutoff instant, October DST change), 72-hour nudge boundary, one-hour window,
-  timezone display, secondary circles, send-time suppression reasons,
-  idempotency across retries and replay, provider error classification.
+  cutoff instant, October and March DST changes), 72-hour nudge boundary and
+  the early return before it, one-hour window and 15-minute minimum, sessions
+  after the Sunday boundary, partner removal for primary and secondary pairs,
+  timezone display, secondary circles, the local availability scope, per-kind
+  failure isolation and order, send-time suppression reasons, idempotency
+  across retries and replay, provider error classification.
 - `tests/unit/reminders-ops.test.mjs`: preferences response with the flag off
-  and on, and the cron due-check queuing and delivering in one invocation.
+  and on, the cron due-check queuing and delivering in one invocation, a
+  failing kind logged at `warn` while queued mail is delivered, the due-check
+  timeout, and a guard that every outbox type keeps a claim under the cap.
+- `tests/e2e/ui-shell-accessibility.spec.ts`: reminder badges follow only the
+  confirmed preference.
 - `tests/e2e/golden-reminders-real-runtime.spec.ts`: the real-runtime golden
   path ([matrix row 14](testing/E2E_GOLDEN_PATHS.md)).

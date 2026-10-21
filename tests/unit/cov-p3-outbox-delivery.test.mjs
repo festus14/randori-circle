@@ -46,7 +46,10 @@ mock.module('../../api/_password-reset.js',{exports:{
 mock.module('../../api/_reminders.js',{exports:{
   REMINDER_EMAIL_EVENT_TYPE:REMINDER,createReminderEmailHandler:factory('reminder'),
 }});
-mock.module('../../api/_local-runtime.js',{exports:{localIdentityAdapterEnabled:()=>state.local}});
+mock.module('../../api/_local-runtime.js',{exports:{
+  localIdentityAdapterEnabled:()=>state.local,
+  localAvailabilityScope:()=>state.local,
+}});
 
 const {
   configuredOutboxBaseUrl,
@@ -104,6 +107,7 @@ test('local development captures every mail type with its kind and at most four 
   assert.equal(plan.handlers.get(PAIRING).localRuntime,true);
   assert.equal(plan.handlers.get(SCHEDULE).localRuntime,true);
   assert.equal(plan.handlers.get(INVITATION).localRuntime,true);
+  assert.equal(plan.handlers.get(REMINDER).localScope,true);
   assert.equal(state.senderCalls.length,0,'no provider client is created for local capture');
 
   const html=['a','b','c','d','e'].map(path=>`<a href="http://127.0.0.1:3000/${path}">${path}</a>`).join('');

@@ -55,3 +55,13 @@ export function localIdentityAdapterEnabled(req){
     &&process.env.CIRCLE_MEMBERSHIP_ENABLED==='true'
     &&process.env.ALLOW_OPEN_SIGNUP!=='true';
 }
+
+/**
+ * Mirrors how the availability endpoint scopes decisions: a strict local
+ * runtime with circle membership disabled stores them under `local` (see
+ * `strictLocalPairingRuntime` in api/ops.js). The bundled dev server enables
+ * membership, so it uses the primary circle's scope like production.
+ */
+export function localAvailabilityScope(req){
+  return process.env.CIRCLE_MEMBERSHIP_ENABLED!=='true'&&localRuntimeRequest(req);
+}

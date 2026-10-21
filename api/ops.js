@@ -47,7 +47,7 @@ import {
   INVITATION_EMAIL_EVENT_TYPE,
 } from './_invitation-email.js';
 import {identityEmailKeyRotationStatus} from './_identity-linking.js';
-import { localRuntimeRequest } from './_local-runtime.js';
+import { localAvailabilityScope, localRuntimeRequest } from './_local-runtime.js';
 import {
   enqueueDueReminders,
   REMINDER_EMAIL_EVENT_TYPE,
@@ -446,6 +446,20 @@ function projectOutboxDelivery({descriptor,result,status,configured,local,captur
     suppressed:result.suppressed,...(local&&configured?{captured}:{}),};
 }
 
+export async function runReminderDueCheck(db,req,deadlineAtMs){
+  let dueCheck;
+  try{
+    dueCheck=await settleBeforeDeadline(()=>enqueueDueReminders(db,{localScope:localAvailabilityScope(req)}),
+      deadlineAtMs);
+  }catch{
+    return {enqueued:null,errors:{due_check:'DUE_CHECK_FAILED'}};
+  }
+  if(!dueCheck.completed) return {enqueued:null,errors:{due_check:'DUE_CHECK_TIMEOUT'}};
+  const {availability_cutoff:availabilityCutoff,agree_time:agreeTime,session_soon:sessionSoon,errors}=dueCheck.value;
+  return {enqueued:{availability_cutoff:availabilityCutoff,agree_time:agreeTime,session_soon:sessionSoon},
+    errors:{...errors}};
+}
+
 export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
   maxClaims=OUTBOX_CRON_MAX_CLAIMS,
   finalizationReserveMs=OUTBOX_CRON_FINALIZATION_RESERVE_MS,
@@ -455,15 +469,15 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
   const preparationDeadline=deadlineAtMs-finalizationReserveMs-minimumDispatchWindowMs;
   // Issue #287: the reminder due-check runs inside the timeboxed preparation so
   // a newly due reminder can be claimed in this invocation. It makes no
-  // database access while REMINDERS_ENABLED is off, and a failure or timeout
-  // is reported without blocking delivery of other mail.
-  let reminders=null;
+  // database access while REMINDERS_ENABLED is off. Each kind reports its own
+  // bounded error code; a failure or timeout is logged at warn level and never
+  // blocks delivery of other mail.
+  let reminders={enqueued:null,errors:{}};
   const preparation=await settleBeforeDeadline(async()=>{
     await migrateLegacyPairingEmails(db,{limit:maxClaims});
     if(remindersEnabled()){
-      const dueCheck=await settleBeforeDeadline(()=>enqueueDueReminders(db),
-        Math.min(preparationDeadline,performance.now()+reminderDueCheckBudgetMs)).catch(()=>null);
-      reminders=dueCheck?.completed?dueCheck.value:{enabled:true,failed:true};
+      reminders=await runReminderDueCheck(db,req,
+        Math.min(preparationDeadline,performance.now()+reminderDueCheckBudgetMs));
     }
     return outboxDeliveryPlan(db,baseUrl,req);
   },preparationDeadline);
@@ -500,13 +514,11 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
     deadline_reached:deadlineReached,metrics_complete:metricRead.completed,
     legacy_reconciliation_complete:preparation.completed,logging_complete:false,
     claimed:invocation.claimed,types,key_rotation:metricRead.completed?metricRead.value.keyRotation:null,
-    ...(remindersEnabled()?{reminders_enqueued:reminders&&!reminders.failed?{
-      availability_cutoff:reminders.availability_cutoff,agree_time:reminders.agree_time,
-      session_soon:reminders.session_soon,
-    }:null}:{})};
+    ...(remindersEnabled()?{reminders_enqueued:reminders.enqueued,reminder_errors:reminders.errors}:{})};
+  const reminderFailed=Object.keys(reminders.errors).length>0;
   if(!metrics.deadline_reached&&performance.now()<deadlineAtMs){
     const logged=await settleBeforeDeadline(()=>logServerOps(
-      invocation.retried||invocation.deadLettered||invocation.leaseLost?'warn':'success',
+      invocation.retried||invocation.deadLettered||invocation.leaseLost||reminderFailed?'warn':'success',
       'outbox_invocation','outbox invocation completed',metrics,null,
     ),deadlineAtMs);
     metrics.logging_complete=logged.completed;

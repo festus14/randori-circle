@@ -32,7 +32,7 @@ import {
   createReminderEmailHandler,
   REMINDER_EMAIL_EVENT_TYPE,
 } from './_reminders.js';
-import { localIdentityAdapterEnabled } from './_local-runtime.js';
+import { localAvailabilityScope, localIdentityAdapterEnabled } from './_local-runtime.js';
 
 // Single registry of outbox delivery adapters. Both the scheduled worker
 // (`/api/cron/outbox`) and the post-commit immediate attempt build handlers
@@ -132,7 +132,8 @@ export async function outboxDeliveryPlan(db,baseUrl,req,{types=null}={}){
     }));
   }
   if(include(REMINDER_EMAIL_EVENT_TYPE)&&reminderSend){
-    handlers.set(REMINDER_EMAIL_EVENT_TYPE,createReminderEmailHandler({db,baseUrl,send:reminderSend}));
+    handlers.set(REMINDER_EMAIL_EVENT_TYPE,createReminderEmailHandler({db,baseUrl,send:reminderSend,
+      localScope:localAvailabilityScope(req)}));
   }
   return {local,captured,handlers};
 }

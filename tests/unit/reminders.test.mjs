@@ -24,6 +24,7 @@ import {
   remindersEnabled,
   renderReminderEmail,
   SESSION_SOON_LEAD_MS,
+  SESSION_SOON_MIN_LEAD_MS,
   sessionSoonRemindersEnabled,
 } from '../../api/_reminders.js';
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
@@ -183,7 +184,7 @@ test('flags default off; the preference descriptor and enqueue are inert until e
   assert.equal(reminderPreferenceDescriptor(),null);
   const untouched={execute(){ throw new Error('no database access while disabled'); },batch(){ throw new Error('no'); }};
   assert.deepEqual(await enqueueDueReminders(untouched),
-    {enabled:false,availability_cutoff:0,agree_time:0,session_soon:0});
+    {enabled:false,availability_cutoff:0,agree_time:0,session_soon:0,errors:{}});
   process.env.REMINDERS_SESSION_SOON_ENABLED='true';
   assert.equal(sessionSoonRemindersEnabled(),false,'the one-hour reminder needs the master flag');
   process.env.REMINDERS_ENABLED='true';
@@ -341,8 +342,10 @@ test('the one-hour reminder is opt-in, scheduled one hour ahead, and follows the
   assert.equal((await enqueueDueReminders(db,{now:at(early)})).session_soon,0);
   assert.equal((await enqueueDueReminders(db,{now:at(queuedAt)})).session_soon,2);
   assert.equal((await enqueueDueReminders(db,{now:at(queuedAt)})).session_soon,0,'idempotent');
-  // Already-queued reminders do not use up the per-run bound for a later pair.
-  const later=await seedPrimaryWeek(db,{weekId:11,cycleId:'2098-W38-b',pairs:[[4,2]]});
+  // Already-queued reminders do not use up the per-run bound for a later
+  // session, here from the previous week's pair (schedules outlive the cycle).
+  const later=await seedPrimaryWeek(db,{weekId:9,cycleId:'2098-W37',startsAt:'2098-09-07T07:00:00.000Z',
+    pairedAt:'2098-09-07 07:00:00',pairs:[[4,2]]});
   await agree(db,later.weekId,later.groups[0],'2098-09-18T12:30:00.000Z');
   assert.equal((await enqueueDueReminders(db,{now:at(queuedAt),limit:2})).session_soon,2);
   const rows=(await queued(db)).filter(row=>row.payload.kind==='session_soon');
@@ -353,7 +356,7 @@ test('the one-hour reminder is opt-in, scheduled one hour ahead, and follows the
   const {sent,send}=capture();
   const sendAt='2098-09-18T12:00:00.000Z';
   assert.equal((await handlerAt(db,sendAt,send)(eventFrom(rows[1]),{})).status,'delivered');
-  assert.equal(sent[0].subject,'Your Randori session starts in about an hour');
+  assert.equal(sent[0].subject,'Your Randori session starts soon');
   assert.match(sent[0].html,/Thursday 18 September 2098, 09:00 \(America\/New_York\)/);
   assert.deepEqual(await handlerAt(db,session,send)(eventFrom(rows[0]),{}),
     {status:'suppressed',reasonCode:'SESSION_ELAPSED'});
@@ -399,19 +402,19 @@ test('secondary circles get circle-named, dashboard-only reminders for all three
   const soon=(await queued(db2)).filter(row=>row.payload.kind==='session_soon');
   assert.equal(soon[0].payload.scope,'secondary');
   assert.equal((await handlerAt(db2,'2098-09-18T12:00:00.000Z',send)(eventFrom(soon[0]),{})).status,'delivered');
-  assert.equal(sent[2].subject,'Night <Owls> — Your Randori session starts in about an hour');
+  assert.equal(sent[2].subject,'Night <Owls> — Your Randori session starts soon');
   const sendAt=handlerAt(db2,'2098-09-18T12:00:00.000Z',send);
   await db2.execute(`UPDATE circles SET name='   ' WHERE id=20`);
   assert.equal((await sendAt(eventFrom(soon[1]),{})).status,'delivered');
-  assert.equal(sent[3].subject,'Your circle — Your Randori session starts in about an hour');
+  assert.equal(sent[3].subject,'Your circle — Your Randori session starts soon');
   await db2.execute(`INSERT INTO user_notification_prefs (user_id,email_enabled) VALUES (1,0)`);
   assert.deepEqual(await sendAt(eventFrom(soon[0]),{}),{status:'suppressed',reasonCode:'EMAIL_DISABLED'});
   await db2.execute(`DELETE FROM user_notification_prefs`);
   await db2.execute(`UPDATE auth_accounts SET is_demo=1 WHERE id=2`);
-  assert.deepEqual(await sendAt(eventFrom(soon[0]),{}),{status:'suppressed',reasonCode:'MEMBER_REMOVED'});
+  assert.deepEqual(await sendAt(eventFrom(soon[0]),{}),{status:'suppressed',reasonCode:'PARTNER_REVOKED'});
   await db2.execute(`UPDATE auth_accounts SET is_demo=0 WHERE id=2`);
   await db2.execute(`UPDATE circle_memberships SET status='inactive' WHERE circle_id=20 AND user_id=2`);
-  assert.deepEqual(await sendAt(eventFrom(soon[0]),{}),{status:'suppressed',reasonCode:'MEMBER_REMOVED'},
+  assert.deepEqual(await sendAt(eventFrom(soon[0]),{}),{status:'suppressed',reasonCode:'PARTNER_REVOKED'},
     'the partner left');
   assert.deepEqual(await sendAt(eventFrom(soon[1]),{}),{status:'suppressed',reasonCode:'MEMBER_REMOVED'},
     'the recipient left');
@@ -565,9 +568,204 @@ test('the due-check and handler default to the wall clock',async()=>{
   cleanup.push(async()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
   process.env.REMINDERS_SESSION_SOON_ENABLED='true';
   // No circles or pairs exist, so the result is deterministic at any real time.
-  assert.deepEqual(await enqueueDueReminders(db),{enabled:true,availability_cutoff:0,agree_time:0,session_soon:0});
+  assert.deepEqual(await enqueueDueReminders(db),
+    {enabled:true,availability_cutoff:0,agree_time:0,session_soon:0,errors:{}});
   const handler=createReminderEmailHandler({db,baseUrl:ORIGIN,send:async()=>{ throw new Error('not sent'); }});
   assert.deepEqual(await handler({eventVersion:1,idempotencyKey:'reminder-email/v1/x',payload:{kind:'agree_time',
     scope:'primary',week_id:1,pair_group_id:1,recipient_user_id:1,template_version:1}},{}),
   {status:'suppressed',reasonCode:'MEMBER_REMOVED'});
+});
+
+test('the cutoff window also follows the March DST change (a 23-hour local window)',async()=>{
+  const db=await fixture();
+  // Sunday 2098-03-30 is the GMT->BST change; its cutoff is 08:00 BST (07:00Z).
+  assert.equal((await enqueueDueReminders(db,{now:at('2098-03-29T06:59:59.999Z')})).availability_cutoff,0);
+  assert.equal((await enqueueDueReminders(db,{now:at('2098-03-29T07:00:00.000Z')})).availability_cutoff,3);
+  assert.equal(resolvePairingCycle({now:new Date('2098-03-29T07:00:00.000Z'),timeZone:ZONE,state:'upcoming'}).cutoffAt,
+    '2098-03-30T07:00:00.000Z');
+});
+
+test('a partner who left the primary circle suppresses the nudge and the one-hour reminder for both',async()=>{
+  process.env.REMINDERS_SESSION_SOON_ENABLED='true';
+  const db=await fixture();
+  const {weekId,groups:[groupId]}=await seedPrimaryWeek(db);
+  const due=plus(W38_START,AGREE_TIME_NUDGE_DELAY_MS);
+  // Queued on Tuesday while both are members...
+  assert.equal((await enqueueDueReminders(db,{now:at(due)})).agree_time,2);
+  const nudges=await queued(db);
+  // ...Bob leaves; Alice's queued nudge is suppressed and nothing new is queued.
+  await db.execute(`UPDATE circle_memberships SET status='inactive' WHERE circle_id=1 AND user_id=2`);
+  const {sent,send}=capture();
+  assert.deepEqual(await handlerAt(db,plus(due,24*3600_000),send)(eventFrom(nudges[0]),{}),
+    {status:'suppressed',reasonCode:'PARTNER_REVOKED'});
+  await agree(db,weekId,groupId,'2098-09-18T13:00:00.000Z');
+  assert.equal((await enqueueDueReminders(db,{now:at('2098-09-18T11:55:00.000Z')})).session_soon,0);
+  await db.execute(`UPDATE circle_memberships SET status='active' WHERE circle_id=1 AND user_id=2`);
+  assert.equal((await enqueueDueReminders(db,{now:at('2098-09-18T11:55:00.000Z')})).session_soon,2);
+  const soon=(await queued(db)).filter(row=>row.payload.kind==='session_soon');
+  await db.execute(`UPDATE auth_accounts SET is_demo=1 WHERE id=2`);
+  assert.deepEqual(await handlerAt(db,'2098-09-18T12:00:00.000Z',send)(eventFrom(soon[0]),{}),
+    {status:'suppressed',reasonCode:'PARTNER_REVOKED'});
+  await db.execute(`UPDATE auth_accounts SET is_demo=0 WHERE id=2`);
+  assert.equal((await handlerAt(db,'2098-09-18T12:00:00.000Z',send)(eventFrom(soon[0]),{})).status,'delivered');
+  assert.equal(sent.length,1);
+});
+
+test('a session agreed after the Sunday boundary still gets its one-hour reminder; the nudge does not',async()=>{
+  process.env.REMINDERS_SESSION_SOON_ENABLED='true';
+  const db=await fixture();
+  const {weekId,groups:[groupId]}=await seedPrimaryWeek(db);
+  const older=await seedPrimaryWeek(db,{weekId:8,cycleId:'2098-W37',startsAt:'2098-09-07T07:00:00.000Z',
+    pairedAt:'2098-09-07 07:00:00',pairs:[[4,2]]});
+  // Week-38 pair agrees Sunday 10:00 BST, after the 08:00 boundary into week 39.
+  const session='2098-09-21T09:00:00.000Z';
+  await agree(db,weekId,groupId,session);
+  await agree(db,8,older.groups[0],session); // two cycles back: out of scope
+  const queuedAt='2098-09-21T08:00:00.000Z';
+  assert.equal(resolvePairingCycle({now:new Date(queuedAt),timeZone:ZONE}).cycleId,'2098-W39');
+  assert.equal((await enqueueDueReminders(db,{now:at(queuedAt)})).session_soon,2);
+  const soon=(await queued(db)).filter(row=>row.payload.kind==='session_soon');
+  assert.deepEqual(soon.map(row=>row.payload.week_id),[weekId,weekId]);
+  const {sent,send}=capture();
+  assert.equal((await handlerAt(db,queuedAt,send)(eventFrom(soon[0]),{})).status,'delivered');
+  const nudge=eventFrom({key:`reminder-email/v1/agree-time/primary/${weekId}/${groupId}/1`,payload:{
+    kind:'agree_time',scope:'primary',week_id:weekId,pair_group_id:groupId,recipient_user_id:1,template_version:1}});
+  await agree(db,weekId,groupId,null);
+  assert.deepEqual(await handlerAt(db,queuedAt,send)(nudge,{}),{status:'suppressed',reasonCode:'CYCLE_ENDED'});
+});
+
+test('a session less than 15 minutes away gets no short-notice reminder',async()=>{
+  process.env.REMINDERS_SESSION_SOON_ENABLED='true';
+  const db=await fixture();
+  const {weekId,groups:[groupId]}=await seedPrimaryWeek(db);
+  const session='2098-09-18T13:00:00.000Z';
+  await agree(db,weekId,groupId,session);
+  // Agreed with 14 minutes to go: never queued.
+  assert.equal((await enqueueDueReminders(db,{now:at(plus(session,-SESSION_SOON_MIN_LEAD_MS+60_000))})).session_soon,0);
+  // Queued in time, but delivery ran late: suppressed rather than sent.
+  assert.equal((await enqueueDueReminders(db,{now:at(plus(session,-SESSION_SOON_MIN_LEAD_MS))})).session_soon,0,
+    'the boundary itself is excluded');
+  assert.equal((await enqueueDueReminders(db,{now:at(plus(session,-SESSION_SOON_MIN_LEAD_MS-1))})).session_soon,2);
+  const [row]=(await queued(db)).filter(item=>item.payload.kind==='session_soon');
+  const {sent,send}=capture();
+  assert.deepEqual(await handlerAt(db,plus(session,-SESSION_SOON_MIN_LEAD_MS+1),send)(eventFrom(row),{}),
+    {status:'suppressed',reasonCode:'SESSION_IMMINENT'});
+  assert.equal((await handlerAt(db,plus(session,-SESSION_SOON_MIN_LEAD_MS),send)(eventFrom(row),{})).status,'delivered');
+  assert.equal(sent.length,1);
+});
+
+test('the nudge reads the current week first and skips pair queries until its pairing is 72 hours old',async()=>{
+  const db=await fixture();
+  await seedPrimaryWeek(db,{pairedAt:'2098-09-15T07:00:00.000Z'});
+  const statements=[];
+  const spy={execute(statement){ statements.push(typeof statement==='string'?statement:statement.sql);
+    return db.execute(statement); },batch:(...args)=>db.batch(...args)};
+  assert.equal((await enqueueDueReminders(spy,{now:at('2098-09-18T06:59:59.999Z')})).agree_time,0);
+  assert.equal(statements.some(sql=>/WITH pairs AS MATERIALIZED/.test(sql)),false,'no pair scan before 72 hours');
+  assert.equal((await enqueueDueReminders(spy,{now:at('2098-09-18T07:00:00.000Z')})).agree_time,2,
+    'ISO-formatted run times are read too');
+  const unknown=await fixture();
+  await seedPrimaryWeek(unknown,{pairedAt:'not a time'});
+  assert.equal((await enqueueDueReminders(unknown,{now:at(THURSDAY)})).agree_time,0);
+  assert.equal((await enqueueDueReminders(await fixture(),{now:at(THURSDAY)})).agree_time,0,'no week published');
+});
+
+test('one failing kind reports a bounded code without stopping the others, and session_soon runs first',async()=>{
+  process.env.REMINDERS_SESSION_SOON_ENABLED='true';
+  const db=await fixture();
+  await seedPrimaryWeek(db);
+  const order=[];
+  const failing=(code)=>({
+    execute(statement){
+      const sql=typeof statement==='string'?statement:statement.sql;
+      if(/FROM pair_schedules schedule/.test(sql)) order.push('session_soon');
+      if(/LEFT JOIN pair_schedules schedule/.test(sql)){
+        order.push('agree_time');
+        return Promise.reject(Object.assign(new Error('locked'),code?{code}:{}));
+      }
+      if(/FROM circles WHERE archived_at IS NULL/.test(sql)) order.push('availability_cutoff');
+      return db.execute(statement);
+    },
+    batch:(...args)=>db.batch(...args),
+  });
+  // Saturday inside the cutoff window, 72+ hours after pairing.
+  const saturday=plus(CUTOFF,-3600_000);
+  const busy=await enqueueDueReminders(failing('SQLITE_BUSY'),{now:at(saturday)});
+  assert.deepEqual(busy,{enabled:true,availability_cutoff:3,agree_time:null,session_soon:0,
+    errors:{agree_time:'SQLITE_BUSY'}});
+  assert.deepEqual(order,['session_soon','agree_time','availability_cutoff']);
+  const opaque=await enqueueDueReminders(failing(null),{now:at(saturday)});
+  assert.deepEqual(opaque.errors,{agree_time:'QUERY_FAILED'});
+  const odd=await enqueueDueReminders(failing('not a code'),{now:at(saturday)});
+  assert.deepEqual(odd.errors,{agree_time:'QUERY_FAILED'});
+});
+
+test('a membership-free local runtime uses the local availability scope, as the availability endpoint does',async()=>{
+  process.env.REMINDERS_SESSION_SOON_ENABLED='true';
+  const db=await fixture();
+  // No circle memberships in this runtime; decisions live under scope `local`.
+  await db.execute(`DELETE FROM circle_memberships`);
+  const opened=plus(CUTOFF,-AVAILABILITY_CUTOFF_LEAD_MS);
+  assert.equal((await enqueueDueReminders(db,{now:at(opened)})).availability_cutoff,0,'circle scope finds nobody');
+  const cycle=resolvePairingCycle({now:new Date(opened),timeZone:ZONE,state:'upcoming'});
+  const localKey=availabilityCycleKey({kind:'local'},cycle);
+  await db.execute({sql:`INSERT INTO pairing_cycles
+      (scope_key,circle_id,cycle_key,cycle_id,starts_at,ends_at,cutoff_at,time_zone,default_source)
+    VALUES ('local',NULL,?,?,?,?,?,?,'cycle_default')`,
+  args:[localKey,cycle.cycleId,cycle.startsAt,cycle.endsAt,cycle.cutoffAt,cycle.timeZone]});
+  await db.execute({sql:`INSERT INTO pairing_cycle_availability
+      (scope_key,cycle_key,user_id,is_available,version,decision_source) VALUES ('local',?,4,1,1,'user')`,
+  args:[localKey]});
+  assert.equal((await enqueueDueReminders(db,{now:at(opened),localScope:true})).availability_cutoff,2);
+  const rows=await queued(db);
+  assert.deepEqual(rows.map(row=>row.key),[1,2].map(id=>`reminder-email/v1/availability-cutoff/local/${localKey}/${id}`));
+  assert.deepEqual(rows[0].payload,{kind:'availability_cutoff',scope:'local',cycle_key:localKey,recipient_user_id:1,
+    template_version:1});
+  const {sent,send}=capture();
+  const local=createReminderEmailHandler({db,baseUrl:ORIGIN,send,now:at(opened),localScope:true});
+  assert.equal((await local(eventFrom(rows[0]),{})).status,'delivered');
+  assert.equal(sent[0].subject,'Are you in for the next Randori cycle?');
+  await db.execute({sql:`INSERT INTO pairing_cycle_availability
+      (scope_key,cycle_key,user_id,is_available,version,decision_source) VALUES ('local',?,2,0,1,'user')`,
+  args:[localKey]});
+  assert.deepEqual(await local(eventFrom(rows[1]),{}),{status:'suppressed',reasonCode:'DECISION_MADE'});
+  assert.deepEqual(await handlerAt(db,opened,send)(eventFrom(rows[0]),{}),
+    {status:'suppressed',reasonCode:'SCOPE_CHANGED'});
+  assert.deepEqual(await local(eventFrom({key:'reminder-email/v1/x',payload:{kind:'availability_cutoff',scope:'local',
+    cycle_key:localKey,recipient_user_id:99,template_version:1}}),{}),{status:'suppressed',reasonCode:'MEMBER_REMOVED'});
+  // Pair reminders need no circle membership in this runtime either.
+  const {weekId,groups:[groupId]}=await seedPrimaryWeek(db);
+  await agree(db,weekId,groupId,'2098-09-18T13:00:00.000Z');
+  assert.equal((await enqueueDueReminders(db,{now:at('2098-09-18T11:55:00.000Z'),localScope:true})).session_soon,2);
+  const soon=(await queued(db)).find(row=>row.payload.kind==='session_soon');
+  const pairHandler=createReminderEmailHandler({db,baseUrl:ORIGIN,send,now:at('2098-09-18T12:00:00.000Z'),localScope:true});
+  assert.equal((await pairHandler(eventFrom(soon),{})).status,'delivered');
+  assert.deepEqual(await handlerAt(db,'2098-09-18T12:00:00.000Z',send)(eventFrom(soon),{}),
+    {status:'suppressed',reasonCode:'MEMBER_REMOVED'},'outside the local runtime membership is required');
+  assert.throws(()=>reminderEventStatement({kind:'availability_cutoff',scope:'local',circle_id:1,cycle_key:localKey,
+    recipient_user_id:1}),/Outbox delivery failed/);
+  assert.throws(()=>reminderEventStatement({kind:'availability_cutoff',scope:'circle',cycle_key:localKey,
+    recipient_user_id:1}),/Outbox delivery failed/);
+});
+
+test('the local availability scope applies only to a strict loopback runtime with membership disabled',async()=>{
+  const {localAvailabilityScope}=await import('../../api/_local-runtime.js');
+  const keys=['NODE_ENV','RANDORI_LOCAL_RUNTIME','TURSO_DATABASE_URL','TURSO_AUTH_TOKEN','APP_URL',
+    'CIRCLE_MEMBERSHIP_ENABLED','VERCEL','VERCEL_ENV','VERCEL_URL'];
+  const saved=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+  try{
+    for(const key of keys) delete process.env[key];
+    Object.assign(process.env,{NODE_ENV:'development',RANDORI_LOCAL_RUNTIME:'true',
+      TURSO_DATABASE_URL:'file:///tmp/randori-local.sqlite',APP_URL:'http://127.0.0.1:3000'});
+    const loopback={headers:{host:'127.0.0.1:3000'},socket:{remoteAddress:'127.0.0.1'}};
+    assert.equal(localAvailabilityScope(loopback),true);
+    assert.equal(localAvailabilityScope({headers:{host:'randori.example.test'},socket:{remoteAddress:'203.0.113.9'}}),
+      false);
+    process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+    assert.equal(localAvailabilityScope(loopback),false,'the bundled dev server uses the circle scope');
+  }finally{
+    for(const [key,value] of Object.entries(saved)){
+      if(value===undefined) delete process.env[key]; else process.env[key]=value;
+    }
+  }
 });

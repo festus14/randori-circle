@@ -53,7 +53,12 @@ mock.module('resend',{exports:{Resend:class{
   }}; }
 }}});
 
-const {default:opsHandler,deliverPendingOutbox}=await import('../../api/ops.js');
+const {
+  default:opsHandler,deliverPendingOutbox,OUTBOX_CRON_MAX_CLAIMS,runReminderDueCheck,
+}=await import('../../api/ops.js');
+const {OUTBOX_DELIVERY_TYPES}=await import('../../api/_outbox-delivery.js');
+const {runOutboxInvocation}=await import('../../api/_outbox.js');
+const {reminderEventStatement}=await import('../../api/_reminders.js');
 
 function invoke({method='GET',url:path='/',query={},headers={},body}={}){
   return new Promise((resolve,reject)=>{
@@ -151,7 +156,7 @@ test('with reminders off the cron neither queries nor queues reminders',async()=
   const response=await invoke(cron);
   assert.equal(response.status,200);
   assert.equal('reminders_enqueued' in response.body.outbox,false);
-  assert.equal(seen.some(sql=>/pairing_cycle_availability|WITH pairs AS/.test(sql)),false);
+  assert.equal(seen.some(sql=>/pairing_cycle_availability|WITH pairs AS|WITH recipients|FROM circles WHERE archived_at IS NULL|week\.week_label IN/.test(sql)),false);
   assert.equal(response.body.reminder_delivery.sent,0);
   assert.equal(Number((await realDb.execute(`SELECT COUNT(*) AS count FROM outbox_events
     WHERE event_type='reminder.email.requested'`)).rows[0].count),0);
@@ -173,13 +178,18 @@ test('the cron due-check queues the nudge and the same invocation delivers it on
   assert.equal(providerCalls.length,2,'a later run never re-sends');
 });
 
-test('a failing due-check is reported without blocking delivery of other mail',async()=>{
+test('a failing due-check kind is logged at warn with a bounded code while queued mail is still delivered',async()=>{
   process.env.REMINDERS_ENABLED='true';
+  // Start from an empty outbox with one reminder already queued.
+  await realDb.execute(`DELETE FROM outbox_audit_events`);
+  await realDb.execute(`DELETE FROM outbox_events`);
+  await realDb.execute(reminderEventStatement({kind:'agree_time',scope:'primary',week_id:10,pair_group_id:20,
+    recipient_user_id:1}));
   let hits=0;
   clientOverride={
     execute(statement){
       const sql=typeof statement==='string'?statement:statement.sql;
-      if(/WITH pairs AS/.test(sql)){ hits+=1; return Promise.reject(new Error('simulated failure')); }
+      if(/WITH pairs AS MATERIALIZED/.test(sql)){ hits+=1; return Promise.reject(new Error('simulated failure')); }
       return realDb.execute(statement);
     },
     batch:(...args)=>realDb.batch(...args),
@@ -188,8 +198,32 @@ test('a failing due-check is reported without blocking delivery of other mail',a
   const response=await invoke(cron);
   assert.equal(response.status,200);
   assert.equal(hits,1);
-  assert.equal(response.body.outbox.reminders_enqueued,null);
-  assert.equal(response.body.outbox.legacy_reconciliation_complete,true);
+  assert.deepEqual(response.body.outbox.reminders_enqueued,{availability_cutoff:0,agree_time:null,session_soon:0});
+  assert.deepEqual(response.body.outbox.reminder_errors,{agree_time:'QUERY_FAILED'});
+  assert.equal(response.body.outbox.types['reminder.email.requested'].delivered,1);
+  assert.deepEqual(providerCalls.map(call=>call.key),['reminder-email/v1/agree-time/primary/10/20/1']);
+  const log=await realDb.execute(`SELECT level,meta_json FROM app_logs WHERE event='outbox_invocation'
+    ORDER BY id DESC LIMIT 1`);
+  assert.equal(String(log.rows[0].level),'warn');
+  assert.match(String(log.rows[0].meta_json),/"reminder_errors":\{"agree_time":"QUERY_FAILED"\}/);
+});
+
+test('an unusable due-check client is reported as a failed due-check',async()=>{
+  process.env.REMINDERS_ENABLED='true';
+  assert.deepEqual(await runReminderDueCheck({execute(){}},{headers:{}},performance.now()+1000),
+    {enqueued:null,errors:{due_check:'DUE_CHECK_FAILED'}});
+});
+
+test('the fair dispatcher still has a claim for every outbox type',async()=>{
+  // runOutboxInvocation rejects a claim cap below the number of types, so a
+  // ninth type would make every cron run throw until the cap is raised.
+  assert.ok(OUTBOX_DELIVERY_TYPES.length<=OUTBOX_CRON_MAX_CLAIMS,
+    `${OUTBOX_DELIVERY_TYPES.length} outbox types exceed OUTBOX_CRON_MAX_CLAIMS=${OUTBOX_CRON_MAX_CLAIMS}: `
+    +'raise the cap (and docs/OUTBOX_INVOCATION_BUDGET.md) before adding a type');
+  const handlers=Object.fromEntries(Array.from({length:OUTBOX_CRON_MAX_CLAIMS+1},(_,index)=>
+    [`guard${index}.email.requested`,async()=>({})]));
+  await assert.rejects(()=>runOutboxInvocation({db:realDb,handlers,eventTypes:Object.keys(handlers),
+    maxClaims:OUTBOX_CRON_MAX_CLAIMS}),/invalid outbox invocation policy/);
 });
 
 test('a slow due-check is abandoned at its own budget and delivery still runs',async()=>{
@@ -199,7 +233,7 @@ test('a slow due-check is abandoned at its own budget and delivery still runs',a
   const client={
     execute(statement){
       const sql=typeof statement==='string'?statement:statement.sql;
-      if(/WITH pairs AS/.test(sql)) return stalled.then(()=>realDb.execute(statement));
+      if(/week\.week_label IN/.test(sql)) return stalled.then(()=>realDb.execute(statement));
       return realDb.execute(statement);
     },
     batch:(...args)=>realDb.batch(...args),
@@ -209,6 +243,7 @@ test('a slow due-check is abandoned at its own budget and delivery still runs',a
     {reminderDueCheckBudgetMs:50});
   release();
   assert.equal(result.metrics.reminders_enqueued,null);
+  assert.deepEqual(result.metrics.reminder_errors,{due_check:'DUE_CHECK_TIMEOUT'});
   assert.equal(result.metrics.legacy_reconciliation_complete,true);
   assert.equal(result.metrics.deadline_reached,false);
 });

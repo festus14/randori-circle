@@ -3032,3 +3032,15 @@ owner sets `REMINDERS_ENABLED=true` (and optionally
 `REMINDERS_SESSION_SOON_ENABLED=true`) in Vercel Production and redeploys. To
 recover, unset the flag and redeploy; queued reminders drain as suppressed.
 Contract: [`REMINDERS.md`](REMINDERS.md).
+
+**Review fixes (follow-up PR).** A primary-pair reminder now requires every
+pair member to be an active, real primary member at queue and send time
+(`PARTNER_REVOKED`), matching the secondary path and pairing mail. Only the
+nudge ends with the cycle; the one-hour reminder covers the current and
+previous week's pairs, because primary schedules outlive the Sunday boundary,
+and skips sessions under 15 minutes away (`SESSION_IMMINENT`). The due-check
+reads the current week first and returns before any pair scan until its
+pairing is 72 hours old, materializes the pairs CTE, runs `session_soon`
+first, and isolates failures per kind with a bounded code in
+`outbox.reminder_errors` and a `warn` log. A membership-free local runtime uses
+the `local` availability scope, like the availability endpoint.
