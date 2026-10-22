@@ -700,6 +700,7 @@ function apiRoute(pathname,query){
   const dataEndpoints=new Map([
     ['/api/circle','circle'],['/api/weeks','weeks'],['/api/history','history'],['/api/progress','progress'],['/api/init','init'],
     ['/api/profile','profile'],['/api/my-pair','my-pair'],['/api/pair-recap','pair-recap'],
+    ['/api/exercise-suggestions','exercise-suggestions'],
     ['/api/session-completion','session-completion'],['/api/session-controls','session-controls'],['/api/meeting-link','meeting-link'],
     ['/api/stats','stats'],['/api/schedule','schedule'],['/api/messages','messages'],
     ['/api/questions','questions'],['/api/runs','runs'],['/api/leetcode','leetcode'],
