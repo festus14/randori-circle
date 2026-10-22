@@ -3189,7 +3189,7 @@ did the backup drill pass, is Run working?".
   and `readOutboxMetrics` plus one per-type due/lease/dead-letter aggregate,
   judged with the watchdog's 15-minute threshold); **Code execution** (the
   configured provider and a bounded reason, 24-hour runner outcomes from
-  `app_logs`, and a deferred seam for the #249 smoke check); **Readiness and
+  `app_logs`, and the latest #249 smoke result, see the #343 addendum); **Readiness and
   migrations** (the `/api/health/ready` probe plus a ledger summary: state,
   versions and the newest names, no checksums); **Recent errors** (24-hour
   `error`/`warn` counts by source and event category, including
@@ -3224,6 +3224,32 @@ need an app-readable evidence store before those cards can go live.
 **Rollout and recovery.** Merge with the flag unset; nothing changes and no
 extra script is downloaded. The owner sets `ADMIN_DIAGNOSTICS_ENABLED=true` in
 Vercel Production and redeploys. To recover, unset it and redeploy.
+
+**Addendum (#343): the execution card shows the latest smoke result.** The
+deferred #249 seam is replaced by `execution.smoke`, still behind
+`ADMIN_DIAGNOSTICS_ENABLED` and with no migration.
+- It reads through `readLatestExecutionSmoke` and the new
+  `latestExecutionSmokeLanguages` in `api/_execution-smoke.js`, so the rules
+  are the smoke route's own (ID-74): server-only `runner` rows with
+  `user_id IS NULL`, the result matched to the latest claim, and
+  `result_missing` once an unsaved claim is past the 165-second grace.
+- The only difference is the lookback: 30 days (the `app_logs` retention,
+  ID-72) instead of one day, so a check that stopped running shows as stale
+  rather than never run.
+- `status` is `passed`, `failed`, `pending` (an unsaved claim inside the
+  grace) or `none`. Each language reports its recorded status (or
+  `result_missing`/`pending`) and duration. `checkedAt` is when the result was
+  saved.
+- Its evidence dates from the result, or from the claim when no result was
+  saved, and is stale after 26 hours (the daily 07:29 UTC run plus two hours).
+  It never changes the card verdict, which still follows member runs.
+- The smoke is read separately. A failing smoke read makes only
+  `execution.smoke` `unavailable`, and a failing execution read keeps the
+  smoke result. It returns no URLs, secrets, program output or error text.
+- The card shows a "Provider smoke check" row with its own status and Stale
+  badges, the per-language line and the result's age, built with
+  `textContent` and the existing `rc-badge` styles. The visual design is still
+  provisional.
 
 ## ID-74: Check the live execution provider after each deploy and daily, within a fixed sandbox budget
 
@@ -3352,6 +3378,25 @@ setup it depends on is complete (bootstrap guide sections 0 and 10.0). To
 pause it, disable the workflow in GitHub Actions. To remove it, revert this
 change. The `app_logs` rows are ordinary log rows and fall under the 30-day
 retention (ID-72).
+
+**Addendum (#342): also drop environment deployments that link to GitHub.**
+When Vercel's deployment starts a workflow, the run is attributed to
+`vercel[bot]`. The lowercase `production` environment deployment its job
+records is therefore created by `vercel[bot]` too, and it passed the creator
+check. Run 39731099057's environment deployment started a real
+`production-smoke` run (39731123064) two seconds later.
+- Both workflows now also require
+  `!startsWith(github.event.deployment_status.target_url, 'https://github.com/')`
+  on `deployment_status` runs. The `vercel[bot]` creator check stays.
+- Checked read-only against the deployments API. All 37 recent successful
+  `Production` statuses (Vercel's) link to `*.vercel.app`. GitHub environment
+  deployments, including the one created by `vercel[bot]`, link to
+  `https://github.com/…/actions/runs/…`.
+- The URL is event data, so it appears only in the job `if:` condition.
+  `check:deployability` requires the clause in both conditions and rejects any
+  other `github.event.deployment…` or `target_url` reference in either file, so
+  it can never be interpolated into a step. The execution-smoke workflow digest
+  pin is updated.
 
 ## ID-75: Give the backup watchdog an eight-hour grace for late GitHub schedules
 

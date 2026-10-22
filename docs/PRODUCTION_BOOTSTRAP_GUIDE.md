@@ -520,8 +520,9 @@ Change only these in Vercel Production, redeploying after each step:
    `vercel env pull .env.local && npm run smoke:execution` from a linked
    checkout and complete one JavaScript and one Python run in the product.
 
-After every Vercel production deploy (deployments created by `vercel[bot]`;
-GitHub's own `production` environment deployments are ignored) the
+After every Vercel production deploy (deployments created by `vercel[bot]`
+whose status links to `*.vercel.app`; GitHub's own `production` environment
+deployments, which link to Actions runs, are ignored) the
 `production-smoke` workflow (also daily and on demand) runs
 `npm run smoke:production`: anonymous, read-only GETs that
 check client routes (`/invite`, `/verify`, `/reset-password`, `/join/...`, an
@@ -537,7 +538,8 @@ update the defaults in `scripts/production-smoke.mjs` or pass
 CI mocks the execution provider, so it cannot see a provider outage or
 retirement (#248). The `execution-smoke` workflow covers that gap. It runs
 after each successful Vercel Production deployment (deployments created by
-`vercel[bot]` only), daily at 07:29 UTC, and on demand. It calls
+`vercel[bot]` whose status does not link to `https://github.com/`), daily at
+07:29 UTC, and on demand. It calls
 `POST /api/cron/execution-smoke` with `CRON_SECRET` and the body
 `{"trigger":"deploy"}` for post-deploy runs or `{"trigger":"schedule"}` for
 scheduled and manual runs. Any other body gets `400`.

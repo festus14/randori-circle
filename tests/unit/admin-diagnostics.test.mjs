@@ -19,6 +19,8 @@ import {
   DIAGNOSTICS_SNAPSHOT_MAX_AGE_MS,
   ERROR_CATEGORY_LIMIT,
   EXECUTION_EVIDENCE_MAX_AGE_MS,
+  EXECUTION_SMOKE_MAX_AGE_MS,
+  EXECUTION_SMOKE_REPORT_LOOKBACK,
   LOG_EVIDENCE_MAX_AGE_MS,
   OUTBOX_DELIVERY_MAX_AGE_MS,
   OUTBOX_DISPATCH_EVIDENCE_MAX_AGE_MS,
@@ -29,6 +31,7 @@ import {
   authorizeGlobalAdmin,
   evidence,
   executionConfiguration,
+  executionSmokeSummary,
   handleAdminDiagnosticsRequest,
   outboxCardStatus,
   parseDiagnosticsInstant,
@@ -38,6 +41,8 @@ import {
   safeLogSource,
   summarizeErrorRows,
 } from '../../api/_admin-diagnostics.js';
+import { APP_LOG_RETENTION_DAYS } from '../../api/_app-log-retention.js';
+import { EXECUTION_SMOKE_RESULT_GRACE_SECONDS } from '../../api/_execution-smoke.js';
 
 const ROOT = new URL('../../', import.meta.url);
 const directory = realpathSync(mkdtempSync(join(tmpdir(), 'randori-admin-diagnostics-')));
@@ -128,6 +133,25 @@ async function log({ level = 'info', source = 'server', event = null, message = 
     args: [level, source, event, message, JSON.stringify({ email: 'person@example.test' }), userId, '/api/x?token=abc', 'ua', '203.0.113.5', at],
   });
 }
+
+const SMOKE_OK_META = JSON.stringify({ javascript: { status: 'ok', durationMs: 700 }, python: { status: 'ok', durationMs: 800 } });
+
+async function smokeRow({ event, message, meta = null, at, source = 'runner', userId = null }) {
+  return Number((await db.execute({
+    sql: `INSERT INTO app_logs (level,source,event,message,meta_json,user_id,created_at) VALUES ('info',?,?,?,?,?,?)`,
+    args: [source, event, message, meta, userId, at],
+  })).lastInsertRowid);
+}
+
+// A smoke claim plus, optionally, the result saved for that exact claim, the
+// way api/_execution-smoke.js writes them.
+async function smokeRun({ ageMs, saved = true, meta = SMOKE_OK_META }) {
+  const claimId = await smokeRow({ event: 'execution_smoke_claim', message: 'schedule', at: sqliteTime(-ageMs) });
+  if (saved) await smokeRow({ event: 'execution_smoke_result', message: String(claimId), meta, at: sqliteTime(-ageMs) });
+  return claimId;
+}
+
+const smokeOf = async (env = {}) => (await readAdminDiagnostics(db, { env, checkReadiness: ready })).cards.execution.smoke;
 
 function assertNoPrivateData(value) {
   const text = JSON.stringify(value);
@@ -355,7 +379,8 @@ test('an empty system is healthy where it can be and stale where evidence is mis
   assert.equal(execution.status, 'failed');
   assert.equal(execution.category, 'not_set');
   assert.equal(execution.evidence.stale, true);
-  assert.deepEqual(execution.smoke, { status: 'deferred', issue: 249, reason: 'smoke_check_not_built' });
+  assert.deepEqual(execution.smoke, { status: 'none', category: null, checkedAt: null, languages: null,
+    evidence: { at: null, ageMs: null, maxAgeMs: EXECUTION_SMOKE_MAX_AGE_MS, stale: true } });
   assert.equal(readiness.status, 'healthy');
   assert.equal(readiness.evidence.stale, false);
   assert.equal(readiness.evidence.maxAgeMs, DIAGNOSTICS_SNAPSHOT_MAX_AGE_MS);
@@ -415,6 +440,91 @@ test('execution reports recent runner outcomes and goes stale after 26 hours', a
   assert.equal(card.status, 'unknown');
   assert.equal(card.category, 'no_runs');
   assert.equal(card.lastOutcome, null);
+});
+
+test('the smoke threshold and lookback follow the daily schedule and log retention', () => {
+  const workflow = readFileSync(new URL('.github/workflows/execution-smoke.yml', ROOT), 'utf8');
+  assert.match(workflow, /^    - cron: '29 7 \* \* \*'$/m, 'the execution smoke runs daily');
+  assert.equal(EXECUTION_SMOKE_MAX_AGE_MS, 26 * HOUR, 'one day plus a two-hour grace');
+  assert.equal(EXECUTION_SMOKE_REPORT_LOOKBACK, `-${APP_LOG_RETENTION_DAYS} days`);
+});
+
+test('execution shows the latest smoke result per language with its age, under the smoke route rules', async () => {
+  const env = { EXECUTION_PROVIDER: 'vercel-sandbox' };
+  await smokeRun({ ageMs: 3 * HOUR });
+  let smoke = await smokeOf(env);
+  assert.equal(smoke.status, 'passed');
+  assert.deepEqual(smoke.languages, { javascript: { status: 'ok', durationMs: 700 }, python: { status: 'ok', durationMs: 800 } });
+  assert.match(smoke.checkedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/);
+  assert.equal(smoke.evidence.at, smoke.checkedAt);
+  assert.ok(Math.abs(smoke.evidence.ageMs - 3 * HOUR) < MINUTE, String(smoke.evidence.ageMs));
+  assert.deepEqual([smoke.evidence.maxAgeMs, smoke.evidence.stale], [EXECUTION_SMOKE_MAX_AGE_MS, false]);
+  // The smoke never changes the card verdict, which still follows member runs.
+  assert.equal((await readAdminDiagnostics(db, { env, checkReadiness: ready })).cards.execution.category, 'no_runs');
+
+  // A newer run with a failing language.
+  await smokeRun({ ageMs: HOUR, meta: JSON.stringify({ javascript: { status: 'ok', durationMs: 600 }, python: { status: 'timeout', durationMs: 45000 } }) });
+  smoke = await smokeOf(env);
+  assert.equal(smoke.status, 'failed');
+  assert.deepEqual(smoke.languages.python, { status: 'timeout', durationMs: 45000 });
+
+  // Forged rows never count: a browser claim, member rows, and a member result
+  // naming the real latest claim.
+  const latestClaim = Number((await db.execute(`SELECT MAX(id) AS id FROM app_logs WHERE event='execution_smoke_claim'`)).rows[0].id);
+  await smokeRow({ event: 'execution_smoke_result', message: String(latestClaim), meta: SMOKE_OK_META, at: sqliteTime(0), userId: ids.owner });
+  await smokeRow({ event: 'execution_smoke_result', message: String(latestClaim), meta: SMOKE_OK_META, at: sqliteTime(0), source: 'client' });
+  await smokeRow({ event: 'execution_smoke_claim', message: 'schedule', at: sqliteTime(0), source: 'client' });
+  await smokeRow({ event: 'execution_smoke_claim', message: 'schedule', at: sqliteTime(0), userId: ids.owner });
+  smoke = await smokeOf(env);
+  assert.equal(smoke.status, 'failed');
+  assert.equal(smoke.languages.python.status, 'timeout');
+
+  // The latest claim without a result is in flight inside the grace, then
+  // result_missing; an older passing result never stands in for it.
+  await smokeRun({ ageMs: 30 * 1000, saved: false });
+  smoke = await smokeOf(env);
+  assert.equal(smoke.status, 'pending');
+  assert.deepEqual(smoke.languages, { javascript: { status: 'pending', durationMs: null }, python: { status: 'pending', durationMs: null } });
+  assert.equal(smoke.checkedAt, null);
+  assert.ok(smoke.evidence.ageMs < 2 * MINUTE, 'evidence dates from the claim when no result was saved');
+  await db.execute(`UPDATE app_logs SET created_at=datetime(created_at,'-${EXECUTION_SMOKE_RESULT_GRACE_SECONDS} seconds')
+    WHERE id=(SELECT MAX(id) FROM app_logs WHERE event='execution_smoke_claim' AND source='runner' AND user_id IS NULL)`);
+  smoke = await smokeOf(env);
+  assert.equal(smoke.status, 'failed');
+  assert.deepEqual(Object.values(smoke.languages).map(entry => entry.status), ['result_missing', 'result_missing']);
+  assert.equal(smoke.evidence.stale, false);
+  assertNoPrivateData(smoke);
+  assert.doesNotMatch(JSON.stringify(smoke), /https?:|randori-smoke|stdout|stderr/);
+});
+
+test('the smoke result goes stale after 26 hours and is found over the whole log retention', async () => {
+  await smokeRun({ ageMs: EXECUTION_SMOKE_MAX_AGE_MS + HOUR });
+  let smoke = await smokeOf();
+  assert.equal(smoke.status, 'passed', 'older than the smoke route lookback, still reported');
+  assert.equal(smoke.evidence.stale, true);
+  assert.ok(smoke.evidence.ageMs > EXECUTION_SMOKE_MAX_AGE_MS);
+  await db.execute('DELETE FROM app_logs');
+  await smokeRun({ ageMs: (APP_LOG_RETENTION_DAYS + 1) * DAY });
+  smoke = await smokeOf();
+  assert.deepEqual([smoke.status, smoke.languages, smoke.evidence.at, smoke.evidence.stale], ['none', null, null, true]);
+});
+
+test('the smoke summary maps every latest-run shape to a bounded status', () => {
+  const nowMs = Date.parse('2026-10-22T12:00:00.000Z');
+  const ok = { status: 'ok', durationMs: 5 };
+  const summary = latest => executionSmokeSummary(latest, nowMs);
+  // A saved result with an unreadable time falls back to the claim's age.
+  const noTime = summary({ claimAgeSeconds: 60, saved: true, checkedAt: null, languages: { javascript: ok, python: ok } });
+  assert.deepEqual([noTime.status, noTime.checkedAt, noTime.evidence.ageMs], ['passed', null, MINUTE]);
+  // No readable claim age and no result: no evidence at all.
+  const unknownAge = summary({ claimAgeSeconds: null, saved: false, checkedAt: null, languages: null });
+  assert.deepEqual([unknownAge.status, unknownAge.evidence.at, unknownAge.evidence.stale], ['failed', null, true]);
+  // One unreadable language fails the run.
+  const partial = summary({ claimAgeSeconds: 60, saved: true, checkedAt: '2026-10-22T11:00:00Z', languages: { javascript: ok, python: null } });
+  assert.deepEqual([partial.status, partial.languages.python.status, partial.checkedAt, partial.evidence.ageMs],
+    ['failed', 'result_missing', '2026-10-22T11:00:00.000Z', HOUR]);
+  assert.ok(Object.isFrozen(partial) && Object.isFrozen(partial.languages) && Object.isFrozen(partial.languages.javascript));
+  assert.equal(summary(null).status, 'none');
 });
 
 test('recent errors count categories only and go stale when logging stops for an hour', async () => {
@@ -541,12 +651,25 @@ test('one failing source makes only its card unavailable; a clock failure is fat
     assert.equal(snapshot.cards[id].status, 'unavailable', id);
     assert.equal(snapshot.cards[id].evidence.stale, true, id);
   }
+  assert.equal(snapshot.cards.execution.smoke.status, 'unavailable');
   assert.equal(snapshot.cards.deadLetters.status, 'healthy');
   assert.equal(snapshot.cards.readiness.status, 'healthy');
   const dead = await readAdminDiagnostics(failing(/outbox_audit_events audit/), { env: {}, checkReadiness: ready });
   assert.equal(dead.cards.deadLetters.status, 'unavailable');
   const readinessDown = await readAdminDiagnostics(db, { env: {}, checkReadiness: async () => { throw new Error('boom'); } });
   assert.equal(readinessDown.cards.readiness.status, 'unavailable');
+  // The smoke read fails alone: only execution.smoke is unavailable.
+  await smokeRun({ ageMs: HOUR });
+  const smokeDown = (await readAdminDiagnostics(failing(/WITH latest AS/), { env: {}, checkReadiness: ready })).cards;
+  assert.deepEqual([smokeDown.execution.status, smokeDown.execution.category], ['failed', 'not_set']);
+  assert.deepEqual(smokeDown.execution.smoke, { status: 'unavailable', category: 'read_failed', checkedAt: null, languages: null,
+    evidence: { at: null, ageMs: null, maxAgeMs: EXECUTION_SMOKE_MAX_AGE_MS, stale: true } });
+  assert.equal(smokeDown.errors.status, 'healthy');
+  // The execution reads fail alone: the card is unavailable but keeps the smoke result.
+  const executionDown = (await readAdminDiagnostics(failing(/event IN \(/), { env: {}, checkReadiness: ready })).cards.execution;
+  assert.deepEqual([executionDown.status, executionDown.category], ['unavailable', 'read_failed']);
+  assert.equal(executionDown.smoke.status, 'passed');
+  assert.ok(Object.isFrozen(executionDown));
   await assert.rejects(readAdminDiagnostics(failing(/now_utc/), { env: {} }), /read failed/);
   await assert.rejects(readAdminDiagnostics({ execute: async () => ({ rows: [{ now_utc: 'garbage' }] }) }), /clock/);
   await assert.rejects(readAdminDiagnostics(null), TypeError);

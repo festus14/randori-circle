@@ -46,6 +46,16 @@ ignores case. Without the check, this job's own deployment would trigger it
 again. The gate requires the same check on `production-smoke`, so environment
 jobs no longer trigger real production-smoke runs.
 
+The creator check alone misses one case (issue #342). A run that Vercel's
+deployment starts is attributed to `vercel[bot]`, so the environment deployment
+its job records is created by `vercel[bot]` too. Both workflows therefore also
+require that `deployment_status.target_url` does not start with
+`https://github.com/`: Vercel's statuses link to `*.vercel.app`, and GitHub's
+environment deployments link to the Actions run. The gate requires this check
+in both job conditions and rejects any other use of deployment event data
+(`github.event.deployment…` or `target_url`) in either workflow, so the URL is
+never interpolated into a step.
+
 This is a post-deploy signal, not a merge gate. It is never a required check.
 
 Required checks run on the pinned `ubuntu-24.04` image rather than the floating
