@@ -19,6 +19,8 @@ const legalCss = read('assets/legal.css');
 const pages = Object.fromEntries(Object.entries(PUBLIC_PAGES).map(([path, file]) => [path, read(file)]));
 const PAGE_TITLES = { '/privacy': 'Privacy Policy', '/terms': 'Terms of Service' };
 const ISSUE_TRACKER = 'https://github.com/festus14/randori-circle/issues';
+// The one address the owner chose to publish for private requests (ID-79).
+const CONTACT_EMAIL = 'festusomole14@gmail.com';
 
 function declarations(block) {
   const values = new Map();
@@ -122,21 +124,28 @@ for (const [path, html] of Object.entries(pages)) {
     }
   });
 
-  test(`${path} publishes no email address and points to the public issue tracker`, () => {
-    assert.doesNotMatch(visibleText(html), /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/u);
-    assert.doesNotMatch(html, /mailto:/iu);
+  test(`${path} publishes only the owner's contact email and keeps the issue tracker as a public option`, () => {
+    const emails = new Set(html.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu) || []);
+    assert.deepEqual([...emails], [CONTACT_EMAIL]);
+    const mailtos = [...html.matchAll(/href="mailto:([^"]*)"/giu)].map(match => match[1]);
+    assert.ok(mailtos.length >= 1);
+    for (const target of mailtos) assert.equal(target, CONTACT_EMAIL);
     assert.ok(html.includes(`href="${ISSUE_TRACKER}"`));
     assert.match(visibleText(html), /don’t post personal information there/u);
     assert.match(visibleText(html), /owner of your circle/u);
   });
 }
 
-test('the privacy policy keeps one marked spot for a future contact email', () => {
+test('the operator and private contact are filled in, with no placeholders left', () => {
   const privacy = pages['/privacy'];
-  assert.equal(privacy.match(/<!-- CONTACT_EMAIL: owner to add -->/gu)?.length, 1);
-  assert.equal(privacy.match(/<!-- CONTROLLER_NAME: owner to add -->/gu)?.length, 1);
-  assert.doesNotMatch(pages['/terms'], /CONTACT_EMAIL|CONTROLLER_NAME/u);
+  for (const html of Object.values(pages)) assert.doesNotMatch(html, /CONTACT_EMAIL|CONTROLLER_NAME|owner to add/u);
+  assert.match(visibleText(privacy), /Randori Circle is run by Festus Omole, based in the United Kingdom\./u);
   assert.match(privacy, /<h2 id="contact">/u);
+  // Privacy and deletion requests and security reports go to the private address.
+  const contact = visibleText(privacy.slice(privacy.indexOf('<h2 id="contact">')));
+  assert.match(contact, new RegExp(`Email ${CONTACT_EMAIL.replace(/\./gu, '\\.')} ?\\. This is the private way to reach us\\.`, 'u'));
+  assert.match(contact, /deleting your account, and for reporting a security problem/u);
+  assert.match(visibleText(pages['/terms']), new RegExp(`report it privately to ${CONTACT_EMAIL.replace(/\./gu, '\\.')}`, 'u'));
 });
 
 test('the privacy policy carries the Google API Services User Data Policy disclosure', () => {

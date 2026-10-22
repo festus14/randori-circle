@@ -3625,12 +3625,15 @@ short in-page "Privacy note" on the landing page.
   the weekly restore rehearsal, which keeps only counts and checksums).
 - *Deletion and contact.* There is no self-service deletion (leaving or
   removal only makes a membership inactive), so the policy explains how to
-  ask: the circle owner or the public issue tracker, with a warning not to
-  post personal information there. Circle owners can't delete accounts; the
-  operator deletes on request and responds within one month. No email
-  address or name is published; HTML comments `<!-- CONTACT_EMAIL: owner to
-  add -->` and `<!-- CONTROLLER_NAME: owner to add -->` in `privacy.html` mark
-  where the owner can add them.
+  ask: by email, or through the circle owner. Circle owners can't delete
+  accounts; the operator deletes on request and responds within one month.
+  At the
+  owner's request the policy names the operator (Festus Omole, based in the
+  United Kingdom) and publishes one private contact address for privacy and
+  deletion requests and security reports, on both pages; the public issue
+  tracker stays as an option for general questions, with a warning not to
+  post personal information there. A unit test allows exactly that one
+  address.
 - *Google disclosure.* The policy states that Randori's use and transfer of
   information received from Google APIs adheres to the Google API Services
   User Data Policy, including the Limited Use requirements, and that the data
@@ -3646,5 +3649,4 @@ while other work is in flight; the drift test keeps the copy honest).
 
 **Rollout and recovery.** Merging publishes both pages on the next production
 deploy and the `production-smoke` workflow then checks them. The owner reads
-the text, optionally adds a contact email at the marked spot, and enters the
-URLs on Google Cloud's Branding page. To withdraw, revert this change.
+the text and enters the URLs on Google Cloud's Branding page. To withdraw, revert this change.
