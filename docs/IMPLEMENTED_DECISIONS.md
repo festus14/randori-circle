@@ -3276,3 +3276,61 @@ A one-day grace would delay a real missed-drill alert by most of a day.
 To recover, revert the commit, which restores the two-hour grace, the 06:47 UTC
 deadline, and the previous digest together. Contract:
 [`TURSO_BACKUP_RESTORE_REHEARSAL.md`](TURSO_BACKUP_RESTORE_REHEARSAL.md).
+
+## ID-76: Compute each member's progress on request from their own records, behind a flag
+
+Status: implemented behind `PROGRESS_DASHBOARD_ENABLED` (default off); no
+migration. Issue #293 (post-MVP roadmap #312). Final layout and copy are
+pending (`needs-design`).
+
+**Context.** History listed past pairings, but a member could not see whether
+they were keeping the weekly habit the product is built around, which patterns
+they had covered, or how their runs were going. Completion receipts (ID-55),
+attested runs, explicit availability decisions and shared session controls
+already hold every fact needed.
+
+**Decision.**
+- `GET /api/progress` returns the signed-in member's completed sessions,
+  current and longest weekly streak, a 12-week series of session status and
+  verified runs, catalogue coverage by pattern (`type`) and topic (`tags`)
+  including untouched ones, and interview-role balance when shared session
+  controls exist. A `feedback` seam waits for #290.
+- Only the session chooses whose records are read. `user_id` is accepted only
+  so a request for anyone else is an explicit `404 progress not found`; owners
+  and admins get the same answer.
+- Counts reuse the existing projections: unanimous receipts as History, recap
+  and `/api/stats` count them (non-demo, like `your_sessions`), and the recap's
+  attestation check for runs. History also lists demo-week pairings, so the
+  response reports them as `demo_pairings` and the UI says "Demo sessions
+  aren't counted here." A real-runtime test checks the relationship.
+- Streak rules v1: a week counts when every participant of a partnered session
+  confirmed it. "Skip this cycle", solo (odd member out) and unpaired weeks
+  pause; the current unconfirmed week is neutral; a finished partnered week
+  without unanimous receipts (including none) ends the streak. Weeks are
+  pairing cycles in `PAIRING_TIME_ZONE`, stepped by local calendar so DST weeks
+  stay consecutive.
+- Reads are one clock query plus one read batch of three bounded statements:
+  the pairing window (`LIMIT 261`) with its controls and receipts by primary
+  key, skip decisions up to now (`LIMIT 260`, a primary-key lookup per cycle),
+  and the newest runs (`LIMIT 501` through `idx_runs_user`; code only for pair
+  room runs). With no index on a pairing member, the pairing window scans
+  `pairing_groups` once, as History and `/api/stats` already do. No table,
+  index, cache or job.
+- History learns the flag from `progress: {enabled: true}` on `/api/history`
+  and only then imports `assets/progress-view.js`. Charts are aria-hidden SVG
+  with design tokens, each with a text summary and a shared weeks table.
+
+**Deferred.** The optional weekly summary line in the pairing email (#334: it
+needs progress reads inside the outbox budget and a preference rule) and
+feedback trends by rubric dimension (#335, blocked by #290).
+
+**Alternatives.** Precomputing weekly rows (a migration and a second truth
+source that can drift from receipts). A separate tab (the spec puts past
+cycles and recaps in History). A chart library (weight, CSP and theming for
+four small charts). Breaking the streak on any week without a session (shames
+members who said they were away or had no partner).
+
+**Rollout and recovery.** Merge with the flag unset; nothing changes. The
+owner sets `PROGRESS_DASHBOARD_ENABLED=true` in Vercel Production and redeploys;
+unsetting it restores the previous behaviour. Contract:
+[`PROGRESS_DASHBOARD.md`](PROGRESS_DASHBOARD.md).

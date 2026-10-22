@@ -34,7 +34,9 @@ const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   // Shared email rules and the bulk invite UI (ID-68).
   'assets/email-validation.js', 'assets/bulk-invite.js',
   // Admin diagnostics view (issue #310).
-  'assets/admin-diagnostics.js'];
+  'assets/admin-diagnostics.js',
+  // Personal progress in History (issue #293, ID-76).
+  'assets/progress-view.js'];
 // Operator tools that cannot run under unit tests; see
 // docs/testing/COVERAGE_BASELINE.md ("Excluded from scope"). Their pure
 // decision logic lives in sibling modules that are measured.
