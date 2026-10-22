@@ -15,6 +15,13 @@ const WEEK_MS=7*24*60*60*1000;
 const EXPECTED_WEEKDAY_UTC=1;
 const EXPECTED_HOUR_UTC=3;
 const EXPECTED_MINUTE_UTC=17;
+// Ceiling for any configured slot grace or absolute slot deadline. GitHub starts
+// scheduled workflows on a best-effort basis and has started the Monday drill
+// about 5h40m late (#324), so the reviewed policy in the watchdog workflow now
+// tolerates hours of delay. With both values at most 12 hours, a missing,
+// failed, or unfinished drill alerts on the first hourly tick after slot + 12h
+// at the latest, which leaves room inside one day for a delayed watchdog tick.
+const MAX_SLOT_ALERT_DELAY_MS=12*60*60*1000;
 const RPO_TARGET_MS=30*60*1000;
 const RTO_TARGET_MS=15*60*1000;
 const MAX_FILE_BYTES=128*1024;
@@ -151,9 +158,9 @@ export function assessScheduledRuns(runs,{defaultBranch,maxRunAgeMs,stuckAfterMs
   const activation=activationEpoch(activationAt);
   const maximumAge=positiveInteger(maxRunAgeMs,'maximum run age',{maximum:90*24*60*60*1000});
   const stuckAge=positiveInteger(stuckAfterMs,'stuck-run age',{maximum:24*60*60*1000});
-  const grace=positiveInteger(slotGraceMs,'schedule grace',{maximum:24*60*60*1000});
+  const grace=positiveInteger(slotGraceMs,'schedule grace',{maximum:MAX_SLOT_ALERT_DELAY_MS});
   const slotDeadline=positiveInteger(slotDeadlineMs,'schedule deadline',
-    {maximum:4*60*60*1000});
+    {maximum:MAX_SLOT_ALERT_DELAY_MS});
   if(slotDeadline<=grace) throw new TypeError('schedule deadline is invalid');
   if(typeof defaultBranch!=='string'||!/^[A-Za-z0-9._/-]{1,255}$/.test(defaultBranch)){
     return publicAlert('api_failure',now.timestamp,{activationAt:activation.value});
