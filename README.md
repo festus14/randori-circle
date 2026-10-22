@@ -24,18 +24,20 @@ still serves `/api/*` (ID-80).
   Reminders go out before the availability cutoff, three days after pairing if
   no time is agreed, and one day and one hour before a session.
 - **Pair room.** The room has chat, a conflict-free shared code editor (Yjs)
-  and a whiteboard saved as checkpoints. It also has a shared focus timer and a
-  feed of verified runs. **Run** evaluates code against server-owned test cases
-  in an isolated Vercel Sandbox. A session counts as complete only when every
-  participant confirms.
+  and a whiteboard saved as checkpoints. It also has a shared focus timer, a
+  feed of verified runs and a peer-to-peer audio and video call (WebRTC: media
+  goes browser to browser, and the set-up messages relayed through
+  `api/video.js` are cleared after about an hour). **Run** evaluates code
+  against server-owned test cases in an isolated Vercel Sandbox. A session
+  counts as complete only when every participant confirms.
 - **History and insights.** Members see pairing recaps, their own progress and
   suggested next exercises. Owners see an aggregate circle health card.
 - **Accounts.** Members can link Google and password sign-in, reset a password,
   and delete their own account. App admins have a read-only Diagnostics view.
 
 Built but switched off: secondary circles (multi-circle) and AI coaching.
-Not built yet: presence, remote cursors and managed video. Which feature is on
-in production, and what each flag needs, is in the
+Not built yet: presence, remote cursors and managed (server-relayed) video.
+Which feature is on in production, and what each flag needs, is in the
 [feature flag table](docs/ENVIRONMENT.md#feature-flags).
 
 ## How it is built
@@ -49,11 +51,13 @@ in production, and what each flag needs, is in the
 - **Database:** Turso (libSQL/SQLite). The schema changes only through the
   append-only migration ledger in `db/`. Request paths never run DDL, and CI
   enforces that.
-- **Email:** Resend, through one durable, idempotent outbox. Auth, invitation
-  and schedule mail is sent right after commit. Everything else is sent by the
-  outbox worker.
-- **Other providers:** Google OAuth for sign-in, Vercel Sandbox for code
-  execution, and Sentry for error reporting (production only).
+- **Email:** Resend, through one durable, idempotent outbox. Auth, invitation,
+  schedule and invite-request notification mail is sent right after commit.
+  Pairing and reminder mail is sent by the outbox worker.
+- **Other providers:** Google OAuth for sign-in, Google public STUN servers for
+  call set-up, Vercel Sandbox for code execution, Sentry for error reporting
+  (production only), and cdnjs, jsDelivr and unpkg, which serve the code
+  editor and formatter to the browser.
 - **Scheduled jobs:**
 
 | Job | Schedule | Runs on |
@@ -113,7 +117,7 @@ full two-user local journey and how to debug it are in
 | Command | What it checks | Runs in CI |
 | --- | --- | --- |
 | `npm run test:unit` | All unit tests (`tests/unit/*.test.mjs`) | Yes, inside `test:coverage` |
-| `npm run test:coverage` | Unit tests with the coverage gate: 97% lines, 92% branches, 99% functions over `api/`, `db/` and `scripts/` ([baseline](docs/testing/COVERAGE_BASELINE.md)) | `e2e` |
+| `npm run test:coverage` | Unit tests with the coverage gate: 97% lines, 92% branches, 99% functions over `api/`, `db/`, `scripts/` and the browser modules listed in `tests/support/coverage.mjs` ([baseline](docs/testing/COVERAGE_BASELINE.md)) | `e2e` |
 | `npm run test:migrations` | Migration ledger rehearsal on local database files | `e2e` |
 | `npm run test:e2e` | Playwright journeys, including real-runtime golden paths ([matrix](docs/testing/E2E_GOLDEN_PATHS.md)). Run `npx playwright install --with-deps chromium` once first | `e2e` |
 | `npm run check:syntax` | `node --check` over `api/`, `db/`, `scripts/` and the test sources | `e2e` |
@@ -124,6 +128,7 @@ full two-user local journey and how to debug it are in
 | `npm run audit:prod` | `npm audit` of production dependencies | `e2e` |
 | `npm run check:deployability` | `vercel.json` routes, headers, crons and the pinned scheduler workflows | `deployability` |
 | `npm run check:backup-controls` | The backup, restore and migration workflow contract | `deployability` |
+| `npm run test:deployability` | Release-contract failure-mode tests | `deployability` |
 | `npm test` | Deployability, catalogue, DDL, syntax, CRDT, coverage and e2e in one go | No |
 
 Before pushing, run `test:unit`, `test:coverage`, `check:syntax`, `check:crdt`,

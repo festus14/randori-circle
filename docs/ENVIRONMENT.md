@@ -52,7 +52,7 @@ without it: the route returns 503 or the capability is not offered.
 | `TURSO_DATABASE_URL` | libSQL URL of the app database (`libsql://…` in production, `file:` locally). Read by `api/_db.js` and the readiness probes; also by `db:status`/`db:plan` and the key-control and chat-retention scripts | Yes | none | Treat as secret | Vercel; secret in GH `credential-key-control` and GH chat-retention env |
 | `TURSO_AUTH_TOKEN` | Database auth token for the URL above. The local runtime refuses to start if it is set | Yes for a remote database | none | Yes | Vercel; secret in GH `credential-key-control` and GH chat-retention env |
 | `APP_URL` | Canonical origin used for Google OAuth redirects and for links in emails and pairing publications. Production needs an exact root-level HTTPS origin (`https://randoricircle.com`); `npm run dev` sets its loopback origin itself | Yes | none | No | Vercel; var in GH `production` (outbox dispatcher, watchdog, execution smoke) |
-| `JWT_SECRET` | Signs session JWTs and keys invitation, activation and reset token hashes. Rotating it is an emergency global sign-out: it also invalidates pending invitation, activation and reset links, so revoke and reissue invitations and ask anyone mid-reset to request a new link | Yes | none | Yes | Vercel |
+| `JWT_SECRET` | Signs session JWTs and keys invitation, activation and reset token hashes. Rotating it is an emergency global sign-out: it also invalidates pending invitation, activation and reset links, so revoke and reissue invitations and ask anyone mid-reset to request a new link. If `RUN_ATTESTATION_SECRET` is unset, first set it to the current `JWT_SECRET` (or add the old value to `RUN_ATTESTATION_PREVIOUS_SECRETS`), or past runs show as unverified. Invitation email hashes are re-keyed too, so invite-request checks for "already invited" and "recently declined" stop matching rows stored under the old secret | Yes | none | Yes | Vercel |
 | `CRON_SECRET` | Authenticates every `/api/cron/*` route (`x-cron-secret` header or `Authorization: Bearer`) | Yes | none | Yes | Vercel; secret in GH `production` (must match Vercel) |
 | `OUTBOX_DISPATCH_SECRET` | Narrower secret for the external cron-job.org scheduler. Accepted only on `/api/cron/outbox` and `/api/cron/outbox-health`; ignored if shorter than 32 characters or equal to `CRON_SECRET` (ID-67, [setup](OUTBOX_EXTERNAL_SCHEDULER.md)) | No | unset (disabled) | Yes | Vercel; stored in cron-job.org, never in GitHub |
 | `RUN_ATTESTATION_SECRET` | Signs verified execution runs. Must be at least 32 characters | Recommended | falls back to `JWT_SECRET` | Yes | Vercel |
@@ -65,7 +65,7 @@ without it: the route returns 503 or the capability is not offered.
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret | No | unset (Google off) | Yes | Vercel |
 | `RESEND_API_KEY` | Resend API key for all outbox email. In production, email activation, password reset and invitation email are unavailable without it | No | unset (no email sent) | Yes | Vercel |
 | `RESEND_FROM` | Sender address on a Resend-verified domain, for example `Randori <noreply@mail.example.com>` | With `RESEND_API_KEY` | unset | No | Vercel |
-| `OUTBOX_IMMEDIATE_DELIVERY` | Send auth, invitation and schedule mail right after commit (ID-64). `false` is the kill switch (mail waits for the cron); `true` turns it on off Vercel | No | on when `VERCEL=1`, off elsewhere | No | Vercel (normally unset) |
+| `OUTBOX_IMMEDIATE_DELIVERY` | Send auth, invitation, schedule and invite-request notification mail right after commit (ID-64); pairing and reminder mail always waits for the outbox worker. `false` is the kill switch (mail waits for the cron); `true` turns it on off Vercel | No | on when `VERCEL=1`, off elsewhere | No | Vercel (normally unset) |
 
 ### Code execution
 
@@ -132,8 +132,9 @@ production state in the [feature flag table](#feature-flags):
 `REMINDERS_ENABLED`, `REMINDERS_SESSION_SOON_ENABLED`,
 `PROGRESS_DASHBOARD_ENABLED`, `EXERCISE_SUGGESTIONS_ENABLED`,
 `CIRCLE_HEALTH_ENABLED`, `ADMIN_DIAGNOSTICS_ENABLED`,
-`ACCOUNT_DELETION_ENABLED`, `OUTBOX_PII_RETENTION_ENABLED`, `AI_ENABLED` and
-`ALLOW_OPEN_SIGNUP`.
+`ACCOUNT_DELETION_ENABLED`, `OUTBOX_PII_RETENTION_ENABLED` and `AI_ENABLED`.
+`ALLOW_OPEN_SIGNUP` is the exception: it is development-only, works only in
+the local runtime and is ignored when `NODE_ENV=production`.
 
 ## Protected GitHub environments
 
@@ -369,11 +370,11 @@ them off cannot undo.
 | `SECONDARY_CIRCLE_SCHEDULING_ENABLED` | Propose, accept and clear a time for a secondary pair | off | Off in effect | `SECONDARY_CIRCLE_COORDINATION_ENABLED`; migration v16 | ID-33 ([secondary scheduling](SECONDARY_SCHEDULING.md)) | Schedules are kept; writes stop |
 | `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED` | Queues dashboard-only pairing emails for secondary publications | off | Off in effect | `SECONDARY_CIRCLE_COORDINATION_ENABLED`; sender canary | ID-32 | New intents stop; already-queued mail is suppressed at send time |
 | `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` | Queues dashboard-only schedule emails for secondary schedules | off | Off in effect | `SECONDARY_CIRCLE_SCHEDULING_ENABLED` | ID-34 ([notifications](SECONDARY_SCHEDULE_NOTIFICATIONS.md)) | As above |
-| `EMAIL_PASSWORD_ACTIVATION_ENABLED` | Invitation-bound email and password signup with a verification link | off | On (observed: `verifiedEmailActivation`) | `CIRCLE_MEMBERSHIP_ENABLED`; `EMAIL_VERIFICATION_*` ring with an accepted control; HTTPS `APP_URL`; Resend; migration v7 | ID-10 | Password signup is withdrawn (invitees can still use Google); verify and resend return 503 and queued verification mail is held until it is turned back on |
-| `PASSWORD_RESET_ENABLED` | "Forgot password?" for existing password accounts | off | On (observed: `passwordReset`) | `PASSWORD_RESET_*` ring with an accepted control; HTTPS `APP_URL`; Resend; migration v8 | ID-11 | Reset request and consume return 503; queued reset mail is held; password login is unaffected |
+| `EMAIL_PASSWORD_ACTIVATION_ENABLED` | Invitation-bound email and password signup with a verification link | off | On (observed: `verifiedEmailActivation`) | `CIRCLE_MEMBERSHIP_ENABLED`; `EMAIL_VERIFICATION_*` ring with an accepted control; HTTPS `APP_URL`; Resend; migration v7 | ID-10 | Password signup is withdrawn (invitees can still use Google); verify and resend return 503. Queued verification mail stays `pending` until the flag is back on, and the outbox watchdog reports `delivery_stale` after 15 minutes; expect that alert or turn it off with an empty queue ([held mail](#held-mail-and-the-outbox-watchdog)) |
+| `PASSWORD_RESET_ENABLED` | "Forgot password?" for existing password accounts | off | On (observed: `passwordReset`) | `PASSWORD_RESET_*` ring with an accepted control; HTTPS `APP_URL`; Resend; migration v8 | ID-11 | Reset request and consume return 503; password login is unaffected. Queued reset mail stays `pending` until the flag is back on, and the outbox watchdog reports `delivery_stale` after 15 minutes; expect that alert or turn it off with an empty queue ([held mail](#held-mail-and-the-outbox-watchdog)) |
 | `IDENTITY_MANAGEMENT_ENABLED` | Account security: link or remove Google and password sign-in | off | On (observed: `identityManagement`) | `IDENTITY_EMAIL_HASH_*` ring with an accepted control (without it Google sign-in fails closed); migration v9 | ID-13, ID-14 | Account security is hidden; Google and password sign-in keep working; existing links stay |
-| `INVITATION_EMAIL_DELIVERY_ENABLED` | Emailing owner-created invitation links | off | Not observable (bootstrap guide §10 turns it on for the MVP) | `CIRCLE_MEMBERSHIP_ENABLED`; `INVITATION_EMAIL_*` ring; Resend; `APP_URL` | ID-25 ([invitation email](INVITATION_EMAIL_DELIVERY.md)) | Invitations are still created with the copy-link fallback; queued invitation mail is held |
-| `INVITE_REQUESTS_ENABLED` | Public "Request an invite" form, owner review API, `inviteRequests` capability | off | On (observed: `inviteRequests`) | `CIRCLE_MEMBERSHIP_ENABLED`; migration v21; Resend and `APP_URL` for the owner digest | ID-66 ([invite requests](INVITE_REQUESTS.md)) | Endpoints return 404 and the form disappears; stored requests still expire and purge weekly |
+| `INVITATION_EMAIL_DELIVERY_ENABLED` | Emailing owner-created invitation links | off | Not observable (bootstrap guide §10 turns it on for the MVP) | `CIRCLE_MEMBERSHIP_ENABLED`; `INVITATION_EMAIL_*` ring; Resend; `APP_URL` | ID-25 ([invitation email](INVITATION_EMAIL_DELIVERY.md)) | Invitations are still created with the copy-link fallback. Queued invitation mail stays `pending` until the flag is back on, and the outbox watchdog reports `delivery_stale` after 15 minutes; expect that alert or turn it off with an empty queue ([held mail](#held-mail-and-the-outbox-watchdog)) |
+| `INVITE_REQUESTS_ENABLED` | Public "Request an invite" form, owner review API, `inviteRequests` capability | off | On (observed: `inviteRequests`) | `CIRCLE_MEMBERSHIP_ENABLED`; migration v21; Resend and `APP_URL` for the owner digest | ID-66 ([invite requests](INVITE_REQUESTS.md)) | Endpoints return 404 and the form disappears; stored requests still expire and purge weekly. Pending owner-digest emails are held the same way: they stay `pending` until the flag is back on, and the outbox watchdog reports `delivery_stale` after 15 minutes; expect that alert or turn it off with an empty queue ([held mail](#held-mail-and-the-outbox-watchdog)) |
 | `REMINDERS_ENABLED` | Availability-cutoff reminder and agree-a-time nudge from the outbox cron | off | On (owner) | Resend; the outbox scheduler | ID-71 ([reminders](REMINDERS.md)) | Queued reminders drain as `suppressed` |
 | `REMINDERS_SESSION_SOON_ENABLED` | One-hour session reminder | off | On (owner) | `REMINDERS_ENABLED` | ID-71 | As above |
 | `PROGRESS_DASHBOARD_ENABLED` | "Your progress" in History and `GET /api/progress` | off | On (owner) | none | ID-76 ([progress dashboard](PROGRESS_DASHBOARD.md)) | Safe; nothing is stored |
@@ -386,6 +387,25 @@ them off cannot undo.
 | `ALLOW_OPEN_SIGNUP` | Open password signup for development | off | Ignored in production (`NODE_ENV=production`) | Not production; circle membership off | none | Safe |
 | `OUTBOX_IMMEDIATE_DELIVERY` | Sending mail right after commit, instead of waiting for the cron (three-state, see above) | on when `VERCEL=1` | Not observable (expected unset, so on) | none | ID-64 | Set `false` and redeploy: mail waits for the scheduled `/api/cron/outbox` |
 | `SENTRY_ENABLE_PREVIEW` | Sentry reporting from previews | off | Preview scope only | `SENTRY_DSN` | none | Safe |
+
+#### Held mail and the outbox watchdog
+
+While `EMAIL_PASSWORD_ACTIVATION_ENABLED`, `PASSWORD_RESET_ENABLED`,
+`INVITATION_EMAIL_DELIVERY_ENABLED` or `INVITE_REQUESTS_ENABLED` is off, its
+outbox handler is not registered (`api/_outbox-delivery.js`), so the worker
+never claims that mail type and queued rows stay `pending`. The same happens
+when a flag they depend on, such as `CIRCLE_MEMBERSHIP_ENABLED`, is turned off.
+Delivery health counts every due `pending` row, whatever its type. Once the
+oldest held row is more than 15 minutes old, the next hourly run of the
+[outbox watchdog](OUTBOX_DISPATCH_WATCHDOG.md) fails with `delivery_stale`, and
+the admin Diagnostics outbox card shows the same. The alert repeats until the
+flag is turned back on (the held rows are then sent, or suppressed if they are
+no longer valid, for example because the link expired) or the rows are
+otherwise drained. Either expect that alert, or turn the flag off only when
+the queue is empty: `dueCount` from `/api/cron/outbox-health` is `0`, or the
+type's Due column in admin Diagnostics is `0`. Reminders do not have this
+problem: their handler is always registered, so queued reminders drain as
+`suppressed` while `REMINDERS_ENABLED` is off.
 
 `EXECUTION_PROVIDER` is not a boolean but works as the switch for Run:
 unsetting it makes every run fail closed with `execution_unavailable` and

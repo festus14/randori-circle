@@ -17,10 +17,12 @@ When you add a doc, add it here too.
 | --- | --- |
 | [IMPLEMENTED_DECISIONS.md](IMPLEMENTED_DECISIONS.md) | The decision log: every accepted product, security and operations decision (ID-01 onwards), with context, alternatives and rollout |
 | [ENVIRONMENT.md](ENVIRONMENT.md) | Every environment variable the code reads, and the feature flag table with production state and safe switch-off |
-| [PRODUCTION_ARCHITECTURE_PLAN.md](PRODUCTION_ARCHITECTURE_PLAN.md) | A possible Next.js/PostgreSQL end state and delivery plan. **Note:** a proposal, not the current runtime (Vercel functions plus Turso). A current system design document is tracked in [#359](https://github.com/festus14/randori-circle/issues/359) |
-| [randori-production-architecture.png](randori-production-architecture.png) | Diagram for the architecture plan above. **Note:** shows the proposed target (Next.js, Supabase, Liveblocks, LiveKit), not what runs today |
-| [randori-production-architecture.svg](randori-production-architecture.svg) | Browser-viewable copy of the same target diagram |
-| [randori-production-architecture.excalidraw](randori-production-architecture.excalidraw) | Editable Excalidraw source of the same target diagram |
+
+A current system design document is tracked in
+[#359](https://github.com/festus14/randori-circle/issues/359). The older
+architecture plan describes a proposed target, not today's runtime, so it is
+listed separately under
+[Proposed architecture (not current)](#proposed-architecture-not-current).
 
 ## Product and UX
 
@@ -168,3 +170,16 @@ Incident runbooks and a postmortem template are tracked in
 | [DEPLOYMENT_GATES.md](DEPLOYMENT_GATES.md) | Required merge checks (`deployability`, `e2e`, GitGuardian) and why Vercel previews are advisory (ID-07) |
 | [GITHUB_ACTIONS_NODE24.md](GITHUB_ACTIONS_NODE24.md) | First-party actions pinned to reviewed commits on the Node 24 runtime |
 | [UBUNTU_RUNNER_PINNING.md](UBUNTU_RUNNER_PINNING.md) | Required jobs pinned to `ubuntu-24.04`, plus the optional Ubuntu 26 canary |
+
+## Proposed architecture (not current)
+
+These describe a possible future platform. None of it is what runs today
+(Vercel functions plus Turso); see the [README](../README.md#how-it-is-built)
+for the current stack.
+
+| Doc | What it covers |
+| --- | --- |
+| [PRODUCTION_ARCHITECTURE_PLAN.md](PRODUCTION_ARCHITECTURE_PLAN.md) | A possible Next.js/PostgreSQL end state and delivery plan. **Note:** a proposal, not the current runtime (Vercel functions plus Turso). A current system design document is tracked in [#359](https://github.com/festus14/randori-circle/issues/359) |
+| [randori-production-architecture.png](randori-production-architecture.png) | Diagram for the architecture plan above. **Note:** shows the proposed target (Next.js, Supabase, Liveblocks, LiveKit), not what runs today |
+| [randori-production-architecture.svg](randori-production-architecture.svg) | Browser-viewable copy of the same target diagram |
+| [randori-production-architecture.excalidraw](randori-production-architecture.excalidraw) | Editable Excalidraw source of the same target diagram |
