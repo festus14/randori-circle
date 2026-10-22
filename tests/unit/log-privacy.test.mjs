@@ -17,11 +17,13 @@ import {
 
 const SECRET='unit-test-secret-at-least-thirty-two-characters';
 const DAY='2026-10-21';
-const savedSecret=process.env.JWT_SECRET;
+const SAVED=Object.freeze({JWT_SECRET:process.env.JWT_SECRET,LOG_ADDRESS_SECRET:process.env.LOG_ADDRESS_SECRET});
 
 afterEach(()=>{
-  if(savedSecret===undefined) delete process.env.JWT_SECRET;
-  else process.env.JWT_SECRET=savedSecret;
+  for(const [key,value] of Object.entries(SAVED)){
+    if(value===undefined) delete process.env[key];
+    else process.env[key]=value;
+  }
 });
 
 // Any IPv4 dotted quad, and any IPv6-looking run (two or more hex groups
@@ -68,7 +70,8 @@ test('logAddressHash is an HMAC of the network salted with the UTC day',()=>{
   assert.equal(ipv6,expectedHash('2001:0db8:0001:0002::/64'));
   assert.equal(logAddressHash('2001:db8:1:2:aaaa:bbbb:cccc:dddd',{day:DAY,secret:SECRET}),ipv6);
   assert.notEqual(logAddressHash('2001:db8:1:3::9',{day:DAY,secret:SECRET}),ipv6);
-  // Values can't be linked across days or without the secret.
+  // Without the secret, values differ from day to day (pseudonymous: whoever
+  // holds the secret can recompute them for every address).
   assert.notEqual(logAddressHash('203.0.113.9',{day:'2026-10-22',secret:SECRET}),ipv4);
   assert.notEqual(logAddressHash('203.0.113.9',{day:DAY,secret:`${SECRET}-other`}),ipv4);
   assert.notEqual(logAddressHash('203.0.113.10',{day:DAY,secret:SECRET}),ipv4);
@@ -82,13 +85,19 @@ test('logAddressHash is an HMAC of the network salted with the UTC day',()=>{
   }
 });
 
-test('logAddressHash defaults to today and JWT_SECRET, and stores nothing it cannot hash',()=>{
+test('logAddressHash defaults to today and LOG_ADDRESS_SECRET or JWT_SECRET, and stores nothing it cannot hash',()=>{
+  delete process.env.LOG_ADDRESS_SECRET;
   process.env.JWT_SECRET=SECRET;
   const today=new Date().toISOString().slice(0,10);
   assert.equal(logAddressHash('198.51.100.7'),expectedHash('198.51.100.7',today));
-  // An existing hash passes through unchanged.
+  // A dedicated key wins over JWT_SECRET, so either can rotate on its own.
+  process.env.LOG_ADDRESS_SECRET='log-address-secret-of-its-own';
+  assert.equal(logAddressHash('198.51.100.7'),expectedHash('198.51.100.7',today,'log-address-secret-of-its-own'));
+  process.env.LOG_ADDRESS_SECRET='';
+  assert.equal(logAddressHash('198.51.100.7'),expectedHash('198.51.100.7',today));
+  // Writers only ever hash a real address: an existing hash is not passed through.
   const hashed=logAddressHash('198.51.100.7');
-  assert.equal(logAddressHash(hashed),hashed);
+  assert.equal(logAddressHash(hashed),null);
   for(const value of [undefined,null,'','unknown','garbage','999.0.0.1','1::2::3','203.0.113.9:443',{},42]){
     assert.equal(logAddressHash(value),null,String(value));
   }
@@ -98,6 +107,8 @@ test('logAddressHash defaults to today and JWT_SECRET, and stores nothing it can
   assert.equal(logAddressHash('198.51.100.7',{secret:''}),null);
   assert.equal(logAddressHash('198.51.100.7',{secret:42}),null);
   delete process.env.JWT_SECRET;
+  assert.equal(logAddressHash('198.51.100.7'),null);
+  delete process.env.LOG_ADDRESS_SECRET;
   assert.equal(logAddressHash('198.51.100.7'),null);
 });
 
@@ -124,6 +135,12 @@ const USER_AGENTS=Object.freeze([
   ['Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)','bot'],
   ['Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)','bot'],
   ['Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)','bot'],
+  ['Mozilla/5.0 (Linux; Android 10; CUBOT X30) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36','Chrome 120 on Android 10'],
+  ['Mozilla/5.0 (compatible; Bytespider; spider-feedback@bytedance.com) AppleWebKit/537.36','bot'],
+  ['Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)','bot'],
+  // Only an exact family passes through; anything appended is reduced.
+  ['Chrome 131 on Windows 10/11; jane@example.test','other'],
+  ['Chrome 131 on Linux\u0000x','other on Linux'],
   ['SomeApp/1.0 (Linux)','other on Linux'],
   ['SomeApp/1.0 Chrome/77','Chrome 77 on other'],
   ['curl/8.4.0','other'],
@@ -185,9 +202,19 @@ test('appLogClientFields reduces whatever the request or logger context carries'
   }
   const hostile={get req(){ throw new Error('broken request'); }};
   assert.deepEqual({...appLogClientFields(hostile)},{ua:null,ip:null});
+  // A row that carries a user keeps no address: the account already says who it was.
+  for(const userId of [7,'7',0]){
+    assert.deepEqual({...appLogClientFields(forwarded,{userId})},{ua:'Chrome 131 on Windows 10/11',ip:null},String(userId));
+  }
+  for(const userId of [undefined,null,'']){
+    assert.equal(appLogClientFields(forwarded,{userId}).ip,hash('203.0.113.9'),String(userId));
+  }
+  // A stored hash offered as an address is not an IP literal, so nothing is stored.
+  assert.equal(appLogClientFields({ip:hash('203.0.113.9')}).ip,null);
 });
 
 test('presentAppLogClient shows rows from before ID-82 reduced, hashed with their own day',()=>{
+  delete process.env.LOG_ADDRESS_SECRET;
   process.env.JWT_SECRET=SECRET;
   const legacy={ua:USER_AGENTS[14][0],ip:'203.0.113.9',created_at:'2026-10-01 10:00:00'};
   const shown=presentAppLogClient(legacy);
@@ -199,4 +226,9 @@ test('presentAppLogClient shows rows from before ID-82 reduced, hashed with thei
   assert.deepEqual({...presentAppLogClient({ua:'agent',ip:'203.0.113.9',created_at:null})},
     {ua:'other',ip:logAddressHash('203.0.113.9')});
   assert.deepEqual({...presentAppLogClient(null)},{ua:null,ip:null});
+  // Rows with a user show no address, old or new.
+  assert.deepEqual({...presentAppLogClient({...legacy,user_id:2})},{ua:'Chrome 131 on Android 14',ip:null});
+  assert.deepEqual({...presentAppLogClient({...shown,user_id:2})},{ua:'Chrome 131 on Android 14',ip:null});
+  // Anything else in the column that is neither a hash nor an address shows nothing.
+  assert.equal(presentAppLogClient({ip:'h1:not-a-hash',created_at:'2026-10-01 10:00:00'}).ip,null);
 });

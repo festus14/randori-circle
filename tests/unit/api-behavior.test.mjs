@@ -2292,7 +2292,7 @@ test('canonical solo room execution authorizes membership before work and persis
   assert.equal(insert.args.slice(-12)[2],20);
 });
 
-test('runner lease, quota and outcome log rows carry a coarse user agent and a daily address hash only (ID-82)', async () => {
+test('runner lease, quota and outcome log rows carry a coarse user agent and no address (ID-82)', async () => {
   process.env.JWT_SECRET=TEST_JWT_SECRET;
   const { logAddressHash } = await import('../../api/_log-privacy.js');
   const question=listPublicExercises()[0];
@@ -2321,14 +2321,19 @@ test('runner lease, quota and outcome log rows carry a coarse user agent and a d
   for(const event of ['execute_lease_start','execute_attempt','execute_success','execute_lease_end']){
     assert.ok(events.includes(event),`${event} row written`);
   }
-  const expectedIp=logAddressHash('2001:db8:42:7::5');
-  assert.match(expectedIp,/^h1:[0-9a-f]{16}$/);
+  // Every runner row carries the member's id, so it keeps no address at all,
+  // not even the daily hash a row without a user would hold.
+  const hashed=logAddressHash('2001:db8:42:7::5');
+  assert.match(hashed,/^h1:[0-9a-f]{16}$/);
   for(const call of logInserts){
     const text=JSON.stringify(call.args);
     assert.ok(!text.includes('2001:db8:42:7'),text);
+    assert.ok(!text.includes(hashed),text);
     assert.ok(!text.includes(userAgent)&&!text.includes('Mozilla'),text);
     assert.ok(call.args.includes('Chrome 131 on macOS'),text);
-    assert.ok(call.args.includes(expectedIp),text);
+    assert.ok(call.args.includes(2),text);
+    // ua is followed by the (empty) address in every runner statement.
+    assert.equal(call.args[call.args.indexOf('Chrome 131 on macOS')+1],null,text);
   }
 });
 

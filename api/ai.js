@@ -53,8 +53,9 @@ async function logServer(level, event, message, meta, reqCtx){
       else if(reqCtx && reqCtx.req && reqCtx.req.url) route=String(reqCtx.req.url).slice(0,300);
       else if(reqCtx && reqCtx.headers && reqCtx.url) route=String(reqCtx.url).slice(0,300);
     }catch{}
-    // ID-82: a coarse user-agent family and a daily keyed address hash, never the raw values.
-    const {ua,ip}=appLogClientFields(reqCtx);
+    // ID-82: a coarse user-agent family, and a daily keyed address hash only
+    // on rows without a user (the account already identifies the rest).
+    const {ua,ip}=appLogClientFields(reqCtx,{userId:user_id});
     await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, user_id, route, ua, ip]});
     try{
       if((lvl==='error' || lvl==='warn') && isSentryConfigured() && !reqCtx?.skipSentry){

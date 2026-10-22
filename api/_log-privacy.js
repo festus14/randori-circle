@@ -5,14 +5,17 @@
 // either: rate limits keep their own keyed hashes in auth_rate_limits, and
 // runner lease/quota checks read user_id. Every writer now stores:
 //
-//   ip  'h1:' + 16 hex characters of HMAC-SHA256(JWT_SECRET,
+//   ip  NULL on any row with a user_id: the account already says who it was.
+//       On rows without one (server and cron events), 'h1:' + 16 hex
+//       characters of HMAC-SHA256(LOG_ADDRESS_SECRET or JWT_SECRET,
 //       'randori-log-address-v1' NUL <UTC day> NUL <network>), where the
 //       network is the IPv4 address or the IPv6 /64 (clientNetwork). Rows
-//       from one client on one UTC day share a value, so a burst can still be
-//       traced to one source, and an operator holding the secret can check a
-//       known address for a given day. The day is part of the input, so
-//       values can't be linked across days. NULL when the address is not an
-//       IP literal or no secret is configured.
+//       from one source on one UTC day share a value, so a burst can be
+//       traced. The value is pseudonymous, not anonymous: anyone holding the
+//       secret can enumerate every IPv4 address for a day (2^32 HMACs, about
+//       an hour of one core), so they can reverse it and link it across days.
+//       Without the secret, values can't be reversed or linked across days.
+//       NULL when the address is not an IP literal or no secret is set.
 //   ua  a coarse family from a fixed vocabulary, never text from the input:
 //       browser and major version plus OS (and its major version where the
 //       user agent has one), e.g. 'Chrome 131 on Windows 10/11',
@@ -21,7 +24,7 @@
 //
 // Rows written before ID-82 still hold raw values until the 30-day retention
 // (ID-72) deletes them; the admin logs API reduces them the same way when it
-// reads them, so admins see only reduced values either way.
+// reads them (presentAppLogClient), so admins see only reduced values.
 
 import { createHmac } from 'node:crypto';
 
@@ -32,7 +35,10 @@ export const LOG_ADDRESS_HASH_PATTERN=/^h1:[0-9a-f]{16}$/;
 const DAY=/^(\d{4}-\d{2}-\d{2})(?:$|[T ])/;
 const UA_SCAN_MAX=512;
 
-const BOT=/(?:bot|crawler|spider)\b/i;
+// A crawler names itself as a product (Googlebot/2.1, Slackbot-LinkExpanding)
+// or uses the bare word; a device model that merely ends in "bot" (CUBOT X30)
+// is neither.
+const BOT=/\b\w*(?:bot|crawler|spider)(?:[/-]|$)|\b(?:bot|crawler|spider)\b/i;
 // Checked in order: Edge, Opera and Samsung Internet also say Chrome, and
 // Chrome on iOS also says Safari. A version is 1–4 digits and nothing longer.
 const BROWSERS=Object.freeze([
@@ -57,19 +63,32 @@ const SYSTEMS=Object.freeze([
 ]);
 const FAMILY=/^(?:bot|other|(?:Edge|Opera|Samsung Internet|Firefox|Headless Chrome|Chrome|Safari|other)(?: \d{1,4})? on (?:iOS \d{1,2}|Android \d{1,2}|Windows(?: 10\/11| 8\.1| 8| 7)?|ChromeOS|macOS|Linux|other))$/;
 
+// The salt day comes from this process's clock, while created_at comes from
+// the database clock. Within a moment of UTC midnight the two can name
+// different days, so a row's hash may use the neighbouring day's salt; that
+// only matters to an operator checking an address, who should try both days.
 function utcDay(day){
   if(day===undefined) return new Date().toISOString().slice(0,10);
   if(day instanceof Date) return Number.isNaN(day.getTime())?null:day.toISOString().slice(0,10);
   return DAY.exec(String(day??''))?.[1]??null;
 }
 
+// Read from the environment here rather than through getJwtSecret() in
+// api/_db.js: that throws when the secret is missing and would pull the
+// database module into every logger, and a log row must never fail because
+// of its address field. LOG_ADDRESS_SECRET lets this key rotate on its own;
+// the label below keeps it domain-separated when JWT_SECRET is shared.
+function addressSecret(){
+  return process.env.LOG_ADDRESS_SECRET||process.env.JWT_SECRET;
+}
+
 /**
- * The daily keyed hash of a client address for app_logs.ip, or null. `day`
- * (a Date or a 'YYYY-MM-DD…' string, default today in UTC) is the salt; an
- * existing hash is returned unchanged.
+ * The daily keyed hash of an IP literal for app_logs.ip, or null. `day` (a
+ * Date or a 'YYYY-MM-DD…' string, default today in UTC) is the salt. Anything
+ * that is not an IP literal, including an existing hash, is null: writers
+ * only ever store a fresh hash of a real address.
  */
-export function logAddressHash(value,{day,secret=process.env.JWT_SECRET}={}){
-  if(typeof value==='string'&&LOG_ADDRESS_HASH_PATTERN.test(value)) return value;
+export function logAddressHash(value,{day,secret=addressSecret()}={}){
   const network=clientNetwork(value);
   const date=utcDay(day);
   if(!network||!date||typeof secret!=='string'||!secret) return null;
@@ -82,7 +101,7 @@ export function logAddressHash(value,{day,secret=process.env.JWT_SECRET}={}){
 /**
  * The coarse family of a user agent for app_logs.ua, or null when there is
  * none. The result only ever contains words from the vocabulary above and a
- * 1–4 digit version; an existing family is returned unchanged.
+ * 1–4 digit version; an exact family is returned unchanged.
  */
 export function userAgentFamily(value){
   if(typeof value!=='string') return null;
@@ -109,23 +128,27 @@ function header(headers,name){
   return Array.isArray(value)?value[0]:value;
 }
 
+function hasUser(userId){
+  return userId!==undefined&&userId!==null&&userId!=='';
+}
+
 /**
  * The `ua` and `ip` values for an app_logs row written while serving a
  * request. `context` is the request itself or a logger context holding
  * `req` or `headers`; an explicit `ip`/`ua` on the context wins over the
- * headers. Both values are reduced as described above.
+ * headers. A row with a `userId` keeps no address at all.
  */
-export function appLogClientFields(context){
+export function appLogClientFields(context,{userId}={}){
   try{
     const req=context?.req??context;
     const headers=context?.headers??req?.headers;
-    const forwarded=String(header(headers,'x-forwarded-for')??'').split(',')[0].trim();
-    const address=context?.ip??(forwarded||header(headers,'x-real-ip')||req?.socket?.remoteAddress);
     const agent=context?.ua??header(headers,'user-agent');
-    return Object.freeze({
-      ua:userAgentFamily(agent),
-      ip:logAddressHash(address),
-    });
+    let ip=null;
+    if(!hasUser(userId)){
+      const forwarded=String(header(headers,'x-forwarded-for')??'').split(',')[0].trim();
+      ip=logAddressHash(context?.ip??(forwarded||header(headers,'x-real-ip')||req?.socket?.remoteAddress));
+    }
+    return Object.freeze({ua:userAgentFamily(agent),ip});
   }catch{
     // A malformed request context never stops the log row; it just says nothing about the client.
     return Object.freeze({ua:null,ip:null});
@@ -133,13 +156,17 @@ export function appLogClientFields(context){
 }
 
 /**
- * The reduced `ua` and `ip` of a stored row for the admin logs API. Rows from
- * before ID-82 are hashed with their own created_at day, so they match what a
- * new row from the same client on that day would hold.
+ * The reduced `ua` and `ip` of a stored row for the admin logs API. A row
+ * with a user_id shows no address. A row from before ID-82 is hashed with its
+ * own created_at day, so it matches what a new row from that source on that
+ * day holds; a stored hash is shown as it is.
  */
 export function presentAppLogClient(row){
-  return Object.freeze({
-    ua:userAgentFamily(row?.ua),
-    ip:logAddressHash(row?.ip,{day:row?.created_at??undefined}),
-  });
+  let ip=null;
+  if(!hasUser(row?.user_id)){
+    ip=typeof row?.ip==='string'&&LOG_ADDRESS_HASH_PATTERN.test(row.ip)
+      ?row.ip
+      :logAddressHash(row?.ip,{day:row?.created_at??undefined});
+  }
+  return Object.freeze({ua:userAgentFamily(row?.ua),ip});
 }

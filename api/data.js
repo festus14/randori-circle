@@ -637,8 +637,9 @@ async function logServer(level, event, message, meta, reqCtx){
       else if(reqCtx && reqCtx.headers && reqCtx.url) route=String(reqCtx.url).slice(0,300);
       else if(reqCtx && reqCtx.req && reqCtx.req.url) route=String(reqCtx.req.url).slice(0,300);
     }catch{}
-    // ID-82: a coarse user-agent family and a daily keyed address hash, never the raw values.
-    const {ua,ip}=appLogClientFields(reqCtx);
+    // ID-82: a coarse user-agent family, and a daily keyed address hash only
+    // on rows without a user (the account already identifies the rest).
+    const {ua,ip}=appLogClientFields(reqCtx,{userId:user_id});
     await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, user_id, route, ua, ip]});
     // Forward to Sentry server if error/warn
     try{
@@ -743,9 +744,10 @@ async function handleLogs(req,res){
       return res.status(429).json({error:'rate limited — too many logs', retry_after:'60s'});
     }
     const userId = payload.id||payload.uid||null;
-    // ID-82: rows keep a daily keyed hash of the address and a coarse
-    // user-agent family; the raw address above stays in memory for the limiter.
-    const client = appLogClientFields(req);
+    // ID-82: rows keep a coarse user-agent family and, since they carry the
+    // member's id, no address; the raw address above stays in memory for the
+    // limiter only.
+    const client = appLogClientFields(req,{userId});
     const body = req.body || {};
     // support batch array
     let batch = [];
@@ -2496,9 +2498,9 @@ function positiveInteger(value){
   return Number.isInteger(parsed) && parsed>0 ? parsed : null;
 }
 
-/** The reduced [ua, ip] arguments of a runner app_logs row (ID-82). */
-function appLogClientArgs(req){
-  const {ua,ip}=appLogClientFields(req);
+/** The reduced [ua, ip] arguments of a runner app_logs row (ID-82); a member's row keeps no address. */
+function appLogClientArgs(req,userId){
+  const {ua,ip}=appLogClientFields(req,{userId});
   return [ua,ip];
 }
 
@@ -2523,7 +2525,7 @@ async function acquireExecutionLease(db,userId,req,metadata){
           )
       )
       RETURNING id`,
-    args:[JSON.stringify(metadata),userId,route,...appLogClientArgs(req),userId],
+    args:[JSON.stringify(metadata),userId,route,...appLogClientArgs(req,userId),userId],
   });
   return positiveInteger(result.rows[0]?.id);
 }
@@ -2533,7 +2535,7 @@ async function releaseExecutionLease(db,userId,leaseId,req){
   try{
     await db.execute({
       sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES ('info','runner','execute_lease_end',?,?,?,?,?,?, datetime('now'))`,
-      args:[String(leaseId),JSON.stringify({lease_id:leaseId}),userId,String(req.url||'').slice(0,300),...appLogClientArgs(req)],
+      args:[String(leaseId),JSON.stringify({lease_id:leaseId}),userId,String(req.url||'').slice(0,300),...appLogClientArgs(req,userId)],
     });
   }catch(e){
     captureSentryException(e,{tags:{event:'execute_lease_release_fail',source:'runner'}});
@@ -2666,7 +2668,7 @@ async function handleExecute(req,res){
     }
     const rateResults=await db.batch([{
       sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES ('info','runner','execute_attempt','execution requested',?,?,?,?,?, datetime('now'))`,
-      args:[JSON.stringify({question_slug:questionSlug,question_version:questionVersion,language:executionLanguage}),userId,String(req.url||'').slice(0,300),...appLogClientArgs(req)],
+      args:[JSON.stringify({question_slug:questionSlug,question_version:questionVersion,language:executionLanguage}),userId,String(req.url||'').slice(0,300),...appLogClientArgs(req,userId)],
     },{
       sql:`SELECT COUNT(*) as c FROM app_logs WHERE user_id=? AND source='runner' AND event='execute_attempt' AND datetime(created_at)>=datetime('now','-1 minute')`,
       args:[userId],

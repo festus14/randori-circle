@@ -103,6 +103,18 @@ const REDACTION_CORPUS = [
   ['token="abc" password=\'x\' activationToken=y x-csrf=z', 'token="[redacted]" password=\'[redacted]\' activationToken=[redacted] x-csrf=[redacted]'],
   ['code: 123456, secret_key: k, status code: 500', 'code: [redacted], secret_key: [redacted], status code: 500'],
   ['jane%2540example.com and jane%2Edoe%40example%2Ecom', '[email] and [email]'],
+  // ID-82: IP addresses and user agents never ride along in the text.
+  ['from 203.0.113.9, via 2001:db8::7 and [2001:db8:0:0:0:0:0:1]:443', 'from [ip], via [ip] and [[ip]]:443'],
+  ['peer ::ffff:198.51.100.23 port 203.0.113.9:8443 at fe80::1%en0.', 'peer [ip] port [ip]:8443 at [ip]%en0.'],
+  ['GET https://203.0.113.9/a.js:1:2 failed for jane@203.0.113.9; last 10.0.0.1.', 'GET https://[ip]/a.js:1:2 failed for jane@[ip]; last [ip].'],
+  ['at http://127.0.0.1:4173/app.js:12:34 and http://[::1]:3000/x.js:5:6 and ::ffff:127.0.0.1', 'at http://127.0.0.1:4173/app.js:12:34 and http://[::1]:3000/x.js:5:6 and ::ffff:127.0.0.1'],
+  ['Chrome 131, Chrome/131.0.0.0, v1.2.3.4, pkg@1.2.3, 1.2.3, 12:34:56, 999.1.1.1, 2026-10-22, <anonymous>:1:2, std::vector', 'Chrome 131, Chrome/131.0.0.0, v1.2.3.4, pkg@1.2.3, 1.2.3, 12:34:56, 999.1.1.1, 2026-10-22, <anonymous>:1:2, std::vector'],
+  ['ua=Mozilla%2F5.0 ip=203.0.113.9 xff=1.2.3.4 user_agent=x clientIp=y x-forwarded-for=z skip=1 zip=2', 'ua=[redacted] ip=[redacted] xff=[redacted] user_agent=[redacted] clientIp=[redacted] x-forwarded-for=[redacted] skip=1 zip=2'],
+  ['body {"userAgent":"Mozilla/5.0 (X11; Linux x86_64)","ip":"203.0.113.9","ok":true}', 'body {"userAgent":"[redacted]","ip":"[redacted]","ok":true}'],
+  ['escaped {\\"user_agent\\":\\"Mozilla/5.0\\",\\"ok\\":true}', 'escaped {\\"user_agent\\":\\"[redacted]\\",\\"ok\\":true}'],
+  ['User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0\nX-Forwarded-For: 203.0.113.9, 10.0.0.1\nnext', 'User-Agent: [redacted]\nX-Forwarded-For: [redacted]\nnext'],
+  ["{ua: 'Mozilla/5.0 (X11)', ok: 1}", '{ua: [redacted], ok: 1}'],
+  ['browser Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.39 Mobile Safari/537.36 failed', 'browser [user agent] failed'],
 ];
 
 // One object corpus for both implementations, so the key rules, limits and
@@ -115,9 +127,10 @@ const VALUE_CORPUS = [
   Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`k${index}`, index])),
   { big: 'x '.repeat(5000), bigger: 'y '.repeat(5000), after: 'gone' },
   Object.fromEntries(Array.from({ length: 28 }, (_, k) => [`k${k}`, Array.from({ length: 20 }, () => 'eyJ-'.repeat(2000))])),
+  { ua: 'Mozilla/5.0', userAgent: 'x', user_agent: 'y', ip: '203.0.113.9', xff: 'z', 'x-forwarded-for': 'w', ipAddress: 'v', 'x-real-ip': 'u', note: 'from 203.0.113.9', zip: '12345', equipment: 'kept' },
 ];
 
-test('redaction strips fragments, secret pairs, credentials, JWTs and emails, identically in the browser and the API', () => {
+test('redaction strips fragments, secret pairs, credentials, user agents, JWTs, emails and IP addresses, identically in the browser and the API', () => {
   const { log } = createPage();
   for (const [input, expected] of REDACTION_CORPUS) {
     assert.equal(log()._redact(input), expected, input);
@@ -131,6 +144,12 @@ test('redaction strips fragments, secret pairs, credentials, JWTs and emails, id
   const budgeted = redactLogValue(VALUE_CORPUS[5]);
   assert.equal(budgeted.after, '[truncated]', 'values past the 16k budget are dropped');
   assert.ok(JSON.stringify(redactLogValue(VALUE_CORPUS[6])).length < 17_000);
+  // ID-82: client-detail keys lose their value; other keys keep theirs.
+  assert.deepEqual(redactLogValue(VALUE_CORPUS[7]), {
+    ua: '[redacted]', userAgent: '[redacted]', user_agent: '[redacted]', ip: '[redacted]', xff: '[redacted]',
+    'x-forwarded-for': '[redacted]', ipAddress: '[redacted]', 'x-real-ip': '[redacted]', note: 'from [ip]',
+    zip: '12345', equipment: 'kept',
+  });
 });
 
 test('a cut never keeps half a token: the partial trailing token is dropped before redaction', () => {
@@ -161,7 +180,8 @@ test('adversarial input costs about as much as benign input of the same size, in
   const { log } = createPage();
   // A quadratic pattern turns these into tens of milliseconds (the old \beyJ
   // JWT pattern took ~22 ms on the first one); benign text takes ~1-2 ms.
-  const inputs = ['eyJ-'.repeat(2000), 'eyJaaaaaaaa.'.repeat(700), '-a'.repeat(4000), '\\"token\\":\\"'.repeat(600), '%40'.repeat(2600), '/'.repeat(8000)];
+  const inputs = ['eyJ-'.repeat(2000), 'eyJaaaaaaaa.'.repeat(700), '-a'.repeat(4000), '\\"token\\":\\"'.repeat(600), '%40'.repeat(2600), '/'.repeat(8000),
+    '1.'.repeat(4000), ' 1.1'.repeat(2000), 'a:'.repeat(4000), ' :a'.repeat(2666), ' 203.0.113.9'.repeat(666), 'Mozilla/5.0 ('.repeat(600), 'user-agent:'.repeat(700)];
   for (const redact of [log()._redact, redactLogText]) {
     const benign = fastest(redact, 'x'.repeat(8000));
     for (const input of inputs) {

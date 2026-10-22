@@ -109,7 +109,8 @@ async function logServerOps(level, event, message, meta, req){
     const ev=String(event).slice(0,80);
     const msg=String(message).slice(0,2000);
     const route = req && req.url ? String(req.url).slice(0,300) : null;
-    // ID-82: a coarse user-agent family and a daily keyed address hash, never the raw values.
+    // ID-82: a coarse user-agent family and a daily keyed address hash (these
+    // rows never carry a user_id), never the raw values.
     const {ua,ip} = appLogClientFields(req);
     await db.execute({sql:"INSERT INTO app_logs (level, source, event, message, meta_json, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?, ?, datetime('now'))", args:[lvl, "server", ev, msg, metaStr, route, ua, ip]});
   }catch(e){ try{ console.warn("[logServerOps fail]", e && e.message); }catch{} }
