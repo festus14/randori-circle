@@ -2,6 +2,9 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+
+import { CANONICAL_DOMAIN_REDIRECTS } from './canonical-domain.mjs';
 
 const OUTBOX_WORKFLOW_PATH='.github/workflows/outbox-dispatch.yml';
 const OUTBOX_WATCHDOG_WORKFLOW_PATH='.github/workflows/outbox-dispatch-watchdog.yml';
@@ -268,6 +271,26 @@ function validateProductionSmokeWorkflow(workflow){
   return errors;
 }
 
+function redirectHosts(rule) {
+  return Array.isArray(rule?.has) ? rule.has.filter(item => record(item)?.type === 'host').map(item => item.value) : [];
+}
+
+// ID-80: www and the old Vercel alias redirect to the canonical origin. Each
+// rule must stay exactly as reviewed: host-conditional (previews never match),
+// www permanent, the old alias temporary and never for /api/*.
+export function validateCanonicalDomainRedirects(redirects) {
+  if (!Array.isArray(redirects)) return ['vercel.json must define the canonical-domain redirects'];
+  const errors = [];
+  for (const expected of CANONICAL_DOMAIN_REDIRECTS) {
+    const [host] = redirectHosts(expected);
+    const rules = redirects.filter(rule => redirectHosts(rule).includes(host));
+    if (rules.length !== 1 || !isDeepStrictEqual(rules[0], expected)) {
+      errors.push(`vercel.json must define exactly one reviewed ${host} redirect: ${JSON.stringify(expected)}`);
+    }
+  }
+  return errors;
+}
+
 // Issue #249. The execution smoke spends Vercel Sandbox quota through a
 // CRON_SECRET route, so its only production material is vars.APP_URL and
 // secrets.CRON_SECRET in the production environment, it never runs for pull
@@ -334,6 +357,7 @@ export function validateDeploymentContract({ vercel, packageJson, files, outboxW
   }
 
   if (config.cleanUrls !== true) errors.push('vercel.json must enable cleanUrls');
+  errors.push(...validateCanonicalDomainRedirects(config.redirects));
 
   if (manifest?.engines?.node !== SUPPORTED_NODE_RANGE) {
     errors.push(`package.json engines.node must be ${SUPPORTED_NODE_RANGE}`);

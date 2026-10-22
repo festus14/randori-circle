@@ -3462,3 +3462,71 @@ members who said they were away or had no partner).
 owner sets `PROGRESS_DASHBOARD_ENABLED=true` in Vercel Production and redeploys;
 unsetting it restores the previous behaviour. Contract:
 [`PROGRESS_DASHBOARD.md`](PROGRESS_DASHBOARD.md).
+
+## ID-80: Make randoricircle.com the canonical origin; keep the old Vercel alias for the API
+
+Status: implemented as an infrastructure change. No feature flag, migration,
+secret or permission. It must merge together with the `APP_URL` switch, in the
+order below.
+
+**Context.** Production ran on `https://randori-circle-self.vercel.app`. The
+owner bought `randoricircle.com`, attached it and `www.randoricircle.com` to the
+Vercel project, and already sends email from it. `APP_URL` drives the Google
+redirect URI and every email link, and Google OAuth is accepted only on the
+`APP_URL` host (`api/_auth-config.js`). The browser Sentry gate and the client
+logger's production policy key off one hard-coded origin. cron-job.org, the
+GitHub outbox workflows and links in emails already sent all call the old host.
+
+**Decision.**
+- `https://randoricircle.com` is the production origin in code: the Sentry and
+  client-logger gate in `index.html` (other `*.vercel.app` hosts, now including
+  the old alias, stay `preview`), the session-link fallback, the smoke and
+  screenshot defaults, tests and runbooks. `scripts/canonical-domain.mjs` holds
+  the origins and the exact redirect rules.
+- `vercel.json` gets two host-conditional redirects. Vercel compiles
+  `redirects` after the cleanUrls redirects and before headers, the filesystem
+  and all rewrites, so they run before the SPA fallback; the `has` host match
+  is anchored, so preview and deployment hosts never match:
+  - `www.randoricircle.com`, source `/:path(.*)`, 308 to
+    `https://randoricircle.com/:path`. `/:path*` was rejected because Vercel
+    compiles it strictly and it does not match `/`, so the bare www host would
+    not redirect.
+  - `randori-circle-self.vercel.app`, source `/:path((?!api(?:/|$)).*)`, 307 to
+    `https://randoricircle.com/:path`. It is temporary so a rollback is not
+    pinned in browser caches, and it excludes `/api` and `/api/*` so
+    cron-job.org, GitHub workflows and in-flight calls keep working on the old
+    alias, which stays attached as an API alias.
+- Query strings pass through, as Vercel already does for the cleanUrls
+  redirects, and browsers keep the `#fragment`, so old `/invite#invite=…`
+  links still open the invitation. Headers and CSP are host-agnostic
+  (`'self'`), so nothing else changes per host.
+- `check:deployability` pins both rules exactly.
+- `smoke:production` defaults to the canonical origin and adds three checks
+  against it: the old alias's page redirect (temporary, same path and query),
+  the old alias's `/api/health/ready` (200, no redirect), and www's permanent
+  redirect. Google sign-in is advertised only on the `APP_URL` host, so the
+  script reads which host advertises it. While that is the old alias, it skips
+  the three checks with the reason printed and does not expect `googleOAuth`
+  on the canonical host. Neither order of merge and `APP_URL` switch turns it
+  red. On a legacy base URL it follows the canonical redirect for page paths.
+- The Google client lists both origins and both redirect URIs during the
+  transition, so either `APP_URL` works and a rollback needs no Google change.
+
+**Consequences.** Sessions are host-only cookies, so every member signs in
+again once; per-origin browser settings start fresh. HSTS with
+`includeSubDomains` now applies to every `*.randoricircle.com` host. If Sentry
+limits Allowed Domains, `randoricircle.com` must be added.
+
+**Alternatives.** Vercel's dashboard domain redirect for the old alias cannot
+exclude `/api/*` and would break cron-job.org and in-flight calls. A
+permanent redirect for the old alias would be cached by browsers and make a
+rollback stick. Accepting OAuth on both hosts would need two redirect URIs in
+code and would split sessions across hosts. Edge middleware would add a
+runtime to every request for what static rules do.
+
+**Rollout and recovery.** Order: Google client origins and redirect URIs, then
+Vercel `APP_URL`, then the GitHub `production` `APP_URL`, then merge and deploy
+(no other deploy between the Vercel change and this one), then the
+cron-job.org URL, then verify. To roll back, restore both `APP_URL` values and
+revert this commit; cron-job.org works on either host. Runbook:
+[`PRODUCTION_BOOTSTRAP_GUIDE.md` section 12](PRODUCTION_BOOTSTRAP_GUIDE.md#12-canonical-domain-id-80).

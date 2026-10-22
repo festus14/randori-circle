@@ -2,6 +2,20 @@
   "cleanUrls": true,
   "git": { "deploymentEnabled": { "main": true, "codex/**": false } },
   "regions": ["dub1"],
+  "redirects": [
+    {
+      "source": "/:path(.*)",
+      "has": [{ "type": "host", "value": "www.randoricircle.com" }],
+      "destination": "https://randoricircle.com/:path",
+      "permanent": true
+    },
+    {
+      "source": "/:path((?!api(?:/|$)).*)",
+      "has": [{ "type": "host", "value": "randori-circle-self.vercel.app" }],
+      "destination": "https://randoricircle.com/:path",
+      "permanent": false
+    }
+  ],
   "headers": [
     {
       "source": "/api/(.*)",
