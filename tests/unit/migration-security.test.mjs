@@ -372,7 +372,7 @@ test('fresh migration creates only the valid pristine-open rollout state',async 
   const {db}=fixture(t);
   const result=await applyCurrent(db);
   assert.equal(result.toVersion,21);
-  const membership=await inspectMembershipAdoption(db);
+  const membership=await inspectMembershipAdoption(db,{managed:false});
   assert.equal(membership.ok,true);
   assert.equal(membership.registrationState,'open');
   assert.deepEqual(membership.counts,{
@@ -418,7 +418,7 @@ test('adoption accepts pristine-open and complete-closed states and writes only 
     const beforeAvailability=plainRows((await db.execute(
       'SELECT * FROM pairing_cycle_availability ORDER BY scope_key,cycle_key,user_id',
     )).rows);
-    const beforeMembership=await inspectMembershipAdoption(db);
+    const beforeMembership=await inspectMembershipAdoption(db,{managed:false});
     assert.equal(beforeMembership.ok,true);
     assert.equal(beforeMembership.registrationState,completed?'closed':'open');
     const beforeState=await inspectMigrationState(db);
@@ -449,7 +449,7 @@ test('adoption accepts pristine-open and complete-closed states and writes only 
       'SELECT * FROM pairing_cycle_availability ORDER BY scope_key,cycle_key,user_id',
     )).rows),beforeAvailability);
     assert.deepEqual((await snapshot(db)).objects.filter(item=>item.name!=='schema_migrations'),beforeObjects);
-    assert.deepEqual(await inspectMembershipAdoption(db),beforeMembership);
+    assert.deepEqual(await inspectMembershipAdoption(db,{managed:false}),beforeMembership);
   }
 });
 

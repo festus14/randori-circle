@@ -665,6 +665,12 @@ export async function detectEvidenceMigration(db){
       &&state.currentVersion===version&&state.schemaExact&&state.ready;
     const unmanaged=state.classification==='unmanaged'&&!state.ledgerPresent
       &&state.currentVersion===0&&state.schemaExact&&state.adoption?.eligible===true;
+    // The ledger says this is the source's version but its schema or its
+    // membership/key-control state is not ready. Say so here: probing a lower
+    // version would only report that the ledger is newer than the selection.
+    if(!managed&&state.classification==='managed'&&state.ledgerPresent&&state.currentVersion===version){
+      fail('REHEARSAL_MIGRATION_STATE_INVALID','source managed state is not ready','source_evidence');
+    }
     if(managed||unmanaged){
       return Object.freeze({
         version,

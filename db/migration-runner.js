@@ -132,7 +132,8 @@ function applicationObjects(objects){
 // and audit trail without taking migrations or the backup rehearsal offline.
 // Only adopting an unmanaged database keeps the one-time rule that every
 // non-demo account has an active primary membership.
-export async function inspectMembershipAdoption(db,{managed=false}={}){
+export async function inspectMembershipAdoption(db,{managed}={}){
+  if(typeof managed!=='boolean') throw new TypeError('inspectMembershipAdoption needs an explicit managed flag');
   const state=managed
     ?await inspectMembershipRolloutReadiness(db)
     :await inspectMembershipAdoptionReadiness(db);

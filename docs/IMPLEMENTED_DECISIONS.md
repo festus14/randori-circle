@@ -4294,6 +4294,11 @@ steady-state rule, so nothing warned.
   the steady-state rule.
 - Every steady-state invariant still blocks: provenance, malformed audits, the
   active owner, backfill completion, orphan memberships.
+- `managed` is a required option, so no caller can fall back to a rule by
+  accident. When the source's own ledger version is not ready, the rehearsal's
+  `detectEvidenceMigration` now fails with `REHEARSAL_MIGRATION_STATE_INVALID`
+  instead of the lower-version probe's "ledger is newer" error (script only;
+  the digest-pinned workflow files are unchanged).
 
 **Alternatives.** Dropping the uncovered-account rule from adoption too (an
 unmanaged database could be adopted with members the backfill never covered).

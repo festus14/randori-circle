@@ -4,7 +4,9 @@
 // collection all still pass. Only adopting an unmanaged database keeps the
 // one-time rule that every non-demo account has an active primary membership.
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
@@ -75,7 +77,8 @@ test('removing and losing members keeps a managed database migratable and rehear
   const strict=await inspectMembershipAdoptionReadiness(db);
   assert.equal(strict.ok,false);
   assert.ok(strict.blockers.includes('closed_rollout_has_uncovered_accounts'));
-  assert.equal((await inspectMembershipAdoption(db)).ok,false,'unmanaged-style inspection stays strict');
+  assert.equal((await inspectMembershipAdoption(db,{managed:false})).ok,false,'unmanaged-style inspection stays strict');
+  await assert.rejects(inspectMembershipAdoption(db),TypeError,'the caller must say which rule applies');
   // ...but steady-state readiness, health and pairing do not, and neither do
   // the migration runner and the backup rehearsal any more.
   assert.equal((await inspectCompletedMembershipRollout(db)).ok,true);
@@ -106,8 +109,7 @@ test('removing and losing members keeps a managed database migratable and rehear
   assert.ok(broken.adoption.membership.blockers.includes('closed_rollout_account_audit_invalid'));
   await assert.rejects(applyMigrations(db,{expectedStateFingerprint:broken.stateFingerprint,retry:NO_RETRY}),
     error=>error.code==='MIGRATION_SCHEMA_INVALID');
-  // The latest version is not ready, and older selections refuse a newer ledger.
-  await assert.rejects(detectEvidenceMigration(db),error=>error.name==='MigrationLedgerError');
+  await assert.rejects(detectEvidenceMigration(db),error=>error.code==='REHEARSAL_MIGRATION_STATE_INVALID');
 });
 
 test('adopting an unmanaged database with uncovered accounts is still refused',async()=>{
@@ -133,4 +135,66 @@ test('adopting an unmanaged database with uncovered accounts is still refused',a
   assert.deepEqual([adopted.mode,adopted.toVersion],['adopt',LATEST_MIGRATION_VERSION]);
   await db.execute(`UPDATE circle_memberships SET status='inactive' WHERE user_id=2`);
   assert.equal((await inspectMigrationState(db)).ready,true);
+});
+
+// Seeds what initializePrimaryCircleData writes, directly, on a schema below
+// the latest version: a closed rollout, owner 1 backfilled as owner, member 2
+// backfilled and then removed by the owner.
+async function seedClosedRolloutWithRemovedMember(db){
+  await db.batch([
+    `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin,is_demo) VALUES
+      (1,'owner@example.test','!oauth:owner','Owner','#111111',1,0),
+      (2,'removed@example.test','!oauth:removed','Removed','#222222',0,0)`,
+    `INSERT INTO circles (id,public_id,slug,name,is_primary,created_by) VALUES (1,'primary-public','randori-circle','Randori',1,1)`,
+    `INSERT INTO circle_memberships (circle_id,user_id,role,status) VALUES (1,1,'owner','active'),(1,2,'member','inactive')`,
+    `INSERT INTO circle_audit_events (circle_id,event_type,actor_user_id,subject_user_id,dedupe_key) VALUES
+      (1,'membership.backfilled',1,1,'membership-backfilled:1:1'),
+      (1,'membership.backfilled',1,2,'membership-backfilled:1:2'),
+      (1,'membership.backfill.completed',1,NULL,'primary-membership-backfill:1:v1'),
+      (1,'membership.deactivated',1,2,'membership.deactivated:seed')`,
+    `UPDATE circle_membership_rollout SET registrations_closed=1 WHERE id=1`,
+  ],'write');
+}
+
+test('applying the next migration to a managed database with a removed member passes its postcondition',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-steady-postcondition-'));
+  const db=createClient({url:`file:${join(directory,'database.sqlite')}`});
+  resources.push(async()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
+  const previous=EXECUTABLE_MIGRATIONS.slice(0,-1);
+  const fresh=await inspectMigrationState(db,{migrations:previous});
+  await applyMigrations(db,{expectedStateFingerprint:fresh.stateFingerprint,migrations:previous,retry:NO_RETRY});
+  await seedClosedRolloutWithRemovedMember(db);
+  const before=await inspectMigrationState(db);
+  assert.equal(before.currentVersion,LATEST_MIGRATION_VERSION-1);
+  assert.equal(before.ready,true,'the managed N-1 database is ready by the steady-state rule');
+  // The latest migration's own membership postcondition runs on this state.
+  const applied=await applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
+  assert.deepEqual(applied.applied.map(item=>item.version),[LATEST_MIGRATION_VERSION]);
+  assert.equal((await inspectMigrationState(db)).ready,true);
+});
+
+test('steady-state readiness still blocks orphan active memberships and forged audits on a managed database',async()=>{
+  const db=await closedRollout();
+  const primary=Number((await db.execute(`SELECT id FROM circles WHERE is_primary=1`)).rows[0].id);
+  await changeCircleMemberStatus(db,{actorUserId:1,targetUserId:2,circleId:primary,action:'deactivate'});
+  assert.equal((await inspectMigrationState(db)).ready,true);
+
+  // An active membership whose account does not exist.
+  await db.execute({sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status) VALUES (?,999,'member','active')`,args:[primary]});
+  let state=await inspectMigrationState(db);
+  assert.equal(state.ready,false);
+  assert.deepEqual(state.adoption.membership.blockers,['closed_rollout_has_orphan_memberships']);
+  await assert.rejects(applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY}),
+    error=>error.code==='MIGRATION_SCHEMA_INVALID');
+  await assert.rejects(detectEvidenceMigration(db),error=>error.code==='REHEARSAL_MIGRATION_STATE_INVALID');
+  await db.execute(`DELETE FROM circle_memberships WHERE user_id=999`);
+  assert.equal((await inspectMigrationState(db)).ready,true);
+
+  // An invitation.accepted audit whose invitation does not exist.
+  await db.execute({sql:`INSERT INTO circle_audit_events (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key)
+    VALUES (?,'invitation.accepted',3,3,'00000000-0000-4000-8000-000000000000','invite-accepted:00000000-0000-4000-8000-000000000000')`,args:[primary]});
+  state=await inspectMigrationState(db);
+  assert.equal(state.ready,false);
+  assert.deepEqual(state.adoption.membership.blockers,['closed_rollout_account_audit_invalid']);
+  await assert.rejects(detectEvidenceMigration(db),error=>error.code==='REHEARSAL_MIGRATION_STATE_INVALID');
 });
