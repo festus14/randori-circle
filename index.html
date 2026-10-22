@@ -4728,6 +4728,18 @@ async function refreshMe(){
   const LIFECYCLE_RECENT_ACTION_KEY='randori-lifecycle-recent-action-v1';
   const ACCOUNT_DELETION_REAUTH_KEY='randori-account-deletion-reauth-v1';
   let accountDeletionReauthResult=null;
+  // Issue #339: the Google step-up marker the deletion dialog stores. Only a
+  // well-formed marker from the last ten minutes counts; anything else is
+  // dropped so it can never capture an unrelated Google return.
+  function freshAccountDeletionReauthMarker(){
+    let marker=null;
+    try{ marker=JSON.parse(sessionStorage.getItem(ACCOUNT_DELETION_REAUTH_KEY)||'null'); }catch{}
+    const created=Number(marker?.created_at);
+    const fresh=marker?.v===1&&Number.isSafeInteger(marker.actor_id)&&marker.actor_id>0
+      &&Number.isFinite(created)&&created<=Date.now()+30_000&&Date.now()-created<=10*60*1000;
+    if(!fresh){ try{ sessionStorage.removeItem(ACCOUNT_DELETION_REAUTH_KEY); }catch{} }
+    return fresh?marker:null;
+  }
   const identityUi={
     data:null,methods:null,busy:false,message:'',returnFocus:null,mode:'manage',
     requestGeneration:0,googleStartController:null,
@@ -5502,11 +5514,17 @@ async function refreshMe(){
       let lifecycleContinuation=false;
       try{ lifecycleContinuation=Boolean(sessionStorage.getItem(LIFECYCLE_RECENT_ACTION_KEY)); }catch{}
       // Issue #339: a Google step-up started from the account-deletion dialog.
-      let accountDeletionContinuation=false;
-      try{ accountDeletionContinuation=Boolean(sessionStorage.getItem(ACCOUNT_DELETION_REAUTH_KEY)); }catch{}
+      const accountDeletionMarker=googleReauth||ge?freshAccountDeletionReauthMarker():null;
       if(googleSuccess||ge||googleReauth||identityLinked||identityLinkError||identityNotice){
         setTimeout(async()=>{
           await authCapabilitiesPromise;
+          // A deletion continuation also needs the marker to belong to the member now signed in.
+          let accountDeletionContinuation=false;
+          if(accountDeletionMarker&&!lifecycleContinuation){
+            if(!authIdentityHydrated) await refreshAuthForOAuthResult();
+            accountDeletionContinuation=Number(me?.id||me?.uid)===accountDeletionMarker.actor_id;
+            if(!accountDeletionContinuation){ try{ sessionStorage.removeItem(ACCOUNT_DELETION_REAUTH_KEY); }catch{} }
+          }
           if(ge&&lifecycleContinuation){
             recentConfirmationCancelled('google_error');
             try{ toast(googleFailureMessage(ge)); }catch{}
@@ -5540,7 +5558,7 @@ async function refreshMe(){
           window.history.replaceState({},document.title,
             window.location.pathname+(cleanQuery?'?'+cleanQuery:'')+window.location.hash);
           if(googleSuccess){ try{ toast('signed in with Google ✓'); }catch{} }
-          if(accountDeletionContinuation&&!lifecycleContinuation){
+          if(accountDeletionContinuation){
             // assets/account-deletion.js reopens its dialog; the server decides if the proof is recent.
             accountDeletionReauthResult=googleReauth&&authRefreshCommitted&&me?'success':'error';
             window._randori_sync_account_deletion?.();

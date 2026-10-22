@@ -74,8 +74,11 @@ leaves an active owner.
 - Availability decisions and notification preferences deleted.
 - Pending, retrying and dead-lettered emails to the member suppressed with an
   `ACCOUNT_DELETED` outbox audit row; their address and token or credential
-  envelopes scrubbed from every outbox row addressed to them; legacy pairing
-  email rows cancelled.
+  envelopes scrubbed from every outbox row addressed to them, including the
+  emails of any invitation to their address that can no longer be used (that
+  invitation's fingerprint is randomised too); legacy pairing email rows
+  cancelled. A still-usable invitation from another owner, and its email, stay:
+  it is how the person can join again.
 - Unused invitations they sent revoked, each with the usual
   `invitation.revoked` audit row. A deleted account should not keep vouching
   for a live link; other owners can invite again.
@@ -86,6 +89,19 @@ leaves an active owner.
   with the pair workspace until it expires).
 - One `account.deleted` circle audit event per circle the member belonged to,
   with only the opaque account id, circle id and time.
+
+All of these are sent as one batch of statements inside the transaction (one
+round trip after the checks, about six in total), well inside Turso's
+interactive-transaction timeout. `app_logs.user_id` and the outbox JSON fields
+have no index; each is scanned once, bounded by its retention. Locally, with
+100,000 log rows and 50,000 outbox rows, a deletion takes about 50 ms.
+
+Requests that write to an account by id (sign-in refreshes and Google identity
+binding, `ADMIN_EMAILS` grants, `last_login`, profile saves, Google linking,
+notification preferences, solo-run inserts) skip a tombstone
+(`LIVE_ACCOUNT_SQL`), so a request authenticated just before the deletion
+commits cannot write into it afterwards. Race tests replay each one across the
+commit.
 
 The same email can then join again as a brand-new account through a new
 invitation (password or Google). Signing in with the old password or Google
@@ -107,7 +123,7 @@ account reaches nothing.
 | `auth_rate_limits` | `key` | Keep | Secret-keyed hashes that expire within 15 minutes and cannot be linked back to the account. |
 | `circle_memberships` | `user_id`, `role`, `status`, `invited_by` | Anonymise | Every membership made inactive and demoted to member. Rows stay so history and invited_by resolve to "Deleted member"; reactivation is refused. |
 | `circles` | `created_by` | Keep | Shared circle; created_by is an opaque id that now resolves to the tombstone. |
-| `circle_invitations` | `created_by`, `used_by`, `email_hash` | Revoke | Unused invitations they sent are revoked and audited. The invitation they accepted keeps its provenance but its email fingerprint is replaced with a random value. |
+| `circle_invitations` | `created_by`, `used_by`, `email_hash` | Revoke | Unused invitations they sent are revoked and audited. The accepted one keeps its provenance; it and other unusable invitations to their address get a random fingerprint. |
 | `circle_audit_events` | `actor_user_id`, `subject_user_id` | Keep | Audit trail of ids only. An account.deleted event with no personal data is added per circle. |
 | `circle_creation_requests` | `actor_user_id`, `initiating_session_hash` | Keep | Idempotency record for circles they created: hashes and ids only, RESTRICT-bound to the circle. |
 | `invite_requests` | `email`, `name`, `note`, `decided_by` | Anonymise | A pending request from their email is expired and scrubbed; decisions they made keep only the opaque decided_by id. |
@@ -136,7 +152,7 @@ account reaches nothing.
 | `ai_account_monthly_reservations` | `user_id` | Delete | Per-member AI quota reservations. |
 | `custom_questions` | `author_id` | Anonymise | Shared question text stays; the author link is cleared. |
 | `app_logs` | `user_id`, `ip`, `ua`, `route`, `message`, `meta_json` | Delete | Client and server log rows linked to the account. |
-| `outbox_events` | `payload_json` | Anonymise | Pending, retrying and dead-lettered emails to them are suppressed (audited, ACCOUNT_DELETED); their address and token or credential envelopes are scrubbed. |
+| `outbox_events` | `payload_json` | Anonymise | Mail to them is suppressed (audited, ACCOUNT_DELETED); address and envelopes are scrubbed, including emails of unusable invitations to their address. |
 | `outbox_audit_events` | `actor_ref` | Keep | Delivery audit; operator references are opaque ids. |
 | `pairing_email_outbox` | `user_id`, `recipient_email` | Anonymise | Legacy queue rows to them are cancelled and the address replaced. |
 | `users` | `name` | Keep | Legacy pre-membership roster keyed by name only; it cannot be attributed to the account without risking another member's row. |
@@ -166,13 +182,22 @@ column on a migrated database.
   tombstone's email no longer matches `ADMIN_EMAILS`, so it never regains
   admin; signing up again with the listed email creates a new account that gets
   admin as usual.
-- **Last app admin**: refused, mirroring the `revoke_admin` invariant.
-  `ADMIN_EMAILS` remains the operator recovery path.
+- **Last app admin**: refused, mirroring the `revoke_admin` invariant. An admin
+  is an active, non-demo account with `is_admin=1` or listed in `ADMIN_EMAILS`;
+  both count as the remaining admin. `ADMIN_EMAILS` remains the operator
+  recovery path.
 - **Invitations they sent**: unused ones are revoked rather than left live; used
   ones stay because they are another member's provenance.
-- **Mid-cycle deletion**: the current primary pairing keeps the tombstone as
-  "Deleted member" so partners' dashboards keep working; any other ex-member in
-  a current publication still fails closed as before.
+- **Mid-cycle deletion**: the current primary and secondary pairings keep the
+  tombstone as "Deleted member" so partners' dashboards keep working; any other
+  ex-member in a current publication is handled as before (primary fails
+  closed, secondary hides the pair).
+- **Google step-up return**: the dialog's sessionStorage marker counts only if
+  it is under ten minutes old and belongs to the member signed in after the
+  return; otherwise it is dropped and the normal Account security flow runs.
+- **Unconfirmed result**: if the deletion request fails or its answer is lost,
+  the dialog says it couldn't confirm and asks the member to refresh, because
+  the server may have finished.
 
 ## Limits and follow-ups
 
@@ -183,6 +208,10 @@ column on a migrated database.
   an account and is left alone.
 - AI sessions a partner started keep their transcript (AI is off in production).
 - Database backups and Sentry keep their own retention windows.
+- A log line written by a request that was already running when the deletion
+  committed can still carry the opaque account id (no name or email).
+- Follow-up: a member an owner removed (or who left every circle) can no longer
+  sign in, so cannot delete their own account; they still need to ask an owner.
 - Pre-existing, not changed here: a member who leaves or is removed mid-cycle
   still makes the current primary pairing unavailable until the next cycle.
 

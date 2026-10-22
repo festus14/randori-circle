@@ -25,6 +25,8 @@ export const ACCOUNT_DELETED_AUDIT_EVENT='account.deleted';
 // write into the tombstone afterwards (sign-in refreshes, ADMIN_EMAILS grants,
 // profile saves, Google linking, solo runs, notification preferences).
 export const LIVE_ACCOUNT_SQL="password_hash<>'!account-deleted'";
+// Its opposite, for reads that keep a deleted partner visible as "Deleted member".
+export const DELETED_ACCOUNT_SQL="password_hash='!account-deleted'";
 // auth_email_activations.password_hash must be 20-128 characters.
 const SCRUBBED_ACTIVATION_PASSWORD_HASH='!account-deleted-scrubbed';
 const OUTBOX_ACTOR='account-deletion';
@@ -52,7 +54,7 @@ export const ACCOUNT_DATA_INVENTORY=Object.freeze([
     'Every membership made inactive and demoted to member. Rows stay so history and invited_by resolve to "Deleted member"; reactivation is refused.'],
   ['circles',['created_by'],'keep','Shared circle; created_by is an opaque id that now resolves to the tombstone.'],
   ['circle_invitations',['created_by','used_by','email_hash'],'revoke',
-    'Unused invitations they sent are revoked and audited. The invitation they accepted keeps its provenance but its email fingerprint is replaced with a random value.'],
+    'Unused invitations they sent are revoked and audited. The accepted one keeps its provenance; it and other unusable invitations to their address get a random fingerprint.'],
   ['circle_audit_events',['actor_user_id','subject_user_id'],'keep','Audit trail of ids only. An account.deleted event with no personal data is added per circle.'],
   ['circle_creation_requests',['actor_user_id','initiating_session_hash'],'keep','Idempotency record for circles they created: hashes and ids only, RESTRICT-bound to the circle.'],
   ['invite_requests',['email','name','note','decided_by'],'anonymise','A pending request from their email is expired and scrubbed; decisions they made keep only the opaque decided_by id.'],
@@ -83,7 +85,7 @@ export const ACCOUNT_DATA_INVENTORY=Object.freeze([
   ['custom_questions',['author_id'],'anonymise','Shared question text stays; the author link is cleared.'],
   ['app_logs',['user_id','ip','ua','route','message','meta_json'],'delete','Client and server log rows linked to the account.'],
   ['outbox_events',['payload_json'],'anonymise',
-    'Pending, retrying and dead-lettered emails to them are suppressed (audited, ACCOUNT_DELETED); their address and token or credential envelopes are scrubbed.'],
+    'Mail to them is suppressed (audited, ACCOUNT_DELETED); address and envelopes are scrubbed, including emails of unusable invitations to their address.'],
   ['outbox_audit_events',['actor_ref'],'keep','Delivery audit; operator references are opaque ids.'],
   ['pairing_email_outbox',['user_id','recipient_email'],'anonymise','Legacy queue rows to them are cancelled and the address replaced.'],
   ['users',['name'],'keep','Legacy pre-membership roster keyed by name only; it cannot be attributed to the account without risking another member\'s row.'],
@@ -209,18 +211,21 @@ async function lastOwnerCircles(executor,userId){
 }
 
 // The last active, non-demo app admin cannot remove themselves, mirroring the
-// revoke_admin invariant. ADMIN_EMAILS stays the recovery path for operators.
+// revoke_admin invariant. An admin is an account with is_admin=1 or one listed
+// in ADMIN_EMAILS (granted at its next sign-in); both count on either side.
 async function isLastAdmin(executor,account,adminEmails){
   const configured=adminEmails.has(String(account.email).trim().toLowerCase());
   if(Number(account.is_admin)!==1&&!configured) return false;
+  const emails=[...adminEmails];
+  const configuredSql=emails.length?` OR lower(admin.email) IN (${emails.map(()=>'?').join(',')})`:'';
   const result=await executor.execute({
     sql:`SELECT COUNT(DISTINCT admin.id) AS other_admins
       FROM auth_accounts admin
       JOIN circle_memberships membership ON membership.user_id=admin.id
       JOIN circles circle ON circle.id=membership.circle_id
-      WHERE admin.id<>? AND admin.is_admin=1 AND COALESCE(admin.is_demo,0)=0
+      WHERE admin.id<>? AND (admin.is_admin=1${configuredSql}) AND COALESCE(admin.is_demo,0)=0
         AND membership.status='active' AND circle.archived_at IS NULL`,
-    args:[Number(account.id)],
+    args:[Number(account.id),...emails],
   });
   return Number(result.rows?.[0]?.other_admins||0)===0;
 }
@@ -265,17 +270,24 @@ export async function accountDeletedForSession(db,{userId,sessionHash}={}){
   return result.rows?.length===1;
 }
 
+// An invitation that can still be used (the same rule the outbox retention
+// sweep uses). One addressed to the member that is still usable is left alone:
+// it belongs to the inviting owner and is how the person can join again.
+const USABLE_INVITATION_SQL=`(used_at IS NULL AND used_by IS NULL AND revoked_at IS NULL
+  AND datetime(expires_at)>datetime(?))`;
 // Outbox rows addressed to this member, by event type: recipient ids (schedule,
 // secondary schedule, reminders), the pairing recipient, the owner of an
 // invite-request digest, a recipient email (activation, reset, legacy pairing),
-// and the invitation email of the invitation they accepted.
+// the invitation email of the invitation they accepted, and the emails of any
+// other invitation to their address that can no longer be used.
 const OUTBOX_RECIPIENT_SQL=`(
   json_extract(payload_json,'$.recipient_user_id')=?
   OR (event_type='pairing.email.requested' AND json_extract(payload_json,'$.user_id')=?)
   OR (event_type='inviterequest.email.requested' AND json_extract(payload_json,'$.owner_user_id')=?)
   OR json_extract(payload_json,'$.recipient_email')=?
   OR (event_type='invitation.email.requested' AND json_extract(payload_json,'$.invitation_id') IN (
-    SELECT id FROM circle_invitations WHERE used_by=?))
+    SELECT id FROM circle_invitations WHERE used_by=?
+      OR (email_hash=? AND NOT ${USABLE_INVITATION_SQL})))
 )`;
 // Invitation emails for the unused invitations they sent; those invitations
 // are revoked below, so any queued delivery is suppressed too.
@@ -284,38 +296,41 @@ const OUTBOX_SENT_INVITATION_SQL=`(event_type='invitation.email.requested'
     SELECT id FROM circle_invitations WHERE created_by=? AND used_at IS NULL AND used_by IS NULL AND revoked_at IS NULL))`;
 const OUTBOX_ACTIONABLE="status IN ('pending','retry','dead_letter')";
 
-function outboxRecipientArgs(userId,email){
-  return [userId,userId,userId,email,userId];
+function outboxRecipientArgs(userId,email,emailHash,occurredAt){
+  return [userId,userId,userId,email,userId,emailHash,occurredAt];
 }
 
 function changed(result){
   return Number(result?.rowsAffected||0);
 }
 
-async function scrubOutbox(transaction,{userId,email,tombstoneEmail}){
-  const recipientArgs=outboxRecipientArgs(userId,email);
+// Every change, in order, as one list of statements sent in a single batch
+// inside the write transaction: one round trip instead of ~35 sequential
+// ones, well inside Turso's interactive-transaction timeout. Each entry may
+// name the summary count it produces. Lookups use indexed keys (user ids,
+// invitation ids, primary keys); the outbox and app_logs predicates scan those
+// tables once, bounded by their retention.
+function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,nowSeconds}){
+  const recipientArgs=outboxRecipientArgs(userId,email,emailHash,occurredAt);
   const suppressWhere=`${OUTBOX_ACTIONABLE} AND (${OUTBOX_RECIPIENT_SQL} OR ${OUTBOX_SENT_INVITATION_SQL})`;
   const suppressArgs=[...recipientArgs,userId];
-  await transaction.execute({
-    sql:`INSERT INTO outbox_audit_events
+  const plan=[
+    // Outbox: audit, then suppress, pending/retrying/dead-lettered mail to them.
+    {sql:`INSERT INTO outbox_audit_events
         (outbox_event_id,action,actor_type,actor_ref,from_status,to_status,reason_code,attempt_number)
       SELECT id,'suppressed','system',?,status,'suppressed',?,attempt_count
       FROM outbox_events WHERE ${suppressWhere}`,
-    args:[OUTBOX_ACTOR,ACCOUNT_DELETED_REASON,...suppressArgs],
-  });
-  const suppressed=await transaction.execute({
-    sql:`UPDATE outbox_events
+    args:[OUTBOX_ACTOR,ACCOUNT_DELETED_REASON,...suppressArgs]},
+    {count:'outbox_suppressed',sql:`UPDATE outbox_events
       SET status='suppressed',lease_owner=NULL,lease_token=NULL,leased_until=NULL,claim_from_status=NULL,
         last_error_code=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
       WHERE ${suppressWhere}`,
-    args:[ACCOUNT_DELETED_REASON,...suppressArgs],
-  });
-  // A row a worker holds right now keeps its envelope so the in-flight lease
-  // and key-rotation metrics stay valid; only the address is replaced. Every
-  // other row addressed to them loses its token or credential envelope and
-  // the email fingerprint of the invitation they accepted.
-  const scrubbed=await transaction.execute({
-    sql:`UPDATE outbox_events
+    args:[ACCOUNT_DELETED_REASON,...suppressArgs]},
+    // A row a worker holds right now keeps its envelope so the in-flight lease
+    // and key-rotation metrics stay valid; only the address is replaced. Every
+    // other row addressed to them loses its token or credential envelope and
+    // the invitation email fingerprint.
+    {count:'outbox_scrubbed',sql:`UPDATE outbox_events
       SET payload_json=CASE WHEN status='processing'
           THEN json_replace(payload_json,'$.recipient_email',?)
           ELSE json_remove(json_replace(payload_json,'$.recipient_email',?),
@@ -323,147 +338,94 @@ async function scrubOutbox(transaction,{userId,email,tombstoneEmail}){
         END,
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
       WHERE ${OUTBOX_RECIPIENT_SQL}`,
-    args:[tombstoneEmail,tombstoneEmail,...recipientArgs],
-  });
-  const legacy=await transaction.execute({
-    sql:`UPDATE pairing_email_outbox
+    args:[tombstoneEmail,tombstoneEmail,...recipientArgs]},
+    {count:'legacy_outbox',sql:`UPDATE pairing_email_outbox
       SET status=CASE WHEN status IN ('pending','failed','sending','exhausted') THEN 'cancelled' ELSE status END,
         recipient_email=?,updated_at=datetime('now')
       WHERE user_id=?`,
-    args:[tombstoneEmail,userId],
-  });
-  return {outbox_suppressed:changed(suppressed),outbox_scrubbed:changed(scrubbed),legacy_outbox:changed(legacy)};
-}
-
-async function revokeSentInvitations(transaction,{userId,occurredAt}){
-  const revoked=await transaction.execute({
-    sql:`UPDATE circle_invitations SET revoked_at=?
+    args:[tombstoneEmail,userId]},
+    // Unused invitations they sent: audited, then revoked.
+    {sql:`INSERT INTO circle_audit_events
+        (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
+      SELECT circle_id,'invitation.revoked',?,NULL,id,'invitation-revoked:'||id,?
+      FROM circle_invitations
       WHERE created_by=? AND used_at IS NULL AND used_by IS NULL AND revoked_at IS NULL
-      RETURNING id,circle_id`,
-    args:[occurredAt,userId],
-  });
-  for(const row of revoked.rows){
-    await transaction.execute({
-      sql:`INSERT INTO circle_audit_events
-          (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
-        VALUES (?,'invitation.revoked',?,NULL,?,?,?)
-        ON CONFLICT(dedupe_key) DO NOTHING`,
-      args:[Number(row.circle_id),userId,String(row.id),`invitation-revoked:${row.id}`,occurredAt],
-    });
-  }
-  // The accepted invitation stays used and unrevoked: it is this account's
-  // audited membership provenance. Only its email fingerprint is replaced.
-  const accepted=await transaction.execute({
-    sql:`UPDATE circle_invitations SET email_hash=lower(hex(randomblob(32))) WHERE used_by=?`,
-    args:[userId],
-  });
-  return {invitations_revoked:revoked.rows?.length||0,invitations_scrubbed:changed(accepted)};
-}
-
-async function scrubPreAccountRecords(transaction,{email,tombstoneEmail,nowSeconds}){
-  const activations=await transaction.execute({
-    sql:`UPDATE auth_email_activations
+      ON CONFLICT(dedupe_key) DO NOTHING`,
+    args:[userId,occurredAt,userId]},
+    {count:'invitations_revoked',sql:`UPDATE circle_invitations SET revoked_at=?
+      WHERE created_by=? AND used_at IS NULL AND used_by IS NULL AND revoked_at IS NULL`,
+    args:[occurredAt,userId]},
+    // The accepted invitation stays used and unrevoked: it is this account's
+    // audited membership provenance. It, and every other invitation to their
+    // address that can no longer be used, gets a random fingerprint.
+    {count:'invitations_scrubbed',sql:`UPDATE circle_invitations SET email_hash=lower(hex(randomblob(32)))
+      WHERE used_by=? OR (email_hash=? AND NOT ${USABLE_INVITATION_SQL})`,
+    args:[userId,emailHash,occurredAt]},
+    {count:'activations_scrubbed',sql:`UPDATE auth_email_activations
       SET email=?,email_hash=lower(hex(randomblob(32))),password_hash=?,display_name=?,color=?,
         revoked_at=CASE WHEN used_at IS NULL AND revoked_at IS NULL THEN MAX(?,created_at) ELSE revoked_at END
       WHERE email=?`,
-    args:[tombstoneEmail,SCRUBBED_ACTIVATION_PASSWORD_HASH,DELETED_MEMBER_NAME,DELETED_MEMBER_COLOR,nowSeconds,email],
-  });
-  const requests=await transaction.execute({
-    sql:`UPDATE invite_requests
+    args:[tombstoneEmail,SCRUBBED_ACTIVATION_PASSWORD_HASH,DELETED_MEMBER_NAME,DELETED_MEMBER_COLOR,nowSeconds,email]},
+    {count:'invite_requests_expired',sql:`UPDATE invite_requests
       SET status='expired',email=NULL,name=NULL,note=NULL,decided_at=MAX(?,created_at),decided_by=NULL,invitation_id=NULL
       WHERE status='pending' AND email=?`,
-    args:[nowSeconds,email],
-  });
-  return {activations_scrubbed:changed(activations),invite_requests_expired:changed(requests)};
-}
-
-async function removeCredentials(transaction,{userId,nowSeconds}){
-  // Same statement as revokeAccountSessions in _db.js, kept here so this
-  // module (and the constants other modules import) has no _db.js dependency.
-  const sessions=await transaction.execute({
-    sql:`UPDATE auth_sessions SET revoked_at=?,revocation_reason=?
-      WHERE user_id=? AND revoked_at IS NULL AND expires_at>? RETURNING session_hash`,
-    args:[nowSeconds,SESSION_REVOCATION_REASON,userId,nowSeconds],
-  });
-  await transaction.execute({sql:`DELETE FROM auth_recent_proofs WHERE user_id=?`,args:[userId]});
-  await transaction.execute({sql:`DELETE FROM auth_session_circle_contexts WHERE user_id=?`,args:[userId]});
-  await transaction.execute({
-    sql:`DELETE FROM auth_provider_email_state WHERE EXISTS (
+    args:[nowSeconds,email]},
+    // Same statement as revokeAccountSessions in _db.js (kept here so this
+    // module has no _db.js dependency); MAX keeps revoked_at>=created_at, the
+    // table's CHECK, under clock skew.
+    {count:'sessions_revoked',sql:`UPDATE auth_sessions SET revoked_at=MAX(?,created_at),revocation_reason=?
+      WHERE user_id=? AND revoked_at IS NULL AND expires_at>?`,
+    args:[nowSeconds,SESSION_REVOCATION_REASON,userId,nowSeconds]},
+    {sql:`DELETE FROM auth_recent_proofs WHERE user_id=?`,args:[userId]},
+    {sql:`DELETE FROM auth_session_circle_contexts WHERE user_id=?`,args:[userId]},
+    {sql:`DELETE FROM auth_provider_email_state WHERE EXISTS (
       SELECT 1 FROM auth_provider_identities identity
       WHERE identity.issuer=auth_provider_email_state.issuer AND identity.subject=auth_provider_email_state.subject
-        AND identity.user_id=?)`,
-    args:[userId],
-  });
-  const identities=await transaction.execute({sql:`DELETE FROM auth_provider_identities WHERE user_id=?`,args:[userId]});
-  await transaction.execute({sql:`DELETE FROM auth_password_resets WHERE user_id=?`,args:[userId]});
-  return {sessions_revoked:sessions.rows.length,google_links_removed:changed(identities)};
-}
-
-async function removeActivity(transaction,{userId,occurredAt}){
-  await transaction.execute({sql:`DELETE FROM pairing_cycle_availability WHERE user_id=?`,args:[userId]});
-  await transaction.execute({sql:`DELETE FROM user_notification_prefs WHERE user_id=?`,args:[userId]});
-  const memberships=await transaction.execute({
-    sql:`UPDATE circle_memberships SET status='inactive',role='member',updated_at=? WHERE user_id=?`,
-    args:[occurredAt,userId],
-  });
-  const messages=await transaction.execute({
-    sql:`UPDATE pair_messages SET message=? WHERE sender_id=? AND message<>?`,
-    args:[DELETED_MESSAGE_TEXT,userId,DELETED_MESSAGE_TEXT],
-  });
-  const soloRuns=await transaction.execute({
-    sql:`DELETE FROM session_runs WHERE user_id=? AND pair_group_id IS NULL`,args:[userId],
-  });
-  // v3 pair runs execute the server-acknowledged shared document; their code
-  // is the pair's joint work (kept in pair_code_documents) and its hash is
-  // what makes the partner's feed show the run as verified.
-  const pairRuns=await transaction.execute({
-    sql:`UPDATE session_runs SET code=''
+        AND identity.user_id=?)`,args:[userId]},
+    {count:'google_links_removed',sql:`DELETE FROM auth_provider_identities WHERE user_id=?`,args:[userId]},
+    {sql:`DELETE FROM auth_password_resets WHERE user_id=?`,args:[userId]},
+    {sql:`DELETE FROM pairing_cycle_availability WHERE user_id=?`,args:[userId]},
+    {sql:`DELETE FROM user_notification_prefs WHERE user_id=?`,args:[userId]},
+    // One account.deleted event per circle they belonged to, before the
+    // memberships change (ids and time only).
+    {count:'circles_audited',sql:`INSERT INTO circle_audit_events
+        (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
+      SELECT circle_id,?,?,?,NULL,?||':'||circle_id||':'||?,?
+      FROM circle_memberships WHERE user_id=?
+      ON CONFLICT(dedupe_key) DO NOTHING`,
+    // The id is concatenated as text: a bound number would read as '2.0'.
+    args:[ACCOUNT_DELETED_AUDIT_EVENT,userId,userId,ACCOUNT_DELETED_AUDIT_EVENT,String(userId),occurredAt,userId]},
+    {count:'memberships_deactivated',sql:`UPDATE circle_memberships SET status='inactive',role='member',updated_at=? WHERE user_id=?`,
+      args:[occurredAt,userId]},
+    {count:'messages_redacted',sql:`UPDATE pair_messages SET message=? WHERE sender_id=? AND message<>?`,
+      args:[DELETED_MESSAGE_TEXT,userId,DELETED_MESSAGE_TEXT]},
+    {count:'solo_runs_deleted',sql:`DELETE FROM session_runs WHERE user_id=? AND pair_group_id IS NULL`,args:[userId]},
+    // v3 pair runs execute the server-acknowledged shared document; their code
+    // is the pair's joint work (kept in pair_code_documents) and its hash is
+    // what makes the partner's feed show the run as verified.
+    {count:'pair_run_code_cleared',sql:`UPDATE session_runs SET code=''
       WHERE user_id=? AND pair_group_id IS NOT NULL AND code<>''
         AND (CASE WHEN json_valid(test_cases_snapshot)
           THEN json_extract(test_cases_snapshot,'$.attestation_version') END) IS NOT 3`,
-    args:[userId],
-  });
-  await transaction.execute({sql:`DELETE FROM pair_meeting_links WHERE updated_by=?`,args:[userId]});
-  await transaction.execute({
-    sql:`DELETE FROM ai_feedback WHERE session_id IN (SELECT id FROM ai_sessions WHERE created_by=?)`,args:[userId],
-  });
-  await transaction.execute({sql:`DELETE FROM ai_sessions WHERE created_by=?`,args:[userId]});
-  await transaction.execute({sql:`DELETE FROM ai_consents WHERE user_id=?`,args:[userId]});
-  await transaction.execute({sql:`DELETE FROM ai_account_monthly_usage WHERE user_id=?`,args:[userId]});
-  await transaction.execute({sql:`DELETE FROM ai_account_monthly_reservations WHERE user_id=?`,args:[userId]});
-  await transaction.execute({sql:`UPDATE custom_questions SET author_id=NULL WHERE author_id=?`,args:[userId]});
-  const logs=await transaction.execute({sql:`DELETE FROM app_logs WHERE user_id=?`,args:[userId]});
-  return {
-    memberships_deactivated:changed(memberships),messages_redacted:changed(messages),
-    solo_runs_deleted:changed(soloRuns),pair_run_code_cleared:changed(pairRuns),logs_deleted:changed(logs),
-  };
-}
-
-async function auditDeletion(transaction,{userId,circleIds,occurredAt}){
-  for(const circleId of circleIds){
-    await transaction.execute({
-      sql:`INSERT INTO circle_audit_events
-          (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
-        VALUES (?,?,?,?,NULL,?,?)
-        ON CONFLICT(dedupe_key) DO NOTHING`,
-      args:[circleId,ACCOUNT_DELETED_AUDIT_EVENT,userId,userId,
-        `${ACCOUNT_DELETED_AUDIT_EVENT}:${circleId}:${userId}`,occurredAt],
-    });
-  }
-}
-
-async function tombstoneAccount(transaction,{userId,tombstoneEmail}){
-  const result=await transaction.execute({
-    sql:`UPDATE auth_accounts
+    args:[userId]},
+    {sql:`DELETE FROM pair_meeting_links WHERE updated_by=?`,args:[userId]},
+    {sql:`DELETE FROM ai_feedback WHERE session_id IN (SELECT id FROM ai_sessions WHERE created_by=?)`,args:[userId]},
+    {sql:`DELETE FROM ai_sessions WHERE created_by=?`,args:[userId]},
+    {sql:`DELETE FROM ai_consents WHERE user_id=?`,args:[userId]},
+    {sql:`DELETE FROM ai_account_monthly_usage WHERE user_id=?`,args:[userId]},
+    {sql:`DELETE FROM ai_account_monthly_reservations WHERE user_id=?`,args:[userId]},
+    {sql:`UPDATE custom_questions SET author_id=NULL WHERE author_id=?`,args:[userId]},
+    {count:'logs_deleted',sql:`DELETE FROM app_logs WHERE user_id=?`,args:[userId]},
+    // Last: the tombstone. Exactly one row must change.
+    {count:'tombstoned',sql:`UPDATE auth_accounts
       SET email=?,password_hash=?,display_name=?,color=?,google_sub=NULL,bio=NULL,tz=NULL,
         interview_focus='both',leetcode_handle=NULL,phone=NULL,last_login=NULL,is_available=0,
         availability_updated_at=NULL,is_admin=0
-      WHERE id=? AND password_hash<>? AND COALESCE(is_demo,0)=0
-      RETURNING id`,
+      WHERE id=? AND password_hash<>? AND COALESCE(is_demo,0)=0`,
     args:[tombstoneEmail,DELETED_ACCOUNT_PASSWORD_HASH,DELETED_MEMBER_NAME,DELETED_MEMBER_COLOR,
-      userId,DELETED_ACCOUNT_PASSWORD_HASH],
-  });
-  if(result.rows?.length!==1||positiveId(result.rows[0].id)!==userId) throw new Error('account tombstone failed');
+      userId,DELETED_ACCOUNT_PASSWORD_HASH]},
+  ];
+  return plan;
 }
 
 async function rollback(transaction){
@@ -476,10 +438,11 @@ async function rollback(transaction){
  * inside the write transaction, before any change.
  */
 export async function deleteAccount(db,{
-  userId,sessionHash,adminEmails=[],nowSeconds=Math.floor(Date.now()/1000),
+  userId,sessionHash,hashInvitationEmail,adminEmails=[],nowSeconds=Math.floor(Date.now()/1000),
 }={}){
   const id=positiveId(userId);
   if(!db||typeof db.transaction!=='function'||!id||!/^[a-f0-9]{64}$/.test(String(sessionHash))
+    ||typeof hashInvitationEmail!=='function'
     ||!Number.isSafeInteger(nowSeconds)||nowSeconds<1){
     throw new TypeError('valid account deletion required');
   }
@@ -499,22 +462,15 @@ export async function deleteAccount(db,{
     const eligibility=await evaluateEligibility(transaction,account,admins);
     if(!eligibility.ok) return await stop(eligibility);
     const email=String(account.email).trim().toLowerCase();
-    const tombstoneEmail=deletedAccountEmail(id);
-    const memberships=await transaction.execute({
-      sql:`SELECT DISTINCT circle_id FROM circle_memberships WHERE user_id=? ORDER BY circle_id`,args:[id],
-    });
-    const circleIds=memberships.rows.map(row=>Number(row.circle_id));
-    const summary={
-      ...await scrubOutbox(transaction,{userId:id,email,tombstoneEmail}),
-      ...await revokeSentInvitations(transaction,{userId:id,occurredAt}),
-      ...await scrubPreAccountRecords(transaction,{email,tombstoneEmail,nowSeconds}),
-      ...await removeCredentials(transaction,{userId:id,nowSeconds}),
-      ...await removeActivity(transaction,{userId:id,occurredAt}),
-    };
-    await auditDeletion(transaction,{userId:id,circleIds,occurredAt});
-    await tombstoneAccount(transaction,{userId:id,tombstoneEmail});
+    const plan=deletionStatements({userId:id,email,emailHash:hashInvitationEmail(email)||null,
+      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds});
+    const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
+    const summary={};
+    plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });
+    const {tombstoned,...counts}=summary;
+    if(tombstoned!==1) throw new Error('account tombstone failed');
     await transaction.commit(); finished=true;
-    return Object.freeze({ok:true,status:'deleted',summary:Object.freeze({...summary,circles_audited:circleIds.length})});
+    return Object.freeze({ok:true,status:'deleted',summary:Object.freeze(counts)});
   }catch(error){
     if(!finished) await rollback(transaction);
     throw error;

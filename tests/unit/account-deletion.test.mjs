@@ -31,6 +31,7 @@ import {
   readAccountDeletionEligibility,
 } from '../../api/_account-deletion.js';
 import { initializeLocalPrimaryCircleData } from '../../api/_admin-init.js';
+import { hashInvitationEmail } from '../../api/_circle-membership.js';
 import { issueSession, verifyRequestAuth } from '../../api/_db.js';
 import { inspectDatabaseReadiness } from '../../api/_health.js';
 import { pairingSchemaV6Ready } from '../../api/_pairing-readiness.js';
@@ -111,7 +112,7 @@ async function fixture({xavierOwnsAloneIn30=false}={}){
   await db.batch([
     {sql:`INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin,is_demo,bio,tz,
         interview_focus,leetcode_handle,phone,google_sub,last_login,is_available,availability_updated_at)
-      VALUES (2,?,'$2a$10$xavier','Xavier','#222222',0,0,?,'Europe/London','dsa','xavier-lc',?,'x-google-sub',datetime('now'),1,datetime('now'))`,
+      VALUES (2,?,'$2a$10$xavier','Xavier','#222222',1,0,?,'Europe/London','dsa','xavier-lc',?,'x-google-sub',datetime('now'),1,datetime('now'))`,
     args:[X_EMAIL,X_BIO,X_PHONE]},
     {sql:`INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by)
       VALUES (?,?,?,?,1,?,?,?,2)`,args:[invitationId,PRIMARY,HEX('a'),HEX('b'),ISO,FUTURE,ISO]},
@@ -122,11 +123,12 @@ async function fixture({xavierOwnsAloneIn30=false}={}){
         token_hash,created_at,expires_at,last_sent_at,send_count,used_at)
       VALUES ('33333333-3333-4333-8333-333333333333',?,?,?,?,'$2a$10$xavierpasswordhash00','Xavier','#222222',?,?,?,?,1,?)`,
     args:[invitationId,PRIMARY,X_EMAIL,HEX('c'),HEX('d'),NOW-100,NOW+1000,NOW-100,NOW-50]},
-    `INSERT INTO circles (id,public_id,slug,name,is_primary,created_by) VALUES
-      (20,'circle-twenty','twenty','Night Owls',0,4),(30,'circle-thirty','thirty','Graph Club',0,2)`,
+    `INSERT INTO circles (id,public_id,slug,name,is_primary,created_by,archived_at) VALUES
+      (20,'circle-twenty','twenty','Night Owls',0,4,NULL),(30,'circle-thirty','thirty','Graph Club',0,2,NULL),
+      (40,'circle-forty','forty','Archived Club',0,2,'2098-01-01T00:00:00.000Z')`,
     `INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by) VALUES
       (20,4,'owner','active',NULL),(20,2,'owner','active',4),(20,3,'member','active',2),
-      (30,2,'owner','active',NULL)`,
+      (30,2,'owner','active',NULL),(40,2,'owner','active',NULL)`,
     {sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by) VALUES (30,3,?,'active',2)`,
       args:[xavierOwnsAloneIn30?'member':'owner']},
     {sql:`INSERT INTO circle_audit_events (id,circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
@@ -138,6 +140,11 @@ async function fixture({xavierOwnsAloneIn30=false}={}){
       VALUES ('44444444-4444-4444-8444-444444444444',20,?,?,2,?,?)`,args:[HEX('2'),HEX('3'),ISO,FUTURE]},
     {sql:`INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by)
       VALUES ('55555555-5555-4555-8555-555555555555',30,?,?,2,?,?,?,3)`,args:[HEX('4'),HEX('5'),ISO,FUTURE,ISO]},
+    // Invitations other owners sent to Xavier's address: one revoked, one still usable.
+    {sql:`INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,revoked_at)
+      VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',20,?,?,4,?,?,?)`,args:[HEX('7'),hashInvitationEmail(X_EMAIL),ISO,FUTURE,ISO]},
+    {sql:`INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
+      VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',30,?,?,3,?,?)`,args:[HEX('8'),hashInvitationEmail(X_EMAIL),ISO,FUTURE]},
     // Invite requests: Xavier's own pending one, someone else's, and one Xavier decided.
     {sql:`INSERT INTO invite_requests (id,circle_id,email_hash,email,name,note,status,created_at,expires_at)
       VALUES ('66666666-6666-4666-8666-666666666666',?,?,?,'Xavier','Second account please','pending',?,?)`,
@@ -267,6 +274,12 @@ async function seedOutbox(db){
     outboxRow(8,'inviterequest.email.requested',{circle_id:20,owner_user_id:2,digest_hour:1}),
     outboxRow(9,'auth.emailverification.requested',{activation_id:'a',recipient_email:X_EMAIL,token_envelope:'sealed-activation'},{status:'delivered'}),
     outboxRow(10,'pairing.email.requested',{publication_id:1,circle_id:20,user_id:3,kind:'paired'},{version:2}),
+    outboxRow(11,'invitation.email.requested',{invitation_id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',circle_id:20,actor_user_id:4,
+      token_hash:HEX('7'),email_hash:hashInvitationEmail(X_EMAIL),credential_envelope:'sealed-old-invite'},{status:'delivered'}),
+    outboxRow(12,'invitation.email.requested',{invitation_id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',circle_id:30,actor_user_id:3,
+      token_hash:HEX('8'),email_hash:hashInvitationEmail(X_EMAIL),credential_envelope:'sealed-rejoin'}),
+    outboxRow(13,'auth.passwordreset.requested',{reset_id:'r2',recipient_email:X_EMAIL,token_envelope:'sealed-inflight'},
+      {status:'processing',lease:true}),
   ],'write');
 }
 
@@ -349,14 +362,14 @@ test('deletion erases or anonymises every inventoried column and keeps partners\
   };
   assert.deepEqual(await readAccountDeletionEligibility(db,{userId:X}),{ok:true});
 
-  const result=await deleteAccount(db,{userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW});
+  const result=await deleteAccount(db,{hashInvitationEmail,userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW});
   assert.equal(result.ok,true);
   assert.equal(result.status,'deleted');
   assert.deepEqual(result.summary,{
-    outbox_suppressed:4,outbox_scrubbed:7,legacy_outbox:1,invitations_revoked:1,invitations_scrubbed:1,
+    outbox_suppressed:4,outbox_scrubbed:9,legacy_outbox:1,invitations_revoked:1,invitations_scrubbed:2,
     activations_scrubbed:1,invite_requests_expired:1,sessions_revoked:2,google_links_removed:1,
-    memberships_deactivated:3,messages_redacted:2,solo_runs_deleted:1,pair_run_code_cleared:2,logs_deleted:2,
-    circles_audited:3,
+    memberships_deactivated:4,messages_redacted:2,solo_runs_deleted:1,pair_run_code_cleared:2,logs_deleted:2,
+    circles_audited:4,
   });
 
   // auth_accounts: tombstoned; partners resolve the id to "Deleted member".
@@ -417,10 +430,10 @@ test('deletion erases or anonymises every inventoried column and keeps partners\
   assert.equal(await count(db,`SELECT COUNT(*) AS count FROM user_notification_prefs WHERE user_id=3`),1);
   const memberships=(await db.execute(`SELECT circle_id,role,status FROM circle_memberships WHERE user_id=2 ORDER BY circle_id`)).rows
     .map(row=>`${row.circle_id}:${row.role}/${row.status}`);
-  assert.deepEqual(memberships,['1:member/inactive','20:member/inactive','30:member/inactive']);
+  assert.deepEqual(memberships,['1:member/inactive','20:member/inactive','30:member/inactive','40:member/inactive']);
   const audits=(await db.execute(`SELECT circle_id,actor_user_id,subject_user_id,invitation_id,dedupe_key FROM circle_audit_events
     WHERE event_type=? ORDER BY circle_id`,[ACCOUNT_DELETED_AUDIT_EVENT])).rows.map(row=>({...row}));
-  assert.deepEqual(audits,[1,20,30].map(circle=>({circle_id:circle,actor_user_id:2,subject_user_id:2,invitation_id:null,
+  assert.deepEqual(audits,[1,20,30,40].map(circle=>({circle_id:circle,actor_user_id:2,subject_user_id:2,invitation_id:null,
     dedupe_key:`account.deleted:${circle}:2`})));
 
   // Pair activity: kept for the partner, minus Xavier's own content.
@@ -477,6 +490,18 @@ test('deletion erases or anonymises every inventoried column and keeps partners\
   assert.equal('credential_envelope' in outbox[7].payload,false);
   assert.equal('email_hash' in outbox[7].payload,false);
   assert.equal(outbox[6].payload.credential_envelope,'sealed-invitee','the invitee\'s own data is not Xavier\'s');
+  // Another owner's revoked invitation to Xavier's address loses its envelope
+  // and fingerprint; a still-usable one stays as the way back in.
+  assert.equal(outbox[11].status,'delivered');
+  assert.equal('credential_envelope' in outbox[11].payload||'email_hash' in outbox[11].payload,false);
+  assert.equal(outbox[12].status,'pending');
+  assert.equal(outbox[12].payload.credential_envelope,'sealed-rejoin');
+  assert.notEqual(byId['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'].email_hash,hashInvitationEmail(X_EMAIL));
+  assert.equal(byId['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'].email_hash,hashInvitationEmail(X_EMAIL));
+  // A row a worker holds keeps its lease and envelope; only the address goes.
+  assert.equal(outbox[13].status,'processing');
+  assert.equal(outbox[13].lease,'lease-token');
+  assert.deepEqual(outbox[13].payload,{reset_id:'r2',recipient_email:'deleted-2@account-deleted.invalid',token_envelope:'sealed-inflight'});
   const outboxAudits=(await db.execute(`SELECT outbox_event_id,from_status,to_status,reason_code,actor_type,actor_ref
     FROM outbox_audit_events ORDER BY outbox_event_id`)).rows.map(row=>({...row}));
   assert.deepEqual(outboxAudits,[
@@ -504,7 +529,7 @@ test('deletion erases or anonymises every inventoried column and keeps partners\
 
 test('a deleted member cannot be reactivated by an owner',async()=>{
   const {db,xSession}=await fixture();
-  await deleteAccount(db,{userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW});
+  await deleteAccount(db,{hashInvitationEmail,userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW});
   const result=await changeCircleMemberStatus(db,{actorUserId:4,targetUserId:X,circleId:20,action:'reactivate'});
   assert.deepEqual(result,{ok:false,reason:'state_conflict'});
   assert.equal((await one(db,`SELECT status FROM circle_memberships WHERE circle_id=20 AND user_id=2`)).status,'inactive');
@@ -516,13 +541,13 @@ test('a deleted member cannot be reactivated by an owner',async()=>{
 test('recent authentication is required, bound to the request session, and checked before any change',async()=>{
   const {db,xOtherSession}=await fixture();
   const before=await allText(db);
-  await assert.rejects(deleteAccount(db,{userId:X,sessionHash:xOtherSession.sessionHash,nowSeconds:NOW}),
+  await assert.rejects(deleteAccount(db,{hashInvitationEmail,userId:X,sessionHash:xOtherSession.sessionHash,nowSeconds:NOW}),
     error=>error.code==='RECENT_AUTH_REQUIRED');
   const stale=await session(db,X,X_EMAIL,{authenticatedAt:NOW-11*60});
-  await assert.rejects(deleteAccount(db,{userId:X,sessionHash:stale.sessionHash,nowSeconds:NOW}),
+  await assert.rejects(deleteAccount(db,{hashInvitationEmail,userId:X,sessionHash:stale.sessionHash,nowSeconds:NOW}),
     error=>error.code==='RECENT_AUTH_REQUIRED');
   const partner=await session(db,3,'partner@example.test');
-  await assert.rejects(deleteAccount(db,{userId:X,sessionHash:partner.sessionHash,nowSeconds:NOW}),
+  await assert.rejects(deleteAccount(db,{hashInvitationEmail,userId:X,sessionHash:partner.sessionHash,nowSeconds:NOW}),
     error=>error.code==='RECENT_AUTH_REQUIRED','another member\'s proof never authorizes the deletion');
   const after=(await allText(db)).filter(value=>!value.startsWith('auth_sessions:')&&!value.startsWith('auth_recent_proofs:'));
   assert.deepEqual(after,before.filter(value=>!value.startsWith('auth_sessions:')&&!value.startsWith('auth_recent_proofs:')));
@@ -531,9 +556,10 @@ test('recent authentication is required, bound to the request session, and check
 
 test('the only active owner of a circle is blocked with the circles to hand over',async()=>{
   const {db,xSession}=await fixture({xavierOwnsAloneIn30:true});
+  // Xavier is also the only owner of an archived circle; archived circles never block.
   const blocked={ok:false,reason:'last_owner',circles:[{public_id:'circle-thirty',name:'Graph Club',is_primary:false}]};
   assert.deepEqual(await readAccountDeletionEligibility(db,{userId:X}),blocked);
-  assert.deepEqual(await deleteAccount(db,{userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW}),blocked);
+  assert.deepEqual(await deleteAccount(db,{hashInvitationEmail,userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW}),blocked);
   assert.equal((await one(db,`SELECT email FROM auth_accounts WHERE id=2`)).email,X_EMAIL);
   assert.equal(await count(db,`SELECT COUNT(*) AS count FROM auth_sessions WHERE user_id=2 AND revoked_at IS NULL`),2);
   // A demo co-owner does not count as someone to hand over to.
@@ -542,13 +568,13 @@ test('the only active owner of a circle is blocked with the circles to hand over
   // Making another member an owner (make_owner) unblocks the deletion.
   assert.equal((await changeCircleOwnerRole(db,{actorUserId:X,targetUserId:3,circleId:30,action:'make_owner',
     session:xSession,nowSeconds:NOW})).ok,true);
-  assert.equal((await deleteAccount(db,{userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW})).status,'deleted');
+  assert.equal((await deleteAccount(db,{hashInvitationEmail,userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW})).status,'deleted');
 });
 
 test('the primary circle owner and the last app admin are blocked; demo accounts are refused',async()=>{
   const {db}=await fixture();
   const owner=await session(db,1,'owner@example.test');
-  assert.deepEqual(await deleteAccount(db,{userId:1,sessionHash:owner.sessionHash,nowSeconds:NOW}),
+  assert.deepEqual(await deleteAccount(db,{hashInvitationEmail,userId:1,sessionHash:owner.sessionHash,nowSeconds:NOW}),
     {ok:false,reason:'last_owner',circles:[{public_id:String((await one(db,`SELECT public_id FROM circles WHERE id=1`)).public_id),
       name:String((await one(db,`SELECT name FROM circles WHERE id=1`)).name),is_primary:true}]});
   // Zoe becomes the only admin; with another owner in the primary circle the
@@ -557,32 +583,35 @@ test('the primary circle owner and the last app admin are blocked; demo accounts
   await db.execute(`UPDATE auth_accounts SET is_admin=CASE WHEN id=4 THEN 1 ELSE 0 END`);
   const zoe=await session(db,4,'zoe@example.test');
   assert.deepEqual(await readAccountDeletionEligibility(db,{userId:4}),{ok:false,reason:'last_admin'});
-  assert.deepEqual(await deleteAccount(db,{userId:4,sessionHash:zoe.sessionHash,nowSeconds:NOW}),{ok:false,reason:'last_admin'});
+  assert.deepEqual(await deleteAccount(db,{hashInvitationEmail,userId:4,sessionHash:zoe.sessionHash,nowSeconds:NOW}),{ok:false,reason:'last_admin'});
   // An ADMIN_EMAILS account counts as an admin even before its flag is synced.
   await db.execute(`UPDATE auth_accounts SET is_admin=0`);
   assert.deepEqual(await readAccountDeletionEligibility(db,{userId:4,adminEmails:[' ZOE@example.test ']}),{ok:false,reason:'last_admin'});
+  // Another ADMIN_EMAILS account counts as an admin before its flag syncs, too.
+  assert.deepEqual(await readAccountDeletionEligibility(db,{userId:4,adminEmails:['zoe@example.test','owner@example.test']}),{ok:true});
   await db.execute(`UPDATE auth_accounts SET is_admin=1 WHERE id=1`);
   assert.deepEqual(await readAccountDeletionEligibility(db,{userId:4,adminEmails:['zoe@example.test']}),{ok:true});
   // Demo accounts and unknown ids.
   await db.execute(`INSERT INTO circle_memberships (circle_id,user_id,role,status) VALUES (1,5,'member','active')`);
   const demo=await session(db,5,'demo@example.test');
-  assert.deepEqual(await deleteAccount(db,{userId:5,sessionHash:demo.sessionHash,nowSeconds:NOW}),{ok:false,reason:'demo_account'});
+  assert.deepEqual(await deleteAccount(db,{hashInvitationEmail,userId:5,sessionHash:demo.sessionHash,nowSeconds:NOW}),{ok:false,reason:'demo_account'});
   assert.deepEqual(await readAccountDeletionEligibility(db,{userId:5}),{ok:false,reason:'demo_account'});
   assert.deepEqual(await readAccountDeletionEligibility(db,{userId:99}),{ok:false,reason:'not_found'});
-  assert.deepEqual(await deleteAccount(db,{userId:99,sessionHash:HEX('0'),nowSeconds:NOW}),{ok:false,reason:'not_found'});
+  assert.deepEqual(await deleteAccount(db,{hashInvitationEmail,userId:99,sessionHash:HEX('0'),nowSeconds:NOW}),{ok:false,reason:'not_found'});
   await assert.rejects(readAccountDeletionEligibility(db,{userId:0}),TypeError);
-  await assert.rejects(deleteAccount(db,{userId:2,sessionHash:'short'}),TypeError);
-  await assert.rejects(deleteAccount(null,{userId:2,sessionHash:HEX('0')}),TypeError);
-  await assert.rejects(deleteAccount(db,{userId:2,sessionHash:HEX('0'),nowSeconds:0}),TypeError);
+  await assert.rejects(deleteAccount(db,{hashInvitationEmail,userId:2,sessionHash:'short'}),TypeError);
+  await assert.rejects(deleteAccount(db,{userId:2,sessionHash:HEX('0')}),TypeError,'the invitation email hash is required');
+  await assert.rejects(deleteAccount(null,{hashInvitationEmail,userId:2,sessionHash:HEX('0')}),TypeError);
+  await assert.rejects(deleteAccount(db,{hashInvitationEmail,userId:2,sessionHash:HEX('0'),nowSeconds:0}),TypeError);
   assert.equal(await accountDeletedForSession(null,{userId:2,sessionHash:HEX('0')}),false);
   assert.equal(await accountDeletedForSession(db,{userId:2,sessionHash:'nope'}),false);
 });
 
 test('deletion is idempotent: a repeat is a no-op answered as already deleted',async()=>{
   const {db,xSession}=await fixture();
-  assert.equal((await deleteAccount(db,{userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW})).status,'deleted');
+  assert.equal((await deleteAccount(db,{hashInvitationEmail,userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW})).status,'deleted');
   const snapshot=await allText(db);
-  assert.deepEqual(await deleteAccount(db,{userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW+5}),
+  assert.deepEqual(await deleteAccount(db,{hashInvitationEmail,userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW+5}),
     {ok:true,status:'already_deleted'});
   assert.deepEqual(await allText(db),snapshot);
   assert.deepEqual(await readAccountDeletionEligibility(db,{userId:X}),{ok:false,reason:'already_deleted'});
@@ -592,13 +621,13 @@ test('concurrent deletions serialize: one commit, consistent audits, and an owne
   const {db,url,xSession}=await fixture();
   const clients=[db,await connect(url),await connect(url)];
   const outcomes=await Promise.allSettled(clients.map(client=>
-    deleteAccount(client,{userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW})));
+    deleteAccount(client,{hashInvitationEmail,userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW})));
   for(const outcome of outcomes){
     if(outcome.status==='rejected') assert.match(String(outcome.reason?.code||outcome.reason?.message),/SQLITE_BUSY|database is locked/i);
   }
   const committed=outcomes.filter(outcome=>outcome.status==='fulfilled'&&outcome.value.status==='deleted');
   assert.equal(committed.length,1);
-  assert.equal(await count(db,`SELECT COUNT(*) AS count FROM circle_audit_events WHERE event_type='account.deleted'`),3);
+  assert.equal(await count(db,`SELECT COUNT(*) AS count FROM circle_audit_events WHERE event_type='account.deleted'`),4);
 
   // Circle 20 has two owners (Zoe and, before, Xavier). Make Partner and Zoe
   // the only owners of circle 30 and have both delete at once: at most one
@@ -611,8 +640,8 @@ test('concurrent deletions serialize: one commit, consistent audits, and an owne
   const partner=await session(db,3,'partner@example.test');
   const zoe=await session(db,4,'zoe@example.test');
   const race=await Promise.allSettled([
-    deleteAccount(clients[1],{userId:3,sessionHash:partner.sessionHash,nowSeconds:NOW}),
-    deleteAccount(clients[2],{userId:4,sessionHash:zoe.sessionHash,nowSeconds:NOW}),
+    deleteAccount(clients[1],{hashInvitationEmail,userId:3,sessionHash:partner.sessionHash,nowSeconds:NOW}),
+    deleteAccount(clients[2],{hashInvitationEmail,userId:4,sessionHash:zoe.sessionHash,nowSeconds:NOW}),
   ]);
   for(const outcome of race){
     if(outcome.status==='rejected') assert.match(String(outcome.reason?.code||outcome.reason?.message),/SQLITE_BUSY|database is locked/i);
@@ -627,16 +656,22 @@ test('a failure inside the transaction rolls every change back',async()=>{
     async transaction(mode){
       const transaction=await db.transaction(mode);
       return {
-        execute(statement){
-          if(String(statement?.sql||statement).includes('UPDATE auth_accounts')) throw new Error('injected');
-          return transaction.execute(statement);
+        execute:statement=>transaction.execute(statement),
+        // Statements before the tombstone really run, then the batch fails.
+        async batch(statements){
+          const results=[];
+          for(const statement of statements){
+            if(String(statement.sql).includes('UPDATE auth_accounts')) throw new Error('injected');
+            results.push(await transaction.execute(statement));
+          }
+          return results;
         },
         commit:()=>transaction.commit(),
         rollback:()=>transaction.rollback(),
       };
     },
   };
-  await assert.rejects(deleteAccount(failing,{userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW}),/injected/);
+  await assert.rejects(deleteAccount(failing,{hashInvitationEmail,userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW}),/injected/);
   assert.deepEqual(await allText(db),before);
 });
 
@@ -646,16 +681,18 @@ test('a tombstone update that matches nothing aborts instead of committing a par
     async transaction(mode){
       const transaction=await db.transaction(mode);
       return {
-        async execute(statement){
-          const result=await transaction.execute(statement);
-          return String(statement?.sql||'').includes('UPDATE auth_accounts')?{rows:[],rowsAffected:0}:result;
+        execute:statement=>transaction.execute(statement),
+        async batch(statements){
+          const results=await transaction.batch(statements);
+          return results.map((result,index)=>String(statements[index].sql).includes('UPDATE auth_accounts')
+            ?{rows:[],rowsAffected:0}:result);
         },
         commit:()=>transaction.commit(),
         rollback:async()=>{ await transaction.rollback(); throw new Error('rollback noise is ignored'); },
       };
     },
   };
-  await assert.rejects(deleteAccount(racing,{userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW}),/tombstone failed/);
+  await assert.rejects(deleteAccount(racing,{hashInvitationEmail,userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW}),/tombstone failed/);
   assert.equal((await one(db,`SELECT email FROM auth_accounts WHERE id=2`)).email,X_EMAIL);
 });
 
@@ -709,7 +746,7 @@ test('health and pairing readiness stay green after deleting members who joined 
   for(const [id,email,label] of [[6,'backfilled@example.test','backfill'],[7,'google.joiner@example.test','Google invitation'],
     [8,'password.joiner@example.test','password activation']]){
     const proof=await session(db,id,email);
-    assert.equal((await deleteAccount(db,{userId:id,sessionHash:proof.sessionHash,nowSeconds:NOW})).status,'deleted',label);
+    assert.equal((await deleteAccount(db,{hashInvitationEmail,userId:id,sessionHash:proof.sessionHash,nowSeconds:NOW})).status,'deleted',label);
     await ready(`after deleting the ${label} member`);
   }
   // The provenance rows are untouched; only the fingerprints changed.
@@ -722,4 +759,14 @@ test('health and pairing readiness stay green after deleting members who joined 
     {used_by:8,used:1,live:1,event_type:'activation.verified',dedupe_key:`activation-verified:${activation}`},
   ]);
   assert.equal(await count(db,`SELECT COUNT(*) AS count FROM circle_audit_events WHERE event_type='membership.backfilled' AND subject_user_id=6`),1);
+});
+
+test('session revocation keeps the revoked_at CHECK when a session was issued ahead of the server clock',async()=>{
+  const {db,xSession}=await fixture();
+  // Another instance's clock ran a minute ahead when it issued this session.
+  await issueSession(db,{id:X,email:X_EMAIL,name:'Xavier'},{nowSeconds:NOW+60});
+  const result=await deleteAccount(db,{hashInvitationEmail,userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW});
+  assert.equal(result.status,'deleted');
+  assert.equal(await count(db,`SELECT COUNT(*) AS count FROM auth_sessions WHERE user_id=2 AND revoked_at IS NULL`),0);
+  assert.equal(await count(db,`SELECT COUNT(*) AS count FROM auth_sessions WHERE user_id=2 AND revoked_at<created_at`),0);
 });

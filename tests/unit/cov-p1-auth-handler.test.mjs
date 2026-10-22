@@ -90,6 +90,7 @@ mock.module('../../api/_circle-membership.js',{exports:{
   createGoogleAccountFromPreparedInvitation:(...a)=>S.membership.createGoogle(...a),
   createPasswordAccountFromPreparedInvitation:(...a)=>S.membership.createPassword(...a),
   ensureCircleMembershipReadiness:(...a)=>S.membership.ready(...a),
+  hashInvitationEmail:()=>null,
   hasActiveCircleMembership:(...a)=>S.membership.hasActive(...a),
   hasActivePrimaryCircleMembership:(...a)=>S.membership.hasPrimary(...a),
   readBoundInviteClaim:(...a)=>S.membership.boundClaim(...a),

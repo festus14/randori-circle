@@ -133,7 +133,8 @@ test('guidance names the circles and offers archiving only for secondary circles
   assert.equal(blockedMessage('last_owner','nope'),
     'You’re the only owner of a circle. Make another member an owner on the Circle page before deleting your account.');
   assert.equal(blockedMessage('last_owner',[null,{name:7}]),blockedMessage('last_owner',[]));
-  assert.equal(blockedMessage('demo_account'),null);
+  assert.equal(blockedMessage('demo_account'),'Demo accounts are managed by the app admins and can’t be deleted here.');
+  assert.equal(blockedMessage('not_found'),null);
 });
 
 test('device data: every randori key goes except the theme and landing preference',()=>{
@@ -482,7 +483,7 @@ test('server refusals: expired proof, last owner, signed out, rate limit and out
   assert.match(ui.find('accountDeletionDialogText').textContent,/only app admin/);
 
   for(const [failure,status] of [[problem(401),COPY.signedOut],[problem(429),COPY.rateLimited],
-    [problem(503),COPY.failed],[{ok:false},COPY.failed]]){
+    [problem(503),COPY.unconfirmed],[{ok:false},COPY.unconfirmed],[new Error('network lost'),COPY.unconfirmed]]){
     answer=failure;
     ui=await finalStep();
     ui.find('accountDeletionConfirmDelete').click();
@@ -544,4 +545,22 @@ test('racing events while a request is busy are ignored, and broken storage neve
   broken.find('accountDeletionGoogle').click();
   await flush();
   assert.equal(broken.find('accountDeletionDialogStatus').textContent,COPY.googleUnavailable);
+});
+
+test('a demo account is told why, without a Circle shortcut, before and after a refused request',async()=>{
+  const section=harness({routes:{'GET /api/auth/account/delete':{ok:true,eligible:false,code:'demo_account'}}});
+  section.controller.sync();
+  await flush();
+  assert.equal(section.find('accountDeletionBlocked').textContent,blockedMessage('demo_account'));
+  assert.equal(section.find('accountDeletionCircle').hidden,true);
+  assert.equal(section.find('accountDeletionOpen').disabled,true);
+
+  const refused=await openReady({...recent(true),'POST /api/auth/account/delete':()=>{ throw problem(403,{code:'demo_account'}); }});
+  refused.find('accountDeletionConfirm').value=CONFIRMATION_WORD;
+  refused.find('accountDeletionConfirm').fire('input');
+  refused.find('accountDeletionContinue').click();
+  refused.find('accountDeletionConfirmDelete').click();
+  await flush();
+  assert.equal(refused.controller.state.step,'blocked');
+  assert.equal(refused.find('accountDeletionDialogText').textContent,blockedMessage('demo_account'));
 });

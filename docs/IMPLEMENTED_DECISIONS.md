@@ -3794,8 +3794,14 @@ provenance, so the account row itself cannot be deleted.
   (`ACCOUNT_DATA_INVENTORY`) and a test fails when a new table is not
   classified.
 - Partners keep their history: every pairing surface resolves the id to
-  "Deleted member", the current primary pairing keeps the tombstone instead of
-  failing closed, the owner roster hides it, and reactivation is refused.
+  "Deleted member", the current primary and secondary pairings keep the
+  tombstone instead of failing closed or hiding the pair, the owner roster
+  hides it, and reactivation is refused.
+- Request paths that write to an account by id skip a tombstone
+  (`LIVE_ACCOUNT_SQL`), so a sign-in, `ADMIN_EMAILS` grant, profile save,
+  Google link, preference save or solo run authenticated before the commit
+  cannot write into it afterwards. Every change is sent as one batch inside the
+  transaction.
 - A retry with the old signed cookie is answered `already_deleted`; the
   deletion is idempotent and concurrent requests serialize on the write
   transaction. The same email can join again as a new account.

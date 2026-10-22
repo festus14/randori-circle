@@ -62,13 +62,14 @@ export const COPY = Object.freeze({
   confirming: 'Confirming…',
   rateLimited: 'Too many attempts. Wait a few minutes and try again.',
   signedOut: 'You’re signed out. Sign in again to delete your account.',
-  failed: 'Your account couldn’t be deleted. Nothing was changed. Try again.',
+  // After a failed or lost answer the server may still have deleted the account.
+  unconfirmed: 'We couldn’t confirm whether your account was deleted. Refresh the page to check.',
   blockedTitle: 'Your account can’t be deleted yet',
-  deletedNotice: 'Your account was deleted. Thank you for practising with Randori Circle.',
 });
 
 /** Guidance for the last-owner and last-admin rules, or null. */
 export function blockedMessage(code, circles = []) {
+  if (code === 'demo_account') return 'Demo accounts are managed by the app admins and can’t be deleted here.';
   if (code === 'last_admin') {
     return 'You’re the only app admin. Make another member an app admin on the Circle page first.';
   }
@@ -215,7 +216,7 @@ export function mountAccountDeletion({ doc, host }) {
     const message = eligibility?.eligible === false ? blockedMessage(eligibility.code, eligibility.circles) : null;
     view.blocked.textContent = message || '';
     view.blocked.hidden = !message;
-    view.circle.hidden = !message;
+    view.circle.hidden = !message || eligibility.code === 'demo_account';
     view.retry.hidden = eligibility?.failed !== true;
     view.open.disabled = eligibility?.eligible !== true;
     view.status.textContent = eligibility === null ? COPY.checking : (eligibility.failed ? COPY.unavailable : '');
@@ -404,8 +405,8 @@ export function mountAccountDeletion({ doc, host }) {
       const code = String(error?.code || '');
       const status = Number(error?.http_status);
       if (code === 'recent_auth_required') void checkRecentAuth(generation, COPY.reauthExpired);
-      else if (code === 'last_owner' || code === 'last_admin') showBlocked(code, error.circles);
-      else showFinal(status === 401 ? COPY.signedOut : (status === 429 ? COPY.rateLimited : COPY.failed));
+      else if (['last_owner', 'last_admin', 'demo_account'].includes(code)) showBlocked(code, error.circles);
+      else showFinal(status === 401 ? COPY.signedOut : (status === 429 ? COPY.rateLimited : COPY.unconfirmed));
     }
   }
 

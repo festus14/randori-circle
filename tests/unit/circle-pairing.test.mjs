@@ -681,3 +681,19 @@ test('an ambiguous commit is never retried and a later call reads the committed 
     assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM circle_pairing_publications`)).rows[0].count),1);
   }finally{ item.close(); }
 });
+
+test('a partner who deleted their account stays in the current secondary pairing as Deleted member',async()=>{
+  const item=fixture();
+  try{
+    await prepare(item.db);
+    const authority=await seedCircle(item.db,{userIds:[1,2]});
+    await publishCirclePairing(item.db,{authority,now:NOW});
+    // The tombstone written by api/_account-deletion.js (issue #339).
+    await item.db.execute(`UPDATE auth_accounts SET password_hash='!account-deleted',display_name='Deleted member',
+      email='deleted-2@account-deleted.invalid' WHERE id=2`);
+    await item.db.execute(`UPDATE circle_memberships SET status='inactive',role='member' WHERE circle_id=20 AND user_id=2`);
+    const read=await readCirclePairing(item.db,{authority,now:NOW});
+    assert.equal(read.accounts.get(2)?.name,'Deleted member');
+    assert.equal(read.publication.groups.length,1);
+  }finally{ item.close(); }
+});

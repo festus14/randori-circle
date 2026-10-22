@@ -22,6 +22,7 @@ import {
   createGoogleAccountFromPreparedInvitation,
   createPasswordAccountFromPreparedInvitation,
   ensureCircleMembershipReadiness,
+  hashInvitationEmail,
   hasActiveCircleMembership,
   hasActivePrimaryCircleMembership,
   readBoundInviteClaim,
@@ -961,7 +962,7 @@ async function handleAccountDeletion(req,res,ep){
     return unavailable();
   }
   let result;
-  try{ result=await deleteAccount(db,{userId:payload.id,sessionHash:payload.sessionHash,adminEmails}); }
+  try{ result=await deleteAccount(db,{userId:payload.id,sessionHash:payload.sessionHash,adminEmails,hashInvitationEmail}); }
   catch(error){
     if(error?.code==='RECENT_AUTH_REQUIRED'){
       return res.status(403).json({error:'recent authentication required',code:'recent_auth_required'});

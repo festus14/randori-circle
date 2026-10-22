@@ -102,8 +102,9 @@ test('every collaborator failure answers 503 and an impossible state answers 401
   S.remove=async()=>({ok:false,reason:'not_found'});
   res=await call({method:'POST',body:{confirm:'DELETE'},cookie});
   assert.deepEqual([res.statusCode,res.body],[401,{error:'authentication required'}]);
-  S.remove=async(database,{userId,sessionHash,adminEmails})=>{
+  S.remove=async(database,{userId,sessionHash,adminEmails,hashInvitationEmail})=>{
     assert.equal(typeof database.execute,'function');
+    assert.equal(typeof hashInvitationEmail,'function');
     assert.equal(userId,2);
     assert.match(sessionHash,/^[a-f0-9]{64}$/);
     assert.ok(adminEmails instanceof Set);
