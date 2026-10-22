@@ -161,11 +161,10 @@ test('the privacy policy carries the Google API Services User Data Policy disclo
 test('the privacy policy states the retention gaps and providers the code really has', () => {
   const text = visibleText(pages['/privacy']);
   for (const phrase of [
-    // Outbox and unfinished sign-ups are never purged today.
-    /Email records : our email queue keeps a record of each email it sends\. For sign-up, password-reset and pairing emails this includes the recipient’s email address; for invitations it is an encrypted copy\. These records are not deleted automatically at the moment/u,
+    // Unfinished sign-ups are never purged today (outbox retention, ID-83, is covered below).
     /Unfinished sign-ups : if you start signing up with a password but don’t confirm your email, we keep your email address, name and password hash\. They are not deleted automatically at the moment/u,
     /The encrypted copy is kept with our email records/u,
-    /our email queue also keeps an encrypted copy so it can send or retry the email/u,
+    /our email queue also keeps an encrypted copy so it can send or retry the email, and later removes it; see How long we keep it/u,
     // Sentry's loader reaches every visitor; tracing and replay are off in code.
     /your browser downloads Sentry’s error-reporting script from Sentry’s servers/u,
     /GitHub hosts our code and public issue tracker and runs our scheduled maintenance jobs/u,
@@ -175,7 +174,8 @@ test('the privacy policy states the retention gaps and providers the code really
     /a count of all pairs or none does show what every pair did/u,
     /Pair counts are hidden in weeks with fewer than four pairs and whenever they could point to a single pair/u,
     // Practice suggestions (ID-77): attempted marks only, and the room-privacy line admits it.
-    /your current partner sees which exercises you have attempted before .* shown only as an “attempted” mark, never your code, scores or dates/u,
+    /Practice suggestions\. Your current partner sees which exercises you have attempted before .* shown only as an “attempted” mark, never your code, scores or dates/u,
+    /Circle health\. Circle owners see counts for each finished week of their circle/u,
     /Your sessions stay private to the two of you, except that practice suggestions/u,
     /Exercises you hide from suggestions are remembered only in your browser/u,
     // Sentry breadcrumbs.
@@ -269,11 +269,53 @@ test('the sign-up dialog links the Terms and Privacy Policy only while signing u
   }
 });
 
-test('the privacy policy describes self-service account deletion only where it is switched on (issue #339)', () => {
+test('the privacy policy describes self-service account deletion as available (issue #339)', () => {
   const text = visibleText(pages['/privacy']);
-  assert.match(text, /Where account deletion is switched on, open Edit profile from the account menu and choose Delete account/u);
+  assert.match(text, /You can delete your account yourself in Edit profile, or ask us to delete it at any time\./u);
+  assert.match(text, /Delete your account\. Open Edit profile from the account menu and choose Delete account/u);
   assert.match(text, /your name shown as “Deleted member”/u);
   assert.match(text, /only owner of a circle, make another member an owner \(or archive the circle\) first; if you are the only app admin, make another member an app admin first/u);
-  assert.match(text, /If the option isn’t switched on, or you can no longer sign in, email/u);
-  assert.doesNotMatch(text, /There isn’t a delete button yet/u);
+  // People who can't sign in keep the contact and owner route, answered within one month.
+  assert.match(text, /If you can no longer sign in, or would rather ask us, email festusomole14@gmail\.com or ask the owner of your circle/u);
+  assert.match(text, /will respond within one month and delete your account/u);
+  assert.doesNotMatch(text, /There isn’t a delete button yet|Where account deletion is switched on|If the option isn’t switched on|where that option is switched on/u);
+});
+
+test('the privacy policy no longer calls the switched-on features off', () => {
+  const text = visibleText(pages['/privacy']);
+  assert.doesNotMatch(text, /currently switched off/iu);
+  assert.doesNotMatch(text, /If it is turned on|if they are turned on/iu);
+  assert.doesNotMatch(text, /switched on/iu);
+  assert.doesNotMatch(text, /These records are not deleted automatically/u);
+  // AI feedback (AI_ENABLED) really is still off.
+  assert.match(text, /would provide optional AI feedback on a practice session\. This feature is off\./u);
+});
+
+test('the privacy policy says which reminder emails members get and how to stop them (issue #287)', () => {
+  const text = visibleText(pages['/privacy']);
+  assert.match(text, /Your email reminder setting\. Unless you turn it off, we email you about your pairings and session times, and send reminders:/u);
+  assert.match(text, /about 24 hours before the Sunday availability cutoff if you haven’t chosen for the next cycle/u);
+  assert.match(text, /3 days after pairing if your pair hasn’t agreed a session time/u);
+  assert.match(text, /a day and about an hour before an agreed session/u);
+  // The switch is the Email box in the Email reminders row of Edit profile (index.html #psRemindRow).
+  assert.match(text, /To stop pairing, session-time and reminder emails \(and, for owners, notices about requests to join\), untick Email under Email reminders in Edit profile ?\./u);
+  assert.match(indexHtml, /<div id="psRemindRow"[^>]*><div><b>Email reminders<\/b>/u);
+  assert.match(indexHtml, /<input id="psRemindEmail" type="checkbox" checked[^>]*\/> Email<\/label>/u);
+  assert.match(indexHtml, /<div id="psRemindEditHost" class="onboarding-edit-only"><\/div>/u);
+  assert.doesNotMatch(text, /in your pairing settings/u);
+});
+
+test('the privacy policy describes email-record retention as ID-83 runs it', () => {
+  const text = visibleText(pages['/privacy']);
+  for (const phrase of [
+    /Email records : our email queue keeps a record of each email it sends\. For sign-up, password-reset and pairing emails this includes the recipient’s email address; for invitations it is an encrypted copy\./u,
+    /The recipient’s address and any email-verification, password-reset or invitation link in the email are removed from that record 7 days after the email is sent \(or skipped because it was no longer needed\), or 30 days after we stop trying to deliver it\./u,
+    /An invitation’s encrypted copy is never removed while the invitation can still be used\./u,
+    /The rest of the record \(the type of email, whether it was sent, and when\) is kept as an operational record without the address\./u,
+    /Our database provider’s backups can still contain the address for up to 1 day after it is removed\./u,
+    /Records that were already older than this when the rule started are cleared over the following hours and days, a limited number each hour\./u,
+    /The encrypted copy is kept with our email records while the invitation can still be used, and is then removed on the same schedule as other email records/u,
+  ]) {
+    assert.match(text, phrase);
+  }
 });
