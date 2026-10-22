@@ -123,10 +123,14 @@ test('account deletion: a member deletes their account by keyboard, partners kee
     const deleted=member.waitForResponse(pathIs('/api/auth/account/delete','POST'));
     const reloaded=member.waitForEvent('domcontentloaded');
     await member.keyboard.press('Enter');
-    const deletion=await deleted;
-    expect(deletion.status()).toBe(200);
-    expect(await deletion.json()).toEqual({ok:true,status:'deleted'});
+    // The page reloads as soon as the answer arrives, so its body is checked
+    // through the database rather than read back from the browser.
+    expect((await deleted).status()).toBe(200);
     await reloaded;
+    const tombstone=await withDatabase(golden,async db=>(await db.execute({
+      sql:`SELECT email,display_name FROM auth_accounts WHERE id=?`,args:[memberId],
+    })).rows.map(row=>({...row})));
+    expect(tombstone).toEqual([{email:`deleted-${memberId}@account-deleted.invalid`,display_name:'Deleted member'}]);
 
     // Signed out on the landing page with a notice, and nothing about the
     // account left in this browser.
