@@ -28,6 +28,8 @@ export const RECENT_ATTEMPT_WINDOW=3;
 // Only the newest runs per exercise are checked; one verified run is enough.
 export const RUNS_PER_EXERCISE=3;
 export const MAX_COMPLETED_SESSIONS=200;
+// Newest runs read from the current room for the shared recent difficulty.
+export const MAX_ROOM_RUNS=100;
 export const DIFFICULTY_LEVELS=Object.freeze(['Easy','Medium','Hard']);
 
 const MAX_SLUG_LENGTH=120;
@@ -348,19 +350,9 @@ function partnerMembershipJoins(){
      AND partner_circle.is_primary=1 AND partner_circle.archived_at IS NULL`:'';
 }
 
-/**
- * Solo when no room is given. For a room, the viewer must pass the shared pair
- * access check and the pair must be in the newest pairing week that is not a
- * demo week (an admin demo shuffle must not hide real pairs); otherwise
- * `null` (the caller answers 404). Partners are the other signed-in members of
- * that pair who are still active members of the same circle.
- */
-export async function resolveSuggestionAudience(db,{viewerId,room=null}){
-  const viewer=positiveSafeInteger(viewerId);
-  if(!viewer) throw new TypeError('viewerId must be a positive safe integer');
-  if(!room) return {roomId:null,partnerIds:[]};
+function audienceStatement(viewer,room){
   const accessArgs=authPairAccessArgs({userId:viewer,weekId:room.weekId,pairGroupId:room.pairGroupId});
-  const result=await db.execute({
+  return {
     sql:`WITH access AS (${authPairAccessSql()}),
       current_access AS (
         SELECT access.* FROM access
@@ -375,7 +367,10 @@ export async function resolveSuggestionAudience(db,{viewerId,room=null}){
       UNION ALL
       SELECT NULL AS partner_id FROM current_access`,
     args:[...accessArgs,viewer],
-  });
+  };
+}
+
+function audienceFromResult(result,viewer,room){
   const rows=result?.rows||[];
   if(!rows.length) return null;
   const partnerIds=[...new Set(rows.map(row=>positiveSafeInteger(row?.partner_id)).filter(Boolean))]
@@ -383,6 +378,49 @@ export async function resolveSuggestionAudience(db,{viewerId,room=null}){
     .sort((left,right)=>left-right)
     .slice(0,2);
   return {roomId:room.roomId,partnerIds};
+}
+
+/**
+ * Solo when no room is given. For a room, the viewer must pass the shared pair
+ * access check and the pair must be in the newest pairing week that is not a
+ * demo week (an admin demo shuffle must not hide real pairs); otherwise
+ * `null` (the caller answers 404). Partners are the other signed-in members of
+ * that pair who are still active members of the same circle.
+ */
+export async function resolveSuggestionAudience(db,{viewerId,room=null}){
+  const viewer=positiveSafeInteger(viewerId);
+  if(!viewer) throw new TypeError('viewerId must be a positive safe integer');
+  if(!room) return {roomId:null,partnerIds:[]};
+  return audienceFromResult(await db.execute(audienceStatement(viewer,room)),viewer,room);
+}
+
+// Partners' runs in the current room. These are already shown to both
+// partners, with runner and time, by the room's run feed, so they may shape
+// the shared recent difficulty. Bounded to the newest MAX_ROOM_RUNS rows.
+function roomRunsStatement(room,partnerIds){
+  return {
+    sql:`SELECT sr.id,sr.user_id,sr.week_id,sr.pair_group_id,sr.question_slug,sr.language,
+        sr.test_cases_snapshot,sr.results_json,sr.passed_count,sr.total_count,sr.created_at
+      FROM session_runs sr
+      WHERE sr.week_id=? AND sr.pair_group_id=? AND sr.user_id IN (${partnerIds.map(()=>'?').join(',')})
+      ORDER BY sr.id DESC LIMIT ?`,
+    args:[room.weekId,room.pairGroupId,...partnerIds,MAX_ROOM_RUNS],
+  };
+}
+
+/** `Map<slug, latestEpochMs>` of partners' verified runs in exactly this room. */
+export function roomAttemptsFromResult(result,{room,partnerIds,slugs,verifyAttestation}){
+  const partners=new Set(partnerIds);
+  const catalogue=new Set((Array.isArray(slugs)?slugs:[]).filter(validSlug));
+  const attempts=new Map();
+  for(const row of result?.rows||[]){
+    if(!partners.has(positiveSafeInteger(row?.user_id))
+      ||positiveSafeInteger(row?.week_id)!==room.weekId
+      ||positiveSafeInteger(row?.pair_group_id)!==room.pairGroupId) continue;
+    const attempt=verifiedRunAttempt(row,verifyAttestation);
+    if(attempt&&catalogue.has(attempt.slug)) recordAttempt(attempts,attempt.slug,attempt.at);
+  }
+  return attempts;
 }
 
 // ---------------------------------------------------------------------------
@@ -503,23 +541,28 @@ function difficultyReason(level,recent){
  * Pick up to `limit` exercises neither the member nor a partner has attempted.
  *
  * `mine` is the member's own history (`Map` or object of slug -> epoch ms).
- * `partnerAttempted` is only the set of slugs partners attempted: their times
- * are deliberately not accepted, so they cannot change any pick or reason.
+ * `partnerAttempted` is only the set of slugs partners attempted anywhere:
+ * those times are deliberately not accepted, so they cannot change any pick
+ * or reason. `roomAttempts` (slug -> epoch ms) holds partners' verified runs
+ * in the current room only; both partners already see those runs, with runner
+ * and time, in the room's run feed, so they join the recent difficulty and
+ * partners working in the same room step up together.
  *
  * Rule (deterministic and explainable):
  *  - candidates: active exercises nobody has attempted and the member has not
  *    hidden;
  *  - coverage of a topic: how many attempted exercises (member or partner)
  *    carry it; a candidate's coverage is that of its least-covered topic;
- *  - target difficulty: one step above the hardest of the member's own 3 most
- *    recent attempts (Easy with no history, capped at Hard);
+ *  - target difficulty: one step above the hardest of the 3 most recent
+ *    attempts among the member's own history and partners' runs in this room
+ *    (Easy with no history, capped at Hard);
  *  - order: lowest coverage, then closest to the target difficulty, then the
  *    easier of two equally distant levels, then slug;
  *  - after each pick its topics count as covered once more, so the next pick
  *    prefers a different topic.
  */
 export function selectExerciseSuggestions({
-  exercises=[],mine=new Map(),partnerAttempted=[],hidden=[],limit=MAX_SUGGESTIONS,pair=false,
+  exercises=[],mine=new Map(),partnerAttempted=[],roomAttempts=new Map(),hidden=[],limit=MAX_SUGGESTIONS,pair=false,
 }={}){
   const catalogue=normalizeSuggestionCatalogue(exercises);
   const bySlug=new Map(catalogue.map(exercise=>[exercise.slug,exercise]));
@@ -529,14 +572,20 @@ export function selectExerciseSuggestions({
     // Map and object keys are unique, so each slug is seen once.
     ownLatest.set(slug,Number.isFinite(Number(at))?Number(at):0);
   }
-  const attempted=new Set(ownLatest.keys());
+  const recentSource=new Map(ownLatest);
+  for(const [slug,at] of historyEntries(roomAttempts)){
+    if(!bySlug.has(slug)) continue;
+    const instant=Number.isFinite(Number(at))?Number(at):0;
+    if(!recentSource.has(slug)||instant>recentSource.get(slug)) recentSource.set(slug,instant);
+  }
+  const attempted=new Set(recentSource.keys());
   for(const slug of slugSet(partnerAttempted)) if(bySlug.has(slug)) attempted.add(slug);
   const coverage=new Map();
   for(const slug of attempted){
     for(const topic of bySlug.get(slug).topics) coverage.set(topic,(coverage.get(topic)||0)+1);
   }
   const levelBySlug=new Map(catalogue.map(exercise=>[exercise.slug,difficultyLevel(exercise.difficulty)]));
-  const recent=recentDifficultyLevel(ownLatest,levelBySlug);
+  const recent=recentDifficultyLevel(recentSource,levelBySlug);
   const target=recent===null?0:Math.min(DIFFICULTY_LEVELS.length-1,recent+1);
   const hiddenSet=new Set(Array.isArray(hidden)?hidden:[]);
   const unattempted=catalogue.filter(exercise=>!attempted.has(exercise.slug));
@@ -605,30 +654,47 @@ export async function readExerciseSuggestions(db,{viewerId,room=null,hidden=[],e
   if(!db||typeof db.execute!=='function'||typeof db.batch!=='function'){
     throw new TypeError('database client is required');
   }
-  const audience=await resolveSuggestionAudience(db,{viewerId,room});
-  if(!audience) return null;
+  const preflight=await resolveSuggestionAudience(db,{viewerId,room});
+  if(!preflight) return null;
+  const viewer=positiveSafeInteger(viewerId);
   const slugs=normalizeSuggestionCatalogue(exercises).map(exercise=>exercise.slug);
-  const members=[viewerId,...audience.partnerIds];
+  const members=[viewer,...preflight.partnerIds];
   const perMember=members.map(userId=>memberAttemptStatements(userId,slugs));
-  const statements=perMember.flat();
+  // One read transaction: the pair authorization is repeated first, so a
+  // partner removed after the preflight cannot reach this response.
+  const recheck=room?[audienceStatement(viewer,room)]:[];
+  const roomRuns=room&&preflight.partnerIds.length&&slugs.length?[roomRunsStatement(room,preflight.partnerIds)]:[];
+  const statements=[...recheck,...perMember.flat(),...roomRuns];
   const results=statements.length?await db.batch(statements,'read'):[];
+  let partnerIds=preflight.partnerIds;
   let offset=0;
-  const histories=perMember.map((memberStatements,index)=>{
+  if(room){
+    const current=audienceFromResult(results[0],viewer,room);
+    if(!current) return null;
+    partnerIds=partnerIds.filter(id=>current.partnerIds.includes(id));
+    offset=1;
+  }
+  const histories=new Map();
+  perMember.forEach((memberStatements,index)=>{
     const slice=results.slice(offset,offset+memberStatements.length);
     offset+=memberStatements.length;
-    return memberAttemptsFromResults(members[index],slugs,slice,verifyAttestation);
+    histories.set(members[index],memberAttemptsFromResults(members[index],slugs,slice,verifyAttestation));
   });
-  const [mine,...partnerHistories]=histories;
-  // Partners contribute only which exercises they attempted, never when.
-  const partnerAttempted=new Set(partnerHistories.flatMap(history=>[...history.keys()]));
-  const pair=audience.partnerIds.length>0;
+  const mine=histories.get(viewer);
+  // Partners contribute which exercises they attempted (never when), plus the
+  // runs in this room that the run feed already shows to both partners.
+  const partnerAttempted=new Set(partnerIds.flatMap(id=>[...histories.get(id).keys()]));
+  const roomAttempts=roomRuns.length
+    ?roomAttemptsFromResult(results[offset],{room,partnerIds,slugs,verifyAttestation})
+    :new Map();
+  const pair=partnerIds.length>0;
   const selection=selectExerciseSuggestions({
-    exercises,mine,partnerAttempted,hidden,limit:MAX_SUGGESTIONS,pair,
+    exercises,mine,partnerAttempted,roomAttempts,hidden,limit:MAX_SUGGESTIONS,pair,
   });
   return {
     mode:pair?'pair':'solo',
-    room_id:audience.roomId,
-    partner_count:audience.partnerIds.length,
+    room_id:preflight.roomId,
+    partner_count:partnerIds.length,
     attempted:attemptedMarkers(exercises,mine,partnerAttempted),
     suggestions:selection.suggestions,
     hidden_count:selection.hiddenCount,

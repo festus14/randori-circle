@@ -129,13 +129,16 @@
     return label ? ` · ${label.charAt(0).toLowerCase()}${label.slice(1)}` : '';
   }
 
+  // Pair suggestions skip what either partner attempted and step up from
+  // the runs both see in this room, but each partner's own history still
+  // shapes their list, so the heading does not promise one shared list.
   function headingText(mode) {
-    return mode === 'pair' ? 'Suggested for this pair' : 'Suggested for you';
+    return mode === 'pair' ? 'Suggested for you in this pair' : 'Suggested for you';
   }
 
   function noteText(mode) {
     return mode === 'pair'
-      ? 'Your partner sees only which exercises you have attempted, never scores, code or dates.'
+      ? 'Skips exercises either of you has attempted. Your partner sees only which exercises you have attempted, never scores, code or dates.'
       : 'Based on your verified runs and completed sessions.';
   }
 
@@ -239,8 +242,18 @@
   // Owns fetching, the hide list and re-rendering. `onMarkers` lets the
   // catalogue re-label cards and options; `onSelect(slug, version)` opens a
   // suggested exercise through the catalogue's normal selection path.
+  // Stored hidden slugs that can never be suggested again (attempted by the
+  // member, or no longer in the catalogue) are dropped so they cannot linger
+  // behind a hidden "Show n hidden" button. Partner-attempted slugs are kept:
+  // they become suggestable again in solo practice.
+  function prunableHidden(hidden, view, catalogueSlugs) {
+    const known = Array.isArray(catalogueSlugs) && catalogueSlugs.length ? new Set(catalogueSlugs) : null;
+    return hidden.filter(slug => view.markers.get(slug)?.me !== true && (!known || known.has(slug)));
+  }
+
   function createController({
-    doc, targets, fetchImpl, storage, getUserId, getRoom, onMarkers = () => {}, onSelect = () => {},
+    doc, targets, fetchImpl, storage, getUserId, getRoom, getCatalogueSlugs = () => [],
+    onMarkers = () => {}, onSelect = () => {},
   } = {}) {
     const state = { enabled: false, epoch: 0, view: null, key: null, pending: null };
 
@@ -275,12 +288,12 @@
       const key = `${userId}|${room}|${hidden.join(',')}`;
       if (!force && state.pending?.key === key) return state.pending.promise;
       if (!force && state.key === key && state.view) return Promise.resolve(state.view);
-      const promise = load(key, room, hidden);
+      const promise = load(key, room, hidden, userId);
       state.pending = { key, promise };
       return promise;
     }
 
-    async function load(key, room, hidden) {
+    async function load(key, room, hidden, userId) {
       const epoch = ++state.epoch;
       let result;
       try {
@@ -293,7 +306,16 @@
       if (epoch !== state.epoch) return null;
       state.pending = null;
       const view = result?.ok ? normalizeResponse(result.body) : null;
-      state.key = view ? key : null;
+      let shownKey = key;
+      if (view) {
+        const kept = prunableHidden(hidden, view, getCatalogueSlugs());
+        if (kept.length !== hidden.length) {
+          // The server already ignored the pruned slugs, so this view stands.
+          writeHidden(storage, userId, kept);
+          shownKey = `${userId}|${room}|${kept.join(',')}`;
+        }
+      }
+      state.key = view ? shownKey : null;
       publish(view);
       renderSuggestions(doc, targets, view, { hiddenCount: view?.hiddenCount || 0 });
       return view;

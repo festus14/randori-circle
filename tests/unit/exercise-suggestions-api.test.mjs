@@ -333,6 +333,73 @@ test('the partner\'s attempt times cannot change the response',async()=>{
   assert.ok(!before.body.suggestions.some(item=>item.slug==='coaching-route-sums'));
 });
 
+test('a partner\'s run in the current room sets the same recent difficulty for both partners',async()=>{
+  // Runs in this room are already visible to both partners in the run feed.
+  await currentDb.execute(pairRun({userId:4,weekId:11,pairGroupId:30,slug:'coaching-route-sums',createdAt:'2026-09-30 10:00:00'}));
+  const member=await invoke({query:{room_id:'week_11_pair_30'}});
+  const partner=await invoke({user:'partner',query:{room_id:'week_11_pair_30'}});
+  assert.equal(member.status,200);
+  assert.equal(partner.status,200);
+  assert.ok(member.body.suggestions.length>0);
+  assert.ok(member.body.suggestions.every(item=>/recent Hard exercises\.$/.test(item.reason.text)));
+  // Same attempted union and same recent difficulty: the same list.
+  assert.equal(JSON.stringify(partner.body.suggestions),JSON.stringify(member.body.suggestions));
+});
+
+test('a partner\'s runs outside the current room never change recency or the response',async()=>{
+  // Last week's room with the same partner, and a run with no room at all.
+  await currentDb.execute(pairRun({userId:4,weekId:10,pairGroupId:20,slug:'coaching-route-sums',createdAt:'2026-09-01 10:00:00'}));
+  await currentDb.execute(soloRun({userId:4,slug:'resilient-network-budget',createdAt:'2026-09-02 10:00:00'}));
+  const before=await invoke({query:{room_id:'week_11_pair_30'}});
+  await currentDb.execute(`UPDATE session_runs SET created_at='2026-09-30 10:00:00'
+    WHERE user_id=4 AND question_slug IN ('coaching-route-sums','resilient-network-budget')`);
+  const after=await invoke({query:{room_id:'week_11_pair_30'}});
+  assert.equal(before.status,200);
+  assert.equal(JSON.stringify(after.body),JSON.stringify(before.body));
+  // The other room's Hard run is newest, yet the member's recent level stays Medium.
+  assert.ok(after.body.suggestions.every(item=>/recent Medium exercises\.$/.test(item.reason.text)));
+  assert.ok(after.body.attempted.some(marker=>marker.slug==='coaching-route-sums'&&marker.by_partner&&!marker.by_me));
+});
+
+test('the pair authorization is repeated inside the history read',async()=>{
+  // The partner is removed from the circle between the first check and the
+  // history batch: none of their history may reach this response.
+  const db=currentDb;
+  let removeAfterPreflight=true;
+  currentDb={
+    async execute(statement){
+      const result=await db.execute(statement);
+      if(removeAfterPreflight&&/current_access/.test(statement.sql||'')){
+        removeAfterPreflight=false;
+        await db.execute(`UPDATE circle_memberships SET status='inactive' WHERE user_id=4`);
+      }
+      return result;
+    },
+    batch:(statements,mode)=>db.batch(statements,mode),
+  };
+  const response=await invoke({query:{room_id:'week_11_pair_30'}});
+  assert.equal(response.status,200);
+  assert.equal(response.body.mode,'solo');
+  assert.equal(response.body.partner_count,0);
+  assert.ok(response.body.attempted.every(marker=>marker.by_partner===false));
+  // If the viewer loses access in between, the request is refused.
+  await db.execute(`UPDATE circle_memberships SET status='active' WHERE user_id=4`);
+  let revoke=true;
+  currentDb={
+    async execute(statement){
+      const result=await db.execute(statement);
+      if(revoke&&/current_access/.test(statement.sql||'')){
+        revoke=false;
+        await db.execute(`UPDATE circle_memberships SET status='inactive' WHERE user_id=2`);
+      }
+      return result;
+    },
+    batch:(statements,mode)=>db.batch(statements,mode),
+  };
+  assert.equal((await invoke({query:{room_id:'week_11_pair_30'}})).status,404);
+  currentDb=db;
+});
+
 test('another member\'s newer runs on the same exercise never crowd out the member\'s own',async()=>{
   // The per-exercise lookup is limited to the member's rows in SQL. Without
   // that filter these three newer runs would fill the three-run window and the

@@ -215,8 +215,9 @@ test('markers say who attempted an exercise in plain words, never how well', () 
   assert.equal(api.markerLabel({ me: false, partner: true }, { partnerCount: 2 }), 'Attempted by a partner');
   assert.equal(api.optionSuffix({ me: false, partner: true }), ' · attempted by your partner');
   assert.equal(api.optionSuffix(null), '');
-  assert.equal(api.headingText('pair'), 'Suggested for this pair');
+  assert.equal(api.headingText('pair'), 'Suggested for you in this pair');
   assert.equal(api.headingText('solo'), 'Suggested for you');
+  assert.match(api.noteText('pair'), /^Skips exercises either of you has attempted\./);
   assert.match(api.noteText('pair'), /never scores, code or dates/);
   assert.match(api.noteText('solo'), /verified runs and completed sessions/);
   assert.deepEqual(api.emptyView('all_hidden', { hiddenCount: 2 }), {
@@ -238,7 +239,7 @@ test('suggestions render with textContent, a labelled Hide button and no HTML', 
   assert.equal(api.renderSuggestions(doc, parts, evil, { hiddenCount: 1 }), true);
   assert.equal(parts.section.hidden, false);
   assert.equal(parts.section.getAttribute('data-mode'), 'pair');
-  assert.equal(parts.title.textContent, 'Suggested for this pair');
+  assert.equal(parts.title.textContent, 'Suggested for you in this pair');
   assert.equal(parts.list.hidden, false);
   assert.equal(parts.empty.hidden, true);
   assert.equal(parts.showHidden.hidden, false);
@@ -437,6 +438,36 @@ test('hiding stores the slug for this member, asks again and moves focus to the 
   headingFocus.controller.setEnabled(true);
   await headingFocus.controller.showHidden();
   assert.equal(headingFocus.parts.title.focused, true);
+});
+
+test('hidden slugs that can never be suggested again are pruned from storage', async () => {
+  const storage = memoryStorage({
+    'randori-hidden-suggestions:2': JSON.stringify(['focus-block-rollup', 'balanced-template-markers', 'retired-one', 'coaching-route-sums']),
+  });
+  const calls = [];
+  const controller = api.createController({
+    doc, targets: targets(), storage, getUserId: () => 2, getRoom: () => '',
+    getCatalogueSlugs: () => ['focus-block-rollup', 'balanced-template-markers', 'coaching-route-sums'],
+    fetchImpl: async path => { calls.push(path); return { status: 200, ok: true, json: async () => body({ hidden_count: 1 }) }; },
+  });
+  controller.setEnabled(true);
+  await controller.refresh();
+  // focus-block-rollup was attempted by the member and retired-one left the
+  // catalogue; balanced-template-markers (partner-attempted) and the still
+  // suggestable coaching-route-sums stay hidden.
+  assert.equal(storage.values.get('randori-hidden-suggestions:2'), '["balanced-template-markers","coaching-route-sums"]');
+  // The shown result already reflects the pruned list: no second request.
+  await controller.refresh();
+  assert.equal(calls.length, 1);
+  // Without a catalogue list only the member's own attempts are pruned.
+  const partial = memoryStorage({ 'randori-hidden-suggestions:2': '["focus-block-rollup","retired-one"]' });
+  const other = api.createController({
+    doc, targets: targets(), storage: partial, getUserId: () => 2, getRoom: () => '',
+    fetchImpl: async () => ({ status: 200, ok: true, json: async () => body() }),
+  });
+  other.setEnabled(true);
+  await other.refresh();
+  assert.equal(partial.values.get('randori-hidden-suggestions:2'), '["retired-one"]');
 });
 
 test('clicks open a suggestion, hide it, or show hidden exercises', async () => {

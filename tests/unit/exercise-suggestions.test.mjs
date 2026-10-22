@@ -21,6 +21,7 @@ import {
   memberAttemptStatements,
   memberAttemptsFromResults,
   readMemberAttempts,
+  roomAttemptsFromResult,
   recentDifficultyLevel,
   resolveSuggestionAudience,
   RUNS_PER_EXERCISE,
@@ -528,6 +529,46 @@ test('partners change only exclusion and coverage, never the recent difficulty o
   assert.ok(!slugs(earlier).includes('strings-medium'));
   const solo=selectExerciseSuggestions({exercises:CATALOGUE,mine});
   assert.ok(slugs(solo).includes('strings-medium'));
+});
+
+test('partners\' runs in the current room join the recent difficulty for both partners',()=>{
+  const mine=history({'arrays-easy-a':Date.parse('2026-10-11T10:00:00Z')});
+  const without=selectExerciseSuggestions({exercises:CATALOGUE,mine,partnerAttempted:['graphs-hard'],pair:true});
+  assert.equal(without.recentLevel,0);
+  const withRoom=selectExerciseSuggestions({exercises:CATALOGUE,mine,partnerAttempted:['graphs-hard'],pair:true,
+    roomAttempts:new Map([['graphs-hard',Date.parse('2026-10-12T10:00:00Z')],['retired-exercise',9]])});
+  assert.equal(withRoom.recentLevel,2);
+  assert.ok(withRoom.suggestions.every(item=>/recent Hard exercises\.$/.test(item.reason.text)));
+  // Only the newest three count: an old room run is outweighed by newer own work.
+  const older=selectExerciseSuggestions({exercises:CATALOGUE,pair:true,
+    mine:history({'arrays-easy-a':5,'arrays-easy-b':6,'graphs-easy':7}),
+    roomAttempts:{'graphs-hard':1}});
+  assert.equal(older.recentLevel,0);
+  assert.equal(selectExerciseSuggestions({exercises:CATALOGUE,roomAttempts:{'graphs-hard':'x'}}).recentLevel,2);
+  // A slug in both keeps its newest time, whichever source it came from.
+  const both=history({'graphs-hard':10,'arrays-easy-a':8,'arrays-easy-b':7,'graphs-easy':6});
+  assert.equal(selectExerciseSuggestions({exercises:CATALOGUE,mine:both,roomAttempts:{'graphs-hard':1}}).recentLevel,2);
+  assert.equal(selectExerciseSuggestions({exercises:CATALOGUE,mine:history({'graphs-hard':1,'arrays-easy-a':8,'arrays-easy-b':7,'graphs-easy':6}),
+    roomAttempts:{'graphs-hard':10}}).recentLevel,2);
+});
+
+test('room attempts keep only partners\' verified runs in exactly this room',()=>{
+  const room={roomId:'week_10_pair_20',weekId:10,pairGroupId:20};
+  const rows=[
+    {...v3Row({user_id:4}),created_at:'2026-10-01 10:00:00'},
+    {...v3Row({user_id:4,question_slug:'graphs-hard'}),created_at:'2026-10-02 10:00:00'},
+    v3Row({user_id:9,question_slug:'trees-hard'}),
+    v3Row({user_id:4,question_slug:'strings-medium',week_id:11},{week_id:11}),
+    v3Row({user_id:4,question_slug:'arrays-easy-a',pair_group_id:21},{pair_group_id:21}),
+    v3Row({user_id:4,question_slug:'not-in-catalogue'}),
+    v2Row({user_id:4,question_slug:'arrays-easy-b'}),
+  ];
+  const attempts=roomAttemptsFromResult({rows},{
+    room,partnerIds:[4],slugs:CATALOGUE.map(exercise=>exercise.slug),verifyAttestation:()=>true,
+  });
+  assert.deepEqual([...attempts.keys()],['graphs-easy','graphs-hard']);
+  assert.equal(roomAttemptsFromResult(undefined,{room,partnerIds:[4],slugs:null,verifyAttestation:()=>true}).size,0);
+  assert.equal(roomAttemptsFromResult({rows},{room,partnerIds:[4],slugs:['graphs-easy'],verifyAttestation:()=>false}).size,0);
 });
 
 test('the hidden count covers only hidden exercises that could be suggested',()=>{

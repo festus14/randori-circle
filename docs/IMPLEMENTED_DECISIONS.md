@@ -3371,7 +3371,11 @@ a sensible next difficulty was. Run history (#20) and session completion
   without reading the stored code: the HMAC still binds the code hash with the
   member, exercise, room and results, and an attempt does not depend on the
   code.
-- Reads are bounded: one `db.batch(…,'read')` with two statements per member.
+- Reads are bounded: one `db.batch(…,'read')` (one read transaction) with
+  two statements per member, plus, for a pair, the pair authorization repeated
+  first and the partners' newest 100 runs in the current room. A partner
+  removed after the preflight check is dropped from that response, and a
+  viewer who lost access gets the 404.
   Runs come from a per-exercise `ORDER BY id DESC LIMIT 3` lookup on the
   `(user_id,question_slug)` index (covering, flat as history grows; about
   0.4 ms at 8,000 runs locally), never `code`. Completed sessions are capped at
@@ -3385,28 +3389,34 @@ a sensible next difficulty was. Run history (#20) and session completion
   signed-in participants of that pair who are still active members of the same
   circle. Another pair's room, an older pair, a removed member and a member of
   another circle all get the same 404. The client then falls back to solo.
-- Privacy: the partner's history is reduced on the server to the set of
-  exercises they attempted before the rule runs, so their attempt times cannot
-  change any pick, `difficulty_step` or reason (a test moves a partner's run
-  and requires a byte-identical response). It leaves the server only as
-  `by_partner` booleans. No scores, code, dates, run ids, user ids or names
-  are returned.
-  The pair card says so: "Your partner sees only which exercises you have
-  attempted, never scores, code or dates."
+- Privacy: outside the current room, the partner's history is reduced on the
+  server to the set of exercises they attempted before the rule runs, so
+  those attempt times cannot change any pick, `difficulty_step` or reason (a
+  test moves a partner's runs outside the room and requires a byte-identical
+  response). Partners' verified runs in the current room also count toward
+  recency: both partners already see those runs, with runner and time, in the
+  room's run feed, so nothing new is revealed and partners working together
+  step up together. History leaves the server only as `by_partner` booleans.
+  No scores, code, dates, run ids, user ids or names are returned. The pair
+  card says: "Skips exercises either of you has attempted. Your partner sees
+  only which exercises you have attempted, never scores, code or dates."
 - Selection rule (deterministic, unit-tested): candidates are active exercises
   nobody in the request has attempted and the member has not hidden. A topic's
   coverage is how many attempted exercises carry it (tags; the pattern when an
   exercise has no tags), and a candidate's coverage is that of its
-  least-covered topic; partner attempts count here and for exclusion only.
-  The target difficulty is one step above the hardest of the member's own
-  three most recent attempts (Easy with no history, capped at Hard). Order:
+  least-covered topic; partner attempts count here and for exclusion. The
+  target difficulty is one step above the hardest of the three most recent
+  attempts among the member's own history and the partners' runs in this
+  room (Easy with no history, capped at Hard). Order:
   lowest coverage, then closest to the target, then the easier of two equally
   distant levels, then slug. After each pick its topics count once more, so
   the next pick prefers another topic. At most three. Each suggestion carries
   a plain reason, for example "Neither of you has practised graphs yet. One
   step up from your recent Easy exercises."
-- UI (room Problem panel, WP-K): a "Suggested for this pair" / "Suggested for
-  you" card under the exercise picker with a Hide button per suggestion and
+- UI (room Problem panel, WP-K): a "Suggested for you in this pair" /
+  "Suggested for you" card (each partner's own history outside the room can
+  still make the two lists differ, so the heading does not promise one shared
+  list) under the exercise picker with a Hide button per suggestion and
   "Show n hidden exercises"; an "Attempted by you" / "Attempted by your
   partner" chip on browse cards (`data-testid="catalog-attempted"`) and the
   same words appended to the picker option. Choosing a suggestion goes through
@@ -3415,7 +3425,10 @@ a sensible next difficulty was. Run history (#20) and session completion
   `assets/catalogue-view.js`.
 - Hidden exercises are stored in the browser (`localStorage`
   `randori-hidden-suggestions:<user id>`, at most 50, oldest dropped first)
-  and sent with each request so the server can skip them.
+  and sent with each request so the server can skip them. Slugs that can never
+  be suggested again (attempted by the member, or no longer in the catalogue)
+  are pruned from storage after each response; partner-attempted slugs stay,
+  since they become suggestable again in solo practice.
 
 **Trade-off of the client-side hide list.** It needs no schema change and the
 server never stores it, but it is per browser: it does not follow the member
