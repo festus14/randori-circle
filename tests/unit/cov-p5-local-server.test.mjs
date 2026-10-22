@@ -550,6 +550,7 @@ test('the adapter routes every API family and redacts handler failures',async()=
   assert.deepEqual((await get('/api/health/ready')).body.query,{endpoint:'health',probe:'ready'});
   assert.deepEqual((await get('/api/weeks')).body,{kind:'data',query:{endpoint:'weeks'},body:{}});
   assert.deepEqual((await get('/api/cron/outbox')).body.query,{endpoint:'outbox'});
+  assert.deepEqual((await get('/api/cron/execution-smoke')).body.query,{endpoint:'execution-smoke'});
   assert.deepEqual((await get('/api/ai/feedback/a%20b')).body.query,{endpoint:'feedback',id:'a b'});
   assert.deepEqual((await get('/api/ai/history')).body.query,{endpoint:'history'});
   assert.deepEqual((await get('/api/video/join')).body.query,{endpoint:'join'});
