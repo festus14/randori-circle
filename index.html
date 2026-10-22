@@ -208,30 +208,10 @@ try{
   function keep(event){
     if(early.length<20) early.push(event&&event.type==='unhandledrejection'?event.reason:(event&&(event.error||event.message)));
   }
-  // Forward logger.log() errors and warnings to Sentry. Patches the real
-  // logger once, whichever runs first: this step calls it when Sentry is
-  // ready, and the logger script calls window.__randoriPatchLogger after it
-  // installs. A missing or placeholder logger (no log function) is skipped.
-  function patchLogger(){
-    var logger=window._randori_log;
-    if(!logger||typeof logger.log!=='function'||logger._sentryPatched) return;
-    var base=logger.log.bind(logger);
-    var redact=typeof logger._redact==='function'?logger._redact:String;
-    logger.log=function(level,eventName,msg,meta){
-      try{ base(level,eventName,msg,meta); }catch{}
-      try{
-        logger._lastEvent=eventName||'';
-        if(level==='error' && window.Sentry){
-          Sentry.captureMessage(String(redact(msg)).slice(0,500), {level:'error', tags:{event:eventName||'unknown', source:'client'}});
-        } else if(level==='warn' && window.Sentry){
-          Sentry.captureMessage(String(redact(msg)).slice(0,500), {level:'warning', tags:{event:eventName||'unknown'}});
-        }
-      }catch{}
-    };
-    logger._sentryPatched=true;
-  }
   function augment(){
-    // Augment the scoped SDK with Randori context + logger forwarding (production origin only)
+    // Augment the scoped SDK with Randori context (production origin only).
+    // The client logger is not wrapped: it creates no Sentry events itself
+    // (ID-72), and its last event only tags events the SDK reports.
     try{
       if(window.Sentry&&window.__randoriSentry&&window.__randoriSentry.enabled){
         window._sentryReady=true;
@@ -245,8 +225,6 @@ try{
             }catch{} return event;
           });
         }catch{}
-        window.__randoriPatchLogger=patchLogger;
-        patchLogger();
         early.splice(0).forEach(function(error){
           try{
             if(error instanceof Error) Sentry.captureException(error,{tags:{event:'early_error'}});
@@ -1719,46 +1697,78 @@ a.btn{text-decoration:none}
   let flushing=false, lastFlush=0, queuedThisPage=0, owner=null;
   let _lastEvent=existing&&existing._lastEvent||null;
 
-  // Redaction. Keep these patterns identical to api/_client-log-policy.js;
-  // tests/unit/client-logger.test.mjs runs both over one corpus.
+  // Redaction. Keep every pattern and limit identical to
+  // api/_client-log-policy.js; tests/unit/client-logger.test.mjs runs both
+  // copies over one text corpus and one object corpus. Input is cut before
+  // any pattern runs (8000 chars per string, 16k per entry), and a cut drops
+  // the partial trailing token so half a secret is never kept.
+  const TEXT_MAX=8000, VALUE_BUDGET=16000;
+  const CUT_DELIMITER=/[\s"'<>()\\,;]/;
+  const ENCODED=/%(?:25)?(?:23|3d|40|2f|2e)/gi;
+  const DECODED={'23':'#','3d':'=','40':'@','2f':'/','2e':'.'};
   const TOKEN=/[^\s"'<>()\\]+/g;
   const LINE_COL=/(?::\d+){1,2}$/;
-  const SECRET_PAIR=/(^|[^a-z0-9_])((?:[a-z0-9]+[_-])?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|auth|authorization|cookie|otp|credential)s?)=([^\s&#"'<>,;()\\]+)/gi;
-  const SECRET_JSON=/("(?:[a-z0-9]+[_-])?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|auth|authorization|cookie|otp|credential)s?"\s*:\s*)"(?:[^"\\]|\\.)*"/gi;
+  const SECRET_PAIR=/(^|[^a-z0-9_])((?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?)=(["']?)([^\s&#"'<>,;()\\]+)/gi;
+  const SECRET_JSON=/("(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|[\w.+-]+)/gi;
+  const SECRET_ESCAPED_JSON=/(\\"(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?\\"\s*:\s*)(?:\\"[^"]*?\\"|[\w.+-]+)/gi;
+  const AUTH_HEADER=/\b((?:proxy-)?authorization)(\s*[:=]\s*["']?)(?:(?:bearer|basic|token|digest)\s+)?[^\s,;"']+/gi;
+  const SECRET_COLON=/\b((?:[a-z0-9]+[_-])?(?:password|passwd|pwd|secret|otp|cookie|credentials?|token)(?:[_-]?(?:id|key|token|hash))?)(\s*:\s*)[^\s,;]+/gi;
+  const CODE_COLON=/\b(code)(\s*:\s*["']?)\d{4,10}\b/gi;
   const AUTH_SCHEME=/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
-  const JWT=/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g;
+  const JWT=/(^|[^A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g;
   const EMAIL=/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,63}/g;
-  const SECRET_KEY=/token|secret|passw|pwd|authorization|cookie|credential|signature|invite|session|^(?:code|key|sig|auth|otp)$/i;
-  // A fragment is dropped from any token with a '/' before its '#', keeping a
-  // trailing stack-frame :line:col.
+  const SECRET_KEY=/token|secret|passw|pwd|authorization|cookie|credential|signature|invite|session|api_?key|private_?key|^(?:code|key|sig|sid|auth|otp)$/i;
+  function cut(text,max){
+    if(text.length<=max) return text;
+    let end=max;
+    while(end>0&&!CUT_DELIMITER.test(text[end-1])) end-=1;
+    return text.slice(0,end)+'[truncated]';
+  }
   function stripFragment(token){
     const hash=token.indexOf('#');
-    if(hash<1||token.lastIndexOf('/',hash)===-1) return token;
-    const lineCol=token.slice(hash).match(LINE_COL);
+    if(hash===-1) return token;
+    const fragment=token.slice(hash+1);
+    if(token.lastIndexOf('/',hash)===-1&&!/[/=]/.test(fragment)) return token;
+    const lineCol=fragment.match(LINE_COL);
     return token.slice(0,hash)+(lineCol?lineCol[0]:'');
   }
-  function redactText(value){
-    return String(value==null?'':value).slice(0,8000)
+  function redactText(value,max){
+    return cut(value==null?'':String(value),max||TEXT_MAX)
+      .replace(ENCODED,code=>DECODED[code.slice(-2).toLowerCase()])
       .replace(TOKEN,stripFragment)
-      .replace(SECRET_PAIR,'$1$2=[redacted]')
-      .replace(SECRET_JSON,'$1"[redacted]"')
+      .replace(AUTH_HEADER,'$1$2[redacted]')
       .replace(AUTH_SCHEME,'$1 [redacted]')
-      .replace(JWT,'[jwt]')
+      .replace(SECRET_PAIR,'$1$2=$3[redacted]')
+      .replace(SECRET_JSON,'$1"[redacted]"')
+      .replace(SECRET_ESCAPED_JSON,'$1\\"[redacted]\\"')
+      .replace(SECRET_COLON,'$1$2[redacted]')
+      .replace(CODE_COLON,'$1$2[redacted]')
+      .replace(JWT,'$1[jwt]')
       .replace(EMAIL,'[email]');
   }
-  function redactValue(value,depth){
-    if(typeof value==='string') return redactText(value);
+  function redactNode(value,depth,budget){
+    if(budget.left<=0) return '[truncated]';
+    if(typeof value==='string'){
+      const max=Math.min(budget.left,TEXT_MAX);
+      budget.left-=Math.min(value.length,max)+1;
+      return redactText(value,max);
+    }
+    budget.left-=1;
     if(value==null||typeof value==='number'||typeof value==='boolean') return value;
-    if(value instanceof Error) return redactText(value.stack||String(value));
-    if(typeof value!=='object') return redactText(value);
+    if(value instanceof Error) return redactNode(value.stack||String(value),depth,budget);
+    if(typeof value!=='object') return redactNode(String(value),depth,budget);
     if(depth>=4) return '[truncated]';
-    if(Array.isArray(value)) return value.slice(0,20).map(item=>redactValue(item,depth+1));
+    if(Array.isArray(value)) return value.slice(0,20).map(item=>redactNode(item,depth+1,budget));
     const copy={};
-    for(const key of Object.keys(value).slice(0,30)) copy[key]=SECRET_KEY.test(key)?'[redacted]':redactValue(value[key],depth+1);
+    for(const key of Object.keys(value).slice(0,30)){
+      budget.left-=key.length;
+      copy[key]=SECRET_KEY.test(key)?'[redacted]':redactNode(value[key],depth+1,budget);
+    }
     return copy;
   }
+  function redactValue(value){ return redactNode(value,0,{left:VALUE_BUDGET}); }
   // Pathname and search only: the fragment never leaves the page.
-  function getRoute(){ try{ return redactText(location.pathname+location.search).slice(0,300); }catch{ return '/'; } }
+  function getRoute(){ try{ return redactText(location.pathname+location.search,300); }catch{ return '/'; } }
   function production(){ try{ return window.__randoriSentry.environment==='production'; }catch{ return false; } }
   // 'u:<id>' signed in, 'anon' signed out, null while /api/auth/me is unsettled.
   function identity(){
@@ -1808,12 +1818,12 @@ a.btn{text-decoration:none}
   function enqueue(level, event, message, meta){
     const lvl=String(level||'info').toLowerCase();
     const lv=LEVELS.indexOf(lvl)!==-1?lvl:'info';
-    const ev=event?redactText(event).slice(0,80):'app';
-    const msg=redactText(message).slice(0,2000);
+    const ev=event?redactText(event,80):'app';
+    const msg=redactText(message,2000);
     const route=getRoute();
     const ts=new Date().toISOString();
     const extra=meta==null?{}:(typeof meta==='object'&&!Array.isArray(meta)&&!(meta instanceof Error)?meta:{extra:meta});
-    const entry={level:lv, source:'client', event:ev, message:msg, meta:Object.assign(redactValue(extra,0),{route,ts}), route, ts};
+    const entry={level:lv, source:'client', event:ev, message:msg, meta:Object.assign(redactValue(extra),{route,ts}), route, ts};
     _lastEvent=event||null;
     consoleMirror(lv, (event? '['+ev+'] ':'')+msg);
     breadcrumb(lv, ev, msg, route);
@@ -1881,6 +1891,7 @@ a.btn{text-decoration:none}
     flush,
     safe,
     _redact:redactText,
+    _redactValue:redactValue,
     get queue(){ return q.slice(); },
     get _lastEventVal(){ return _lastEvent; }
   };
@@ -1888,8 +1899,6 @@ a.btn{text-decoration:none}
   try{ window._log=window._randori_log.log; }catch{}
   // expose safe globally for inline try-catch sugar
   try{ window._randori_safe=safe; }catch{}
-  // The Sentry augment step may already have run; let it patch this logger.
-  try{ if(typeof window.__randoriPatchLogger==='function') window.__randoriPatchLogger(); }catch{}
 })();
 </script>
 <script>
@@ -3489,6 +3498,9 @@ a.btn{text-decoration:none}
   try{ localStorage.removeItem(TOKEN_KEY); }catch{}
   async function api(path, opts={}){
     const _apiStart = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    // Logs and Sentry tags name the path without its query, which can carry
+    // search terms such as an email address (ID-72 addendum).
+    const apiPath=String(path).split('?')[0];
     try{
       const headers = opts.headers||{};
       headers['content-type']='application/json';
@@ -3500,24 +3512,29 @@ a.btn{text-decoration:none}
       const text = await r.text();
       let j; try{ j=JSON.parse(text)}catch{ j={raw:text,status:r.status} }
       if(!r.ok){
-        try{ window._randori_log && window._randori_log.warn('api_fail', path+' -> '+r.status, {status:r.status, body: (j && (j.error||j.message||'')).toString().slice(0,400), path}); }catch{}
-        try{ if(window.Sentry) Sentry.captureMessage('api_fail '+path, {level:'warning', tags:{event:'api_fail', path, status:r.status}}); }catch{}
+        // One log entry and one Sentry report per HTTP failure: 5xx is an
+        // error, a 4xx the caller may handle (409, 401, ...) is a warning.
+        const level=r.status>=500?'error':'warn';
+        try{ window._randori_log && window._randori_log[level]('api_fail', apiPath+' -> '+r.status, {status:r.status, body: (j && (j.error||j.message||'')).toString().slice(0,400), path:apiPath}); }catch{}
+        try{ if(window.Sentry) Sentry.captureMessage('api_fail '+apiPath, {level:level==='error'?'error':'warning', tags:{event:'api_fail', path:apiPath, status:r.status}}); }catch{}
         const problem=j&&typeof j==='object'?j:{error:'request failed'};
         problem.http_status=r.status;
         throw problem;
       }
       try{
         const dur = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-_apiStart));
-        if(dur>3000){ try{ window._randori_log && window._randori_log.warn('api_slow', path+' slow '+dur+'ms', {dur, path}); }catch{} }
+        if(dur>3000){ try{ window._randori_log && window._randori_log.warn('api_slow', apiPath+' slow '+dur+'ms', {dur, path:apiPath}); }catch{} }
       }catch{}
       return j;
     }catch(e){
       if(e?.name==='AbortError') throw e;
+      // An HTTP problem was logged and reported above; rethrow it as is.
+      if(e&&typeof e==='object'&&!(e instanceof Error)&&Number.isInteger(e.http_status)) throw e;
       try{
         const msg = (e && (e.error||e.message||e.detail)) ? String(e.error||e.message||e.detail) : String(e);
-        window._randori_log && window._randori_log.error('api_fail', 'api '+path+' failed: '+msg.slice(0,300), {path, err: msg.slice(0,800), stack: e && e.stack ? String(e.stack).slice(0,1500):''});
+        window._randori_log && window._randori_log.error('api_fail', 'api '+apiPath+' failed: '+msg.slice(0,300), {path:apiPath, err: msg.slice(0,800), stack: e && e.stack ? String(e.stack).slice(0,1500):''});
       }catch{}
-      try{ if(window.Sentry){ Sentry.captureException(e instanceof Error ? e : new Error('api_fail '+path+': '+String(e).slice(0,400)), {tags:{event:'api_fail', path}}); } }catch{}
+      try{ if(window.Sentry){ Sentry.captureException(e instanceof Error ? e : new Error('api_fail '+apiPath+': '+String(e).slice(0,400)), {tags:{event:'api_fail', path:apiPath}}); } }catch{}
       throw e;
     }
   }

@@ -477,7 +477,9 @@ async function readErrorsCard(db,nowMs){
       FROM app_logs
       WHERE level IN ('error','warn') AND created_at>=datetime('now','-1 day')
       GROUP BY source,event,level ORDER BY count DESC LIMIT 500`),
-    db.execute(`SELECT created_at FROM app_logs ORDER BY created_at DESC LIMIT 1`),
+    // Freshness comes from server-written rows only (no user id): a member's
+    // browser can post client rows at will and must not keep this fresh.
+    db.execute(`SELECT created_at FROM app_logs WHERE user_id IS NULL ORDER BY created_at DESC LIMIT 1`),
   ]);
   const summary=summarizeErrorRows(grouped?.rows||[]);
   const status=summary.totals.error>0?'degraded':'healthy';
