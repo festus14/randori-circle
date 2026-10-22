@@ -171,6 +171,23 @@ test('watchdog permissions, isolation, schedule, and terminal alert fail closed'
     'watchdog must not continue after a failed control step'));
 });
 
+test('the watchdog keeps the reviewed eight-hour late-schedule grace and its deadline',()=>{
+  const watchdog=current().watchdog;
+  assert.match(watchdog,/^ {10}WATCHDOG_SLOT_GRACE_MS: '28800000'$/m);
+  assert.match(watchdog,/^ {10}WATCHDOG_SLOT_DEADLINE_MS: '34200000'$/m);
+  for(const [from,to] of [
+    // Reverting to the pre-#324 two-hour grace and 06:47 UTC deadline.
+    ["WATCHDOG_SLOT_GRACE_MS: '28800000'","WATCHDOG_SLOT_GRACE_MS: '7200000'"],
+    ["WATCHDOG_SLOT_DEADLINE_MS: '34200000'","WATCHDOG_SLOT_DEADLINE_MS: '12600000'"],
+    // Silently stretching either bound further.
+    ["WATCHDOG_SLOT_GRACE_MS: '28800000'","WATCHDOG_SLOT_GRACE_MS: '43200000'"],
+    ["WATCHDOG_SLOT_DEADLINE_MS: '34200000'","WATCHDOG_SLOT_DEADLINE_MS: '86400000'"],
+  ]){
+    assert.ok(changed('watchdog',from,to).includes(
+      'watchdog freshness, stuck-run, grace, and absolute-deadline policy must remain fixed'),to);
+  }
+});
+
 test('external actions and checkout credentials must remain independently safe',()=>{
   assert.ok(changed('rehearsal','actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
     'actions/setup-node@v7').includes(
