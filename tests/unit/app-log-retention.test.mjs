@@ -13,6 +13,12 @@ const { directory, url } = await createMigratedDatabase({ prefix: 'randori-app-l
 const db = createClient({ url });
 await prepareMigrationConnection(db);
 
+// `x-test-member: <id>` authenticates a member for POST /api/logs.
+function memberFor(req) {
+  const id = Number(req?.headers?.['x-test-member']);
+  return id ? { id, email: `member${id}@example.test`, sessionHash: 'a'.repeat(64) } : null;
+}
+
 mock.module('../../api/_db.js', {
   exports: {
     JWT_AUDIENCE: 'randori-web',
@@ -28,8 +34,8 @@ mock.module('../../api/_db.js', {
     revokeRequestSession: async () => ({ authenticated: false, revoked: false, userId: null }),
     isoWeekLabel: () => '2026-W38',
     shuffleArray: values => [...values],
-    verifyRequestAuth: () => null,
-    verifySignedRequestAuth: () => null,
+    verifyRequestAuth: memberFor,
+    verifySignedRequestAuth: memberFor,
     verifyMutationOrigin: () => true,
     initSentry: () => {},
     isSentryConfigured: () => false,
@@ -46,6 +52,24 @@ const {
   runAppLogRetention,
 } = await import('../../api/_app-log-retention.js');
 const { deliverPendingOutbox, OUTBOX_APP_LOG_RETENTION_BUDGET_MS } = await import('../../api/ops.js');
+const { default: dataHandler } = await import('../../api/data.js');
+const { CLIENT_LOG_RECENT_COUNT_SQL } = await import('../../api/_client-log-policy.js');
+
+function postLogs(memberId, body, headers = {}) {
+  return new Promise((resolve, reject) => {
+    let status = 200;
+    const res = {
+      status(code) { status = code; return this; },
+      json(payload) { resolve({ status, body: payload }); return this; },
+      setHeader() {},
+      end(payload) { resolve({ status, body: payload }); },
+    };
+    Promise.resolve(dataHandler({
+      method: 'POST', url: '/api/logs', query: { endpoint: 'logs' },
+      headers: { ...(memberId ? { 'x-test-member': String(memberId) } : {}), ...headers }, body,
+    }, res)).catch(reject);
+  });
+}
 
 after(() => {
   try { db.close(); } catch {}
@@ -189,4 +213,95 @@ test('retention is skipped when its budget does not fit, and a slow or failed ru
   assert.deepEqual(failed.metrics.app_logs_retention, { ran: false, failed: true });
   assert.equal(failed.metrics.metrics_complete, true);
   assert.equal(failed.metrics.logging_complete, true);
+});
+
+test('member-written rows can never claim or suppress retention (M1)', async () => {
+  await seed([{ offset: '-45 days', message: 'expired' }]);
+  // A member posts a forged server row; it is stored as a client row.
+  const forged = await postLogs(2, { level: 'warn', source: 'server', event: APP_LOG_RETENTION_EVENT, message: 'forged claim' });
+  assert.deepEqual(forged, { status: 200, body: { ok: true, inserted: 1 } });
+  const stored = (await db.execute({ sql: 'SELECT source, user_id FROM app_logs WHERE message=?', args: ['forged claim'] })).rows[0];
+  assert.deepEqual([stored.source, Number(stored.user_id)], ['client', 2]);
+  // Rows a server-side bug or an older build might have written are ignored
+  // too: the claim counts only server rows without a user.
+  await db.execute({ sql: `INSERT INTO app_logs (level, source, event, message, user_id, created_at) VALUES ('warn','server',?,'legacy',2,datetime('now'))`, args: [APP_LOG_RETENTION_EVENT] });
+  await db.execute({ sql: `INSERT INTO app_logs (level, source, event, message, created_at) VALUES ('warn','client',?,'legacy',datetime('now'))`, args: [APP_LOG_RETENTION_EVENT] });
+  assert.deepEqual({ ...await runAppLogRetention(db) }, { ran: true, purged: 1, more: false });
+  assert.equal((await runAppLogRetention(db)).ran, false, 'the real claim still throttles');
+});
+
+test('POST /api/logs refuses oversized bodies before parsing them (C1)', async () => {
+  const body = { logs: [{ level: 'error', event: 'probe', message: 'x', meta: { big: 'eyJ-'.repeat(70_000) } }] };
+  const declared = await postLogs(2, body, { 'content-length': String(300 * 1024) });
+  assert.equal(declared.status, 413);
+  assert.equal(declared.body.max_bytes, 256 * 1024);
+  const anonymous = await postLogs(0, body, { 'content-length': String(300 * 1024) });
+  assert.equal(anonymous.status, 413, 'the size check runs before authentication');
+  const undeclared = await postLogs(2, body);
+  assert.equal(undeclared.status, 413, 'without content-length the parsed body is measured');
+  assert.equal(Number((await db.execute('SELECT COUNT(*) AS c FROM app_logs')).rows[0].c), 0);
+});
+
+test('a body just under the limit made of the C1 worst case is handled in milliseconds', async () => {
+  // 27 strings of 8000 characters: the shape that took 13 s at 4.48 MB.
+  const meta = Object.fromEntries(Array.from({ length: 15 }, (_, k) => [`k${k}`, ['eyJ-'.repeat(2000)]]));
+  const body = { logs: Array.from({ length: 12 }, (_, index) => ({ level: 'error', event: 'probe', message: `${'eyJ-'.repeat(2000)} ${index}`, meta: index ? {} : meta })) };
+  const size = Buffer.byteLength(JSON.stringify(body));
+  assert.ok(size < 256 * 1024 && size > 200 * 1024, `fixture is ${size} bytes`);
+  const started = performance.now();
+  const result = await postLogs(2, body, { 'content-length': String(size) });
+  const elapsed = performance.now() - started;
+  assert.equal(result.status, 200);
+  assert.equal(result.body.inserted, 12);
+  assert.ok(elapsed < 1000, `took ${elapsed.toFixed(0)} ms`);
+  const stored = (await db.execute(`SELECT max(length(meta_json)) AS meta, max(length(message)) AS message FROM app_logs`)).rows[0];
+  assert.ok(Number(stored.meta) <= 8000 && Number(stored.message) <= 2000);
+});
+
+test('each member stores at most 200 client rows an hour, in one batch per request (M2)', async () => {
+  await db.execute(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<195)
+    INSERT INTO app_logs (level, source, event, message, user_id, created_at)
+    SELECT 'warn','client','probe','seed '||i,3,datetime('now','-30 minutes') FROM n`);
+  // Older rows and other members do not count.
+  await seed([{ offset: '-61 minutes', message: 'an hour ago' }]);
+  await db.execute(`UPDATE app_logs SET user_id=3 WHERE message='an hour ago'`);
+  const batch = { logs: Array.from({ length: 20 }, (_, index) => ({ level: 'warn', event: 'probe', message: `batch ${index}` })) };
+  assert.deepEqual(await postLogs(3, batch), { status: 200, body: { ok: true, inserted: 5 } });
+  assert.deepEqual(await postLogs(3, batch), { status: 429, body: { error: 'rate limited — too many logs', retry_after: '3600s' } });
+  assert.deepEqual(await postLogs(4, batch), { status: 200, body: { ok: true, inserted: 20 } });
+  assert.deepEqual(await postLogs(4, { logs: [] }), { status: 200, body: { ok: true, inserted: 0 } });
+  const plan = (await db.execute(`EXPLAIN QUERY PLAN ${CLIENT_LOG_RECENT_COUNT_SQL.replace('user_id=?', 'user_id=3').replace('LIMIT ?', 'LIMIT 200')}`))
+    .rows.map(row => String(row.detail)).join('\n');
+  assert.match(plan, /idx_logs_source_created/);
+});
+
+test('a failed batch write stores nothing and reports the log store unavailable', async () => {
+  const realBatch = db.batch.bind(db);
+  db.batch = async () => { throw new Error('simulated write failure'); };
+  try {
+    assert.deepEqual(await postLogs(5, { level: 'warn', event: 'probe', message: 'lost' }), { status: 503, body: { error: 'logging unavailable' } });
+  } finally {
+    db.batch = realBatch;
+  }
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS c FROM app_logs WHERE message='lost'`)).rows[0].c), 0);
+});
+
+test('concurrent requests cannot store more than the hourly cap between them (M2 race)', async () => {
+  const batch = index => ({ logs: Array.from({ length: 20 }, (_, entry) => ({ level: 'warn', event: 'burst', message: `burst ${index}.${entry}` })) });
+  const results = await Promise.all(Array.from({ length: 50 }, (_, index) => postLogs(6, batch(index))));
+  const stored = Number((await db.execute(`SELECT COUNT(*) AS c FROM app_logs WHERE user_id=6`)).rows[0].c);
+  assert.equal(stored, 200);
+  const inserted = results.filter(result => result.status === 200).reduce((sum, result) => sum + result.body.inserted, 0);
+  assert.equal(inserted, 200, 'inserted counts only the rows actually written');
+  assert.ok(results.every(result => result.status === 200 || result.status === 429));
+});
+
+test('oversized meta is stored as a valid JSON preview instead of being cut mid-structure', async () => {
+  const meta = { first: 'a '.repeat(3500), second: 'b '.repeat(3500), third: 'tail' };
+  assert.deepEqual(await postLogs(7, { level: 'warn', event: 'probe', message: 'big meta', meta }), { status: 200, body: { ok: true, inserted: 1 } });
+  const stored = (await db.execute(`SELECT meta_json FROM app_logs WHERE message='big meta'`)).rows[0].meta_json;
+  const parsed = JSON.parse(String(stored));
+  assert.equal(parsed.truncated, true);
+  assert.equal(parsed.preview.length, 7000);
+  assert.ok(parsed.preview.startsWith('{"first":"a a '));
 });

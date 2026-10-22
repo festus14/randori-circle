@@ -3069,11 +3069,9 @@ accumulated.
 **Decision.**
 - *Install everywhere.* The placeholder is gone. The logger installs unless a
   real logger (one with a `log` function) already exists; it replaces a bare
-  placeholder and keeps its last event. The Sentry augment step patches
-  `_randori_log.log` through `patchLogger`, which it runs when Sentry is ready
-  and also exposes as `window.__randoriPatchLogger` for the logger to call
-  after it installs, so the real logger is patched exactly once whichever runs
-  first. The early-error buffer is unchanged.
+  placeholder and keeps its last event. The Sentry augment step no longer
+  wraps the logger (see the addendum); it only tags SDK events with the
+  logger's last event. The early-error buffer is unchanged.
 - *Production send rule.* On the canonical production origin
   (`__randoriSentry.environment==='production'`, automated browsers included)
   only `warn` and `error` entries are queued for `/api/logs`. `info`,
@@ -3105,16 +3103,18 @@ accumulated.
   `credential`, with an optional `prefix_`/`prefix-`) with `[redacted]`,
   `Bearer`/`Basic` credentials with `[redacted]`, JWTs with `[jwt]` and email
   addresses with `[email]`. Meta objects are copied to depth 4 (30 keys, 20
-  array items), and keys matching the secret names lose their value. Every
-  pattern is linear in the input, which is capped at 8000 characters.
-  `api/_client-log-policy.js` holds the same rules as a server-side backstop
+  array items), and keys matching the secret names lose their value. Input is
+  cut before any pattern runs (8000 characters per string, a 16k-character
+  budget per entry since the addendum). The original JWT pattern was
+  quadratic on adversarial input; the addendum anchors it and adds timing
+  tests. `api/_client-log-policy.js` holds the same rules as a server-side backstop
   for `POST /api/logs` (message, meta, `meta_json`, event and route); a unit
   test runs the browser and server copies over one corpus.
 - *Sentry volume is unchanged.* The logger itself creates no Sentry events:
   its `forwardToSentry` and the explicit captures in its global handlers are
   removed, because the SDK's global handlers (and the early buffer) already
-  report uncaught errors and call sites capture their own. The patched
-  `_randori_log.log('error'|'warn')` path still forwards (redacted), as before.
+  report uncaught errors and call sites capture their own. The old
+  `_randori_log.log` patch is removed (addendum): nothing called it.
 - *Admin view.* Client rows reach the existing admin logs panel
   (`GET /api/data?endpoint=logs`, `#logsArea`), which stays admin-only
   (401 signed out, 403 for members). The panel gained a source filter
@@ -3159,6 +3159,97 @@ retention table (needs a migration).
 **Rollout and recovery.** Merging turns it on; the next production deploy
 installs the logger. To stop client ingestion quickly, revert this change;
 retention is independent and can stay.
+
+### ID-72 addendum: harden client log ingest (post-merge review of PR #326)
+
+Status: implemented; no migration. Fixes from the post-merge review, before
+invitees join (today only the owner is active, and every issue needs a
+signed-in member).
+
+- **C1, CPU per request.** The JWT pattern `\beyJ…` was quadratic on input
+  such as `'eyJ-'.repeat(2000)`, and redaction ran before truncation over all
+  of meta: one 4.48 MB request cost about 12 s of CPU in the real handler.
+  - The JWT pattern now starts only where a token starts
+    (`(^|[^A-Za-z0-9_-])eyJ…`, replaced with `$1[jwt]`). It uses a capture
+    instead of the suggested lookbehind so the inline browser copy still
+    parses on Safari before 16.4; matching is identical.
+  - `POST /api/logs` returns 413 when `content-length` is over 256 KB, before
+    authentication and before `req.body` (parsed lazily on Vercel) is touched.
+    Without a `content-length` the parsed body is measured after
+    authentication.
+  - Text is cut before it is redacted (8000 characters per string, 2000 for
+    messages, 80 for events, 300 for routes and user agents), and
+    `redactLogValue` has a 16k-character budget per entry; values past it
+    become `[truncated]`.
+  - Measured in the real handler: the reviewer's 4.48 MB body took 11.9 s
+    (12.4 s without `content-length`) and now returns 413 in 4 ms (8 ms). A
+    217 KB body of the same strings, just under the limit, spent 545 ms in
+    redaction and is now stored in 14 ms. One 8000-character `eyJ-` string
+    went from 22 ms to about 2 ms for all rules. Timing tests cover both
+    copies on adversarial input.
+- **M1, forged server rows.** `/api/logs` stores every row with the literal
+  source `client`; only server code writes `server` and `runner` rows. The
+  retention claim counts only `source='server' AND user_id IS NULL` rows, so
+  no member-written row can suppress retention. No other reader trusts
+  member rows: runner lease and quota checks read `source='runner'`, the
+  outbox health and watchdogs read `outbox_events`, Admin Diagnostics (ID-73)
+  takes dispatcher evidence and errors-card freshness and the execution smoke
+  check (#249) takes its claims and results only from rows with
+  `user_id IS NULL`, and the admin panel shows the stored source.
+- **M2, write volume.** Each member stores at most 200 client rows in any
+  rolling hour (`CLIENT_LOG_RECENT_COUNT_SQL`, which searches
+  `idx_logs_source_created` and stops counting at the cap; checked with
+  `EXPLAIN QUERY PLAN`). A pre-check answers 429 once the cap is reached;
+  the cap itself is enforced by each row's conditional
+  `INSERT … SELECT … WHERE (count) < cap` inside one `'write'` batch, so
+  concurrent requests cannot overshoot it (50 concurrent 20-entry requests
+  store exactly 200 rows), and `inserted` is the sum of `rowsAffected`. A
+  failed write stores nothing and returns 503. The per-IP limit stays.
+  Worst case is 200 rows per member per hour.
+- **m1, redaction gaps.** Percent-encoded `#`, `=`, `@`, `/` and `.` are
+  decoded before matching, also when double-encoded (`%2540`). A fragment is also dropped when it holds a `/` or `=`
+  (`#/invite/SECRET`, a bare `#invite=…`). Secret names accept a few camelCase
+  prefixes (`accessToken`, `apiKey`, `refreshToken`, `idToken`,
+  `clientSecret`; `cycleKey` stays readable) and an id/key/token/hash suffix
+  (`sessionId`, `session_id`), plus `sid`. JSON values may be numbers
+  (`"otp":123456`), escaped JSON is covered (`{\"token\":\"…\"}`), and
+  `password: x`, `secret: x`, `Authorization: Token x` and
+  `authorization=Bearer x` lose the whole credential. The app's `api()`
+  wrapper logs and tags only the path without its query.
+- **m2, partial secrets.** A cut drops the partial trailing token (back to
+  whitespace, a quote, a parenthesis, `,` or `;`) and appends `[truncated]`,
+  so half an email or JWT is never kept.
+- **m3, tests.** The text corpus adds uppercase emails, `x_session=` and the
+  m1 forms; a shared object corpus runs the browser `redactValue` and the
+  server `redactLogValue` together (key rules and budget); the API test
+  checks server-side event and user-agent redaction; the retention test
+  covers the claim's source and user filters.
+- **m4, double rows.** A non-OK response is logged once (5xx as `error`, a 4xx
+  the caller may handle as `warn`) and reported to Sentry once; `api()` no
+  longer logs and reports the same HTTP problem again when it rethrows it.
+- **m5.** Golden path 20 (`golden-client-logging-real-runtime.spec.ts`): on
+  the real runtime a member's uncaught error lands in `app_logs` redacted, a
+  signed-out visitor sends nothing, and the admin panel shows it under the
+  client filter.
+- **n1.** The Sentry step's `patchLogger` wrapped only `_randori_log.log`,
+  which nothing called; it is removed. Sentry events are still tagged with
+  the logger's last event.
+- **Re-review follow-ups.**
+  - The authorization rule now keeps an opening quote, so
+    `{Authorization: "Bearer abc.def"}`, `{ Authorization: 'Bearer abc' }`
+    and `Authorization="Bearer abc"` lose the whole credential.
+  - Quoted values after `=` (`token="abc"`, `password='x'`), `activationToken`,
+    `csrf`/`xsrf` names, `secret_key: x` and `code:` before 4-10 digits are
+    redacted; `status code: 500` stays readable. A JWT right after `-` is not
+    matched (the anchored pattern's documented trade-off).
+  - Meta whose serialized form is over 8000 characters is stored as
+    `{"truncated":true,"preview":"…first 7000 characters…"}`, so `meta_json`
+    is always valid JSON.
+  - A non-OK 5xx response is reported to Sentry at level `error`, a 4xx at
+    `warning`.
+  - The adversarial timing test compares each input with benign input of
+    the same length (`< 4×benign + 2 ms`); restoring `\beyJ` fails it
+    (≈20 ms against ≈1.3 ms).
 
 ## ID-73: Admin Diagnostics in the Circle view, read-only and behind a flag
 

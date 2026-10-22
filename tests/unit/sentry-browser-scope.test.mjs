@@ -207,16 +207,17 @@ test('no environment creates a logger placeholder, so the client logger installs
   assert.doesNotMatch(configScript(), /_randori_log\s*=/);
 });
 
-test('the Sentry step skips a missing or placeholder logger instead of creating one', () => {
-  for (const logger of [undefined, { _lastEvent: '' }]) {
+test('the Sentry step never creates, replaces or wraps the logger', () => {
+  for (const logger of [undefined, { _lastEvent: '' }, { log() {}, _lastEvent: '' }]) {
+    const log = logger?.log;
     const page = runLoader({ enabled: true, logger });
     page.fire('load');
     page.idleCallbacks[0].callback();
     page.window.Sentry = page.sentry;
     page.appended[0].onload();
     assert.equal(page.window._sentryReady, true);
-    assert.equal(typeof page.window.__randoriPatchLogger, 'function');
+    assert.equal(page.window.__randoriPatchLogger, undefined);
     assert.equal(page.window._randori_log, logger);
-    assert.equal(logger?._sentryPatched, undefined);
+    assert.equal(logger?.log, log);
   }
 });
