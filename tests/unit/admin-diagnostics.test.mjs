@@ -547,6 +547,8 @@ test('recent errors count categories only and go stale when logging stops for an
 
   await db.execute('DELETE FROM app_logs');
   await log({ level: 'info', event: 'outbox_invocation', at: sqliteTime(-(LOG_EVIDENCE_MAX_AGE_MS + MINUTE)) });
+  // A fresh member-posted row does not make server logging look alive.
+  await log({ level: 'info', source: 'client', event: 'probe', userId: ids.owner, at: sqliteTime(-MINUTE) });
   card = (await readAdminDiagnostics(db, { env: {}, checkReadiness: ready })).cards.errors;
   assert.equal(card.status, 'healthy');
   assert.equal(card.evidence.stale, true);
