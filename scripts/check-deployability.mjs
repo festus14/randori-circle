@@ -2,6 +2,9 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+
+import { CANONICAL_DOMAIN_REDIRECTS } from './canonical-domain.mjs';
 
 const OUTBOX_WORKFLOW_PATH='.github/workflows/outbox-dispatch.yml';
 const OUTBOX_WATCHDOG_WORKFLOW_PATH='.github/workflows/outbox-dispatch-watchdog.yml';
@@ -16,7 +19,7 @@ const EXECUTION_SMOKE_SCRIPT_PATH='scripts/github-execution-smoke.mjs';
 const SPA_FALLBACK_DESTINATION='/';
 const OUTBOX_WATCHDOG_WORKFLOW_SHA256='3808af3df03c84a1370b7df74bc6c785d349a20796ccb1cf236f5166103f3651';
 const OUTBOX_WATCHDOG_SCRIPT_SHA256='0c854c7892197b6f353fd32a96b5c7b70a6431e6b9ea86a07d2ad59fe0177b34';
-const EXECUTION_SMOKE_WORKFLOW_SHA256='5164dcbbdd3d65099cde7ebef84af5464156e0753858e5ff8afaec863cd8a7e9';
+const EXECUTION_SMOKE_WORKFLOW_SHA256='e8494aa678c9ef96ae029d07bb7f2552790e651b512465e5825f5643ef0069ab';
 const EXECUTION_SMOKE_SCRIPT_SHA256='eacde79646d11355d0ab717b4f633c128b318537b4dc1ea16489a869e9d4d7ef';
 const REQUIRED_ROOT_FILES = [
   'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
@@ -238,6 +241,30 @@ function validateOutboxWatchdogWorkflow(workflow){
   return errors;
 }
 
+// Issue #342. A run that Vercel's deployment starts is attributed to
+// vercel[bot], so the "production" environment deployment its job records is
+// created by vercel[bot] too and passes the creator check. Its statuses link
+// to the Actions run, while Vercel's link to *.vercel.app, so both smoke
+// workflows also drop statuses whose target URL starts with
+// https://github.com/. The URL (like all event payload data) is read only in
+// the job's `if:` condition and never reaches a step, where it could be
+// interpolated into a shell.
+const JOB_CONDITION=/^ {4}if: >-\n(?: {6}.+\n)+/m;
+// Any read of the event payload: `github.event` itself or any property or
+// index of it (`github.event.x`, `github.event['x']`), any index into the
+// github context, `toJSON(github…)`, the payload file, or the target URL by
+// name. `github.event_name` is not payload data. Expression names are
+// case-insensitive.
+const EVENT_DATA_READ=/\bgithub\s*\.\s*event(?!\w)|\bgithub\s*\[|\btoJSON\s*\(\s*github\b|\bGITHUB_EVENT_PATH\b|target_url/iu;
+// execution-smoke checks out the default branch. This exact line is the only
+// payload read it has outside its condition (the file is digest-pinned too).
+const REVIEWED_DEFAULT_BRANCH_REF=/^ {10}ref: \$\{\{ github\.event\.repository\.default_branch \}\}\n/mu;
+function eventDataOnlyInJobCondition(workflow,allowed=[]){
+  const condition=JOB_CONDITION.exec(workflow)?.[0]??'';
+  const rest=allowed.reduce((text,pattern)=>text.replace(pattern,''),workflow.replace(condition,''));
+  return condition.includes('github.event.deployment_status.target_url')&&!EVENT_DATA_READ.test(rest);
+}
+
 function validateProductionSmokeWorkflow(workflow){
   if(typeof workflow!=='string'||!workflow.trim()){
     return ['production smoke workflow must be readable'];
@@ -250,8 +277,10 @@ function validateProductionSmokeWorkflow(workflow){
       'production smoke must run only for successful deployments'],
     [/github\.event\.deployment\.environment == 'Production'/,
       'production smoke must run only for the Vercel Production environment'],
-    [/github\.event\.deployment\.environment == 'Production' &&\n\s+github\.event\.deployment\.creator\.login == 'vercel\[bot\]'\)/,
+    [/github\.event\.deployment\.environment == 'Production' &&\n\s+github\.event\.deployment\.creator\.login == 'vercel\[bot\]' &&\n/,
       'production smoke must ignore deployments that GitHub environment jobs create'],
+    [/github\.event\.deployment\.creator\.login == 'vercel\[bot\]' &&\n\s+!startsWith\(github\.event\.deployment_status\.target_url, 'https:\/\/github\.com\/'\)\)\n/,
+      'production smoke must ignore environment deployments whose status links to GitHub'],
     [/^\s{2}schedule:\s*$/m,'production smoke must define a scheduled trigger'],
     [/^\s{2}workflow_dispatch:\s*$/m,'production smoke must support manual runs'],
     [/^permissions:\n  contents: read\n\n/m,'production smoke permissions must be contents: read only'],
@@ -261,6 +290,9 @@ function validateProductionSmokeWorkflow(workflow){
     [/npm run smoke:production/,'production smoke must run the reviewed read-only smoke script'],
   ];
   for(const [pattern,message] of checks){ if(!pattern.test(workflow)) errors.push(message); }
+  if(!eventDataOnlyInJobCondition(workflow)){
+    errors.push('production smoke may read GitHub event data only in its job condition');
+  }
   if(/pull_request(?:_target)?:|:\s*write\b|write-all|^\s*environment:|secrets\.|vars\.|CRON_SECRET|VERCEL_TOKEN|TURSO_|RESEND_|continue-on-error:/mu
     .test(workflow)){
     errors.push('production smoke must remain secret-free, read-only, and non-mutating');
@@ -268,12 +300,22 @@ function validateProductionSmokeWorkflow(workflow){
   return errors;
 }
 
+// ID-80: www and the old Vercel alias redirect to the canonical origin. The
+// whole redirects array must stay exactly as reviewed: host-conditional
+// (previews never match), www permanent, the old alias temporary and never for
+// /api/*, and no other rule (host-less or otherwise) beside them.
+export function validateCanonicalDomainRedirects(redirects) {
+  if (!Array.isArray(redirects)) return ['vercel.json must define the canonical-domain redirects'];
+  return isDeepStrictEqual(redirects, CANONICAL_DOMAIN_REDIRECTS) ? []
+    : [`vercel.json redirects must be exactly the reviewed canonical-domain redirects: ${JSON.stringify(CANONICAL_DOMAIN_REDIRECTS)}`];
+}
+
 // Issue #249. The execution smoke spends Vercel Sandbox quota through a
 // CRON_SECRET route, so its only production material is vars.APP_URL and
 // secrets.CRON_SECRET in the production environment, it never runs for pull
 // requests, and deployment_status runs are limited to Vercel's own successful
 // Production deployments (GitHub's environment deployments would otherwise
-// re-trigger it).
+// re-trigger it, including those recorded as vercel[bot]; see #342 above).
 function validateExecutionSmokeWorkflow(workflow){
   if(typeof workflow!=='string'||!workflow.trim()){
     return ['execution smoke workflow must be readable'];
@@ -284,7 +326,7 @@ function validateExecutionSmokeWorkflow(workflow){
     [/^on:\n  deployment_status:\n  schedule:\n    - cron: '29 7 \* \* \*'\n  workflow_dispatch:\n\n/m,
       'execution smoke triggers must be deployment_status, one daily schedule, and workflow_dispatch only'],
     [/^permissions:\n  contents: read\n\njobs:/m,'execution smoke permissions must be contents: read only'],
-    [/^    if: >-\n      \(github\.event_name == 'deployment_status' &&\n      github\.event\.deployment_status\.state == 'success' &&\n      github\.event\.deployment\.environment == 'Production' &&\n      github\.event\.deployment\.creator\.login == 'vercel\[bot\]'\) \|\|\n      \(github\.event_name != 'deployment_status' &&\n      github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)\)\n/m,
+    [/^    if: >-\n      \(github\.event_name == 'deployment_status' &&\n      github\.event\.deployment_status\.state == 'success' &&\n      github\.event\.deployment\.environment == 'Production' &&\n      github\.event\.deployment\.creator\.login == 'vercel\[bot\]' &&\n      !startsWith\(github\.event\.deployment_status\.target_url, 'https:\/\/github\.com\/'\)\) \|\|\n      \(github\.event_name != 'deployment_status' &&\n      github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)\)\n/m,
       'execution smoke must run only for successful Vercel Production deployments or from the default branch'],
     [/^\s{4}environment:\s*production\s*$/m,
       'execution smoke must read its credential through the production environment'],
@@ -302,6 +344,9 @@ function validateExecutionSmokeWorkflow(workflow){
       'execution smoke step must retain its exact fail-closed shape'],
   ];
   for(const [pattern,message] of checks){ if(!pattern.test(workflow)) errors.push(message); }
+  if(!eventDataOnlyInJobCondition(workflow,[REVIEWED_DEFAULT_BRANCH_REF])){
+    errors.push('execution smoke may read GitHub event data only in its job condition');
+  }
   // The only production material it may see is APP_URL and CRON_SECRET.
   const reviewedProductionAccess=workflow
     .replace(/^ {4}environment: production\n/mu,'')
@@ -334,6 +379,7 @@ export function validateDeploymentContract({ vercel, packageJson, files, outboxW
   }
 
   if (config.cleanUrls !== true) errors.push('vercel.json must enable cleanUrls');
+  errors.push(...validateCanonicalDomainRedirects(config.redirects));
 
   if (manifest?.engines?.node !== SUPPORTED_NODE_RANGE) {
     errors.push(`package.json engines.node must be ${SUPPORTED_NODE_RANGE}`);

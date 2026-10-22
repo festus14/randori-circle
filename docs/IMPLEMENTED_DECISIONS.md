@@ -3280,8 +3280,8 @@ did the backup drill pass, is Run working?".
   and `readOutboxMetrics` plus one per-type due/lease/dead-letter aggregate,
   judged with the watchdog's 15-minute threshold); **Code execution** (the
   configured provider and a bounded reason, 24-hour runner outcomes from
-  `app_logs`, and a deferred seam for the #249 smoke check); **Readiness and
-  migrations** (the `/api/health/ready` probe plus a ledger summary: state,
+  `app_logs`, and the latest #249 smoke result per the #343 addendum below);
+  **Readiness and migrations** (the `/api/health/ready` probe plus a ledger summary: state,
   versions and the newest names, no checksums); **Recent errors** (24-hour
   `error`/`warn` counts by source and event category, including
   `source='client'` rows). Event names that do not look like code identifiers
@@ -3315,6 +3315,45 @@ need an app-readable evidence store before those cards can go live.
 **Rollout and recovery.** Merge with the flag unset; nothing changes and no
 extra script is downloaded. The owner sets `ADMIN_DIAGNOSTICS_ENABLED=true` in
 Vercel Production and redeploys. To recover, unset it and redeploy.
+
+### ID-73 addendum: show the latest execution smoke result (#343)
+
+The deferred #249 seam is replaced by `execution.smoke`, still behind
+`ADMIN_DIAGNOSTICS_ENABLED` and with no migration.
+- It reads through `readLatestExecutionSmoke` and the new
+  `latestExecutionSmokeLanguages` in `api/_execution-smoke.js`, so the rules
+  are the smoke route's own (ID-74): server-only `runner` rows with
+  `user_id IS NULL`, the result matched to the latest claim, and
+  `result_missing` once an unsaved claim is past the 165-second grace.
+- The only difference is the lookback: 30 days (the `app_logs` retention,
+  ID-72) instead of one day, so a check that stopped running shows as stale
+  rather than never run.
+- `status` is `passed`, `failed`, `pending` (an unsaved claim inside the
+  grace) or `none`. Each language reports its recorded status (or
+  `result_missing`/`pending`) and duration. `checkedAt` is when the result was
+  saved.
+- Its evidence dates from the result, or from the claim when no result was
+  saved, and is stale after 26 hours (the daily 07:29 UTC run plus two hours).
+- The card verdict folds the smoke in (owner decision on the PR #348 review);
+  newer evidence wins:
+  - A fresh smoke failure (under 26 hours) newer than the latest member run
+    makes the card `degraded`. The category is `smoke_failed` when a language
+    reports a provider outcome, and `smoke_result_missing` when only results
+    are missing.
+  - A fresh passing smoke lifts a card with no member runs (`unknown`,
+    `no_runs`) to `healthy`.
+  - Nothing else changes the verdict. A `failed` card (provider not
+    configured) stays failed. A member run newer than the smoke keeps its own
+    verdict. A pending, absent, unreadable or stale smoke changes nothing.
+  - The card's freshness is the newer of the latest member run and the smoke.
+    The existing 26-hour execution threshold already matches the daily smoke.
+- The smoke is read separately. A failing smoke read makes only
+  `execution.smoke` `unavailable`, and a failing execution read keeps the
+  smoke result. It returns no URLs, secrets, program output or error text.
+- The card shows a "Provider smoke check" row with its own status and Stale
+  badges, the per-language line and the result's age, built with
+  `textContent` and the existing `rc-badge` styles. The visual design is still
+  provisional.
 
 ## ID-74: Check the live execution provider after each deploy and daily, within a fixed sandbox budget
 
@@ -3443,6 +3482,31 @@ setup it depends on is complete (bootstrap guide sections 0 and 10.0). To
 pause it, disable the workflow in GitHub Actions. To remove it, revert this
 change. The `app_logs` rows are ordinary log rows and fall under the 30-day
 retention (ID-72).
+
+### ID-74 addendum: drop environment deployments whose status links to GitHub (#342)
+
+When Vercel's deployment starts a workflow, the run is attributed to
+`vercel[bot]`. The lowercase `production` environment deployment its job
+records is therefore created by `vercel[bot]` too, and it passed the creator
+check. Run 39731099057's environment deployment started a real
+`production-smoke` run (39731123064) two seconds later.
+- Both workflows now also require
+  `!startsWith(github.event.deployment_status.target_url, 'https://github.com/')`
+  on `deployment_status` runs. The `vercel[bot]` creator check stays.
+- Checked read-only against the deployments API. All 37 recent successful
+  `Production` statuses (Vercel's) link to `*.vercel.app`. GitHub environment
+  deployments, including the one created by `vercel[bot]`, link to
+  `https://github.com/…/actions/runs/…`.
+- The URL is event data, so it appears only in the job `if:` condition.
+  `check:deployability` requires the clause in both conditions.
+- Outside the conditions, the gate rejects any read of the event payload in
+  either file: `github.event` or any property or index of it, an index into
+  `github`, `toJSON(github…)`, `GITHUB_EVENT_PATH`, or `target_url`.
+  - The one exception is `execution-smoke`'s reviewed default-branch checkout
+    ref.
+  - `production-smoke` is not digest-pinned (other changes edit it), so this
+    broad rule, not a pin, is what keeps event data out of its steps.
+- The execution-smoke workflow digest pin is updated.
 
 ## ID-75: Give the backup watchdog an eight-hour grace for late GitHub schedules
 
@@ -3755,6 +3819,83 @@ the threshold with the owner, then set `CIRCLE_HEALTH_ENABLED=true` in Vercel
 Production and redeploy. To recover, unset the flag and redeploy; there is no
 stored state. Contract: [`CIRCLE_HEALTH.md`](CIRCLE_HEALTH.md).
 
+## ID-80: Make randoricircle.com the canonical origin; keep the old Vercel alias for the API
+
+Status: implemented as an infrastructure change. No feature flag, migration,
+secret or permission. It must merge together with the `APP_URL` switch, in the
+order below.
+
+**Context.** Production ran on `https://randori-circle-self.vercel.app`. The
+owner bought `randoricircle.com`, attached it and `www.randoricircle.com` to the
+Vercel project, and already sends email from it. `APP_URL` drives the Google
+redirect URI and every email link, and Google OAuth is accepted only on the
+`APP_URL` host (`api/_auth-config.js`). The browser Sentry gate and the client
+logger's production policy key off one hard-coded origin. cron-job.org, the
+GitHub outbox workflows and links in emails already sent all call the old host.
+
+**Decision.**
+- `https://randoricircle.com` is the production origin in code: the Sentry and
+  client-logger gate in `index.html` (other `*.vercel.app` hosts, now including
+  the old alias, stay `preview`), the session-link fallback, the smoke and
+  screenshot defaults, tests and runbooks. `scripts/canonical-domain.mjs` holds
+  the origins and the exact redirect rules.
+- `vercel.json` gets two host-conditional redirects. Vercel compiles
+  `redirects` after the cleanUrls redirects and before headers, the filesystem
+  and all rewrites, so they run before the SPA fallback. A string `has` value
+  is a regular expression, so the host values escape their dots
+  (`www\.randoricircle\.com`, `randori-circle-self\.vercel\.app`) and match
+  exactly one host; preview and deployment hosts never match:
+  - `www.randoricircle.com`, source `/:path(.*)`, 308 to
+    `https://randoricircle.com/:path`. `/:path*` was rejected because Vercel
+    compiles it strictly and it does not match `/`, so the bare www host would
+    not redirect.
+  - `randori-circle-self.vercel.app`, source `/:path((?!api(?:/|$)).*)`, 307 to
+    `https://randoricircle.com/:path`. It is temporary so a rollback is not
+    pinned in browser caches, and it excludes `/api` and `/api/*` so
+    cron-job.org, GitHub workflows and in-flight calls keep working on the old
+    alias, which stays attached as an API alias.
+- Query strings pass through, as Vercel already does for the cleanUrls
+  redirects, and browsers keep the `#fragment`, so old `/invite#invite=…`
+  links still open the invitation. Headers and CSP are host-agnostic
+  (`'self'`), so nothing else changes per host.
+- `check:deployability` pins the whole `redirects` array, so an extra rule
+  fails too.
+- `smoke:production` defaults to the canonical origin and adds three checks
+  against it: the old alias's page redirect (temporary, same path and query),
+  the old alias's `/api/health/live` (200, no redirect; liveness, so a
+  database outage is not reported as a routing failure), and www's permanent
+  redirect. Google sign-in is advertised only on the `APP_URL` host, so the
+  script reads which host advertises it. While that is the old alias, it skips
+  the three checks with the reason printed and does not expect `googleOAuth`
+  on the canonical host, but only while the old alias still serves its own
+  pages. If they already redirect away (merged before the switch, or `APP_URL`
+  drifted back), Google sign-in is unreachable and the run fails. On a legacy
+  base URL it follows the canonical redirect for page paths.
+- The Google client lists both origins and both redirect URIs during the
+  transition, so either `APP_URL` works and a rollback needs no Google change.
+
+**Consequences.** Sessions are host-only cookies, so every member signs in
+again once; per-origin browser settings start fresh. HSTS with
+`includeSubDomains` now applies to every `*.randoricircle.com` host. If Sentry
+limits Allowed Domains, `randoricircle.com` must be added.
+
+**Alternatives.** Vercel's dashboard domain redirect for the old alias cannot
+exclude `/api/*` and would break cron-job.org and in-flight calls. A
+permanent redirect for the old alias would be cached by browsers and make a
+rollback stick. Accepting OAuth on both hosts would need two redirect URIs in
+code and would split sessions across hosts. Edge middleware would add a
+runtime to every request for what static rules do.
+
+**Rollout and recovery.** After the preflight (PR clean and green, readiness
+200, no auto-merge armed, no Production build building or queued), the order
+is: Google client origins and redirect URIs, then the GitHub `production`
+`APP_URL`, then Vercel `APP_URL` immediately followed by a manual merge. Next,
+confirm the Production deployment is the merge commit, move the cron-job.org
+URL, and verify. To roll back, use Instant Rollback to the pre-change
+deployment, restore both `APP_URL` values, revert the merge commit and
+re-promote. cron-job.org works on either host. Runbook:
+[`PRODUCTION_BOOTSTRAP_GUIDE.md` section 12](PRODUCTION_BOOTSTRAP_GUIDE.md#12-canonical-domain-id-80).
+
 ## ID-81: Let members delete their own account by tombstoning it in one transaction, behind a flag
 
 Status: implemented behind `ACCOUNT_DELETION_ENABLED` (default off, and only
@@ -3864,3 +4005,123 @@ readiness (`requireClosedMembership`) failed.
 
 **Recovery.** Revert the commit. Readiness then fails again for every account
 that joined by activation.
+
+## ID-83: Expire recipient data in the email outbox after delivery, behind a flag
+
+Status: implemented behind `OUTBOX_PII_RETENTION_ENABLED` (default off); no
+migration. Issue #341 (split out of #338). Turning it on is destructive and is
+an owner decision.
+
+**Context.** Outbox rows kept recipient addresses and sealed credentials with
+no time limit after an email was delivered, suppressed or dead-lettered. The
+inventory of personal data in the outbox tables:
+
+| Where | Personal data | What still needs it |
+| --- | --- | --- |
+| `pairing.email.requested` v1 payload | `recipient_email` (plain) | the handler and replay while actionable; unavailable evidence reads only `week_id`, `user_id`, `kind`; the legacy bridge reads only the key |
+| `invitation.email.requested` payload | `credential_envelope` (AES-GCM sealed `{email, token}` under `INVITATION_EMAIL_ENCRYPTION_KEY`, envelope v1 or key-versioned v2 bound to the idempotency key), `email_hash`, `token_hash` | the handler and replay; owner resend reopens the latest envelope while the invitation is live (7-day TTL); send count and the rejected-email hint read only `invitation_id`; rotation metrics read envelopes of actionable rows and of a live invitation's latest event |
+| `auth.emailverification.requested`, `auth.passwordreset.requested` payloads | `recipient_email` (plain), `token_envelope` (sealed token; 30-minute links) | the handler and replay; rotation metrics read actionable envelopes |
+| schedule, secondary schedule, reminder, invite-request, secondary pairing payloads | internal ids, schedule instants or opaque fingerprints only | supersession, dedupe and suppression checks; no contact data |
+| `idempotency_key` | internal ids, UUIDs and opaque hashes only; never an address | producer `ON CONFLICT` dedupe, reminder and legacy-bridge `NOT EXISTS`, provider idempotency |
+| `provider_message_id` | a key into the provider's own logs, which hold the address | nothing in the app |
+| other `outbox_events` columns | none (type, version, status, timestamps, counts, error codes) | health, the watchdog, diagnostics, metrics |
+| `outbox_audit_events` | none: worker ids, `user:<id>` of the replaying admin, bounded reason codes (provider reasons are `status:name:reason`, PII-free by pattern) | health `recentRejectReasons`, diagnostics provider reason, replay audit |
+| legacy `pairing_email_outbox` (pre-v6) | `recipient_email` (plain, `NOT NULL`), `provider_message_id`, free-text `last_error` | the bridge, only for actionable rows not yet copied into `outbox_events` |
+| `outbox_invocation` app_logs rows | none (counts and codes) | diagnostics dispatcher evidence (30-day app_logs retention, ID-72) |
+
+**Decision.**
+- `api/_outbox-retention.js` runs from `/api/cron/outbox` after the delivery
+  round and after `app_logs` retention, only when the flag is exactly `true`,
+  with its own 2-second budget that must fit before the finalization reserve.
+  It stops issuing statements when the budget ends, so it can never delay or
+  fail mail; a slow or failed run is reported and retried by a later hour.
+- Each run first claims the hour with one atomic `INSERT … WHERE NOT EXISTS`
+  of a server `outbox_pii_retention` app_logs row with `user_id IS NULL`, so a
+  run inside the hour, a concurrent run, or any member-written row changes
+  nothing.
+- Windows, each exclusive at the cutoff: delivered 7 days after
+  `delivered_at`, suppressed 7 days after the suppression (`updated_at`), dead
+  letters 30 days after `dead_lettered_at` so admin replay works for a month.
+  Only the four types above are candidates, and only while a contact or
+  credential field is present. Pending, retry and processing (leased) rows are
+  never selected.
+- Redaction removes `recipient_email`, `credential_envelope`,
+  `token_envelope`, `email_hash` and `token_hash` with `json_remove`, adds
+  `"retention_redacted":1`, and clears `provider_message_id`. Type, version,
+  status, idempotency key, counts, error codes, timestamps and the audit trail
+  are unchanged. The kept ids (`week_id`, `user_id`, `kind`, `invitation_id`,
+  `activation_id`, `reset_id`) are internal references that unavailable
+  evidence, send counts and the rejected-email hint use.
+- An invitation event is skipped while its invitation is still live (unused,
+  unrevoked, unexpired), because resend reopens the latest envelope. A legacy
+  row gets the non-routable `redacted@redacted.invalid` (the column is
+  `NOT NULL`), a cleared provider id and error text once it is older than 30
+  days and was sent or already bridged; an unbridged actionable row is kept.
+- Each class is one `UPDATE … WHERE id IN (SELECT … ORDER BY … LIMIT ?)` of at
+  most 100 rows, oldest first. The candidate subquery runs inside the same
+  write, so a concurrent claim, replay or second run cannot interleave, and a
+  rerun only finds rows that still hold personal data. The response and the
+  `outbox_invocation` row report `{ran, redacted:{delivered, suppressed,
+  dead_letter, legacy_pairing}, more}`. Counts live in a caller-owned progress
+  object, so a run that committed some classes and then timed out, failed or
+  hit its budget is reported as `{ran:true, partial:true, …}` with what it
+  committed (`failed_class` names a failed statement), never as "nothing
+  happened". A failed, timed-out or partial run, of this job or of the ID-72
+  `app_logs` retention, logs the invocation row at `warn`, not `success`.
+- Replay of a redacted dead letter is refused whether or not the flag is on:
+  `replayDeadLetter` only updates unredacted rows and then throws
+  `OutboxEventRedactedError`, and `POST /api/admin/outbox/replay` answers
+  `409 {code:"outbox_event_redacted"}`. The Admin Diagnostics dead-letter list
+  keeps the row, adds `redacted:true`, says "recipient details removed by
+  retention; cannot be replayed" and disables its Replay button; a replay
+  started from an older snapshot gets "can't be replayed: its recipient
+  details were removed after 30 days under the retention policy. Nothing
+  changed."
+- Credential rotation metrics (`readCredentialRotationMetrics` and the
+  invitation metrics) skip redacted rows: they hold no envelope and are no
+  longer actionable or resendable, so they cannot block key retirement.
+- Dedupe is unchanged because keys are kept: re-enqueueing a redacted event is
+  absorbed by `ON CONFLICT(idempotency_key)`, reminder and bridge `NOT EXISTS`
+  checks still match, and terminal rows are never claimed again.
+- Every delivery type is declared either in `OUTBOX_PII_EVENT_TYPES` or in
+  `OUTBOX_PII_FREE_EVENT_TYPES`; a unit test fails when a new type is in
+  neither list.
+- Flag off: no statement from this job and no `outbox_pii_retention` key in
+  the cron response or invocation row. The replay guard and the rotation-metric
+  filter are always present but match nothing until a row has been redacted.
+
+**Schema and scan cost.** No migration and no DDL. A terminal row's
+`next_attempt_at` is its finalization instant and never later than its anchor
+timestamp (finalization writes both from one instant, the lease sweep keeps
+the earlier due time, the legacy bridge writes `now` to both; a unit test
+drives every terminal path), so each class scan is a range on
+`idx_outbox_events_dispatch`
+(`status=? AND next_attempt_at<?`, no temporary sort) followed by a rowid
+update, and the invitation guard is a primary-key lookup; a unit test checks
+the plans with `EXPLAIN QUERY PLAN`. The scan still steps over rows redacted
+earlier, so an hourly run reads every terminal row older than its window. That
+is far less than the full-table metric and rotation reads every five-minute
+invocation already does. The legacy table no longer grows and is scanned
+whole. A partial index on unredacted rows would make the scan proportional to
+the backlog; it needs a migration and is deferred until volume needs it.
+
+**Alternatives.** Deleting rows (re-enqueueing the same key would send again,
+reminder and bridge dedupe would re-queue, and audit rows reference events).
+Hashing idempotency keys (they hold no personal data, and producers dedupe on
+the exact key). Destroying only the envelopes (three types keep a plaintext
+address). A weekly sweep (a backlog of a week at most 100 rows per class). A
+`redacted_at` column with a partial index (cleaner, but needs a protected
+migration cutover).
+
+**Rollout and recovery.** Merge with the flag unset; nothing changes. **Do not
+enable the flag until the matching Privacy Policy text is live** (the
+"Email records" line in `privacy.html`, #336; the exact text is in PR #346).
+That text says the record is kept as an operational record without the
+address, that database backups keep unredacted copies for the provider's
+point-in-time restore window (1 day on Turso's Free plan, per
+`docs/PRODUCTION_BOOTSTRAP_GUIDE.md` §3.4; 10 or 30 days on paid plans), and
+that an existing backlog clears over the following hours or days. Then the
+owner sets `OUTBOX_PII_RETENTION_ENABLED=true` in Vercel Production and
+redeploys; the backlog drains at up to 100 rows per class an hour. Redaction
+cannot be undone, and redacted dead letters stay non-replayable after the flag
+is unset.

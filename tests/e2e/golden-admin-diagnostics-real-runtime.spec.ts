@@ -13,9 +13,10 @@ import {
 
 // Issue #310 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 15). The real
 // loopback runtime runs with ADMIN_DIAGNOSTICS_ENABLED. A global admin opens
-// Circle › Diagnostics, sees every status card (including the stale state),
-// and replays a dead letter through the existing audited endpoint after a
-// confirmation. Members, ordinary owners, demo admins and visitors are refused.
+// Circle › Diagnostics, sees every status card (including the stale state and
+// the latest provider smoke result, #343), and replays a dead letter through
+// the existing audited endpoint after a confirmation. Members, ordinary owners,
+// demo admins and visitors are refused.
 
 const CRON_SECRET='golden-admin-diagnostics-cron-secret';
 const ENV_KEYS=['ADMIN_DIAGNOSTICS_ENABLED','CRON_SECRET'] as const;
@@ -138,13 +139,49 @@ test('admin diagnostics: a global admin reads every card, sees stale evidence, a
     await expect(card(owner,'readiness')).toContainText('(current)');
     await expect(card(owner,'execution')).toHaveAttribute('data-status','failed');
     await expect(card(owner,'execution')).toContainText('No execution provider is configured');
-    await expect(card(owner,'execution')).toContainText('#249');
+    // No member run and no smoke run: the execution card has no evidence yet.
+    await expect(card(owner,'execution')).toHaveAttribute('data-stale','true');
+    // The provider smoke check (#343) has not run yet.
+    const smoke=card(owner,'execution').getByTestId('admin-diagnostics-smoke');
+    await expect(smoke).toHaveAttribute('data-status','none');
+    await expect(smoke).toHaveAttribute('data-stale','true');
+    await expect(card(owner,'execution').getByTestId('admin-diagnostics-smoke-evidence')).toHaveText('No smoke run recorded yet; expected at least every 26 h.');
     for(const id of ['outboxWatchdog','backupWatchdog']){
       await expect(card(owner,id)).toHaveAttribute('data-status','deferred');
       await expect(card(owner,id)).toContainText('GitHub Actions');
       await expect(card(owner,id).getByTestId('admin-diagnostics-stale')).toBeHidden();
     }
     await expect(card(owner,'errors')).toBeVisible();
+
+    // Seed one smoke claim and the result saved for it, the way
+    // /api/cron/execution-smoke records them (server-only runner rows).
+    await withDatabase(golden,async db=>{
+      const claim=await db.execute(`INSERT INTO app_logs (level,source,event,message,created_at)
+        VALUES ('info','runner','execution_smoke_claim','schedule',datetime('now','-3 hours'))`);
+      await db.execute({sql:`INSERT INTO app_logs (level,source,event,message,meta_json,created_at)
+        VALUES ('warn','runner','execution_smoke_result',?,?,datetime('now','-3 hours'))`,
+      args:[String(claim.lastInsertRowid),JSON.stringify({javascript:{status:'ok',durationMs:700},python:{status:'timeout',durationMs:45000}})]});
+    });
+    const seeded=await refresh(owner);
+    expect(seeded.cards.execution.smoke.languages).toEqual({javascript:{status:'ok',durationMs:700},python:{status:'timeout',durationMs:45000}});
+    await expect(smoke).toHaveAttribute('data-status','failed');
+    await expect(smoke).toHaveAttribute('data-stale','false');
+    await expect(card(owner,'execution').getByTestId('admin-diagnostics-smoke-status')).toHaveText('Failed');
+    await expect(card(owner,'execution').getByTestId('admin-diagnostics-smoke-stale')).toBeHidden();
+    await expect(card(owner,'execution')).toContainText('JavaScript: ok · Python: timed out.');
+    await expect(card(owner,'execution').getByTestId('admin-diagnostics-smoke-evidence')).toHaveText('Last smoke result 3 h ago; expected at least every 26 h.');
+    // The smoke run is fresh card evidence, but an unconfigured provider keeps
+    // the card failed even after a fresh smoke failure.
+    await expect(card(owner,'execution')).toHaveAttribute('data-stale','false');
+    await expect(card(owner,'execution')).toHaveAttribute('data-status','failed');
+    await expect(card(owner,'execution')).toContainText('Last run 3 h ago');
+    // Past the 26-hour cadence the smoke result is stale.
+    await withDatabase(golden,db=>db.execute(`UPDATE app_logs SET created_at=datetime('now','-27 hours') WHERE event IN ('execution_smoke_claim','execution_smoke_result')`));
+    await refresh(owner);
+    await expect(smoke).toHaveAttribute('data-stale','true');
+    await expect(card(owner,'execution').getByTestId('admin-diagnostics-smoke-stale')).toBeVisible();
+    await expect(card(owner,'execution').getByTestId('admin-diagnostics-smoke-evidence')).toHaveText('Last smoke result 27 h ago; expected at least every 26 h.');
+    await expect(card(owner,'execution')).toHaveAttribute('data-stale','true');
 
     // A dispatcher run is fresh evidence.
     await drainOutbox(owner);

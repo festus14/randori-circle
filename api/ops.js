@@ -20,6 +20,11 @@ import {
 } from './_circle-pairing.js';
 import { purgeExpiredCodeDocuments } from './_code-document.js';
 import { runAppLogRetention } from './_app-log-retention.js';
+import {
+  OutboxEventRedactedError,
+  outboxPiiRetentionEnabled,
+  runOutboxPiiRetention,
+} from './_outbox-retention.js';
 import { inviteRequestSchemaNotInstalled, runInviteRequestRetention } from './_invite-request-config.js';
 import { INVITE_REQUEST_EVENT_TYPE } from './_invite-request-notification.js';
 import {
@@ -90,6 +95,9 @@ export const OUTBOX_CRON_MAX_CLAIMS=8;
 export const OUTBOX_REMINDER_DUE_CHECK_BUDGET_MS=5_000;
 // ID-72: app_logs retention runs after the delivery round with this budget.
 export const OUTBOX_APP_LOG_RETENTION_BUDGET_MS=2_000;
+// ID-83: outbox personal-data retention (OUTBOX_PII_RETENTION_ENABLED) runs
+// after app_logs retention with its own budget.
+export const OUTBOX_PII_RETENTION_BUDGET_MS=2_000;
 const OUTBOX_CRON_MIN_DISPATCH_WINDOW_MS=100;
 
 function codeDocumentSchemaNotInstalled(error){
@@ -480,6 +488,12 @@ function projectOutboxDelivery({descriptor,result,status,configured,local,captur
     suppressed:result.suppressed,...(local&&configured?{captured}:{}),};
 }
 
+function interruptedRetention(progress,reason){
+  return progress.ran
+    ?{ran:true,partial:true,...reason,redacted:{...progress.redacted},more:true}
+    :{ran:false,...reason};
+}
+
 export async function runReminderDueCheck(db,req,deadlineAtMs){
   let dueCheck;
   try{
@@ -500,6 +514,7 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
   minimumDispatchWindowMs=OUTBOX_CRON_MIN_DISPATCH_WINDOW_MS,
   reminderDueCheckBudgetMs=OUTBOX_REMINDER_DUE_CHECK_BUDGET_MS,
   appLogRetentionBudgetMs=OUTBOX_APP_LOG_RETENTION_BUDGET_MS,
+  outboxPiiRetentionBudgetMs=OUTBOX_PII_RETENTION_BUDGET_MS,
 }={}){
   const preparationDeadline=deadlineAtMs-finalizationReserveMs-minimumDispatchWindowMs;
   // Issue #287: the reminder due-check runs inside the timeboxed preparation so
@@ -541,6 +556,26 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
       ()=>({ran:false,failed:true}),
     );
   }
+  // ID-83: with OUTBOX_PII_RETENTION_ENABLED unset this issues no SQL and adds
+  // nothing to the metrics. When on it follows the same rules as app_logs
+  // retention: after delivery, throttled hourly inside the module, only when
+  // its whole budget fits, and it stops issuing statements at its deadline.
+  // Classes that committed before a timeout or failure are still reported
+  // (`partial:true`) from the caller-owned progress object.
+  const piiRetentionEnabled=outboxPiiRetentionEnabled();
+  let outboxPiiRetention=null;
+  if(piiRetentionEnabled&&preparation.completed&&!invocation.deadlineReached){
+    const piiRetentionDeadline=performance.now()+outboxPiiRetentionBudgetMs;
+    if(piiRetentionDeadline<=deadlineAtMs-finalizationReserveMs){
+      const progress={ran:false,redacted:null};
+      outboxPiiRetention=await settleBeforeDeadline(()=>runOutboxPiiRetention(db,{
+        shouldContinue:()=>performance.now()<piiRetentionDeadline,progress,
+      }),piiRetentionDeadline).then(
+        settled=>settled.completed?settled.value:interruptedRetention(progress,{timed_out:true}),
+        ()=>interruptedRetention(progress,{failed:true}),
+      );
+    }
+  }
   const metricRead=preparation.completed&&!invocation.deadlineReached
     ?await settleBeforeDeadline(async()=>({outbox:await readOutboxMetrics(db),
       keyRotation:await outboxKeyRotationStatuses(db,{local:plan.local})}),deadlineAtMs)
@@ -567,11 +602,17 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
     legacy_reconciliation_complete:preparation.completed,logging_complete:false,
     claimed:invocation.claimed,types,key_rotation:metricRead.completed?metricRead.value.keyRotation:null,
     app_logs_retention:appLogRetention,
+    ...(piiRetentionEnabled?{outbox_pii_retention:outboxPiiRetention}:{}),
     ...(remindersEnabled()?{reminders_enqueued:reminders.enqueued,reminder_errors:reminders.errors}:{})};
   const reminderFailed=Object.keys(reminders.errors).length>0;
+  // A retention run that failed, timed out or stopped part-way is a warning,
+  // not a success (ID-72 app_logs, ID-83 outbox personal data).
+  const retentionIncomplete=[appLogRetention,outboxPiiRetention]
+    .some(result=>result?.failed===true||result?.timed_out===true||result?.partial===true);
   if(!metrics.deadline_reached&&performance.now()<deadlineAtMs){
     const logged=await settleBeforeDeadline(()=>logServerOps(
-      invocation.retried||invocation.deadLettered||invocation.leaseLost||reminderFailed?'warn':'success',
+      invocation.retried||invocation.deadLettered||invocation.leaseLost||reminderFailed||retentionIncomplete
+        ?'warn':'success',
       'outbox_invocation','outbox invocation completed',metrics,null,
     ),deadlineAtMs);
     metrics.logging_complete=logged.completed;
@@ -634,6 +675,10 @@ async function handleOutboxReplay(req,res){
     if(!replayed) return res.status(409).json({error:'event is not replayable'});
     return res.json({ok:true,replayed:true});
   }catch(error){
+    if(error instanceof OutboxEventRedactedError){
+      return res.status(409).json({error:'event is not replayable: retention removed its recipient details',
+        code:'outbox_event_redacted'});
+    }
     if(error instanceof TypeError) return res.status(400).json({error:'invalid replay request'});
     return res.status(503).json({error:'outbox unavailable'});
   }
