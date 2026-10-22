@@ -2747,6 +2747,8 @@ a.btn{text-decoration:none}
           </div>
           <span id="historyCount" class="rc-badge">0 pairings</span>
         </header>
+        <!-- Issue #293 personal progress (PROGRESS_DASHBOARD_ENABLED); filled by assets/progress-view.js. -->
+        <section id="historyProgress" class="history-progress" data-testid="progress-dashboard" aria-labelledby="historyProgressTitle" hidden></section>
         <div class="history-layout">
           <div class="history-list-column">
             <div id="historyList" class="weeks history-local"></div>
@@ -7956,6 +7958,25 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   // ---------- server-backed pairing/activity history ----------
   const pairRecapState={historyEpoch:0,historyAbort:null,historyUserId:null,epoch:0,abort:null,room:null,userId:null,recap:null,status:'idle',visibilityResumeHistory:false,visibilityResumeRoom:null};
+  // Issue #293: /api/history says when the progress dashboard is on; only then
+  // is assets/progress-view.js imported. The module owns rendering and fencing.
+  const progressView={controller:null,loading:null,wanted:false};
+  function progressController(){
+    if(progressView.controller) return Promise.resolve(progressView.controller);
+    progressView.loading??=import('/assets/progress-view.js').then(module=>{
+      progressView.controller=module.mountProgress({doc:document,host:{
+        userId:currentHistoryUserId,visible:historyViewVisible,
+        fetchProgress:signal=>fetch('/api/progress',{credentials:'same-origin',cache:'no-store',signal}),
+      }});
+      return progressView.controller;
+    }).catch(()=>{ progressView.loading=null; return null; });
+    return progressView.loading;
+  }
+  function showProgress(enabled){
+    progressView.wanted=enabled;
+    if(!enabled){ progressView.controller?.reset(); return; }
+    void progressController().then(controller=>{ if(progressView.wanted) void controller?.load(); });
+  }
 
   function currentHistoryUserId(){
     const value=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||me?.id||me?.uid);
@@ -8038,6 +8059,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     pairRecapState.epoch+=1;
     const historyAbort=pairRecapState.historyAbort; pairRecapState.historyAbort=null; historyAbort?.abort();
     const recapAbort=pairRecapState.abort; pairRecapState.abort=null; recapAbort?.abort();
+    // A re-render for the same member keeps the last Progress dashboard until
+    // the reload replaces it; any other member (or none) clears it.
+    if(clear){ progressView.wanted=false; progressView.controller?.release(currentHistoryUserId()); }
+    else progressView.controller?.stop();
     if(clear){
       pairRecapState.historyUserId=null; pairRecapState.room=null; pairRecapState.userId=null; pairRecapState.recap=null; pairRecapState.status='idle';
       pairRecapState.visibilityResumeHistory=false; pairRecapState.visibilityResumeRoom=null;
@@ -8355,6 +8380,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(rows.length){ const list=document.createElement('ol'); list.className='people history-list'; list.setAttribute('aria-label','Your pairings, newest first'); rows.forEach(row=>list.appendChild(row)); cont.appendChild(list); }
       const count=document.getElementById('historyCount'); if(count) count.textContent=circleUi.historyCountLabel(rows.length);
       const hint=document.getElementById('historyAuthHint'); if(hint) hint.textContent=rows.length?'Your past pairings. Open one to see its recap.':'Your past pairings will appear here.';
+      showProgress(data.progress?.enabled===true);
       return true;
     }catch(error){
       if(controller.signal.aborted||pairRecapState.historyEpoch!==epoch||currentHistoryUserId()!==userId||!historyViewVisible()) return false;
@@ -8362,6 +8388,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const status=document.createElement('div'); status.className='small muted'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent='Pairing history unavailable right now.'; cont.appendChild(status);
       const retry=document.createElement('button'); retry.type='button'; retry.className='btn secondary sm'; retry.textContent='Retry'; retry.addEventListener('click',()=>{ void renderPersonalHistory(); }); cont.appendChild(retry);
       const count=document.getElementById('historyCount'); if(count) count.textContent='Unavailable';
+      showProgress(false);
       return false;
     }finally{ if(pairRecapState.historyAbort===controller) pairRecapState.historyAbort=null; }
   }
@@ -8414,6 +8441,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const resumeRoom=pairRecapState.visibilityResumeRoom;
     pairRecapState.visibilityResumeHistory=false; pairRecapState.visibilityResumeRoom=null;
     if(resumeHistory) renderPersonalHistory();
+    else if(progressView.wanted) void progressView.controller?.resume();
     if(resumeRoom) fetchPairRecap(resumeRoom);
   });
   window.addEventListener('randori:auth-refreshed',event=>{
