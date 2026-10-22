@@ -209,6 +209,10 @@
       "destination": "/api/ops?endpoint=outbox-health"
     },
     {
+      "source": "/api/cron/execution-smoke",
+      "destination": "/api/ops?endpoint=execution-smoke"
+    },
+    {
       "source": "/api/cron/outbox",
       "destination": "/api/ops?endpoint=outbox"
     },
