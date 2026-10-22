@@ -3141,7 +3141,7 @@ retention table (needs a migration).
 installs the logger. To stop client ingestion quickly, revert this change;
 retention is independent and can stay.
 
-## ID-73: Show owners aggregate circle health from existing tables behind a flag
+## ID-78: Show owners aggregate circle health from existing tables behind a flag
 
 Status: implemented behind `CIRCLE_HEALTH_ENABLED` (default off); no
 migration. Issue #292 (post-MVP roadmap #312, Wave 3). Final design is
@@ -3154,11 +3154,12 @@ third-party tracker would conflict with a private circle.
 
 **Decision.**
 - `GET /api/circle/health` (rewrite to `/api/ops?endpoint=circle-health`)
-  returns, for the selected circle's last 8 published cycles, member counts
-  for available, paired, agreed a time, completed (primary circles only) and
-  solo, the median hours from publication to the agreed session time, and the
-  repeat-pair rate against the 8 cycles before. Cancellations and no-shows are
-  in the contract as `not_tracked` until #291.
+  returns, for the selected circle's last 8 **finished** cycles, member counts
+  for available, paired and solo, the number of pairs, the number of pairs
+  that agreed a time and that completed (primary circles only), and the
+  repeat-pair rate against the 8 cycles before. The current cycle is never
+  returned. Cancellations, no-shows and the median time to agreement are in
+  the contract as `not_tracked`.
 - Everything is computed per request with read-only statements over the
   existing publication, schedule, completion-receipt (ID-55) and v13/v16
   secondary tables: no table, cache row, index or migration. One `read` batch
@@ -3166,34 +3167,44 @@ third-party tracker would conflict with a private circle.
   CTE inside every data statement. Any active owner of the unarchived circle
   may read it (ID-69); members, demoted or inactive owners, archived circles
   and other circles get 403.
-- Small-cell suppression runs on the server before the response is built: a
-  cycle with 1 or 2 available members is withheld; any count of 1 or 2
-  members is hidden; funnel counts are also hidden when their difference from
-  another shown funnel count is 1 or 2; rates and medians need at least 3
-  members on every side. The response has no ids, names or emails.
+- Suppression runs on the server before the response is built, counted in
+  pairs because people act in pairs. With fewer than 3 pairs, agreed,
+  completed and repeat are always hidden. With 3 or more, a count is hidden
+  when exactly one pair is in or out of it, and agreed and completed are
+  hidden together. An exhaustive test over every pair state for 1 to 6 pairs
+  shows no hidden cell is determined by the rest of the response. A shown 0
+  or "every pair" still tells an owner every pair's state; that is the only
+  way the owner learns another named pair's state, and the same test checks
+  it. Available, paired, solo and pairs describe the published pairing, which
+  every member saw, and are shown. The response has no ids, names or emails.
 - The flag gates the route (404 with no storage access), the `circleHealth`
-  capability and the owner card. The card loads only while the Circle view is
-  on screen and keeps one copy per circle context for 5 minutes.
+  capability and the owner card. The card's module is imported only when the
+  capability is on and the owner opens the Circle view, and one copy per
+  circle context is kept for 5 minutes.
 
 **Read budget.** Every statement uses an existing index except the primary
 group read: `pairing_groups` has no `week_id` index, so that read scans the
 table, as `/api/stats` and history already do. A `pairing_groups(week_id)`
-index is left for a future managed migration rather than added here.
+index stays on the backlog for a future managed migration.
 
-**Residual risk.** Numbers for the in-progress cycle change as pairs act, so
-comparing two views can show that some pair just acted (not which one).
+**Residual risk.** Receipts and schedules can still be written for a finished
+cycle, so comparing two views can show that a count moved (not which pair).
 
-**Deferred.** "Time to agree" (when the pair agreed, not the session time)
-needs an agreement timestamp; `pair_schedules.updated_at` changes on later
-proposals. Cancellations and no-shows wait for #291. Trends beyond 8 cycles,
-per-member views (out of scope) and a server-side cache.
+**Deferred.** The median time from pairing to agreement needs a stored
+agreement timestamp (`pair_schedules.updated_at` changes on later proposals).
+The review of the first version showed that a publication-to-session median
+measured something else, and that its status and value revealed a hidden
+agreed count and another pair's session time. Cancellations and no-shows wait
+for #291. Trends beyond 8 cycles, per-member views (out of scope) and a
+server-side cache.
 
-**Alternatives.** A nightly aggregate table (a migration, a scheduler and
+**Alternatives.** Member-count thresholds (with pairs, "hidden" could only
+mean one value, so it revealed the other pair's state). Hiding every cell of
+a small cycle including the published pairing (no privacy gain; the pairing
+was visible). Showing the current cycle with live counts (polling showed which
+pair just acted). A nightly aggregate table (a migration, a scheduler and
 stale numbers for little saving at this size). An in-memory cache across
 requests (cannot be invalidated on demotion and is per serverless instance).
-Client-side events (out of scope and a privacy cost). Suppressing only cells
-of 1 or 2 without complements (a hidden value could be recovered by
-subtraction).
 
 **Rollout and recovery.** Merge with the flag unset; nothing changes. Agree
 the threshold with the owner, then set `CIRCLE_HEALTH_ENABLED=true` in Vercel

@@ -8,7 +8,6 @@ import healthUi, {
   cellView,
   cycleLabel,
   footnoteText,
-  formatDuration,
   METRICS,
   mountCircleHealth,
   normalizeCell,
@@ -77,20 +76,24 @@ const untracked = { status: 'not_tracked', value: null };
 
 function cycle(overrides = {}) {
   return {
-    cycle_id: '2026-W43', starts_at: '2026-10-18T07:00:00.000Z', in_progress: false, suppressed: false,
+    cycle_id: '2026-W43', starts_at: '2026-10-18T07:00:00.000Z',
     metrics: {
-      available: ok(8), paired: ok(8), solo: ok(0), scheduled: hidden, completed: ok(4), cancelled: untracked,
-      no_show: untracked, median_hours_to_agreed_time: ok(36), repeat_pair_percent: none,
+      available: ok(9), paired: ok(8), solo: ok(1), pairs: ok(4), scheduled_pairs: ok(4), completed_pairs: ok(2),
+      repeat_pair_percent: hidden, median_hours_to_agreed_time: untracked, cancelled: untracked, no_show: untracked,
     },
     ...overrides,
   };
 }
 
+function withMetrics(overrides) {
+  return cycle({ metrics: { ...cycle().metrics, ...overrides } });
+}
+
 function response(cycles = [cycle()], health = {}) {
   return {
     ok: true,
-    health: { version: 1, scope: 'primary', window_cycles: 8, lookback_cycles: 8, min_cell_size: 3, completion_tracked: true,
-      attendance_outcomes_tracked: false, generated_at: '2026-10-20T12:00:00.000Z', cycles, ...health },
+    health: { version: 1, scope: 'primary', window_cycles: 8, lookback_cycles: 8, min_pairs: 3, completion_tracked: true,
+      attendance_outcomes_tracked: false, generated_at: '2026-10-27T12:00:00.000Z', cycles, ...health },
   };
 }
 
@@ -126,62 +129,61 @@ test('cells are accepted only in the server contract shape', () => {
   assert.deepEqual(normalizeCell(hidden), hidden);
   assert.deepEqual(normalizeCell(none), none);
   assert.deepEqual(normalizeCell(untracked), untracked);
-  assert.equal(normalizeCell({ status: 'suppressed', value: 1 }), null, 'a suppressed cell never carries a value');
+  assert.equal(normalizeCell({ status: 'suppressed', value: 1 }), null, 'a hidden cell never carries a value');
   assert.equal(normalizeCell({ status: 'ok', value: 1.5 }), null);
   assert.equal(normalizeCell({ status: 'ok', value: -1 }), null);
   assert.equal(normalizeCell({ status: 'ok', value: '3' }), null);
   assert.equal(normalizeCell({ status: 'other', value: null }), null);
   assert.equal(normalizeCell(null), null);
-  assert.deepEqual(normalizeCell(ok(36.5), 'hours'), ok(36.5));
-  assert.equal(normalizeCell(ok(24 * 400), 'hours'), null);
   assert.deepEqual(normalizeCell(ok(100), 'percent'), ok(100));
   assert.equal(normalizeCell(ok(101), 'percent'), null);
+  assert.equal(normalizeCell(ok(100001)), null);
 });
 
 test('a response is rendered only when every cycle and cell is valid', () => {
-  const health = normalizeHealthResponse(response([cycle({ in_progress: true }), cycle({ cycle_id: '2026-W42', starts_at: null })]));
+  const health = normalizeHealthResponse(response([cycle(), cycle({ cycle_id: '2026-W42', starts_at: null })]));
   assert.equal(health.scope, 'primary');
   assert.equal(health.completionTracked, true);
   assert.equal(health.attendanceTracked, false);
-  assert.equal(health.minimum, 3);
+  assert.equal(health.minimumPairs, 3);
   assert.deepEqual(health.cycles.map(item => item.cycle_id), ['2026-W43', '2026-W42']);
   for (const invalid of [
     null, { ok: false }, { ok: true }, response([], { scope: 'tertiary' }), response([], { completion_tracked: 'yes' }),
-    response([], { min_cell_size: 1 }), response([], { cycles: {} }), response(Array.from({ length: 9 }, () => cycle())),
-    response([cycle({ cycle_id: 'W43' })]), response([cycle({ in_progress: 'no' })]), response([cycle({ suppressed: 1 })]),
+    response([], { min_pairs: 1 }), response([], { min_cell_size: 3, min_pairs: undefined }), response([], { cycles: {} }),
+    response(Array.from({ length: 9 }, () => cycle())), response([cycle({ cycle_id: 'W43' })]),
     response([cycle({ starts_at: 'not a date' })]), response([cycle({ metrics: null })]),
-    response([cycle({ metrics: { ...cycle().metrics, no_show: undefined } })]),
-    response([cycle({ metrics: { ...cycle().metrics, available: { status: 'suppressed', value: 2 } } })]),
+    response([withMetrics({ no_show: undefined })]),
+    response([withMetrics({ available: { status: 'suppressed', value: 2 } })]),
+    response([withMetrics({ pairs: hidden })]),
+    response([withMetrics({ scheduled_pairs: ok(5) })]),
   ]) {
     assert.equal(normalizeHealthResponse(invalid), null, JSON.stringify(invalid)?.slice(0, 120));
   }
 });
 
-test('cell text explains hidden, empty and untracked values', () => {
+test('cell text explains pair counts, hidden, empty and untracked values', () => {
   const count = METRICS.find(metric => metric.key === 'available');
-  const hours = METRICS.find(metric => metric.key === 'median_hours_to_agreed_time');
+  const pairs = METRICS.find(metric => metric.key === 'scheduled_pairs');
   const percent = METRICS.find(metric => metric.key === 'repeat_pair_percent');
   assert.deepEqual(cellView(count, ok(7)), { text: '7', state: 'ok' });
+  assert.deepEqual(cellView(pairs, ok(2), { pairs: 4 }), { text: '2 of 4', state: 'ok' });
   assert.deepEqual(cellView(percent, ok(50)), { text: '50%', state: 'ok' });
-  assert.deepEqual(cellView(hours, ok(36)), { text: '36 h', state: 'ok' });
-  assert.deepEqual(cellView(count, hidden), { text: 'Hidden', state: 'suppressed', title: 'Hidden so it cannot describe fewer than 3 members' });
-  assert.equal(cellView(count, hidden, { minimum: 5 }).title, 'Hidden so it cannot describe fewer than 5 members');
-  assert.deepEqual(cellView(count, none), { text: '—', state: 'none', title: 'Nothing to measure yet' });
+  assert.deepEqual(cellView(pairs, hidden), { text: 'Hidden', state: 'suppressed', title: 'Hidden so it cannot point to a single pair' });
+  assert.deepEqual(cellView(pairs, none), { text: '—', state: 'none', title: 'No pairs this cycle' });
   assert.deepEqual(cellView(count, untracked), { text: 'Not tracked', state: 'not-tracked' });
-  assert.equal(formatDuration(0.4), 'under 1 h');
-  assert.equal(formatDuration(9.4), '9 h');
-  assert.equal(formatDuration(47.6), '48 h');
-  assert.equal(formatDuration(60), '2.5 days');
+  assert.ok(!METRICS.some(metric => metric.key === 'median_hours_to_agreed_time'), 'the median is deferred and not shown');
 });
 
-test('secondary circles drop the completion column and say why', () => {
+test('secondary circles drop the completion column and every footnote is accurate', () => {
   const primary = normalizeHealthResponse(response());
-  const secondary = normalizeHealthResponse(response([cycle({ metrics: { ...cycle().metrics, completed: untracked } })],
+  const secondary = normalizeHealthResponse(response([withMetrics({ completed_pairs: untracked })],
     { scope: 'secondary', completion_tracked: false, attendance_outcomes_tracked: true }));
-  assert.ok(visibleMetrics(primary).some(metric => metric.key === 'completed'));
-  assert.ok(!visibleMetrics(secondary).some(metric => metric.key === 'completed'));
-  assert.equal(footnoteText(primary), 'Cancellations and no-shows will appear once cancel and no-show reporting is available.');
-  assert.equal(footnoteText(secondary), 'This circle does not record completed sessions.');
+  assert.ok(visibleMetrics(primary).some(metric => metric.key === 'completed_pairs'));
+  assert.ok(!visibleMetrics(secondary).some(metric => metric.key === 'completed_pairs'));
+  assert.equal(footnoteText(primary), 'Only finished cycles are shown; this week\'s pairs are on the Pairing tab. '
+    + 'Cancellations, no-shows and time to agree a session will appear once they are recorded.');
+  assert.equal(footnoteText(secondary), 'Only finished cycles are shown; this week\'s pairs are on the Pairing tab. '
+    + 'This circle does not record completed sessions. Time to agree a session will appear once it is recorded.');
 });
 
 test('cycle labels prefer the host week label and fall back to the cycle id', () => {
@@ -192,30 +194,27 @@ test('cycle labels prefer the host week label and fall back to the cycle id', ()
   assert.equal(cycleLabel(item), '2026-W43');
 });
 
-test('the table is text-only, one row per cycle, with withheld cycles spanning the row', () => {
+test('the table is text-only with one row per finished cycle', () => {
   const doc = fakeDocument();
   const table = doc.elements.get('circleHealthTable');
   const health = normalizeHealthResponse(response([
-    cycle({ in_progress: true }),
-    cycle({ cycle_id: '2026-W42', suppressed: true, metrics: Object.fromEntries(Object.keys(cycle().metrics).map(key => [key, hidden])) }),
+    cycle(),
+    cycle({ cycle_id: '2026-W42', metrics: { ...cycle().metrics, pairs: ok(2), scheduled_pairs: hidden, completed_pairs: hidden } }),
   ]));
   renderHealthTable(doc, table, health, { weekLabel: () => 'Week of 18 Oct' });
   const [caption, head, body] = table.children;
   assert.equal(caption.tagName, 'CAPTION');
-  assert.match(caption.textContent, /last 2 cycles, newest first\. Hidden values would describe fewer than 3 members/);
+  assert.match(caption.textContent, /last 2 finished cycles, newest first\. Pair counts are hidden when they could point to a single pair/);
   assert.deepEqual(head.children[0].children.map(cell => cell.textContent),
-    ['Cycle', 'Available', 'Paired', 'Agreed a time', 'Completed', 'Solo', 'Pairing to session', 'Repeat pairs']);
-  const [current, withheld] = body.children;
-  assert.equal(current.children[0].textContent, 'Week of 18 Oct In progress');
-  assert.deepEqual(current.children.slice(1).map(cell => [cell.attributes['data-metric'], cell.textContent]), [
-    ['available', '8'], ['paired', '8'], ['scheduled', 'Hidden'], ['completed', '4'], ['solo', '0'],
-    ['median_hours_to_agreed_time', '36 h'], ['repeat_pair_percent', '—'],
+    ['Cycle', 'Available', 'Paired', 'Solo', 'Agreed a time', 'Completed', 'Repeat pairs']);
+  const [newest, older] = body.children;
+  assert.equal(newest.children[0].textContent, 'Week of 18 Oct');
+  assert.deepEqual(newest.children.slice(1).map(cell => [cell.attributes['data-metric'], cell.textContent]), [
+    ['available', '9'], ['paired', '8'], ['solo', '1'], ['scheduled_pairs', '4 of 4'], ['completed_pairs', '2 of 4'],
+    ['repeat_pair_percent', 'Hidden'],
   ]);
-  assert.equal(current.children[3].attributes.title, 'Hidden so it cannot describe fewer than 3 members');
-  assert.equal(withheld.attributes['data-suppressed'], 'true');
-  assert.equal(withheld.children.length, 2);
-  assert.equal(withheld.children[1].attributes.colspan, '7');
-  assert.equal(withheld.children[1].textContent, 'Hidden: fewer than 3 members took part');
+  assert.equal(newest.children[6].attributes.title, 'Hidden so it cannot point to a single pair');
+  assert.deepEqual(older.children.slice(4, 6).map(cell => cell.textContent), ['Hidden', 'Hidden']);
 });
 
 test('the controller needs every panel element', () => {
@@ -228,7 +227,7 @@ test('an owner sees the panel load once per circle context and reuse it', async 
   const doc = fakeDocument();
   const host = fakeHost();
   const controller = mountCircleHealth({ doc, host });
-  assert.match(doc.elements.get('circleHealthDefinitions').textContent, /Pairing to session.*Repeat pairs.*Hidden/s);
+  assert.match(doc.elements.get('circleHealthDefinitions').textContent, /Agreed a time.*Repeat pairs.*Hidden.*fewer than 3 pairs/s);
   assert.equal(await controller.show(), true);
   const panel = doc.elements.get('circleHealthPanel');
   assert.equal(panel.hidden, false);
@@ -277,7 +276,7 @@ test('an empty history shows the empty state', async () => {
   await controller.show();
   assert.equal(doc.elements.get('circleHealthEmpty').hidden, false);
   assert.equal(doc.elements.get('circleHealthTableWrap').hidden, true);
-  assert.equal(doc.elements.get('circleHealthFootnote').hidden, true);
+  assert.equal(doc.elements.get('circleHealthFootnote').hidden, false);
 });
 
 test('403 or 404 hides the panel; other failures offer a retry', async () => {
@@ -325,6 +324,19 @@ test('stale responses and changed circle contexts are ignored', async () => {
   assert.equal(doc.elements.get('circleHealthPanel').hidden, false, 'a stale failure changes nothing');
   host.valid = false;
   assert.equal(await controller.refresh(), false, 'nothing is requested while the context is changing');
+});
+
+test('a refused circle context does not leave the card stuck on a settled request', async () => {
+  const doc = fakeDocument();
+  const host = fakeHost({ valid: false });
+  const controller = mountCircleHealth({ doc, host });
+  assert.equal(await controller.show(), false);
+  assert.equal(await controller.show(), false);
+  assert.equal(host.calls, 0);
+  host.valid = true;
+  assert.equal(await controller.show(), true, 'the next call with a valid context loads');
+  assert.equal(host.calls, 1);
+  assert.equal(rows(doc).length, 1);
 });
 
 test('a newer circle context supersedes an older request, and reset clears everything', async () => {

@@ -98,9 +98,10 @@ before(async()=>{
       args:[hash,Number(userId),nowSeconds-60,nowSeconds+3600],
     })),
   ],'write');
-  await insertPrimaryWeek(realDb,{ ...week(0),participants:[101,102,103,104],groups:[
+  await insertPrimaryWeek(realDb,{ ...week(0),participants:[101,102,103,104,105,106],groups:[
     { members:[101,102],agreed:new Date(Date.now()-6*86400000).toISOString(),receipts:[101,102] },
     { members:[103,104],agreed:new Date(Date.now()-5*86400000).toISOString(),receipts:[103,104] },
+    { members:[105,106],agreed:new Date(Date.now()-5*86400000).toISOString(),receipts:[105,106] },
   ] });
   await insertPrimaryWeek(realDb,{ ...week(1),participants:[101,102],groups:[{ members:[101,102] }] });
   await insertSecondaryPublication(realDb,{ circleId:20,cycleId:'2025-W40',startsAt:'2025-09-28T07:00:00.000Z',
@@ -174,9 +175,9 @@ test('an active owner and a co-owner read the primary health in single-circle mo
     assert.equal('circle_context_version' in result.body,false);
     const [newest,older]=result.body.health.cycles;
     assert.equal(newest.cycle_id,'2025-W40');
-    assert.deepEqual(newest.metrics.completed,{ status:'ok',value:4 });
-    assert.deepEqual(newest.metrics.scheduled,{ status:'ok',value:4 });
-    assert.equal(older.suppressed,true);
+    assert.deepEqual(newest.metrics.completed_pairs,{ status:'ok',value:3 });
+    assert.deepEqual(newest.metrics.scheduled_pairs,{ status:'ok',value:3 });
+    assert.deepEqual(older.metrics.scheduled_pairs,{ status:'suppressed',value:null },'one pair');
     assert.doesNotMatch(JSON.stringify(result.body),/@|User \d/);
   }
 });
@@ -231,7 +232,7 @@ test('multi-circle: a secondary owner with one circle reads it without a header'
   assert.equal(result.body.circle_context_version,0);
   assert.equal(result.body.health.scope,'secondary');
   assert.deepEqual(result.body.health.cycles.map(cycle=>cycle.cycle_id),['2025-W40']);
-  assert.deepEqual(result.body.health.cycles[0].metrics.completed,{ status:'not_tracked',value:null });
+  assert.deepEqual(result.body.health.cycles[0].metrics.completed_pairs,{ status:'not_tracked',value:null });
 });
 
 test('multi-circle: no selection, or a selected archived circle, is refused',async()=>{

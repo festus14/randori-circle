@@ -2377,12 +2377,12 @@ a.btn{text-decoration:none}
       </div>
       <!-- Issue #292 owner-only circle health (provisional design; assets/circle-health.js fills it). -->
       <section id="circleHealthPanel" data-testid="circle-health" class="card circle-card circle-health" hidden aria-labelledby="circleHealthTitle" style="display:none">
-        <div class="card-h"><h3 id="circleHealthTitle" class="circle-card-title">Circle health</h3><span class="circle-card-meta">Last 8 cycles · owners only</span></div>
+        <div class="card-h"><h3 id="circleHealthTitle" class="circle-card-title">Circle health</h3><span class="circle-card-meta">Last 8 finished cycles · owners only</span></div>
         <div class="card-b circle-card-body">
-          <p class="small muted circle-help">How the weekly loop is going, as totals for the whole circle. Numbers that would describe fewer than 3 members are hidden.</p>
+          <p class="small muted circle-help">How the weekly loop went in recent finished cycles, as totals for the whole circle. Pair counts are hidden when they could point to a single pair.</p>
           <div id="circleHealthStatus" class="small muted" role="status" aria-live="polite"></div>
           <div id="circleHealthTableWrap" class="circle-health-scroll" role="region" aria-label="Circle health by cycle" tabindex="0" aria-busy="false" hidden><table id="circleHealthTable" data-testid="circle-health-table" class="rc-table circle-health-table"></table></div>
-          <div id="circleHealthEmpty" class="rc-empty" data-testid="circle-health-empty" hidden><p class="rc-empty-title">No cycles yet</p><p class="small">Health appears after the first pairs are published.</p></div>
+          <div id="circleHealthEmpty" class="rc-empty" data-testid="circle-health-empty" hidden><p class="rc-empty-title">No finished cycles yet</p><p class="small">Health appears once the first published cycle has finished.</p></div>
           <p id="circleHealthFootnote" class="small muted circle-help" hidden></p>
           <details class="circle-invite-history circle-health-help"><summary>What these numbers mean</summary><dl id="circleHealthDefinitions" class="circle-health-definitions"></dl></details>
           <div><button id="circleHealthRefresh" data-testid="circle-health-refresh" class="btn secondary sm" type="button">Refresh</button></div>
@@ -2763,7 +2763,6 @@ a.btn{text-decoration:none}
     <script src="/assets/circle-ui.js"></script>
     <script type="module" src="/assets/email-validation.js"></script>
     <script type="module" src="/assets/bulk-invite.js"></script>
-    <script type="module" src="/assets/circle-health.js"></script>
   </main>
 </div>
 <!-- ---------- WP-A dialogs: confirm, prompt, sign-in and account security ---------- -->
@@ -5807,7 +5806,7 @@ async function refreshMe(){
   const circleInviteEmails=new Map();
   // Bulk invite controller (assets/bulk-invite.js); mounted further below.
   let bulkInviteController=null;
-  // Circle health controller (assets/circle-health.js, issue #292); mounted further below.
+  // Circle health controller (assets/circle-health.js, issue #292); imported on demand further below.
   let circleHealthController=null;
   let inviteRequestsState={requests:[],nextCursor:null,pendingCount:0,loading:false,request:0,pendingDecision:null};
   let circleRenderEpoch=0;
@@ -7352,34 +7351,41 @@ async function refreshMe(){
   }
   mountBulkInvite();
   window.addEventListener('randori:bulk-invite-ready',mountBulkInvite);
-  // Circle health (assets/circle-health.js, issue #292). Shown only to owners
-  // when /api/auth/capabilities advertises circleHealth; the server enforces
-  // ownership and small-cell suppression on every read.
+  // Circle health (assets/circle-health.js, issue #292). The module is
+  // imported only when /api/auth/capabilities advertises circleHealth and the
+  // viewer owns the circle; the server enforces ownership and hides what must
+  // not be shown on every read.
+  let circleHealthLoad=null;
+  function loadCircleHealth(){
+    if(circleHealthController) return Promise.resolve(circleHealthController);
+    if(circleHealthLoad) return circleHealthLoad;
+    circleHealthLoad=import('/assets/circle-health.js').then(module=>{
+      circleHealthController??=module.default.mountCircleHealth({doc:document,host:{
+        canView:()=>authCapabilities.circleHealth===true&&activeCircleRole==='owner'&&!!me,
+        cacheKey:()=>[Number(me?.id||me?.uid),activeCircleContext?.active_circle?.public_id||'primary',
+          activeCircleContext?.context_version??0].join(':'),
+        capture:()=>captureCircleControlOperation(),
+        matches:(operation,result)=>circleControlOperationMatches(operation,result),
+        fetch:()=>api('/api/circle/health',{method:'GET'}),
+        weekLabel:item=>circleUi.pairingWeekLabel(item),
+      }});
+      return circleHealthController;
+    },()=>{ circleHealthLoad=null; return null; });
+    return circleHealthLoad;
+  }
   async function showCircleHealth(epoch=circleRenderEpoch){
     if(!authCapabilitiesLoaded){
       try{ await authCapabilitiesPromise; }catch{}
       if(epoch!==circleRenderEpoch) return;
     }
+    if(authCapabilities.circleHealth!==true||activeCircleRole!=='owner'||!me) return;
     // renderPeople() also runs in the background (sign-in, publication), so
-    // read only while the Circle view is actually on screen.
+    // load and read only while the Circle view is actually on screen.
     if(!document.getElementById('view-circle')?.getClientRects().length) return;
-    await circleHealthController?.show();
+    const controller=await loadCircleHealth();
+    if(epoch!==circleRenderEpoch) return;
+    await controller?.show();
   }
-  function mountCircleHealth(){
-    if(circleHealthController||!window.RandoriCircleHealth) return;
-    circleHealthController=window.RandoriCircleHealth.mountCircleHealth({doc:document,host:{
-      canView:()=>authCapabilities.circleHealth===true&&activeCircleRole==='owner'&&!!me,
-      cacheKey:()=>[Number(me?.id||me?.uid),activeCircleContext?.active_circle?.public_id||'primary',
-        activeCircleContext?.context_version??0].join(':'),
-      capture:()=>captureCircleControlOperation(),
-      matches:(operation,result)=>circleControlOperationMatches(operation,result),
-      fetch:()=>api('/api/circle/health',{method:'GET'}),
-      weekLabel:item=>circleUi.pairingWeekLabel(item),
-    }});
-    if(activeCircleRole==='owner') void showCircleHealth();
-  }
-  mountCircleHealth();
-  window.addEventListener('randori:circle-health-ready',mountCircleHealth);
   async function copyLatestInviteLink(){
     if(activeCircleRole!=='owner'||!latestInviteUrl) return;
     const operation=captureCircleControlOperation();

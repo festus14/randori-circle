@@ -1,5 +1,6 @@
-// Issue #292: the circle health read model and its small-cell suppression,
+// Issue #292: the circle health read model and its suppression rules,
 // against a real migrated SQLite database and a hand-built pairing history.
+// The exhaustive privacy property lives in circle-health-privacy.test.mjs.
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { createClient } from '@libsql/client';
@@ -8,23 +9,22 @@ import {
   aggregateCycle,
   buildCircleHealth,
   CIRCLE_HEALTH_LOOKBACK,
-  CIRCLE_HEALTH_MIN_CELL,
+  CIRCLE_HEALTH_MIN_PAIRS,
   CIRCLE_HEALTH_SQL,
   CIRCLE_HEALTH_WINDOW,
   circleHealthEnabled,
   circleHealthQueryValid,
-  countCell,
-  median,
+  edgePairCount,
   parseStoredInstant,
   readCircleHealth,
-  smallCell,
   suppressCycleMetrics,
 } from '../../api/_circle-health.js';
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { insertPrimaryWeek, insertSecondaryPublication } from '../support/circle-health-fixture.mjs';
 import { createMigratedDatabase } from '../support/migrated-db.mjs';
 
-const NOW=Date.parse('2026-10-20T12:00:00.000Z');
+// Tuesday of 2026-W44: W44 is the current cycle and must never be returned.
+const NOW=Date.parse('2026-10-27T12:00:00.000Z');
 const TZ='Europe/London';
 const { url, cleanup }=await createMigratedDatabase({ prefix:'randori-circle-health-', filename:'health.sqlite' });
 const db=createClient({ url });
@@ -33,8 +33,9 @@ const ok=value=>({ status:'ok', value });
 const hidden={ status:'suppressed', value:null };
 const none={ status:'no_data', value:null };
 const untracked={ status:'not_tracked', value:null };
+const deferred={ median_hours_to_agreed_time:untracked, cancelled:untracked, no_show:untracked };
 
-// Weekly ISO labels and Sunday 08:00 London starts, newest first.
+// Weekly ISO labels and Sunday 08:00 London starts; offset 0 is 2026-W43.
 function week(offset){
   const start=Date.parse('2026-10-18T07:00:00.000Z')-offset*7*86400000;
   const weekNumber=43-offset;
@@ -65,24 +66,26 @@ before(async()=>{
       (21,7,'owner','active'),(30,1,'owner','active')`,
   ],'write');
 
-  // Index 0 (in progress): 7 available, one solo, 2 of 3 pairs agreed a time,
-  // one pair completed.
+  // The current cycle (W44) is never returned, however much happened in it.
+  await insertPrimaryWeek(db,{ ...week(-1), participants:[101,102,103,104,105,106], groups:[
+    { members:[101,102], agreed:'2026-10-27T18:00:00.000Z', receipts:[101,102] },
+    { members:[103,104], agreed:'2026-10-28T18:00:00.000Z' }, { members:[105,106] },
+  ] });
+  // Index 0: 3 pairs and a solo; 2 pairs agreed a time, 1 completed.
   await insertPrimaryWeek(db,{ ...week(0), participants:[101,102,103,104,105,106,107], groups:[
     { members:[101,102], agreed:'2026-10-21T18:00:00.000Z', receipts:[101,102] },
     { members:[103,104], agreed:'2026-10-22T18:00:00.000Z', receipts:[103] },
     { members:[105,106] },
     { members:[107] },
   ] });
-  // Index 1: a healthy cycle where every pair agreed and two pairs completed.
-  const w42=week(1);
-  const hoursAfter=hours=>new Date(Date.parse(w42.publishedAt)+hours*3600000).toISOString();
-  await insertPrimaryWeek(db,{ ...w42, participants:[101,102,103,104,105,106,107,108], groups:[
-    { members:[101,102], agreed:hoursAfter(12), receipts:[101,102] },
-    { members:[103,104], agreed:hoursAfter(24), receipts:[103,104] },
-    { members:[105,106], agreed:hoursAfter(48), receipts:[105] },
-    { members:[107,108], agreed:hoursAfter(96) },
+  // Index 1: 4 pairs, all agreed, two completed (a third has one receipt).
+  await insertPrimaryWeek(db,{ ...week(1), participants:[101,102,103,104,105,106,107,108], groups:[
+    { members:[101,102], agreed:'2026-10-11T20:00:00.000Z', receipts:[101,102] },
+    { members:[103,104], agreed:'2026-10-12T08:00:00.000Z', receipts:[103,104] },
+    { members:[105,106], agreed:'2026-10-13T08:00:00.000Z', receipts:[105] },
+    { members:[107,108], agreed:'2026-10-15T08:00:00.000Z' },
   ] });
-  // Index 2: only two members took part, so the whole cycle is withheld.
+  // Index 2: a single pair.
   await insertPrimaryWeek(db,{ ...week(2), participants:[101,102], groups:[
     { members:[101,102], agreed:'2026-10-05T18:00:00.000Z', receipts:[101,102] },
   ] });
@@ -93,15 +96,16 @@ before(async()=>{
     { members:[101,102,103], agreed:'Tuesday 7pm', receipts:[101,102,103] },
     { members:[104,105], agreed:'2026-09-24T18:00:00.000Z' },
   ] });
-  // Index 5: three members, one pair and a solo.
+  // Index 5: one pair and a solo.
   await insertPrimaryWeek(db,{ ...week(5), participants:[104,105,106], groups:[
     { members:[104,105] }, { members:[106] },
   ] });
-  // Index 6: two pairs, nothing agreed.
-  await insertPrimaryWeek(db,{ ...week(6), participants:[104,106,107,108], groups:[
+  // W37 is a demo week: skipped without using a window slot, so the eighth
+  // cycle shown is W35.
+  await insertPrimaryWeek(db,{ ...week(6), isDemo:1, participants:[104,106,107,108], groups:[
     { members:[104,107] }, { members:[106,108] },
   ] });
-  // Index 7 (oldest shown): repeats only from inside its 8-cycle lookback.
+  // Index 7: repeats only from inside its 8-cycle lookback.
   await insertPrimaryWeek(db,{ ...week(7), participants:[101,104,105,106,109,110,111,112], groups:[
     { members:[109,110] }, { members:[111,112] }, { members:[101,105] }, { members:[104,106] },
   ] });
@@ -110,23 +114,26 @@ before(async()=>{
   for(const [offset,members] of lookback.entries()){
     await insertPrimaryWeek(db,{ ...week(8+offset), participants:members, groups:[{ members }] });
   }
-  // Demo and legacy non-ISO weeks never count.
-  await insertPrimaryWeek(db,{ label:'2026-W45', weekStart:'2026-11-01T08:00:00.000Z',
-    publishedAt:'2026-11-01T08:00:05.000Z', isDemo:1, participants:[101,102], groups:[{ members:[101,102] }] });
-  await insertPrimaryWeek(db,{ label:'2026-W44-demo-1234', weekStart:'2026-10-25T08:00:00.000Z',
+  // Non-ISO demo and legacy labels never count.
+  await insertPrimaryWeek(db,{ label:'2026-W42-demo-1234', weekStart:'2026-10-11T08:00:00.000Z',
     participants:[103,104], groups:[{ members:[103,104] }] });
   await insertPrimaryWeek(db,{ label:'legacy-week', weekStart:'2026-10-19T08:00:00.000Z',
     participants:[105,106], groups:[{ members:[105,106] }] });
 
-  // Secondary circle 20 and an unrelated secondary circle 21.
+  // Secondary circle 20 (with a current-cycle publication that must not be
+  // returned) and an unrelated secondary circle 21.
   await insertSecondaryPublication(db,{ circleId:20, cycleId:'2026-W42', startsAt:'2026-10-11T07:00:00.000Z',
-    publishedAt:'2026-10-11T07:00:01.000Z', groups:[{ members:[101,102] },{ members:[103,104] }] });
+    publishedAt:'2026-10-11T07:00:01.000Z', groups:[{ members:[101,102] },{ members:[103,104] },{ members:[105,106] }] });
   await insertSecondaryPublication(db,{ circleId:20, cycleId:'2026-W43', startsAt:'2026-10-18T07:00:00.000Z',
-    publishedAt:'2026-10-18T07:00:01.000Z', unavailable:[105], groups:[
+    publishedAt:'2026-10-18T07:00:01.000Z', unavailable:[107], groups:[
       { members:[101,102], agreed:'2026-10-20T18:00:00.000Z' },
       { members:[103,104], agreed:'2026-10-21T18:00:00.000Z' },
+      { members:[105,106], agreed:'2026-10-22T18:00:00.000Z' },
       { members:[6] },
     ] });
+  await insertSecondaryPublication(db,{ circleId:20, cycleId:'2026-W44', startsAt:'2026-10-25T08:00:00.000Z',
+    publishedAt:'2026-10-25T08:00:01.000Z', groups:[{ members:[101,102], agreed:'2026-10-27T18:00:00.000Z' },
+      { members:[103,104] },{ members:[105,106] }] });
   await insertSecondaryPublication(db,{ circleId:21, cycleId:'2026-W43', startsAt:'2026-10-18T07:00:00.000Z',
     publishedAt:'2026-10-18T07:00:01.000Z', groups:[{ members:[7,108] },{ members:[109,110] }] });
 });
@@ -161,29 +168,6 @@ test('only the grouped endpoint query is accepted',()=>{
   assert.equal(circleHealthQueryValid({ query:[] }),true);
 });
 
-test('a count covering one or two members is suppressed; zero and three or more are shown',()=>{
-  assert.equal(CIRCLE_HEALTH_MIN_CELL,3);
-  assert.deepEqual([0,1,2,3,4].map(value=>smallCell(value)),[false,true,true,false,false]);
-  assert.deepEqual(countCell(0),ok(0));
-  assert.deepEqual(countCell(1),hidden);
-  assert.deepEqual(countCell(2),hidden);
-  assert.deepEqual(countCell(3),ok(3));
-  // Complement: 6 paired and 4 scheduled would reveal that one pair did not.
-  assert.deepEqual(countCell(4,{ relatedCounts:[6] }),hidden);
-  assert.deepEqual(countCell(4,{ relatedCounts:[8] }),ok(4));
-  assert.deepEqual(countCell(0,{ relatedCounts:[2] }),hidden);
-  assert.deepEqual(countCell(6,{ relatedCounts:[6,4] }),hidden);
-  assert.deepEqual(countCell(2,{ minimum:2 }),ok(2));
-});
-
-test('median handles odd and even lists without mutating the input',()=>{
-  const values=[96,12,48,24];
-  assert.equal(median(values),36);
-  assert.deepEqual(values,[96,12,48,24]);
-  assert.equal(median([5,1,3]),3);
-  assert.equal(median([7]),7);
-});
-
 test('stored instants accept SQLite and ISO forms only',()=>{
   assert.equal(parseStoredInstant('2026-10-18 08:00:05'),Date.parse('2026-10-18T08:00:05Z'));
   assert.equal(parseStoredInstant('2026-10-18T07:00:00.000Z'),Date.parse('2026-10-18T07:00:00.000Z'));
@@ -193,62 +177,98 @@ test('stored instants accept SQLite and ISO forms only',()=>{
   assert.equal(parseStoredInstant(null),null);
 });
 
-test('the cycle floor withholds every metric when only one or two members took part',()=>{
-  const raw={ available:2,paired:2,solo:0,scheduled:2,completed:2,leadHours:[5],leadMembers:2,
-    humanGroups:1,repeatGroups:1,repeatMembers:2 };
-  const result=suppressCycleMetrics(raw);
-  assert.equal(result.suppressed,true);
-  for(const key of ['available','paired','solo','scheduled','completed','median_hours_to_agreed_time','repeat_pair_percent']){
-    assert.deepEqual(result.metrics[key],hidden,key);
+test('a count of pairs is an edge when exactly one pair is in or out',()=>{
+  assert.equal(CIRCLE_HEALTH_MIN_PAIRS,3);
+  assert.deepEqual([0,1,2,3,4].map(count=>edgePairCount(count,4)),[false,true,false,true,false]);
+  assert.deepEqual([0,1,2,3].map(count=>edgePairCount(count,3)),[false,true,true,false]);
+});
+
+function raw(overrides={}){
+  return { available:9,paired:8,solo:1,pairs:4,scheduledPairs:2,completedPairs:2,repeatPairs:2,...overrides };
+}
+
+test('available, paired, solo and pairs describe the published pairing and are always shown',()=>{
+  const metrics=suppressCycleMetrics(raw({ available:2,paired:2,solo:0,pairs:1 }));
+  assert.deepEqual([metrics.available,metrics.paired,metrics.solo,metrics.pairs],[ok(2),ok(2),ok(0),ok(1)]);
+  assert.deepEqual(suppressCycleMetrics(raw()).solo,ok(1));
+});
+
+test('with fewer than three pairs, agreed, completed and repeat are hidden whatever their value',()=>{
+  for(const pairs of [1,2]){
+    for(const count of [0,1,pairs]){
+      const metrics=suppressCycleMetrics(raw({ pairs,scheduledPairs:count,completedPairs:count,repeatPairs:count }));
+      assert.deepEqual([metrics.scheduled_pairs,metrics.completed_pairs,metrics.repeat_pair_percent],[hidden,hidden,hidden]);
+    }
   }
-  assert.deepEqual(result.metrics.cancelled,untracked);
-  assert.deepEqual(result.metrics.no_show,untracked);
-  assert.deepEqual(suppressCycleMetrics(raw,{ completionTracked:false }).metrics.completed,untracked);
+  assert.deepEqual(suppressCycleMetrics(raw({ pairs:2 }),{ completionTracked:false }).completed_pairs,untracked);
 });
 
-test('rates and medians need at least three members on every side',()=>{
-  const base={ available:8,paired:8,solo:0,scheduled:8,completed:8,leadHours:[10,20,30,40],leadMembers:8,
-    humanGroups:4,repeatGroups:2,repeatMembers:4 };
-  assert.deepEqual(suppressCycleMetrics(base).metrics.repeat_pair_percent,ok(50));
-  assert.deepEqual(suppressCycleMetrics(base).metrics.median_hours_to_agreed_time,ok(25));
-  // One repeat pair (2 members), or one fresh pair, is identifying.
-  assert.deepEqual(suppressCycleMetrics({ ...base,repeatGroups:1,repeatMembers:2 }).metrics.repeat_pair_percent,hidden);
-  assert.deepEqual(suppressCycleMetrics({ ...base,repeatGroups:3,repeatMembers:6 }).metrics.repeat_pair_percent,hidden);
-  assert.deepEqual(suppressCycleMetrics({ ...base,repeatGroups:4,repeatMembers:8 }).metrics.repeat_pair_percent,ok(100));
-  // A single pair can never show a rate, even 0%.
-  assert.deepEqual(suppressCycleMetrics({ ...base,available:3,paired:2,solo:1,scheduled:0,completed:0,
-    humanGroups:1,repeatGroups:0,repeatMembers:0,leadHours:[],leadMembers:0 }).metrics.repeat_pair_percent,hidden);
-  assert.deepEqual(suppressCycleMetrics({ ...base,humanGroups:0,paired:0,repeatGroups:0,repeatMembers:0 })
-    .metrics.repeat_pair_percent,none);
-  assert.deepEqual(suppressCycleMetrics({ ...base,leadHours:[3],leadMembers:2 }).metrics.median_hours_to_agreed_time,hidden);
-  assert.deepEqual(suppressCycleMetrics({ ...base,leadHours:[],leadMembers:0 }).metrics.median_hours_to_agreed_time,none);
-  assert.deepEqual(suppressCycleMetrics({ ...base,leadHours:[1.04,2.06],leadMembers:4 }).metrics.median_hours_to_agreed_time,ok(1.6));
+test('with no pairs there is nothing to measure',()=>{
+  const metrics=suppressCycleMetrics(raw({ available:0,paired:0,solo:0,pairs:0,scheduledPairs:0,completedPairs:0,repeatPairs:0 }));
+  assert.deepEqual(metrics,{ available:ok(0),paired:ok(0),solo:ok(0),pairs:ok(0),scheduled_pairs:none,
+    completed_pairs:none,repeat_pair_percent:none,...deferred });
 });
 
-test('aggregation ignores agreements without a valid instant or before publication',()=>{
-  const cycle={ cycleId:'2026-W43',startsAt:null,publishedAtMs:Date.parse('2026-10-18T07:00:00Z'),availableMembers:['1','2'],
+test('agreed and completed are shown or hidden together, so neither narrows the other',()=>{
+  assert.deepEqual(suppressCycleMetrics(raw()),{ available:ok(9),paired:ok(8),solo:ok(1),pairs:ok(4),
+    scheduled_pairs:ok(2),completed_pairs:ok(2),repeat_pair_percent:ok(50),...deferred });
+  // Completed is an edge (3 of 4): agreed is hidden with it.
+  const completedEdge=suppressCycleMetrics(raw({ scheduledPairs:4,completedPairs:3 }));
+  assert.deepEqual([completedEdge.scheduled_pairs,completedEdge.completed_pairs],[hidden,hidden]);
+  // Agreed is an edge (1 of 4): completed is hidden with it.
+  const scheduledEdge=suppressCycleMetrics(raw({ scheduledPairs:1,completedPairs:0 }));
+  assert.deepEqual([scheduledEdge.scheduled_pairs,scheduledEdge.completed_pairs],[hidden,hidden]);
+  // Without completion tracking only agreed decides.
+  const secondary=suppressCycleMetrics(raw({ scheduledPairs:2,completedPairs:null }),{ completionTracked:false });
+  assert.deepEqual([secondary.scheduled_pairs,secondary.completed_pairs],[ok(2),untracked]);
+  assert.deepEqual(suppressCycleMetrics(raw({ scheduledPairs:3 }),{ completionTracked:false }).scheduled_pairs,hidden);
+  // Unanimous counts are shown.
+  const all=suppressCycleMetrics(raw({ pairs:3,scheduledPairs:3,completedPairs:0,repeatPairs:3 }));
+  assert.deepEqual([all.scheduled_pairs,all.completed_pairs,all.repeat_pair_percent],[ok(3),ok(0),ok(100)]);
+});
+
+test('the repeat rate hides an edge count and otherwise rounds to a whole percent',()=>{
+  assert.deepEqual(suppressCycleMetrics(raw({ repeatPairs:1 })).repeat_pair_percent,hidden);
+  assert.deepEqual(suppressCycleMetrics(raw({ repeatPairs:3 })).repeat_pair_percent,hidden);
+  assert.deepEqual(suppressCycleMetrics(raw({ pairs:6,repeatPairs:4 })).repeat_pair_percent,ok(67));
+  assert.deepEqual(suppressCycleMetrics(raw({ repeatPairs:0 })).repeat_pair_percent,ok(0));
+});
+
+test('the median, cancellations and no-shows are deferred in every cycle',()=>{
+  for(const pairs of [0,1,3,6]){
+    const metrics=suppressCycleMetrics(raw({ pairs,scheduledPairs:0,completedPairs:0,repeatPairs:0 }));
+    assert.deepEqual([metrics.median_hours_to_agreed_time,metrics.cancelled,metrics.no_show],[untracked,untracked,untracked]);
+  }
+});
+
+test('aggregation counts members for the pairing and pairs for what pairs did',()=>{
+  const cycle={ cycleId:'2026-W43',startsAt:null,availableMembers:['1','2','9'],
     groups:[
-      { members:['1','2'],solo:false,scheduled:true,agreedAtMs:Date.parse('2026-10-17T07:00:00Z'),completed:false },
-      { members:['3','4'],solo:false,scheduled:true,agreedAtMs:null,completed:true },
-      { members:['5'],solo:true,scheduled:true,agreedAtMs:Date.parse('2026-10-19T07:00:00Z'),completed:true },
+      { members:['1','2'],solo:false,scheduled:true,completed:false },
+      { members:['3','4','8'],solo:false,scheduled:false,completed:true },
+      { members:['5'],solo:true,scheduled:true,completed:true },
     ] };
-  const raw=aggregateCycle(cycle,new Set(['1|2']));
-  assert.deepEqual({ ...raw,leadHours:[...raw.leadHours] },{
-    available:5,paired:4,solo:1,scheduled:4,completed:2,leadHours:[],leadMembers:0,
-    humanGroups:2,repeatGroups:1,repeatMembers:2,
+  assert.deepEqual({ ...aggregateCycle(cycle,new Set(['1|2'])) },{
+    available:7,paired:5,solo:1,pairs:2,scheduledPairs:1,completedPairs:1,repeatPairs:1,
   });
-  assert.equal(aggregateCycle({ ...cycle,publishedAtMs:null },new Set()).leadMembers,0);
-  assert.equal(aggregateCycle(cycle,new Set(),{ completionTracked:false }).completed,null);
+  assert.equal(aggregateCycle(cycle,new Set(['4|8'])).repeatPairs,1,'any member pair inside a triad counts');
+  assert.equal(aggregateCycle(cycle,new Set(),{ completionTracked:false }).completedPairs,null);
 });
 
-test('an invalid time zone only clears the in-progress marker',()=>{
-  const health=buildCircleHealth([{ cycleId:'2026-W43',startsAt:null,publishedAtMs:null,availableMembers:[],groups:[] }],
-    { scope:'primary',now:NOW,timeZone:'Not/AZone' });
-  assert.equal(health.cycles[0].in_progress,false);
-  assert.deepEqual(health.cycles[0].metrics.available,ok(0));
+test('the envelope describes the window and the deferred metrics',()=>{
+  const health=buildCircleHealth([{ cycleId:'2026-W43',startsAt:null,availableMembers:[],groups:[] }],
+    { scope:'secondary',now:NOW,completionTracked:false });
+  assert.deepEqual({ ...health,cycles:health.cycles.length },{
+    version:1,scope:'secondary',window_cycles:8,lookback_cycles:8,min_pairs:3,completion_tracked:false,
+    attendance_outcomes_tracked:false,generated_at:new Date(NOW).toISOString(),cycles:1,
+  });
 });
 
-test('primary health matches the hand-built fixture for the last eight cycles',async()=>{
+test('an invalid pairing time zone fails closed instead of guessing the current cycle',async()=>{
+  await assert.rejects(readCircleHealth(db,{ actorUserId:1,circleId:10,now:NOW,timeZone:'Not/AZone' }),TypeError);
+});
+
+test('primary health matches the hand-built fixture for the last eight finished cycles',async()=>{
   const result=await readCircleHealth(db,{ actorUserId:1,circleId:10,now:NOW,timeZone:TZ });
   assert.equal(result.ok,true);
   assert.equal(result.circleId,10);
@@ -256,63 +276,43 @@ test('primary health matches the hand-built fixture for the last eight cycles',a
   assert.equal(health.scope,'primary');
   assert.equal(health.window_cycles,CIRCLE_HEALTH_WINDOW);
   assert.equal(health.lookback_cycles,CIRCLE_HEALTH_LOOKBACK);
-  assert.equal(health.min_cell_size,3);
+  assert.equal(health.min_pairs,3);
   assert.equal(health.completion_tracked,true);
-  assert.equal(health.attendance_outcomes_tracked,false);
-  assert.equal(health.generated_at,new Date(NOW).toISOString());
+  // W44 is in progress; W37 is a demo week.
   assert.deepEqual(health.cycles.map(cycle=>cycle.cycle_id),
-    ['2026-W43','2026-W42','2026-W41','2026-W40','2026-W39','2026-W38','2026-W37','2026-W36']);
-  assert.deepEqual(health.cycles.map(cycle=>cycle.in_progress),[true,false,false,false,false,false,false,false]);
+    ['2026-W43','2026-W42','2026-W41','2026-W40','2026-W39','2026-W38','2026-W36','2026-W35']);
   const cycles=byCycle(health);
-  assert.equal(cycles['2026-W43'].starts_at,'2026-10-18T07:00:00.000Z');
-
-  assert.deepEqual(cycles['2026-W43'],{ ...cycles['2026-W43'],suppressed:false,metrics:{
-    available:ok(7),paired:ok(6),solo:hidden,
-    // 4 of 6 paired members scheduled: the gap is one pair, so it is hidden.
-    scheduled:hidden,completed:hidden,cancelled:untracked,no_show:untracked,
-    // Agreed 82.998 h and 106.998 h after publication.
-    median_hours_to_agreed_time:ok(95),
-    repeat_pair_percent:ok(100),
+  assert.deepEqual(cycles['2026-W43'],{ cycle_id:'2026-W43',starts_at:'2026-10-18T07:00:00.000Z',metrics:{
+    available:ok(7),paired:ok(6),solo:ok(1),pairs:ok(3),
+    // 2 of 3 pairs agreed: one pair is out, so agreed and completed hide together.
+    scheduled_pairs:hidden,completed_pairs:hidden,
+    // 101-102, 103-104 and 105-106 all met in W42.
+    repeat_pair_percent:ok(100),...deferred,
   } });
   assert.deepEqual(cycles['2026-W42'].metrics,{
-    available:ok(8),paired:ok(8),solo:ok(0),scheduled:ok(8),completed:ok(4),cancelled:untracked,no_show:untracked,
-    median_hours_to_agreed_time:ok(36),
-    // 101-102 was paired in W41 and 103-104 in W34 (8 cycles back); 105-106
-    // last met in W33, outside the lookback.
-    repeat_pair_percent:ok(50),
+    available:ok(8),paired:ok(8),solo:ok(0),pairs:ok(4),scheduled_pairs:ok(4),completed_pairs:ok(2),
+    // 101-102 (W41), 103-104 (W34) and 105-106 (W33) repeat: 3 of 4 is an edge.
+    repeat_pair_percent:hidden,...deferred,
   });
-  assert.equal(cycles['2026-W41'].suppressed,true);
-  assert.deepEqual(cycles['2026-W41'].metrics.available,hidden);
-  assert.deepEqual(cycles['2026-W40'],{ ...cycles['2026-W40'],suppressed:false,metrics:{
-    available:ok(0),paired:ok(0),solo:ok(0),scheduled:ok(0),completed:ok(0),cancelled:untracked,no_show:untracked,
-    median_hours_to_agreed_time:none,repeat_pair_percent:none,
-  } });
-  assert.deepEqual(cycles['2026-W39'].metrics,{
-    available:ok(5),paired:ok(5),solo:ok(0),
-    // The triad's free-text agreement counts as scheduled but has no instant.
-    scheduled:ok(5),completed:hidden,cancelled:untracked,no_show:untracked,
-    median_hours_to_agreed_time:hidden,repeat_pair_percent:hidden,
-  });
-  assert.deepEqual(cycles['2026-W38'].metrics,{
-    available:ok(3),paired:hidden,solo:hidden,scheduled:hidden,completed:hidden,cancelled:untracked,no_show:untracked,
-    median_hours_to_agreed_time:none,repeat_pair_percent:hidden,
-  });
-  assert.deepEqual(cycles['2026-W37'].metrics,{
-    available:ok(4),paired:ok(4),solo:ok(0),scheduled:ok(0),completed:ok(0),cancelled:untracked,no_show:untracked,
-    median_hours_to_agreed_time:none,repeat_pair_percent:ok(0),
-  });
-  // 109-110 (W28) and 101-105 (W31) repeat; 111-112 last met in W27, which
-  // is past the lookback and is never read (otherwise this would be 75%).
-  assert.deepEqual(cycles['2026-W36'].metrics.repeat_pair_percent,ok(50));
-  assert.deepEqual(cycles['2026-W36'].metrics.available,ok(8));
+  for(const [cycleId,structure] of [['2026-W41',[2,2,0,1]],['2026-W39',[5,5,0,2]],['2026-W38',[3,2,1,1]],['2026-W35',[2,2,0,1]]]){
+    const [available,paired,solo,pairs]=structure;
+    assert.deepEqual(cycles[cycleId].metrics,{ available:ok(available),paired:ok(paired),solo:ok(solo),pairs:ok(pairs),
+      scheduled_pairs:hidden,completed_pairs:hidden,repeat_pair_percent:hidden,...deferred },cycleId);
+  }
+  assert.deepEqual(cycles['2026-W40'].metrics,{ available:ok(0),paired:ok(0),solo:ok(0),pairs:ok(0),
+    scheduled_pairs:none,completed_pairs:none,repeat_pair_percent:none,...deferred });
+  // 109-110 (W28) and 101-105 (W31) repeat; 111-112 last met in W27, past the
+  // lookback (counting it would make 3 of 4, an edge).
+  assert.deepEqual(cycles['2026-W36'].metrics,{ available:ok(8),paired:ok(8),solo:ok(0),pairs:ok(4),
+    scheduled_pairs:ok(0),completed_pairs:ok(0),repeat_pair_percent:ok(50),...deferred });
 });
 
-test('the response never carries member identities',async()=>{
+test('the response never carries member identities or live data',async()=>{
   const { health }=await readCircleHealth(db,{ actorUserId:1,circleId:10,now:NOW,timeZone:TZ });
   const text=JSON.stringify(health);
-  assert.doesNotMatch(text,/@|Member \d|user_id|member_id|email|name/);
+  assert.doesNotMatch(text,/@|Member \d|user_id|member_id|email|name|2026-W44/);
   for(const cycle of health.cycles){
-    assert.deepEqual(Object.keys(cycle).sort(),['cycle_id','in_progress','metrics','starts_at','suppressed']);
+    assert.deepEqual(Object.keys(cycle).sort(),['cycle_id','metrics','starts_at']);
     for(const cell of Object.values(cycle.metrics)){
       assert.deepEqual(Object.keys(cell).sort(),['status','value']);
     }
@@ -331,28 +331,45 @@ test('every active owner of the circle can read it, including co-owners and sing
 
 test('members, demoted owners, inactive owners, archived circles and other circles are denied',async()=>{
   const denied={ ok:false,reason:'owner_required' };
-  assert.deepEqual(await readCircleHealth(db,{ actorUserId:2,circleId:10 }),denied,'member');
-  assert.deepEqual(await readCircleHealth(db,{ actorUserId:4,circleId:10 }),denied,'demoted owner');
-  assert.deepEqual(await readCircleHealth(db,{ actorUserId:5,circleId:10 }),denied,'inactive owner');
-  assert.deepEqual(await readCircleHealth(db,{ actorUserId:1,circleId:30 }),denied,'archived circle');
-  assert.deepEqual(await readCircleHealth(db,{ actorUserId:6,circleId:10 }),denied,'owner of another circle');
-  assert.deepEqual(await readCircleHealth(db,{ actorUserId:1,circleId:20 }),denied,'member of the secondary');
-  assert.deepEqual(await readCircleHealth(db,{ actorUserId:6 }),denied,'secondary owner has no primary');
-  assert.deepEqual(await readCircleHealth(db,{ actorUserId:99,circleId:10 }),denied,'unknown account');
+  const ask=input=>readCircleHealth(db,{ now:NOW,timeZone:TZ,...input });
+  assert.deepEqual(await ask({ actorUserId:2,circleId:10 }),denied,'member');
+  assert.deepEqual(await ask({ actorUserId:4,circleId:10 }),denied,'demoted owner');
+  assert.deepEqual(await ask({ actorUserId:5,circleId:10 }),denied,'inactive owner');
+  assert.deepEqual(await ask({ actorUserId:1,circleId:30 }),denied,'archived circle');
+  assert.deepEqual(await ask({ actorUserId:6,circleId:10 }),denied,'owner of another circle');
+  assert.deepEqual(await ask({ actorUserId:1,circleId:20 }),denied,'member of the secondary');
+  assert.deepEqual(await ask({ actorUserId:6 }),denied,'secondary owner has no primary');
+  assert.deepEqual(await ask({ actorUserId:99,circleId:10 }),denied,'unknown account');
 });
 
-test('a demotion between the owner check and the read batch still denies',async()=>{
-  const racing={
+function racing(change,restore){
+  return {
     execute:statement=>db.execute(statement),
     batch:async(statements,mode)=>{
-      await db.execute(`UPDATE circle_memberships SET role='member' WHERE circle_id=10 AND user_id=3`);
+      await db.execute(change);
       try{ return await db.batch(statements,mode); }
-      finally{ await db.execute(`UPDATE circle_memberships SET role='owner' WHERE circle_id=10 AND user_id=3`); }
+      finally{ await db.execute(restore); }
     },
   };
-  assert.deepEqual(await readCircleHealth(racing,{ actorUserId:3,circleId:10 }),{ ok:false,reason:'owner_required' });
+}
+
+test('a demotion, deactivation or archive between the owner check and the read batch still denies',async()=>{
+  const denied={ ok:false,reason:'owner_required' };
+  assert.deepEqual(await readCircleHealth(racing(
+    `UPDATE circle_memberships SET role='member' WHERE circle_id=10 AND user_id=3`,
+    `UPDATE circle_memberships SET role='owner' WHERE circle_id=10 AND user_id=3`,
+  ),{ actorUserId:3,circleId:10,now:NOW,timeZone:TZ }),denied,'demoted');
+  assert.deepEqual(await readCircleHealth(racing(
+    `UPDATE circle_memberships SET status='inactive' WHERE circle_id=10 AND user_id=3`,
+    `UPDATE circle_memberships SET status='active' WHERE circle_id=10 AND user_id=3`,
+  ),{ actorUserId:3,circleId:10,now:NOW,timeZone:TZ }),denied,'deactivated');
+  assert.deepEqual(await readCircleHealth(racing(
+    `UPDATE circles SET archived_at='2026-10-27T00:00:00.000Z' WHERE id=10`,
+    `UPDATE circles SET archived_at=NULL WHERE id=10`,
+  ),{ actorUserId:3,circleId:10,now:NOW,timeZone:TZ }),denied,'archived');
+  assert.equal((await readCircleHealth(db,{ actorUserId:3,circleId:10,now:NOW,timeZone:TZ })).ok,true,'state restored');
   const invalid={ execute:async()=>({ rows:[{ circle_id:'x',is_primary:1 }] }),batch:async()=>assert.fail('no read') };
-  assert.deepEqual(await readCircleHealth(invalid,{ actorUserId:3,circleId:10 }),{ ok:false,reason:'owner_required' });
+  assert.deepEqual(await readCircleHealth(invalid,{ actorUserId:3,circleId:10,now:NOW,timeZone:TZ }),denied);
 });
 
 test('malformed or legacy rows are skipped rather than trusted',async()=>{
@@ -361,54 +378,64 @@ test('malformed or legacy rows are skipped rather than trusted',async()=>{
     execute:async()=>result([{ circle_id:10,is_primary:isPrimary }]),
     batch:async()=>batchRows.map(result),
   });
+  const pairsOf=(weekId,count)=>Array.from({ length:count },(_,index)=>(
+    { id:70+index,week_id:weekId,user_a_id:1+2*index,user_b_id:2+2*index,user_c_id:null,is_ai_pair:0 }));
+  const participantsOf=(weekId,count)=>Array.from({ length:2*count },(_,index)=>(
+    { week_id:weekId,user_id:1+index,source:'auth' }));
   const primary=await readCircleHealth(fake(1,[
     [{ owner:1 }],
-    // A legacy week without a publication run falls back to the week's own
-    // creation time for the lead-time metric.
-    [{ id:5,week_label:'2026-W42',week_start:'2026-10-11T07:00:00.000Z',week_created_at:'2026-10-11 07:00:00',published_at:null }],
-    [{ week_id:5,user_id:1,source:'auth' },{ week_id:5,user_id:2,source:null },{ week_id:5,user_id:null },
-      { week_id:5,user_id:3,source:'auth' },{ week_id:5,user_id:4,source:'auth' }],
-    [{ id:7,week_id:5,user_a_id:1,user_b_id:2,user_c_id:null,is_ai_pair:0 },
-      { id:8,week_id:5,user_a_id:3,user_b_id:4,user_c_id:null,is_ai_pair:0 },{ id:null,week_id:5 }],
-    [{ week_id:5,pair_group_id:7,agreed_time:'2026-10-12T07:00:00.000Z' },
-      { week_id:5,pair_group_id:8,agreed_time:'2026-10-13T07:00:00.000Z' }],
-    [{ week_id:5,pair_group_id:7,user_id:1,participant_source:'auth' },
-      { week_id:5,pair_group_id:7,user_id:2,participant_source:null }],
+    [{ id:5,week_label:'2026-W42',week_start:'2026-10-11T07:00:00.000Z' }],
+    [...participantsOf(5,4),{ week_id:5,user_id:null },{ week_id:5,user_id:2,source:null }],
+    [...pairsOf(5,4),{ id:null,week_id:5 }],
+    [70,71,72,73].map(id=>({ week_id:5,pair_group_id:id,agreed_time:'2026-10-12T07:00:00.000Z' })),
+    [
+      // Group 70: both members confirmed. User 2's participant source fell
+      // back to auth, so both receipts are required and present.
+      { week_id:5,pair_group_id:70,user_id:1,participant_source:'auth' },
+      { week_id:5,pair_group_id:70,user_id:2,participant_source:'auth' },
+      // Group 71: both members confirmed, plus a receipt from someone outside
+      // the pair, so it does not count as completed.
+      { week_id:5,pair_group_id:71,user_id:3,participant_source:'auth' },
+      { week_id:5,pair_group_id:71,user_id:4,participant_source:'auth' },
+      { week_id:5,pair_group_id:71,user_id:99,participant_source:'auth' },
+      // Group 72: one receipt has no auth source.
+      { week_id:5,pair_group_id:72,user_id:5,participant_source:'auth' },
+      { week_id:5,pair_group_id:72,user_id:6,participant_source:null },
+      // Group 73: both confirmed.
+      { week_id:5,pair_group_id:73,user_id:7,participant_source:'auth' },
+      { week_id:5,pair_group_id:73,user_id:8,participant_source:'auth' },
+    ],
   ]),{ actorUserId:1,circleId:10,now:NOW,timeZone:TZ });
-  assert.deepEqual(primary.health.cycles[0].metrics.available,ok(4));
-  // Both members default to the auth source, so one receipt is not enough.
-  assert.deepEqual(primary.health.cycles[0].metrics.completed,ok(0));
-  assert.deepEqual(primary.health.cycles[0].metrics.median_hours_to_agreed_time,ok(36));
+  const metrics=primary.health.cycles[0].metrics;
+  assert.deepEqual([metrics.available,metrics.pairs,metrics.scheduled_pairs,metrics.completed_pairs],
+    [ok(8),ok(4),ok(4),ok(2)]);
   const secondary=await readCircleHealth(fake(0,[
     [{ owner:1 }],
-    [{ id:3,cycle_id:'2026-W42',starts_at:'bad',created_at:'2026-10-11T07:00:01.000Z' },
-      { id:4,cycle_id:'2026-W41',starts_at:'2026-10-04T07:00:00.000Z',created_at:'2026-10-04T07:00:01.000Z' }],
+    [{ id:3,cycle_id:'2026-W42',starts_at:'bad' },{ id:4,cycle_id:'2026-W41',starts_at:'2026-10-04T07:00:00.000Z' }],
     [{ id:null,publication_id:3 },{ id:9,publication_id:3,user_a_id:5,user_b_id:6,is_solo:0 },
-      { id:10,publication_id:3,user_a_id:7,user_b_id:8,is_solo:0 }],
+      { id:10,publication_id:3,user_a_id:7,user_b_id:8,is_solo:0 },{ id:11,publication_id:3,user_a_id:9,user_b_id:null,is_solo:1 }],
     { rows:null },
   ]),{ actorUserId:1,circleId:10,now:NOW,timeZone:TZ });
   assert.equal(secondary.health.cycles[0].starts_at,null);
-  assert.deepEqual(secondary.health.cycles[0].metrics.paired,ok(4));
-  assert.deepEqual(secondary.health.cycles[0].metrics.scheduled,ok(0));
+  assert.deepEqual([secondary.health.cycles[0].metrics.paired,secondary.health.cycles[0].metrics.solo],[ok(4),ok(1)]);
+  assert.deepEqual(secondary.health.cycles[0].metrics.scheduled_pairs,hidden,'two pairs');
   assert.deepEqual(secondary.health.cycles[1].metrics.available,ok(0));
 });
 
-test('secondary health reads only that circle and marks completion as not tracked',async()=>{
+test('secondary health reads only that circle\'s finished cycles and marks completion as not tracked',async()=>{
   const result=await readCircleHealth(db,{ actorUserId:6,circleId:20,now:NOW,timeZone:TZ });
   assert.equal(result.ok,true);
   assert.equal(result.health.scope,'secondary');
   assert.equal(result.health.completion_tracked,false);
   assert.deepEqual(result.health.cycles.map(cycle=>cycle.cycle_id),['2026-W43','2026-W42']);
-  const [current,previous]=result.health.cycles;
-  assert.equal(current.in_progress,true);
-  assert.deepEqual(current.metrics,{
-    available:ok(5),paired:ok(4),solo:hidden,scheduled:ok(4),completed:untracked,cancelled:untracked,no_show:untracked,
-    // Agreed 58.9997 h and 82.9997 h after publication.
-    median_hours_to_agreed_time:ok(71),repeat_pair_percent:ok(100),
+  const [newest,older]=result.health.cycles;
+  assert.deepEqual(newest.metrics,{
+    available:ok(7),paired:ok(6),solo:ok(1),pairs:ok(3),scheduled_pairs:ok(3),completed_pairs:untracked,
+    repeat_pair_percent:ok(100),...deferred,
   });
-  assert.deepEqual(previous.metrics,{
-    available:ok(4),paired:ok(4),solo:ok(0),scheduled:ok(0),completed:untracked,cancelled:untracked,no_show:untracked,
-    median_hours_to_agreed_time:none,repeat_pair_percent:ok(0),
+  assert.deepEqual(older.metrics,{
+    available:ok(6),paired:ok(6),solo:ok(0),pairs:ok(3),scheduled_pairs:ok(0),completed_pairs:untracked,
+    repeat_pair_percent:ok(0),...deferred,
   });
 });
 

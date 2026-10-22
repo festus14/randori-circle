@@ -11,17 +11,16 @@ import {
   withDatabase,
 } from './golden-runtime';
 
-// Issue #292 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 15). The real
+// Issue #292 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 18). The real
 // loopback runtime runs with CIRCLE_HEALTH_ENABLED. The owner publishes the
-// current cycle through the UI; two earlier cycles are a hand-built history
-// written straight into the runtime database, so every number on screen can
-// be checked against the fixture. Only owners see the panel.
+// current cycle through the UI (never shown: only finished cycles are); two
+// earlier cycles are a hand-built history written straight into the runtime
+// database, so every number on screen can be checked against the fixture.
+// Only owners see the panel, and the module loads only for them.
 
 const ENV_KEYS=['CIRCLE_HEALTH_ENABLED'] as const;
 const HOUR=3600_000;
 const ok=(value:number)=>({status:'ok',value});
-const hidden={status:'suppressed',value:null};
-const none={status:'no_data',value:null};
 const untracked={status:'not_tracked',value:null};
 
 async function expectPanelAccessible(page:Page){
@@ -43,7 +42,7 @@ function rowCells(page:Page,cycleId:string){
   return page.locator(`[data-testid="circle-health-row"][data-cycle="${cycleId}"] td`);
 }
 
-test('circle health: an owner sees fixture-exact, privacy-suppressed metrics for recent cycles; a member cannot',async({browser})=>{
+test('circle health: an owner sees fixture-exact metrics for recent finished cycles; a member cannot',async({browser})=>{
   test.setTimeout(150_000);
   const original=Object.fromEntries(ENV_KEYS.map(key=>[key,process.env[key]]));
   process.env.CIRCLE_HEALTH_ENABLED='true';
@@ -55,8 +54,8 @@ test('circle health: an owner sees fixture-exact, privacy-suppressed metrics for
     const ownerId=pair.owner.user.id;
     const memberId=pair.member.user.id;
 
-    // The UI published the current cycle (2 members: withheld as a whole).
-    // Add two earlier cycles with six more members in the primary circle.
+    // The UI published the current cycle, which is never returned. Add two
+    // earlier, finished cycles with seven more members in the primary circle.
     const current=await withDatabase(golden,async db=>{
       const week=(await db.execute(`SELECT week_label,week_start FROM pairing_weeks ORDER BY id DESC LIMIT 1`)).rows[0];
       const circleId=Number((await db.execute(`SELECT id FROM circles WHERE is_primary=1 AND archived_at IS NULL`)).rows[0].id);
@@ -71,9 +70,9 @@ test('circle health: an owner sees fixture-exact, privacy-suppressed metrics for
       const older=resolvePairingCycle({now:new Date(Date.parse(previous.startsAt)-1)});
       const published=Date.parse(previous.startsAt);
       const at=(hours:number)=>new Date(published+hours*HOUR).toISOString();
-      // Previous cycle: 8 available, every pair agreed (24/36/60/72 h after
-      // publication, median 48 h), two pairs completed; 9103-9104 and
-      // 9105-9106 repeat from the older cycle.
+      // Previous cycle: 8 available, all 4 pairs agreed a time, 2 completed
+      // (a third has one receipt); 9103-9104 and 9105-9106 repeat from the
+      // older cycle.
       await insertPrimaryWeek(db,{label:previous.cycleId,weekStart:previous.startsAt,publishedAt:previous.startsAt,
         participants:[ownerId,memberId,9101,9102,9103,9104,9105,9106],groups:[
           {members:[ownerId,9101],agreed:at(24),receipts:[ownerId,9101]},
@@ -89,38 +88,35 @@ test('circle health: an owner sees fixture-exact, privacy-suppressed metrics for
       return {label:String(week.week_label),previous:previous.cycleId,older:older.cycleId};
     });
 
-    // The API returns exactly the fixture's aggregates, newest first.
+    // The API returns exactly the fixture's aggregates for finished cycles,
+    // newest first; the current cycle is not included.
     const api=await json(owner,'/api/circle/health');
     expect(api.status,JSON.stringify(api.body)).toBe(200);
-    expect(api.body.health.cycles.map((cycle:any)=>cycle.cycle_id)).toEqual([current.label,current.previous,current.older]);
-    const [now,previous,older]=api.body.health.cycles;
-    expect(now.suppressed).toBe(true);
-    expect(now.in_progress).toBe(true);
+    expect(api.body.health.cycles.map((cycle:any)=>cycle.cycle_id)).toEqual([current.previous,current.older]);
+    const [previous,older]=api.body.health.cycles;
+    const deferred={median_hours_to_agreed_time:untracked,cancelled:untracked,no_show:untracked};
     expect(previous.metrics).toEqual({
-      available:ok(8),paired:ok(8),solo:ok(0),scheduled:ok(8),completed:ok(4),cancelled:untracked,no_show:untracked,
-      median_hours_to_agreed_time:ok(48),repeat_pair_percent:ok(50),
+      available:ok(8),paired:ok(8),solo:ok(0),pairs:ok(4),scheduled_pairs:ok(4),completed_pairs:ok(2),
+      repeat_pair_percent:ok(50),...deferred,
     });
     expect(older.metrics).toEqual({
-      available:ok(7),paired:ok(6),solo:hidden,scheduled:ok(0),completed:ok(0),cancelled:untracked,no_show:untracked,
-      median_hours_to_agreed_time:none,repeat_pair_percent:ok(0),
+      available:ok(7),paired:ok(6),solo:ok(1),pairs:ok(3),scheduled_pairs:ok(0),completed_pairs:ok(0),
+      repeat_pair_percent:ok(0),...deferred,
     });
-    expect(JSON.stringify(api.body)).not.toMatch(/@|Fixture|Golden|Owner|user_id/);
+    expect(JSON.stringify(api.body)).not.toMatch(new RegExp(`@|Fixture|Golden|Owner|user_id|${current.label}`));
 
     // The owner sees the same numbers in the Circle tab.
     await owner.locator('[data-tab="circle"]').click();
     const panel=owner.getByTestId('circle-health');
     await expect(panel).toBeVisible();
-    await expect(owner.getByTestId('circle-health-row')).toHaveCount(3);
-    const currentRow=owner.locator(`[data-testid="circle-health-row"][data-cycle="${current.label}"]`);
-    await expect(currentRow).toContainText('In progress');
-    await expect(currentRow).toContainText('Hidden: fewer than 3 members took part');
+    await expect(owner.getByTestId('circle-health-row')).toHaveCount(2);
     expect(await rowCells(owner,current.previous).allTextContents())
-      .toEqual(['8','8','8','4','0','2 days','50%']);
+      .toEqual(['8','8','0','4 of 4','2 of 4','50%']);
     expect(await rowCells(owner,current.older).allTextContents())
-      .toEqual(['7','6','0','0','Hidden','—','0%']);
+      .toEqual(['7','6','1','0 of 3','0 of 3','0%']);
     await expect(owner.getByTestId('circle-health-table').locator('thead th'))
-      .toHaveText(['Cycle','Available','Paired','Agreed a time','Completed','Solo','Pairing to session','Repeat pairs']);
-    await expect(panel).toContainText('Cancellations and no-shows will appear once cancel and no-show reporting is available.');
+      .toHaveText(['Cycle','Available','Paired','Solo','Agreed a time','Completed','Repeat pairs']);
+    await expect(panel).toContainText('Only finished cycles are shown');
 
     // Keyboard only: open the definitions and refresh.
     const summary=panel.locator('summary');
@@ -133,16 +129,20 @@ test('circle health: an owner sees fixture-exact, privacy-suppressed metrics for
     const refreshed=owner.waitForResponse(pathIs('/api/circle/health','GET'));
     await owner.keyboard.press('Enter');
     expect((await refreshed).status()).toBe(200);
-    await expect(owner.getByTestId('circle-health-row')).toHaveCount(3);
+    await expect(owner.getByTestId('circle-health-row')).toHaveCount(2);
     // The table scrolls sideways on phones, so its region takes focus.
     await owner.locator('#circleHealthTableWrap').focus();
     await expect(owner.locator('#circleHealthTableWrap')).toBeFocused();
     await expectPanelAccessible(owner);
 
-    // A member never sees the panel and is refused by the server.
+    // A member never sees the panel, never loads the module, and is refused
+    // by the server.
+    const memberModuleRequests:string[]=[];
+    member.on('request',request=>{ if(new URL(request.url()).pathname==='/assets/circle-health.js') memberModuleRequests.push(request.url()); });
     await member.locator('[data-tab="circle"]').click();
     await expect(member.getByTestId('circle-members')).toBeVisible();
     await expect(member.getByTestId('circle-health')).toBeHidden();
+    expect(memberModuleRequests).toEqual([]);
     const denied=await json(member,'/api/circle/health');
     expect(denied.status).toBe(403);
     expect(denied.body).toEqual({error:'circle owner required'});

@@ -1,32 +1,32 @@
 // Owner "Circle health" panel (issue #292, provisional design: needs-design).
 //
-// Loaded by index.html as `<script type="module">`. The pure helpers validate
-// the server response and turn each cell into display text; the controller
-// renders a text-only table into the static panel. Every request, ownership
-// hint and circle-context guard comes from the host object index.html passes
-// in. The server is authoritative for ownership and has already suppressed
-// small cells, so this file only displays what it is given and never stores
-// it anywhere but memory (cleared by `reset()` on any identity or circle
-// change).
+// index.html imports this module on demand, only when /api/auth/capabilities
+// advertises circleHealth. The pure helpers validate the server response and
+// turn each cell into display text; the controller renders a text-only table
+// into the static panel. Every request, ownership hint and circle-context
+// guard comes from the host object index.html passes in. The server is
+// authoritative for ownership and has already hidden what must not be shown,
+// so this file only displays what it is given and never stores it anywhere
+// but memory (cleared by `reset()` on any identity or circle change).
 
 export const METRICS = Object.freeze([
   Object.freeze({ key: 'available', label: 'Available', kind: 'count',
     help: 'Members who were in for the cycle when the pairs were published.' }),
   Object.freeze({ key: 'paired', label: 'Paired', kind: 'count',
     help: 'Members placed with a partner.' }),
-  Object.freeze({ key: 'scheduled', label: 'Agreed a time', kind: 'count',
-    help: 'Paired members whose pair agreed a session time.' }),
-  Object.freeze({ key: 'completed', label: 'Completed', kind: 'count',
-    help: 'Paired members whose pair confirmed the session took place.' }),
   Object.freeze({ key: 'solo', label: 'Solo', kind: 'count',
     help: 'The odd member, who practised solo that cycle.' }),
-  Object.freeze({ key: 'median_hours_to_agreed_time', label: 'Pairing to session', kind: 'hours',
-    help: 'Median time from publishing the pairs to the agreed session time.' }),
+  Object.freeze({ key: 'scheduled_pairs', label: 'Agreed a time', kind: 'pairs',
+    help: 'Pairs that agreed a session time, out of all pairs.' }),
+  Object.freeze({ key: 'completed_pairs', label: 'Completed', kind: 'pairs',
+    help: 'Pairs where both partners confirmed the session took place.' }),
   Object.freeze({ key: 'repeat_pair_percent', label: 'Repeat pairs', kind: 'percent',
     help: 'Share of pairs who were also paired in one of the 8 cycles before.' }),
 ]);
 
-const SERVER_METRICS = [...METRICS.map(metric => metric.key), 'cancelled', 'no_show'];
+// Kept in the contract but not displayed: `pairs` is the denominator shown in
+// "2 of 4"; the rest are always `not_tracked` for now.
+const SERVER_METRICS = [...METRICS.map(metric => metric.key), 'pairs', 'median_hours_to_agreed_time', 'cancelled', 'no_show'];
 // The figures move slowly (weekly cycles), so one copy per circle context is
 // reused for a few minutes instead of re-reading on every Circle tab visit.
 export const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -39,10 +39,8 @@ function record(value) {
 }
 
 function validValue(kind, value) {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return false;
-  if (kind === 'percent') return Number.isInteger(value) && value <= 100;
-  if (kind === 'hours') return value < 24 * 366;
-  return Number.isInteger(value) && value <= 100000;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return false;
+  return kind === 'percent' ? value <= 100 : value <= 100000;
 }
 
 /** One `{status,value}` cell, or null when the shape is not trustworthy. */
@@ -57,7 +55,6 @@ function normalizeCycle(raw) {
   const cycle = record(raw);
   const metrics = record(cycle?.metrics);
   if (!cycle || !metrics || typeof cycle.cycle_id !== 'string' || !ISO_WEEK.test(cycle.cycle_id)
-    || typeof cycle.in_progress !== 'boolean' || typeof cycle.suppressed !== 'boolean'
     || (cycle.starts_at !== null && (typeof cycle.starts_at !== 'string' || !Number.isFinite(Date.parse(cycle.starts_at))))) {
     return null;
   }
@@ -68,13 +65,12 @@ function normalizeCycle(raw) {
     if (!cell) return null;
     normalized[key] = cell;
   }
-  return Object.freeze({
-    cycle_id: cycle.cycle_id,
-    starts_at: cycle.starts_at,
-    in_progress: cycle.in_progress,
-    suppressed: cycle.suppressed,
-    metrics: Object.freeze(normalized),
-  });
+  if (normalized.pairs.status !== 'ok') return null;
+  for (const metric of METRICS) {
+    const cell = normalized[metric.key];
+    if (metric.kind === 'pairs' && cell.status === 'ok' && cell.value > normalized.pairs.value) return null;
+  }
+  return Object.freeze({ cycle_id: cycle.cycle_id, starts_at: cycle.starts_at, metrics: Object.freeze(normalized) });
 }
 
 /** Validate a GET /api/circle/health body; null means render nothing. */
@@ -82,8 +78,8 @@ export function normalizeHealthResponse(raw) {
   const body = record(raw);
   const health = record(body?.health);
   if (body?.ok !== true || !health || !['primary', 'secondary'].includes(health.scope)
-    || typeof health.completion_tracked !== 'boolean' || !Number.isInteger(health.min_cell_size)
-    || health.min_cell_size < 2 || !Array.isArray(health.cycles) || health.cycles.length > MAX_CYCLES) {
+    || typeof health.completion_tracked !== 'boolean' || !Number.isInteger(health.min_pairs)
+    || health.min_pairs < 2 || !Array.isArray(health.cycles) || health.cycles.length > MAX_CYCLES) {
     return null;
   }
   const cycles = health.cycles.map(normalizeCycle);
@@ -92,36 +88,28 @@ export function normalizeHealthResponse(raw) {
     scope: health.scope,
     completionTracked: health.completion_tracked,
     attendanceTracked: health.attendance_outcomes_tracked === true,
-    minimum: health.min_cell_size,
+    minimumPairs: health.min_pairs,
     cycles: Object.freeze(cycles),
   });
 }
 
-/** "9 h", "36 h", "2.5 days". */
-export function formatDuration(hours) {
-  if (hours < 1) return 'under 1 h';
-  if (hours < 48) return `${Math.round(hours)} h`;
-  const days = Math.round((hours / 24) * 10) / 10;
-  return `${days} days`;
-}
+const HIDDEN_TITLE = 'Hidden so it cannot point to a single pair';
 
 /** Display text for one cell. `title` is the longer explanation. */
-export function cellView(metric, cell, { minimum = 3 } = {}) {
+export function cellView(metric, cell, { pairs = 0 } = {}) {
   if (cell.status === 'ok') {
     if (metric.kind === 'percent') return { text: `${cell.value}%`, state: 'ok' };
-    if (metric.kind === 'hours') return { text: formatDuration(cell.value), state: 'ok' };
+    if (metric.kind === 'pairs') return { text: `${cell.value} of ${pairs}`, state: 'ok' };
     return { text: String(cell.value), state: 'ok' };
   }
-  if (cell.status === 'suppressed') {
-    return { text: 'Hidden', state: 'suppressed', title: `Hidden so it cannot describe fewer than ${minimum} members` };
-  }
+  if (cell.status === 'suppressed') return { text: 'Hidden', state: 'suppressed', title: HIDDEN_TITLE };
   if (cell.status === 'not_tracked') return { text: 'Not tracked', state: 'not-tracked' };
-  return { text: '—', state: 'none', title: 'Nothing to measure yet' };
+  return { text: '—', state: 'none', title: 'No pairs this cycle' };
 }
 
 /** Columns for this circle: completion is not recorded for secondary circles. */
 export function visibleMetrics(health) {
-  return METRICS.filter(metric => metric.key !== 'completed' || health.completionTracked);
+  return METRICS.filter(metric => metric.key !== 'completed_pairs' || health.completionTracked);
 }
 
 export function cycleLabel(cycle, weekLabel) {
@@ -131,9 +119,11 @@ export function cycleLabel(cycle, weekLabel) {
 }
 
 export function footnoteText(health) {
-  const notes = [];
+  const notes = ['Only finished cycles are shown; this week\'s pairs are on the Pairing tab.'];
   if (!health.completionTracked) notes.push('This circle does not record completed sessions.');
-  if (!health.attendanceTracked) notes.push('Cancellations and no-shows will appear once cancel and no-show reporting is available.');
+  notes.push(health.attendanceTracked
+    ? 'Time to agree a session will appear once it is recorded.'
+    : 'Cancellations, no-shows and time to agree a session will appear once they are recorded.');
   return notes.join(' ');
 }
 
@@ -149,7 +139,7 @@ export function renderHealthTable(doc, table, health, { weekLabel } = {}) {
   const metrics = visibleMetrics(health);
   table.replaceChildren();
   table.appendChild(element(doc, 'caption', { className: 'sr-only',
-    text: `Circle health for the last ${health.cycles.length} cycles, newest first. Hidden values would describe fewer than ${health.minimum} members.` }));
+    text: `Circle health for the last ${health.cycles.length} finished cycles, newest first. Pair counts are hidden when they could point to a single pair.` }));
   const head = element(doc, 'thead');
   const headRow = element(doc, 'tr');
   headRow.appendChild(element(doc, 'th', { text: 'Cycle', attrs: { scope: 'col' } }));
@@ -158,24 +148,12 @@ export function renderHealthTable(doc, table, health, { weekLabel } = {}) {
   const body = element(doc, 'tbody');
   for (const cycle of health.cycles) {
     const row = element(doc, 'tr', { attrs: { 'data-testid': 'circle-health-row', 'data-cycle': cycle.cycle_id } });
-    const header = element(doc, 'th', { attrs: { scope: 'row' } });
-    header.appendChild(element(doc, 'span', { text: cycleLabel(cycle, weekLabel) }));
-    if (cycle.in_progress) {
-      header.appendChild(doc.createTextNode(' '));
-      header.appendChild(element(doc, 'span', { className: 'rc-badge', text: 'In progress', attrs: { 'data-tone': 'info' } }));
-    }
-    row.appendChild(header);
-    if (cycle.suppressed) {
-      row.setAttribute('data-suppressed', 'true');
-      row.appendChild(element(doc, 'td', { className: 'circle-health-hidden',
-        text: `Hidden: fewer than ${health.minimum} members took part`, attrs: { colspan: String(metrics.length) } }));
-    } else {
-      for (const metric of metrics) {
-        const view = cellView(metric, cycle.metrics[metric.key], { minimum: health.minimum });
-        const attrs = { 'data-metric': metric.key, 'data-state': view.state };
-        if (view.title) attrs.title = view.title;
-        row.appendChild(element(doc, 'td', { text: view.text, attrs }));
-      }
+    row.appendChild(element(doc, 'th', { text: cycleLabel(cycle, weekLabel), attrs: { scope: 'row' } }));
+    for (const metric of metrics) {
+      const view = cellView(metric, cycle.metrics[metric.key], { pairs: cycle.metrics.pairs.value });
+      const attrs = { 'data-metric': metric.key, 'data-state': view.state };
+      if (view.title) attrs.title = view.title;
+      row.appendChild(element(doc, 'td', { text: view.text, attrs }));
     }
     body.appendChild(row);
   }
@@ -188,7 +166,7 @@ export function renderDefinitions(doc, list) {
     list.append(element(doc, 'dt', { text: metric.label }), element(doc, 'dd', { text: metric.help }));
   }
   list.append(element(doc, 'dt', { text: 'Hidden' }),
-    element(doc, 'dd', { text: 'Any number that would describe fewer than 3 members, or could be worked out from two other numbers, is hidden by the server so no one can be singled out.' }));
+    element(doc, 'dd', { text: 'Pair counts are hidden for cycles with fewer than 3 pairs, and when exactly one pair is in or out of a count, so a number cannot point to a single pair. When every pair, or no pair, did something, the number says so.' }));
 }
 
 /**
@@ -244,21 +222,22 @@ export function mountCircleHealth({ doc = document, host }) {
 
   function load() {
     if (!host.canView()) return Promise.resolve(false);
+    // Nothing is requested while the circle context is changing; checked
+    // before any request is recorded, so a later call can still load.
+    const operation = host.capture();
+    if (!host.matches(operation)) return Promise.resolve(false);
     const key = host.cacheKey();
     // One request per circle context; a newer context supersedes an older one.
     if (inflight && inflight.key === key) return inflight.promise;
-    const promise = fetchHealth(key);
-    inflight = { key, promise };
-    return promise;
+    const entry = { key, promise: fetchHealth(key, operation) };
+    inflight = entry;
+    const settle = () => { if (inflight === entry) inflight = null; };
+    entry.promise.then(settle, settle);
+    return entry.promise;
   }
 
-  async function fetchHealth(key) {
-    const operation = host.capture();
+  async function fetchHealth(key, operation) {
     const started = ++epoch;
-    if (!host.matches(operation)) {
-      inflight = null;
-      return false;
-    }
     refresh.disabled = true;
     wrap.setAttribute('aria-busy', 'true');
     status.textContent = 'Loading circle health…';
@@ -285,7 +264,6 @@ export function mountCircleHealth({ doc = document, host }) {
       return false;
     } finally {
       if (started === epoch) {
-        inflight = null;
         refresh.disabled = false;
         wrap.setAttribute('aria-busy', 'false');
       }
@@ -331,7 +309,6 @@ const api = Object.freeze({
   cellView,
   cycleLabel,
   footnoteText,
-  formatDuration,
   mountCircleHealth,
   normalizeCell,
   normalizeHealthResponse,
