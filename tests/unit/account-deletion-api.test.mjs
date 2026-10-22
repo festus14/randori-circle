@@ -390,10 +390,31 @@ test('/me and a profile save racing the deletion write nothing into the tombston
     body:{display_name:'Member Again',bio:'still here'},cookie});
   assert.equal(fired(),true);
   assert.deepEqual(await tombstone(db2),TOMBSTONE);
-  // Notification preferences saved after the deletion never come back either.
-  await invoke({handler:opsHandler,endpoint:'notifications-prefs',url:'/api/notifications/prefs',method:'POST',
+});
+
+test('a notification-preferences save racing the deletion does not bring the email or phone back',async()=>{
+  const db=await fixture();
+  const cookie=await signedIn();
+  const fired=interceptOnce(sql=>sql.includes('INSERT INTO user_notification_prefs'),()=>deleteNow(cookie));
+  const saved=await invoke({handler:opsHandler,endpoint:'notifications-prefs',url:'/api/notifications/prefs',method:'POST',
     body:{email_enabled:true,email:'member@example.test',phone:'07700900123'},cookie});
-  assert.equal(Number((await db2.execute(`SELECT COUNT(*) AS count FROM user_notification_prefs WHERE user_id=2`)).rows[0].count),0);
+  assert.equal(fired(),true,'the save was authenticated before the deletion committed');
+  assert.equal(saved.statusCode,200);
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM user_notification_prefs WHERE user_id=2`)).rows[0].count),0);
+});
+
+test('an ADMIN_EMAILS admin operation racing the deletion cannot grant admin to the tombstone',async()=>{
+  const db=await fixture();
+  process.env.ADMIN_EMAILS='member@example.test';
+  const cookie=await signedIn();
+  await db.execute(`UPDATE auth_accounts SET is_admin=0 WHERE id=2`);
+  const fired=interceptOnce(sql=>sql.startsWith('UPDATE auth_accounts SET is_admin=1 WHERE id=?'),()=>deleteNow(cookie));
+  const seeded=await invoke({handler:opsHandler,endpoint:'demo-seed',url:'/api/admin/demo-seed',method:'POST',body:{},cookie});
+  assert.equal(fired(),true);
+  assert.deepEqual([seeded.statusCode,seeded.body],[401,{error:'authentication required'}]);
+  assert.deepEqual(await tombstone(db),TOMBSTONE);
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM auth_accounts WHERE is_demo=1`)).rows[0].count),0,
+    'the admin operation stops instead of running for a deleted account');
 });
 
 test('a solo run executed across the deletion is not saved with the member\'s code',async()=>{

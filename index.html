@@ -5013,6 +5013,9 @@ async function refreshMe(){
   });
   async function beginGoogleReauthentication(){
     if(identityUi.busy) return;
+    // Issue #339: this confirmation belongs to Account security or a circle
+    // change, never to an earlier account-deletion dialog.
+    try{ sessionStorage.removeItem(ACCOUNT_DELETION_REAUTH_KEY); }catch{}
     const mode=identityUi.mode;
     const lifecycle=mode==='confirm';
     const generation=identityUi.requestGeneration;

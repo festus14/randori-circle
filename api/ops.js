@@ -750,7 +750,12 @@ async function prepareAdminOperation(ctx,res,ensureReadiness){
   try{
     await ensureReadiness(ctx.db);
     if(ctx.callerConfiguredAdmin&&!ctx.callerIsAdminFlag){
-      await ctx.db.execute({sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=? AND ${LIVE_ACCOUNT_SQL}`,args:[ctx.callerDbRow.id]});
+      const granted=await ctx.db.execute({sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=? AND ${LIVE_ACCOUNT_SQL}`,args:[ctx.callerDbRow.id]});
+      // Nothing changed: the account was deleted after this request was authenticated (issue #339).
+      if(Number(granted?.rowsAffected||0)!==1){
+        res.status(401).json({error:'authentication required'});
+        return null;
+      }
       ctx.callerIsAdminFlag=true;
     }
     return ctx;
