@@ -483,6 +483,12 @@ function projectOutboxDelivery({descriptor,result,status,configured,local,captur
     suppressed:result.suppressed,...(local&&configured?{captured}:{}),};
 }
 
+function interruptedRetention(progress,reason){
+  return progress.ran
+    ?{ran:true,partial:true,...reason,redacted:{...progress.redacted},more:true}
+    :{ran:false,...reason};
+}
+
 export async function runReminderDueCheck(db,req,deadlineAtMs){
   let dueCheck;
   try{
@@ -549,16 +555,19 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
   // nothing to the metrics. When on it follows the same rules as app_logs
   // retention: after delivery, throttled hourly inside the module, only when
   // its whole budget fits, and it stops issuing statements at its deadline.
+  // Classes that committed before a timeout or failure are still reported
+  // (`partial:true`) from the caller-owned progress object.
   const piiRetentionEnabled=outboxPiiRetentionEnabled();
   let outboxPiiRetention=null;
   if(piiRetentionEnabled&&preparation.completed&&!invocation.deadlineReached){
     const piiRetentionDeadline=performance.now()+outboxPiiRetentionBudgetMs;
     if(piiRetentionDeadline<=deadlineAtMs-finalizationReserveMs){
+      const progress={ran:false,redacted:null};
       outboxPiiRetention=await settleBeforeDeadline(()=>runOutboxPiiRetention(db,{
-        shouldContinue:()=>performance.now()<piiRetentionDeadline,
+        shouldContinue:()=>performance.now()<piiRetentionDeadline,progress,
       }),piiRetentionDeadline).then(
-        settled=>settled.completed?settled.value:{ran:false,timed_out:true},
-        ()=>({ran:false,failed:true}),
+        settled=>settled.completed?settled.value:interruptedRetention(progress,{timed_out:true}),
+        ()=>interruptedRetention(progress,{failed:true}),
       );
     }
   }
@@ -591,9 +600,14 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
     ...(piiRetentionEnabled?{outbox_pii_retention:outboxPiiRetention}:{}),
     ...(remindersEnabled()?{reminders_enqueued:reminders.enqueued,reminder_errors:reminders.errors}:{})};
   const reminderFailed=Object.keys(reminders.errors).length>0;
+  // A retention run that failed, timed out or stopped part-way is a warning,
+  // not a success (ID-72 app_logs, ID-83 outbox personal data).
+  const retentionIncomplete=[appLogRetention,outboxPiiRetention]
+    .some(result=>result?.failed===true||result?.timed_out===true||result?.partial===true);
   if(!metrics.deadline_reached&&performance.now()<deadlineAtMs){
     const logged=await settleBeforeDeadline(()=>logServerOps(
-      invocation.retried||invocation.deadLettered||invocation.leaseLost||reminderFailed?'warn':'success',
+      invocation.retried||invocation.deadLettered||invocation.leaseLost||reminderFailed||retentionIncomplete
+        ?'warn':'success',
       'outbox_invocation','outbox invocation completed',metrics,null,
     ),deadlineAtMs);
     metrics.logging_complete=logged.completed;

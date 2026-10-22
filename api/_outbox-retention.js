@@ -25,8 +25,17 @@
 // redaction is one UPDATE whose candidate subquery runs in the same write, so
 // a concurrent claim, replay or second run can never interleave with it, and a
 // rerun only finds rows that still hold personal data. No DDL: the class scans
-// use idx_outbox_events_dispatch, since a terminal row's next_attempt_at is its
-// finalization instant and never later than the anchor timestamp.
+// use idx_outbox_events_dispatch.
+//
+// Invariant the scan relies on: a terminal row's next_attempt_at is never later
+// than its anchor timestamp. finalizeOutcome writes next_attempt_at, the
+// terminal status and delivered_at / dead_lettered_at / updated_at from one
+// database instant; the exhausted-lease sweep leaves next_attempt_at at the
+// earlier value a claim already found due; the legacy bridge writes `now` to
+// both; replay moves a row out of dead_letter. The `next_attempt_at<cutoff`
+// range is therefore only a superset filter. If the invariant ever broke, a
+// row would be redacted later, never earlier (the anchor predicate still
+// applies). A unit test drives every terminal path and checks it.
 //
 // This module has no imports from the outbox core so api/_outbox.js,
 // api/_key-rotation.js and api/_invitation-email.js can share its marker SQL.
@@ -54,6 +63,15 @@ export const OUTBOX_PII_EVENT_TYPES=Object.freeze([
 ]);
 export const OUTBOX_PII_FIELDS=Object.freeze([
   'recipient_email','credential_envelope','token_envelope','email_hash','token_hash',
+]);
+// Delivered types whose payloads carry no contact data or credential: internal
+// ids, schedule instants or opaque fingerprints only. Handlers read the
+// address from the account at send time. A unit test requires every delivery
+// type to be in exactly one of these two lists.
+export const OUTBOX_PII_FREE_EVENT_TYPES=Object.freeze([
+  'schedule.email.requested', // v1 ids + instants; v2 opaque schedule id + fingerprint
+  'inviterequest.email.requested', // circle_id, owner_user_id, digest_hour
+  'reminder.email.requested', // ids + cycle key or instant fingerprint
 ]);
 const INVITATION_EVENT_TYPE='invitation.email.requested';
 
@@ -159,19 +177,34 @@ export function legacyPairingRedactionStatement({now,limit}){
 
 /**
  * Run one throttled retention pass. `now` (tests only) replaces the database
- * instant the windows count from; the hourly claim always uses the database
- * clock. `shouldContinue` is checked before each statement so a caller's
- * budget stops new work. Returns counts only.
+ * instant the windows count from and may not be later than the database
+ * clock; the hourly claim always uses the database clock. `shouldContinue` is
+ * checked before each statement so a caller's budget stops new work.
+ * `progress` (optional, caller-owned) is updated as each class commits, so a
+ * caller that stops waiting can still report what was redacted. A class
+ * statement that fails ends the pass with `{ran:true, partial:true,
+ * failed:true, failed_class}` and the counts committed before it. Returns
+ * counts only.
  */
 export async function runOutboxPiiRetention(db,{
-  limit=OUTBOX_PII_RETENTION_BATCH_LIMIT,now=null,shouldContinue=()=>true,
+  limit=OUTBOX_PII_RETENTION_BATCH_LIMIT,now=null,shouldContinue=()=>true,progress=null,
 }={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
   if(!Number.isSafeInteger(limit)||limit<1||limit>OUTBOX_PII_RETENTION_MAX_BATCH_LIMIT){
     throw new TypeError(`outbox retention limit must be 1-${OUTBOX_PII_RETENTION_MAX_BATCH_LIMIT}`);
   }
   if(typeof shouldContinue!=='function') throw new TypeError('outbox retention shouldContinue must be a function');
+  if(progress!==null&&(typeof progress!=='object'||Array.isArray(progress))){
+    throw new TypeError('outbox retention progress must be an object');
+  }
   const injected=now===null?null:canonicalInstant(now);
+  if(injected!==null){
+    // Test-only override: a future instant would widen every window.
+    const clock=await db.execute(`SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc`);
+    if(Date.parse(injected)>Date.parse(canonicalInstant(clock.rows?.[0]?.now_utc))){
+      throw new TypeError('outbox retention time cannot be later than the database clock');
+    }
+  }
   const claim=await db.execute({
     sql:`INSERT INTO app_logs (level, source, event, message, created_at)
       SELECT 'info','server',?,'outbox personal data retention ran',datetime('now')
@@ -186,6 +219,7 @@ export async function runOutboxPiiRetention(db,{
   if(!claim.rows?.length) return Object.freeze({ran:false,redacted:Object.freeze(emptyCounts()),more:false});
   const instant=injected??canonicalInstant(claim.rows[0].now_utc);
   const counts=emptyCounts();
+  if(progress){ progress.ran=true; progress.redacted=counts; }
   let more=false;
   const statements=[
     ...CLASSES.map(item=>({key:item.key,statement:outboxRedactionStatement({
@@ -194,10 +228,17 @@ export async function runOutboxPiiRetention(db,{
     {key:'legacy_pairing',statement:legacyPairingRedactionStatement({now:instant,limit})},
   ];
   for(const {key,statement} of statements){
-    if(!shouldContinue()){ more=true; break; }
-    const result=await db.execute(statement);
+    if(!shouldContinue()){
+      return Object.freeze({ran:true,partial:true,stopped:true,redacted:Object.freeze({...counts}),more:true});
+    }
+    let result;
+    try{ result=await db.execute(statement); }
+    catch{
+      return Object.freeze({ran:true,partial:true,failed:true,failed_class:key,
+        redacted:Object.freeze({...counts}),more:true});
+    }
     counts[key]=Number(result.rowsAffected)||0;
     if(counts[key]>=limit) more=true;
   }
-  return Object.freeze({ran:true,redacted:Object.freeze(counts),more});
+  return Object.freeze({ran:true,redacted:Object.freeze({...counts}),more});
 }

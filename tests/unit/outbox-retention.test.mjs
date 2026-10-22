@@ -57,6 +57,7 @@ const {
   OUTBOX_LEGACY_REDACTED_EMAIL,
   OUTBOX_PII_EVENT_TYPES,
   OUTBOX_PII_FIELDS,
+  OUTBOX_PII_FREE_EVENT_TYPES,
   OUTBOX_PII_RETENTION_BATCH_LIMIT,
   OUTBOX_PII_RETENTION_DEAD_LETTER_DAYS,
   OUTBOX_PII_RETENTION_DELIVERED_DAYS,
@@ -73,7 +74,8 @@ const {
   outboxRedactionStatement,
   runOutboxPiiRetention,
 } = retention;
-const { enqueueOutboxEvent, readOutboxMetrics, replayDeadLetter, runOutboxWorker } = await import('../../api/_outbox.js');
+const { claimOutboxEvent, enqueueOutboxEvent, OutboxDeliveryError, readOutboxMetrics, replayDeadLetter, runOutboxWorker } =
+  await import('../../api/_outbox.js');
 const { readOutboxDeliveryHealth } = await import('../../api/_outbox-health.js');
 const { readAdminDiagnostics } = await import('../../api/_admin-diagnostics.js');
 const { parseKeyRing, readCredentialRotationMetrics, sealCredentialEnvelope } = await import('../../api/_key-rotation.js');
@@ -258,6 +260,13 @@ test('invalid input is rejected before anything is claimed', async () => {
   }
   await assert.rejects(runOutboxPiiRetention(db, { shouldContinue: 'yes' }), /shouldContinue must be a function/);
   await assert.rejects(runOutboxPiiRetention(db, { now: 'not a time' }), /valid outbox retention time/);
+  for (const progress of ['yes', [], 5]) {
+    await assert.rejects(runOutboxPiiRetention(db, { progress }), /progress must be an object/);
+  }
+  // The test-only clock may not run ahead of the database clock: that would
+  // widen every window.
+  await assert.rejects(runOutboxPiiRetention(db, { now: new Date(Date.now() + DAY) }),
+    /cannot be later than the database clock/);
   assert.equal(Number((await db.execute('SELECT COUNT(*) AS c FROM app_logs')).rows[0].c), 0);
   const error = new OutboxEventRedactedError();
   assert.equal(error.code, 'OUTBOX_EVENT_REDACTED');
@@ -314,12 +323,20 @@ test('windows count from delivered_at, the suppression and dead_lettered_at, eac
   for (const [status, anchor, expected] of cases) {
     rows.push({ status, anchor, expected, row: await insertEvent('activation', { status, anchor: at(anchor) }) });
   }
-  // A dead letter swept long after its last claim: the window counts from the
-  // dead-letter time, never from the older next_attempt_at.
+  // Rows whose next_attempt_at is far older than the anchor (a dead letter
+  // swept long after its last claim): the window counts from the anchor, and
+  // a row exactly on the cutoff stays (`<`, not `<=`).
+  for (const [status, cutoffAt] of [['delivered', DELIVERED_CUTOFF], ['suppressed', DELIVERED_CUTOFF],
+    ['dead_letter', DEAD_LETTER_CUTOFF]]) {
+    for (const [anchor, expected] of [[cutoffAt, false], [cutoffAt - MS, true]]) {
+      rows.push({ status, anchor, expected, row: await insertEvent('activation',
+        { status, anchor: at(anchor), nextAttemptAt: at(cutoffAt - 20 * DAY) }) });
+    }
+  }
   const swept = await insertEvent('reset', { status: 'dead_letter', anchor: ago(29 * DAY), nextAttemptAt: ago(45 * DAY) });
 
   assert.deepEqual(plain(await run({ now: new Date(NOW) })),
-    { ran: true, redacted: counts({ delivered: 1, suppressed: 1, dead_letter: 1 }), more: false });
+    { ran: true, redacted: counts({ delivered: 2, suppressed: 2, dead_letter: 2 }), more: false });
   for (const { status, anchor, expected, row } of rows) {
     const payload = await payloadOf(row.id);
     assert.equal(payload.retention_redacted === 1, expected, `${status} at ${at(anchor)}`);
@@ -366,7 +383,7 @@ test('a caller budget stops new statements between classes', async () => {
   const delivered = await insertEvent('pairing', { status: 'delivered', anchor: ago(10 * DAY) });
   let checks = 0;
   const result = await run({ shouldContinue: () => { checks += 1; return checks <= 1; } });
-  assert.deepEqual(plain(result), { ran: true, redacted: counts({ dead_letter: 1 }), more: true });
+  assert.deepEqual(plain(result), { ran: true, partial: true, stopped: true, redacted: counts({ dead_letter: 1 }), more: true });
   assert.equal('recipient_email' in await payloadOf(delivered.id), true, 'the delivered class did not start');
 });
 
@@ -376,24 +393,26 @@ test('a caller budget stops new statements between classes', async () => {
 
 test('the hourly claim: a run inside the hour does nothing, a member-written row cannot suppress it', async () => {
   const first = await insertEvent('pairing', { status: 'delivered', anchor: ago(9 * DAY) });
-  // Rows a member could cause (client source, or any row with a user id) do not count as a run.
+  // Rows a member could cause (client source, or any row with a user id) do
+  // not count as a run; each predicate (source and user) is needed on its own.
   await db.execute({ sql: `INSERT INTO app_logs (level,source,event,message,user_id,created_at)
-    VALUES ('info','client',?,'forged',7,datetime('now')),('info','server',?,'forged',7,datetime('now'))`,
-  args: [OUTBOX_PII_RETENTION_EVENT, OUTBOX_PII_RETENTION_EVENT] });
+    VALUES ('info','client',?,'forged',7,datetime('now')),('info','server',?,'forged',7,datetime('now')),
+      ('info','client',?,'forged',NULL,datetime('now'))`,
+  args: [OUTBOX_PII_RETENTION_EVENT, OUTBOX_PII_RETENTION_EVENT, OUTBOX_PII_RETENTION_EVENT] });
   assert.deepEqual(plain(await run()), { ran: true, redacted: counts({ delivered: 1 }), more: false });
   assert.equal((await payloadOf(first.id)).retention_redacted, 1);
   const marker = (await db.execute({ sql: `SELECT level,source,message,user_id FROM app_logs
-    WHERE event=? AND user_id IS NULL`, args: [OUTBOX_PII_RETENTION_EVENT] })).rows;
+    WHERE event=? AND source='server' AND user_id IS NULL`, args: [OUTBOX_PII_RETENTION_EVENT] })).rows;
   assert.deepEqual(marker.map(row => [row.level, row.source, row.message, row.user_id]),
     [['info', 'server', 'outbox personal data retention ran', null]]);
 
   const second = await insertEvent('pairing', { status: 'delivered', anchor: ago(9 * DAY) });
   assert.deepEqual(plain(await run()), { ran: false, redacted: counts(), more: false });
-  await db.execute({ sql: `UPDATE app_logs SET created_at=datetime('now','-59 minutes') WHERE event=? AND user_id IS NULL`,
+  await db.execute({ sql: `UPDATE app_logs SET created_at=datetime('now','-59 minutes') WHERE event=? AND source='server' AND user_id IS NULL`,
     args: [OUTBOX_PII_RETENTION_EVENT] });
   assert.equal((await run()).ran, false);
   assert.equal('recipient_email' in await payloadOf(second.id), true);
-  await db.execute({ sql: `UPDATE app_logs SET created_at=datetime('now','-60 minutes') WHERE event=? AND user_id IS NULL`,
+  await db.execute({ sql: `UPDATE app_logs SET created_at=datetime('now','-60 minutes') WHERE event=? AND source='server' AND user_id IS NULL`,
     args: [OUTBOX_PII_RETENTION_EVENT] });
   assert.deepEqual(plain(await run()), { ran: true, redacted: counts({ delivered: 1 }), more: false });
 });
@@ -423,9 +442,13 @@ test('two concurrent runs on separate connections: one claims, every row is reda
 // Invitation resend and the legacy bridge
 // ---------------------------------------------------------------------------
 
-async function insertInvitation(id, { expiresAt, usedAt = null, revokedAt = null }) {
+async function insertInvitation(id, { expiresAt, usedAt = null, revokedAt = null, ownerId = null }) {
   const circle = (await db.execute({ sql: `INSERT INTO circles (public_id,slug,name,is_primary,created_at)
     VALUES (?,?,?,0,datetime('now')) RETURNING id`, args: [randomUUID(), `retention-${randomUUID()}`, 'Retention'] })).rows[0];
+  if (ownerId !== null) {
+    await db.execute({ sql: `INSERT INTO circle_memberships (circle_id,user_id,role,status) VALUES (?,?,'owner','active')`,
+      args: [Number(circle.id), ownerId] });
+  }
   await db.execute({ sql: `INSERT INTO circle_invitations
       (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by,revoked_at)
       VALUES (?,?,?,?,1,?,?,?,?,?)`,
@@ -615,16 +638,20 @@ test('health, recent reject reasons, metrics and the admin dead-letter list read
     return {
       health: { ...health, checkedAt: null, oldestDueAgeMs: null },
       metrics: plain(await readOutboxMetrics(db)),
-      deadLetters: diagnostics.cards.deadLetters.items.map(item => ({ ...item, ageMs: null })),
+      deadLetters: diagnostics.cards.deadLetters.items.map(item => ({ ...item, ageMs: null, redacted: null })),
+      redactedFlags: Object.fromEntries(diagnostics.cards.deadLetters.items.map(item => [item.id, item.redacted])),
       deadLetterTotal: diagnostics.cards.deadLetters.total,
       byType: diagnostics.cards.outbox.byType.map(item => ({ ...item, oldestDueAgeMs: null })),
       rejectReasons: diagnostics.cards.outbox.recentRejectReasons,
     };
   };
   const before = await read();
+  assert.deepEqual(before.redactedFlags, { [dead[0].id]: false, [dead[1].id]: false, [dead[2].id]: false });
   assert.deepEqual(plain(await run()), { ran: true, redacted: counts({ delivered: 1, suppressed: 1, dead_letter: 2 }), more: false });
   const afterRedaction = await read();
-  assert.deepEqual(afterRedaction, before);
+  // Only the list's `redacted` flag changes, so Replay can be disabled there.
+  assert.deepEqual(afterRedaction.redactedFlags, { [dead[0].id]: true, [dead[1].id]: true, [dead[2].id]: false });
+  assert.deepEqual({ ...afterRedaction, redactedFlags: null }, { ...before, redactedFlags: null });
   assert.deepEqual(plain(afterRedaction.health.recentRejectReasons), { testing_recipient_restricted: 1 });
   assert.equal(afterRedaction.deadLetters.length, 3);
   assert.deepEqual(afterRedaction.deadLetters.map(item => item.providerReason).sort(),
@@ -648,7 +675,7 @@ test('redacted dead letters no longer count as actionable envelopes for key rota
   assert.equal(afterRedaction.ready, true);
   assert.equal((await payloadOf(pending.id)).recipient_email, pending.payload.recipient_email);
 
-  // Invitation metrics: actionable dead letters and resend-retained latest events.
+  // Invitation metrics, actionable branch: a redacted dead letter drops out.
   const invitationDead = await insertEvent('invitation', { status: 'dead_letter', anchor: ago(31 * DAY) });
   await db.execute({ sql: `UPDATE outbox_events SET payload_json=json_set(payload_json,'$.credential_envelope','malformed') WHERE id=?`,
     args: [invitationDead.id] });
@@ -659,11 +686,29 @@ test('redacted dead letters no longer count as actionable envelopes for key rota
   const invitationAfter = await invitationMetric();
   assert.equal(invitationAfter.malformed, 0);
   assert.equal(invitationAfter.actionable, 0);
-  // A redacted latest event of a live invitation is not counted as retained.
-  await insertInvitation(invitationDead.payload.invitation_id, { expiresAt: ago(-DAY) });
-  await db.execute({ sql: `UPDATE outbox_events SET status='delivered',delivered_at=dead_lettered_at,dead_lettered_at=NULL WHERE id=?`,
-    args: [invitationDead.id] });
-  assert.equal((await invitationMetric()).retained, 0);
+
+  // Retained branch: the latest delivered email of a live invitation with an
+  // active owner counts until it is redacted, and never after.
+  const ownerId = await insertAdmin();
+  const latest = await insertEvent('invitation', { status: 'delivered', anchor: ago(8 * DAY) });
+  const invitationId = latest.payload.invitation_id;
+  const liveUntil = new Date(Date.now() + DAY).toISOString(); // live by the database clock and by NOW
+  await insertInvitation(invitationId, { expiresAt: liveUntil, ownerId });
+  assert.deepEqual([(await invitationMetric()).retained, (await invitationMetric()).malformed], [1, 0]);
+  await anHourPasses();
+  await run();
+  assert.equal(typeof (await payloadOf(latest.id)).credential_envelope, 'string', 'a live invitation is not redacted');
+  assert.equal((await invitationMetric()).retained, 1);
+  // Once it has expired the next run redacts it ...
+  await db.execute({ sql: 'UPDATE circle_invitations SET expires_at=? WHERE id=?', args: [ago(1000), invitationId] });
+  await anHourPasses();
+  assert.equal((await run()).redacted.delivered, 1);
+  assert.equal((await payloadOf(latest.id)).retention_redacted, 1);
+  // ... and even if the invitation were live again (clock skew), the redacted
+  // row is neither retained nor counted as a malformed envelope.
+  await db.execute({ sql: 'UPDATE circle_invitations SET expires_at=? WHERE id=?', args: [liveUntil, invitationId] });
+  const skewed = await invitationMetric();
+  assert.deepEqual([skewed.retained, skewed.malformed], [0, 0]);
 });
 
 // ---------------------------------------------------------------------------
@@ -671,6 +716,17 @@ test('redacted dead letters no longer count as actionable envelopes for key rota
 // ---------------------------------------------------------------------------
 
 test('the scans use existing indexes, so no DDL is needed', async () => {
+  // EXPLAIN runs on its own connection, closed afterwards: libsql can leave an
+  // EXPLAIN statement active, which would hold a lock for later tests.
+  const explain = createClient({ url });
+  try {
+    await explainPlans(explain);
+  } finally {
+    explain.close();
+  }
+});
+
+async function explainPlans(db) {
   const plan = async statement => (await db.execute({ sql: `EXPLAIN QUERY PLAN ${statement.sql}`, args: statement.args }))
     .rows.map(row => String(row.detail)).join('\n');
   for (const [status, anchor] of [['delivered', 'COALESCE(event.delivered_at,event.updated_at)'], ['suppressed', 'event.updated_at'],
@@ -689,7 +745,7 @@ test('the scans use existing indexes, so no DDL is needed', async () => {
   const legacy = await plan(legacyPairingRedactionStatement({ now: NOW, limit: 100 }));
   assert.match(legacy, /SEARCH pairing_email_outbox USING INTEGER PRIMARY KEY \(rowid=\?\)/, legacy);
   assert.match(legacy, /sqlite_autoindex_outbox_events_1 \(idempotency_key=\?\)/, legacy);
-});
+}
 
 // ---------------------------------------------------------------------------
 // The outbox cron
@@ -762,6 +818,7 @@ test('flag on: the cron redacts after delivery and reports counts in the respons
   const logged = JSON.parse((await db.execute(`SELECT meta_json FROM app_logs WHERE event='outbox_invocation'
     ORDER BY id DESC LIMIT 1`)).rows[0].meta_json);
   assert.deepEqual(logged.outbox_pii_retention, expected);
+  assert.equal(await lastInvocationLevel(), 'success', 'a complete retention run keeps the invocation a success');
   assert.doesNotMatch(JSON.stringify(first.body), /@example\.test/);
   for (const id of [delivered.id, dead.id]) assert.equal((await payloadOf(id)).retention_redacted, 1);
 
@@ -798,12 +855,14 @@ test('flag on: skipped when the budget does not fit; a slow or failed run never 
   assert.deepEqual(slow.metrics.outbox_pii_retention, { ran: false, timed_out: true });
   assert.equal(slow.metrics.deadline_reached, false);
   assert.equal(slow.metrics.metrics_complete, true);
+  assert.equal(await lastInvocationLevel(), 'warn', 'a timed-out retention run is a warning');
 
   const failed = await deliverPendingOutbox(wrappedDb(sql => (sql.includes('outbox personal data retention ran')
     ? Promise.reject(new Error('simulated')) : null)), 'https://randori.example.test', req, performance.now() + 10_000);
   assert.deepEqual(failed.metrics.outbox_pii_retention, { ran: false, failed: true });
   assert.equal(failed.metrics.metrics_complete, true);
   assert.equal(failed.metrics.logging_complete, true);
+  assert.equal(await lastInvocationLevel(), 'warn', 'a failed retention run is a warning');
 
   // A pass still running when its budget ends issues no further statements.
   // The claim answers at once and the first redaction stalls past the budget.
@@ -818,9 +877,108 @@ test('flag on: skipped when the budget does not fit; a slow or failed run never 
   });
   const partial = await deliverPendingOutbox(stopping, 'https://randori.example.test', req, performance.now() + 10_000,
     { outboxPiiRetentionBudgetMs: 1_000 });
-  assert.deepEqual(partial.metrics.outbox_pii_retention, { ran: false, timed_out: true });
+  assert.deepEqual(partial.metrics.outbox_pii_retention,
+    { ran: true, partial: true, timed_out: true, redacted: counts(), more: true });
   releaseUpdate();
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(redactions.length, 1, 'the dead-letter class ran; no class started after the budget');
 });
 
+
+async function lastInvocationLevel() {
+  return String((await db.execute(`SELECT level FROM app_logs WHERE event='outbox_invocation'
+    ORDER BY id DESC LIMIT 1`)).rows[0]?.level);
+}
+
+test('a run that redacts one class and then fails or runs out of budget reports what it committed', async () => {
+  process.env.OUTBOX_PII_RETENTION_ENABLED = 'true';
+  const req = { headers: {} };
+  const dead = await insertEvent('pairing', { status: 'dead_letter', anchor: ago(40 * DAY) });
+  const delivered = await insertEvent('pairing', { status: 'delivered', anchor: ago(10 * DAY) });
+  // The delivered class (its anchor is delivered_at) fails after the
+  // dead-letter class committed.
+  const failing = wrappedDb(sql => (sql.includes('json_remove') && sql.includes('event.delivered_at')
+    ? Promise.reject(Object.assign(new Error('simulated'), { code: 'SQLITE_BUSY' })) : null));
+  const failed = await runOutboxPiiRetention(failing, { now: NOW });
+  assert.deepEqual(plain(failed), { ran: true, partial: true, failed: true, failed_class: 'delivered',
+    redacted: counts({ dead_letter: 1 }), more: true });
+  assert.equal((await payloadOf(dead.id)).retention_redacted, 1);
+  assert.equal('recipient_email' in await payloadOf(delivered.id), true);
+
+  // Through the cron: the same report, and the invocation is a warning.
+  await anHourPasses();
+  const second = await insertEvent('pairing', { status: 'dead_letter', anchor: ago(40 * DAY) });
+  const viaCron = await deliverPendingOutbox(failing, 'https://randori.example.test', req, performance.now() + 10_000);
+  assert.deepEqual(viaCron.metrics.outbox_pii_retention, { ran: true, partial: true, failed: true,
+    failed_class: 'delivered', redacted: counts({ dead_letter: 1 }), more: true });
+  assert.equal(await lastInvocationLevel(), 'warn');
+  assert.equal((await payloadOf(second.id)).retention_redacted, 1);
+
+  // Budget ends while the delivered class is in flight: the committed
+  // dead-letter count is still reported.
+  await anHourPasses();
+  const third = await insertEvent('pairing', { status: 'dead_letter', anchor: ago(40 * DAY) });
+  let releaseDelivered;
+  const deliveredStalled = new Promise(resolve => { releaseDelivered = resolve; });
+  const stalling = wrappedDb(sql => (sql.includes('json_remove') && sql.includes('event.delivered_at')
+    ? deliveredStalled.then(() => ({ rows: [], rowsAffected: 0 })) : null));
+  const timedOut = await deliverPendingOutbox(stalling, 'https://randori.example.test', req, performance.now() + 10_000,
+    { outboxPiiRetentionBudgetMs: 1_000 });
+  releaseDelivered();
+  assert.deepEqual(timedOut.metrics.outbox_pii_retention, { ran: true, partial: true, timed_out: true,
+    redacted: counts({ dead_letter: 1 }), more: true });
+  assert.equal(await lastInvocationLevel(), 'warn');
+  assert.equal((await payloadOf(third.id)).retention_redacted, 1);
+});
+
+test('every delivery type is either redacted or declared free of personal data', async () => {
+  const { OUTBOX_DELIVERY_TYPES } = await import('../../api/_outbox-delivery.js');
+  const delivered = OUTBOX_DELIVERY_TYPES.map(({ type }) => type).sort();
+  const declared = [...OUTBOX_PII_EVENT_TYPES, ...OUTBOX_PII_FREE_EVENT_TYPES];
+  assert.equal(new Set(declared).size, declared.length, 'no type is in both lists');
+  assert.deepEqual([...declared].sort(), delivered,
+    'a new delivery type must be added to OUTBOX_PII_EVENT_TYPES or OUTBOX_PII_FREE_EVENT_TYPES');
+  // A declared-free type really carries no contact field in any payload shape.
+  for (const kind of ['secondaryPairing', 'schedule', 'secondarySchedule', 'reminder', 'inviteRequest']) {
+    const { payload } = payloadFor(kind);
+    for (const field of OUTBOX_PII_FIELDS) assert.equal(field in payload, false, `${kind}.${field}`);
+  }
+});
+
+test('a terminal row never has next_attempt_at later than its anchor, on every terminal path', async () => {
+  const TYPE = 'retention.invariant';
+  const enqueue = async (sequenceNumber, maxAttempts = 5) => enqueueOutboxEvent(db, { eventType: TYPE,
+    idempotencyKey: `retention-invariant/${sequenceNumber}`, payload: { sequence: sequenceNumber }, maxAttempts });
+  const options = { db, workerId: 'invariant-worker', heartbeatIntervalMs: 0, leaseDurationMs: 1000 };
+  // delivered, suppressed and a non-retryable dead letter through finalizeOutcome
+  for (const sequenceNumber of [1, 2, 3]) await enqueue(sequenceNumber);
+  const outcomes = { 1: () => ({ providerMessageId: 'sent' }), 2: () => ({ status: 'suppressed', reasonCode: 'NOT_NEEDED' }),
+    3: () => { throw new OutboxDeliveryError('PROVIDER_REJECTED', { retryable: false }); } };
+  await runOutboxWorker({ ...options, handlers: { [TYPE]: event => outcomes[event.payload.sequence]() } });
+  // an exhausted lease swept to dead_letter after it expires
+  await enqueue(4, 1);
+  const claimed = await claimOutboxEvent(db, { workerId: 'crashed-worker', leaseDurationMs: 1000, eventType: TYPE });
+  assert.equal(claimed.payload.sequence, 4);
+  await db.execute({ sql: `UPDATE outbox_events SET leased_until=strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 second') WHERE id=?`,
+    args: [claimed.id] });
+  await runOutboxWorker({ ...options, handlers: { [TYPE]: () => ({ providerMessageId: 'unused' }) } });
+  // a replayed dead letter delivered again
+  const rejected = (await db.execute(`SELECT id FROM outbox_events WHERE idempotency_key='retention-invariant/3'`)).rows[0];
+  assert.equal(await replayDeadLetter(db, { eventId: Number(rejected.id), operatorUserId: 9, reasonCode: 'OPERATOR_RETRY' }), true);
+  await runOutboxWorker({ ...options, handlers: { [TYPE]: () => ({ providerMessageId: 'resent' }) } });
+  // a legacy row bridged straight to dead_letter
+  await insertLegacy({ status: 'exhausted', weekId: 501, age: 90 });
+  assert.equal(await migrateLegacyPairingEmails(db), 1);
+
+  const rows = (await db.execute(`SELECT idempotency_key,status,next_attempt_at,
+      CASE status WHEN 'delivered' THEN delivered_at WHEN 'dead_letter' THEN dead_lettered_at ELSE updated_at END AS anchor
+    FROM outbox_events ORDER BY id`)).rows;
+  assert.deepEqual(rows.map(row => [row.idempotency_key, row.status]), [
+    ['retention-invariant/1', 'delivered'], ['retention-invariant/2', 'suppressed'], ['retention-invariant/3', 'delivered'],
+    ['retention-invariant/4', 'dead_letter'], ['randori/501/paired/2', 'dead_letter']]);
+  for (const row of rows) {
+    assert.ok(String(row.anchor).length > 0, `${row.idempotency_key} has an anchor`);
+    assert.ok(Date.parse(String(row.next_attempt_at)) <= Date.parse(String(row.anchor).replace(' ', 'T')),
+      `${row.idempotency_key}: next_attempt_at ${row.next_attempt_at} <= ${row.anchor}`);
+  }
+});

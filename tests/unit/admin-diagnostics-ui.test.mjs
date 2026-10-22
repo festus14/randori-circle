@@ -302,7 +302,8 @@ test('snapshots are validated before anything renders', () => {
   assert.equal(valid.refreshAfterMs, 5 * MINUTE);
   assert.equal(valid.outboxTypes.length, 2);
   assert.deepEqual(valid.deadLetters.items[0], { id: 41, eventType: 'invitation.email.requested', eventVersion: 1,
-    errorCode: 'PROVIDER_REJECTED', providerReason: 'domain_not_verified', attempts: 5, replays: 0, ageMs: 2 * HOUR });
+    errorCode: 'PROVIDER_REJECTED', providerReason: 'domain_not_verified', attempts: 5, replays: 0, ageMs: 2 * HOUR,
+    redacted: false });
   const base = snapshot();
   for (const bad of [null, [], { ...base, ok: false }, { ...base, format: 'other' }, { ...base, checkedAt: 'nope' },
     { ...base, cards: null }, { ...base, cards: { ...base.cards, readiness: { status: 'odd' } } },
@@ -316,7 +317,7 @@ test('snapshots are validated before anything renders', () => {
   assert.equal(loose.refreshAfterMs, 5 * MINUTE);
   assert.deepEqual(loose.outboxTypes, []);
   assert.equal(loose.deadLetters.total, 0);
-  assert.deepEqual(loose.deadLetters.items, [{ id: 3, eventType: 'a.b', eventVersion: 0, errorCode: null, providerReason: null, attempts: 0, replays: 0, ageMs: null }]);
+  assert.deepEqual(loose.deadLetters.items, [{ id: 3, eventType: 'a.b', eventVersion: 0, errorCode: null, providerReason: null, attempts: 0, replays: 0, ageMs: null, redacted: false }]);
   assert.deepEqual(normalizeSnapshot({ ...base, cards: { ...base.cards, deadLetters: { status: 'healthy' } } }).deadLetters.items, []);
 });
 
@@ -478,6 +479,30 @@ test('a confirmed replay uses the selected reason, reloads and keeps focus in th
   assert.equal(elements.adminDeadLettersTitle.focused, 1);
   await elements.adminDiagnosticsRefresh.dispatch('click');
   assert.equal(elements.adminDiagnosticsStatus.textContent, 'Diagnostics updated.', 'a manual refresh clears the notice');
+});
+
+test('a dead letter redacted by retention is listed with the reason and cannot be replayed (ID-83)', async () => {
+  const base = snapshot();
+  const redactedItem = { ...base.cards.deadLetters.items[0], id: 42, redacted: true };
+  const payload = snapshot({ deadLetters: { ...base.cards.deadLetters, total: 2,
+    items: [base.cards.deadLetters.items[0], redactedItem] } });
+  assert.equal(normalizeSnapshot(payload).deadLetters.items[1].redacted, true);
+  assert.match(deadLetterSummary({ ageMs: null, attempts: 5, replays: 0, providerReason: null, redacted: true }),
+    /recipient details removed by retention; cannot be replayed$/);
+  const { elements, state } = harness({ payloads: [payload] });
+  await openPanel(elements);
+  const [plain, redacted] = elements.adminDeadLetters.byTestId('admin-dead-letter');
+  const [plainButton] = plain.byTestId('admin-dead-letter-replay');
+  const [redactedButton] = redacted.byTestId('admin-dead-letter-replay');
+  assert.equal(plainButton.disabled, false);
+  assert.equal(plainButton.getAttribute('aria-label'), 'Replay event #41');
+  assert.equal(redactedButton.disabled, true);
+  assert.equal(redactedButton.getAttribute('aria-label'), 'Replay event #42 unavailable: recipient details removed');
+  assert.match(redacted.textContent, /recipient details removed by retention; cannot be replayed/);
+  assert.doesNotMatch(plain.textContent, /retention/);
+  await redactedButton.dispatch('click');
+  assert.deepEqual(state.confirms, []);
+  assert.deepEqual(state.replays, []);
 });
 
 test('an unknown reason falls back to operator retry', async () => {

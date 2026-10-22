@@ -3,19 +3,20 @@ import {expect,Page,test} from '@playwright/test';
 
 import {
   createPairedCircle,
+  json,
   pathIs,
   startGoldenRuntime,
   withDatabase,
 } from './golden-runtime';
 
-// Issue #341 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 21, ID-83). The
+// Issue #341 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 23, ID-83). The
 // real loopback runtime runs with OUTBOX_PII_RETENTION_ENABLED and
 // ADMIN_DIAGNOSTICS_ENABLED. The invitation, activation and pairing emails of a
 // new pair are delivered by the production `/api/cron/outbox`; once they are
 // past their window (aged in the database) the next run removes every
 // recipient address and sealed credential while keys, statuses and the audit
-// trail stay. The global admin then tries to replay the redacted dead letter
-// from Circle › Diagnostics and is told clearly why it cannot be replayed.
+// trail stay. In Circle › Diagnostics the global admin sees the redacted dead
+// letter marked as such with Replay disabled, and the endpoint refuses it.
 // With the flag off the cron leaves old rows alone and its response is
 // unchanged.
 
@@ -27,7 +28,7 @@ const PII_PRESENT=`(json_type(payload_json,'$.recipient_email') IS NOT NULL
   OR json_type(payload_json,'$.credential_envelope') IS NOT NULL
   OR json_type(payload_json,'$.token_envelope') IS NOT NULL
   OR json_type(payload_json,'$.email_hash') IS NOT NULL)`;
-const REDACTED_MESSAGE='can’t be replayed: its recipient details were removed after 30 days under the retention policy. Nothing changed.';
+const REDACTED_SUMMARY='recipient details removed by retention; cannot be replayed';
 
 async function drainOutbox(page:Page){
   const response=await page.evaluate(async secret=>{
@@ -126,31 +127,26 @@ test('outbox retention: old recipient details are removed, keys and audit stay, 
     expect(deadPayload.week_id).toEqual(expect.any(Number));
     expect(after.logged.outbox_pii_retention).toEqual(second.outbox.outbox_pii_retention);
 
-    // The admin still sees the dead letter with its provider reason, and a
-    // replay attempt explains why it cannot be replayed.
+    // The admin still sees the dead letter with its provider reason, marked as
+    // redacted with Replay disabled; the endpoint itself refuses it too.
     await reloadSettled(owner);
     const diagnostics=owner.getByTestId('admin-diagnostics');
     await expect(diagnostics).toBeVisible();
     const firstLoad=owner.waitForResponse(pathIs('/api/admin/diagnostics','GET'));
     await diagnostics.locator('summary').focus();
     await owner.keyboard.press('Enter');
-    await firstLoad;
+    const snapshot=await (await firstLoad).json();
+    expect(snapshot.cards.deadLetters.items.find((item:{id:number})=>item.id===deadId)).toMatchObject({redacted:true});
     const row=owner.locator(`[data-testid="admin-dead-letter"][data-event-id="${deadId}"]`);
     await expect(row).toContainText('pairing.email.requested');
     await expect(row).toContainText('provider: domain_not_verified');
-    await row.getByTestId('admin-dead-letter-replay').focus();
-    await owner.keyboard.press('Enter');
-    await expect(owner.locator('#confirmTitle')).toHaveText(`Replay dead letter #${deadId}?`);
-    await expect(owner.locator('#confirmCancel')).toBeFocused();
-    await owner.keyboard.press('Tab');
-    await expect(owner.locator('#confirmOk')).toBeFocused();
-    const replayed=owner.waitForResponse(pathIs('/api/admin/outbox/replay','POST'));
-    await owner.keyboard.press('Enter');
-    const replay=await replayed;
-    expect(replay.status()).toBe(409);
-    expect(await replay.json()).toEqual({error:'event is not replayable: retention removed its recipient details',
-      code:'outbox_event_redacted'});
-    await expect(owner.getByTestId('admin-diagnostics-status')).toContainText(`Event #${deadId} ${REDACTED_MESSAGE}`);
+    await expect(row).toContainText(REDACTED_SUMMARY);
+    const replayButton=row.getByTestId('admin-dead-letter-replay');
+    await expect(replayButton).toBeDisabled();
+    await expect(replayButton).toHaveAttribute('aria-label',`Replay event #${deadId} unavailable: recipient details removed`);
+    const replay=await json(owner,'/api/admin/outbox/replay','POST',{event_id:deadId,reason_code:'OPERATOR_RETRY'});
+    expect(replay).toEqual({status:409,body:{error:'event is not replayable: retention removed its recipient details',
+      code:'outbox_event_redacted'}});
     await expect(row).toBeVisible();
     const state=await withDatabase(golden,async db=>({
       status:String((await db.execute({sql:`SELECT status FROM outbox_events WHERE id=?`,args:[deadId]})).rows[0].status),

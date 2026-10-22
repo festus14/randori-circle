@@ -3811,26 +3811,40 @@ inventory of personal data in the outbox tables:
   write, so a concurrent claim, replay or second run cannot interleave, and a
   rerun only finds rows that still hold personal data. The response and the
   `outbox_invocation` row report `{ran, redacted:{delivered, suppressed,
-  dead_letter, legacy_pairing}, more}`.
+  dead_letter, legacy_pairing}, more}`. Counts live in a caller-owned progress
+  object, so a run that committed some classes and then timed out, failed or
+  hit its budget is reported as `{ran:true, partial:true, …}` with what it
+  committed (`failed_class` names a failed statement), never as "nothing
+  happened". A failed, timed-out or partial run, of this job or of the ID-72
+  `app_logs` retention, logs the invocation row at `warn`, not `success`.
 - Replay of a redacted dead letter is refused whether or not the flag is on:
   `replayDeadLetter` only updates unredacted rows and then throws
   `OutboxEventRedactedError`, and `POST /api/admin/outbox/replay` answers
-  `409 {code:"outbox_event_redacted"}`. Admin Diagnostics shows "can't be
-  replayed: its recipient details were removed after 30 days under the
-  retention policy. Nothing changed." The row stays in the dead-letter list.
+  `409 {code:"outbox_event_redacted"}`. The Admin Diagnostics dead-letter list
+  keeps the row, adds `redacted:true`, says "recipient details removed by
+  retention; cannot be replayed" and disables its Replay button; a replay
+  started from an older snapshot gets "can't be replayed: its recipient
+  details were removed after 30 days under the retention policy. Nothing
+  changed."
 - Credential rotation metrics (`readCredentialRotationMetrics` and the
   invitation metrics) skip redacted rows: they hold no envelope and are no
   longer actionable or resendable, so they cannot block key retirement.
 - Dedupe is unchanged because keys are kept: re-enqueueing a redacted event is
   absorbed by `ON CONFLICT(idempotency_key)`, reminder and bridge `NOT EXISTS`
   checks still match, and terminal rows are never claimed again.
+- Every delivery type is declared either in `OUTBOX_PII_EVENT_TYPES` or in
+  `OUTBOX_PII_FREE_EVENT_TYPES`; a unit test fails when a new type is in
+  neither list.
 - Flag off: no statement from this job and no `outbox_pii_retention` key in
   the cron response or invocation row. The replay guard and the rotation-metric
   filter are always present but match nothing until a row has been redacted.
 
 **Schema and scan cost.** No migration and no DDL. A terminal row's
 `next_attempt_at` is its finalization instant and never later than its anchor
-timestamp, so each class scan is a range on `idx_outbox_events_dispatch`
+timestamp (finalization writes both from one instant, the lease sweep keeps
+the earlier due time, the legacy bridge writes `now` to both; a unit test
+drives every terminal path), so each class scan is a range on
+`idx_outbox_events_dispatch`
 (`status=? AND next_attempt_at<?`, no temporary sort) followed by a rowid
 update, and the invitation guard is a primary-key lookup; a unit test checks
 the plans with `EXPLAIN QUERY PLAN`. The scan still steps over rows redacted
@@ -3848,9 +3862,15 @@ address). A weekly sweep (a backlog of a week at most 100 rows per class). A
 `redacted_at` column with a partial index (cleaner, but needs a protected
 migration cutover).
 
-**Rollout and recovery.** Merge with the flag unset; nothing changes. The owner
-sets `OUTBOX_PII_RETENTION_ENABLED=true` in Vercel Production and redeploys;
-the existing backlog then drains at up to 100 rows per class an hour.
-Redaction cannot be undone, and redacted dead letters stay non-replayable after
-the flag is unset. When it is turned on, update the Privacy Policy line about
-email records to match.
+**Rollout and recovery.** Merge with the flag unset; nothing changes. **Do not
+enable the flag until the matching Privacy Policy text is live** (the
+"Email records" line in `privacy.html`, #336; the exact text is in PR #346).
+That text says the record is kept as an operational record without the
+address, that database backups keep unredacted copies for the provider's
+point-in-time restore window (1 day on Turso's Free plan, per
+`docs/PRODUCTION_BOOTSTRAP_GUIDE.md` §3.4; 10 or 30 days on paid plans), and
+that an existing backlog clears over the following hours or days. Then the
+owner sets `OUTBOX_PII_RETENTION_ENABLED=true` in Vercel Production and
+redeploys; the backlog drains at up to 100 rows per class an hour. Redaction
+cannot be undone, and redacted dead letters stay non-replayable after the flag
+is unset.

@@ -234,6 +234,7 @@ function validDeadLetter(item) {
     attempts: wholeNumber(source.attempts),
     replays: wholeNumber(source.replays),
     ageMs: source.ageMs === null || source.ageMs === undefined ? null : finite(source.ageMs),
+    redacted: source.redacted === true,
   });
 }
 
@@ -294,6 +295,7 @@ export function deadLetterSummary(item) {
     `replayed ${item.replays}×`,
   ];
   if (item.providerReason) parts.push(`provider: ${item.providerReason}`);
+  if (item.redacted) parts.push('recipient details removed by retention; cannot be replayed');
   return parts.join(' · ');
 }
 
@@ -470,9 +472,15 @@ export function mountAdminDiagnostics({
       button.type = 'button';
       button.className = 'btn secondary sm';
       button.dataset.testid = 'admin-dead-letter-replay';
-      button.setAttribute('aria-label', `Replay event #${item.id}`);
       button.textContent = 'Replay';
-      button.addEventListener('click', () => { void replay(item, button); });
+      if (item.redacted) {
+        // ID-83: the server refuses it; say why instead of offering it.
+        button.disabled = true;
+        button.setAttribute('aria-label', `Replay event #${item.id} unavailable: recipient details removed`);
+      } else {
+        button.setAttribute('aria-label', `Replay event #${item.id}`);
+        button.addEventListener('click', () => { void replay(item, button); });
+      }
       actions.appendChild(button);
       row.append(main, actions);
       rows.push(row);
