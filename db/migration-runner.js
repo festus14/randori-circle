@@ -10,7 +10,7 @@ import {
   validateMigrationLedger,
 } from './migration-ledger.js';
 import { MIGRATION_PLANS } from './migration-plan.js';
-import { inspectMembershipAdoptionReadiness } from './membership-readiness.js';
+import { inspectMembershipAdoptionReadiness, inspectMembershipRolloutReadiness } from './membership-readiness.js';
 import { inspectCredentialKeyControlReadiness } from './credential-key-control.js';
 import { enforceCheckConstraints } from './check-constraint-state.js';
 import { inspectSchema } from './schema-inspector.js';
@@ -126,8 +126,17 @@ function applicationObjects(objects){
   return objects.filter(item=>item.name!==MIGRATION_LEDGER_TABLE&&!item.name.startsWith('sqlite_'));
 }
 
-export async function inspectMembershipAdoption(db){
-  const state=await inspectMembershipAdoptionReadiness(db);
+// A database already under the managed ledger is judged by the same
+// steady-state rule as /api/health/ready (inspectMembershipRolloutReadiness):
+// once the rollout is closed, a removed or inactive member keeps their account
+// and audit trail without taking migrations or the backup rehearsal offline.
+// Only adopting an unmanaged database keeps the one-time rule that every
+// non-demo account has an active primary membership.
+export async function inspectMembershipAdoption(db,{managed}={}){
+  if(typeof managed!=='boolean') throw new TypeError('inspectMembershipAdoption needs an explicit managed flag');
+  const state=managed
+    ?await inspectMembershipRolloutReadiness(db)
+    :await inspectMembershipAdoptionReadiness(db);
   if(state.registrationState==='invalid') return state;
   const evidenceResults=await Promise.all([
     db.execute(`SELECT id,is_demo FROM auth_accounts ORDER BY id`),
@@ -174,7 +183,7 @@ export async function inspectMigrationState(db,{migrations=EXECUTABLE_MIGRATIONS
   let membership=null;
   if(exactSchema(schemaStatus)&&(classification==='unmanaged'&&latestVersion>=2
     ||(classification==='managed'&&ledger.currentVersion>=2))){
-    membership=await inspectMembershipAdoption(db);
+    membership=await inspectMembershipAdoption(db,{managed:classification==='managed'});
   }
   let keyControl=null;
   if(exactSchema(schemaStatus)&&(classification==='unmanaged'&&latestVersion>=15
@@ -298,7 +307,7 @@ async function applyOneVersion(db,migration,{expectedStateFingerprint,migrations
         });
       }
       if(migration.version>=2){
-        const membership=await inspectMembershipAdoption(transaction);
+        const membership=await inspectMembershipAdoption(transaction,{managed:true});
         if(!membership.ok){
           throw new MigrationError('MIGRATION_SCHEMA_INVALID','Membership migration postcondition failed',{
             details:{version:migration.version},

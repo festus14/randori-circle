@@ -154,6 +154,8 @@ The fingerprint binds the inspected schema, ledger, membership rollout evidence,
 
 For an unmanaged database, adoption requires the exact current schema. The membership rollout must contain exactly the singleton row with ID `1`. An open latch may not contain circles, memberships, invitations, or audit state. A closed latch must have exactly one active primary circle, an active owner, exact owner-authored backfill completion evidence, canonical backfill or accepted-invitation provenance for every non-demo account, no uncovered accounts, and no orphan active memberships. The runner preserves the latch; it never reopens registration.
 
+A managed database is judged by the steady-state rule that `/api/health/ready` uses (ID-85): once the latch is closed, a member who was removed, deactivated, or left keeps their account and audit trail, so "no uncovered accounts" is not required. Every other invariant (one active primary circle, an active owner, backfill completion evidence, provenance for every non-demo account, no malformed audits, no orphan active memberships) still is. This applies to `apply` (including a latest-version no-op and each migration's postcondition), to backup evidence, and to the backup/restore rehearsal's source detection.
+
 Every invocation emits exactly one redacted JSON document. Successful results and controlled refusals use stdout; invocation or operational failures use stderr.
 
 | Exit | Meaning |

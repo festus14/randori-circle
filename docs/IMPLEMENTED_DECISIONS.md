@@ -4266,3 +4266,43 @@ wording.
 **Rollout and recovery.** Merging changes only what new rows hold and what the
 admin API returns; no schema, flag or production setting changes. Reverting
 the commit restores the previous writers; nothing needs to be cleaned up.
+
+## ID-85: Judge a managed database by steady-state membership readiness in migrations and the backup rehearsal
+
+Status: implemented; no flag, no migration. Fixes a live failure found while
+reviewing #347 (account deletion).
+
+**Context.** `db/migration-runner.js` judged every database, including one
+already under the managed ledger, with the one-time adoption rule
+`inspectMembershipAdoptionReadiness`. That rule also requires every non-demo
+account to have an active primary membership (`closed_rollout_has_uncovered_accounts`).
+As soon as an owner removed or deactivated a member, or a member left,
+`inspectMigrationState` reported a managed database as not ready: even a
+no-op `applyMigrations` threw `MIGRATION_SCHEMA_INVALID`, and the Monday
+backup/restore rehearsal failed in `detectEvidenceMigration` and backup
+evidence collection. Health and pairing readiness already used the
+steady-state rule, so nothing warned.
+
+**Decision.**
+- `inspectMembershipAdoption(db,{managed})` uses
+  `inspectMembershipRolloutReadiness` for a managed ledger: the completed
+  steady-state check once the rollout is closed, the pristine-open check
+  before. `inspectMigrationState` passes `managed` for managed ledgers, and the
+  per-migration postcondition in `applyMigrations` always does.
+- Adopting an unmanaged database keeps the strict one-time rule, including
+  uncovered accounts. The adoption postcondition (now managed) must also pass
+  the steady-state rule.
+- Every steady-state invariant still blocks: provenance, malformed audits, the
+  active owner, backfill completion, orphan memberships.
+- `managed` is a required option, so no caller can fall back to a rule by
+  accident. When the source's own ledger version is not ready, the rehearsal's
+  `detectEvidenceMigration` now fails with `REHEARSAL_MIGRATION_STATE_INVALID`
+  instead of the lower-version probe's "ledger is newer" error (script only;
+  the digest-pinned workflow files are unchanged).
+
+**Alternatives.** Dropping the uncovered-account rule from adoption too (an
+unmanaged database could be adopted with members the backfill never covered).
+Reactivating removed members before migrating (destroys an owner's decision).
+
+**Rollout.** Takes effect on merge for `db:migrate`, the production migration
+workflow and the rehearsal. No workflow file or digest pin changes.
