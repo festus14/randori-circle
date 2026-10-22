@@ -3043,7 +3043,13 @@ reads the current week first and returns before any pair scan until its
 pairing is 72 hours old, materializes the pairs CTE, runs `session_soon`
 first, and isolates failures per kind with a bounded code in
 `outbox.reminder_errors` and a `warn` log. A membership-free local runtime uses
-the `local` availability scope, like the availability endpoint.
+the `local` availability scope, like the availability endpoint, through one
+shared `strictLocalPairingRuntime` check. The one-hour due-check pages with a
+keyset on (agreed time, group, user) so queued recipients cannot starve later
+ones (at most 20 pages a run, reported as `PAGE_LIMIT_REACHED`), and nothing is
+queued when no reminder handler can deliver (`NO_DELIVERY_HANDLER`). The nudge
+still scans `pairing_groups` once per run after 72 hours (no `week_id` index
+without a migration); this is documented rather than throttled.
 
 ## ID-72: Turn on production client error logging (warn/error, signed-in) with app_logs retention
 

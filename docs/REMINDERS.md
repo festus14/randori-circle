@@ -88,29 +88,42 @@ deployment through `REMINDERS_SESSION_SOON_ENABLED`, not per member.
   `/api/cron/outbox`, before the claim rounds, so a newly due reminder can be
   delivered in the same invocation. It creates at most 50 intents per kind per
   invocation and is skipped by `NOT EXISTS` on the idempotency key once
-  queued (for `session_soon`, whose key holds a fingerprint, queued keys are
-  filtered after an over-fetching read ordered by agreed time, so they cannot
-  starve a later session). No new Vercel cron was added.
+  queued. `session_soon` keys hold a fingerprint computed in JavaScript, so
+  queued keys are filtered after each read: the read pages with a keyset on
+  (agreed time, group, user), earliest session first, until 50 new reminders
+  are found or the window runs out, so already-queued recipients can never
+  hide later ones. Each run reads at most 20 pages (1,000 rows); if that cap
+  stops the scan early the count is still reported and
+  `reminder_errors.session_soon` is `PAGE_LIMIT_REACHED`. No new Vercel cron
+  was added.
 - Kinds run in the order `session_soon`, `agree_time`, `availability_cutoff`
   and fail independently. A failing kind reports a bounded error code (the
   libSQL code such as `SQLITE_BUSY`, otherwise `QUERY_FAILED`) in
   `outbox.reminder_errors` and a `null` count in `outbox.reminders_enqueued`;
   the other kinds still run. The whole check has its own 5-second slice of the
   preparation window (`DUE_CHECK_TIMEOUT`, or `DUE_CHECK_FAILED` for an
-  unusable client). Any reminder error logs the `outbox_invocation` row at
-  `warn` level, and other mail is still delivered.
-- Cost per five-minute run: one indexed lookup of the current and previous
-  primary week (`pairing_weeks` by label joined to its run). The nudge query
-  runs only once the current week's pairing is 72 hours old, and both pair
-  queries are scoped to those week ids with the pairs CTE `MATERIALIZED`, so
-  pairs are scanned once per query rather than once per member slot.
+  unusable client). Nothing is queued when no reminder handler can deliver (no
+  Resend keys and no local capture): `due_check` is then
+  `NO_DELIVERY_HANDLER`, so intents never sit pending undeliverable. Any
+  reminder error logs the `outbox_invocation` row at `warn` level, and other
+  mail is still delivered.
+- Cost per five-minute run: one lookup of the current and previous primary
+  week (`pairing_weeks` by label joined to its run). The one-hour query is
+  fully indexed (`pair_schedules` by week, groups by id). The nudge query runs
+  only from 72 hours after publication until the cycle ends (about 1,150 runs
+  a week); `pairing_groups` has no `week_id` index, so each of those runs
+  scans every stored group once (the pairs CTE is `MATERIALIZED`, so not once
+  per member slot). At current circle sizes that is hundreds of rows per run,
+  well inside Turso's read allowance. An hourly throttle would need persisted
+  state and an index needs a migration, so neither was added.
 - Local runtime: reminders read availability under the same scope the
   availability endpoint writes. The bundled dev server enables circle
   membership, so that is the primary circle's `circle:{id}` scope, as in
   production (the golden path saves a choice in the browser and checks that it
   stops the cutoff reminder). A strict local runtime with membership disabled
-  uses the `local` scope and skips membership checks, exactly as the endpoint
-  does.
+  uses the `local` scope and skips membership checks; the endpoint, the
+  pairing publisher and reminders share one check for that
+  (`strictLocalPairingRuntime` in `api/_local-runtime.js`).
 
 ## Known limits
 
@@ -123,6 +136,11 @@ deployment through `REMINDERS_SESSION_SOON_ENABLED`, not per member.
 - The one-hour reminder is opt-in per deployment, not per member (see
   Preferences); `REMINDERS_SESSION_SOON_ENABLED` stays off until per-type
   toggles exist.
+- Primary pairs from two or more cycles back get no one-hour reminder, even
+  though a past week's room can still set a future time; only the current and
+  previous week are read.
+- Secondary sessions after their publication's boundary are not reminded,
+  matching the existing secondary 24-hour reminder.
 
 ## Volume
 
@@ -150,14 +168,17 @@ Recovery: unset `REMINDERS_ENABLED` and redeploy. Queued reminders drain as
 - `tests/unit/reminders.test.mjs`: cycle-boundary timing (24-hour window,
   cutoff instant, October and March DST changes), 72-hour nudge boundary and
   the early return before it, one-hour window and 15-minute minimum, sessions
-  after the Sunday boundary, partner removal for primary and secondary pairs,
+  after the Sunday boundary, more than 200 recipients in one window (keyset
+  paging), earliest-session ordering, the per-run page cap, partner removal
+  for primary and secondary pairs,
   timezone display, secondary circles, the local availability scope, per-kind
   failure isolation and order, send-time suppression reasons, idempotency
   across retries and replay, provider error classification.
 - `tests/unit/reminders-ops.test.mjs`: preferences response with the flag off
   and on, the cron due-check queuing and delivering in one invocation, a
-  failing kind logged at `warn` while queued mail is delivered, the due-check
-  timeout, and a guard that every outbox type keeps a claim under the cap.
+  failing kind logged at `warn` while queued mail is delivered, no queueing
+  without a delivery handler, the due-check timeout, and a guard that every
+  outbox type keeps a claim under the cap.
 - `tests/e2e/ui-shell-accessibility.spec.ts`: reminder badges follow only the
   confirmed preference.
 - `tests/e2e/golden-reminders-real-runtime.spec.ts`: the real-runtime golden

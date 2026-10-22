@@ -398,7 +398,9 @@ test('secondary circles get circle-named, dashboard-only reminders for all three
   await db2.execute({sql:`UPDATE circle_pair_schedules SET agreed_time=? WHERE group_id=?`,
     args:['2098-09-18T13:00:00.000Z',groupId]});
   assert.deepEqual(await handler(eventFrom(nudges[1]),{}),{status:'suppressed',reasonCode:'TIME_AGREED'});
-  assert.equal((await enqueueDueReminders(db2,{now:at('2098-09-18T11:55:00.000Z')})).session_soon,2);
+  // One per run: the second run pages past the queued secondary recipient.
+  assert.equal((await enqueueDueReminders(db2,{now:at('2098-09-18T11:55:00.000Z'),limit:1})).session_soon,1);
+  assert.equal((await enqueueDueReminders(db2,{now:at('2098-09-18T11:55:00.000Z'),limit:1})).session_soon,1);
   const soon=(await queued(db2)).filter(row=>row.payload.kind==='session_soon');
   assert.equal(soon[0].payload.scope,'secondary');
   assert.equal((await handlerAt(db2,'2098-09-18T12:00:00.000Z',send)(eventFrom(soon[0]),{})).status,'delivered');
@@ -749,7 +751,7 @@ test('a membership-free local runtime uses the local availability scope, as the 
 });
 
 test('the local availability scope applies only to a strict loopback runtime with membership disabled',async()=>{
-  const {localAvailabilityScope}=await import('../../api/_local-runtime.js');
+  const {strictLocalPairingRuntime:localAvailabilityScope}=await import('../../api/_local-runtime.js');
   const keys=['NODE_ENV','RANDORI_LOCAL_RUNTIME','TURSO_DATABASE_URL','TURSO_AUTH_TOKEN','APP_URL',
     'CIRCLE_MEMBERSHIP_ENABLED','VERCEL','VERCEL_ENV','VERCEL_URL'];
   const saved=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
@@ -768,4 +770,65 @@ test('the local availability scope applies only to a strict loopback runtime wit
       if(value===undefined) delete process.env[key]; else process.env[key]=value;
     }
   }
+});
+
+async function seedManyPairs(db,{pairs,session,firstUserId=100,weekId=10}){
+  const statements=[];
+  const users=pairs*2;
+  for(let index=0;index<users;index+=1){
+    const id=firstUserId+index;
+    statements.push({sql:`INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
+      VALUES (?,?,'hash',?,'#555',0)`,args:[id,`member${id}@example.test`,`Member ${id}`]});
+    statements.push({sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status) VALUES (1,?,'member','active')`,
+      args:[id]});
+  }
+  await db.batch(statements,'write');
+  const week=await seedPrimaryWeek(db,{weekId,pairs:Array.from({length:pairs},(_,index)=>
+    [firstUserId+index*2,firstUserId+index*2+1])});
+  await db.batch(week.groups.map(groupId=>({sql:`INSERT INTO pair_schedules
+    (week_id,pair_group_id,proposed_times,agreed_time) VALUES (?,?,'[]',?)`,args:[weekId,groupId,session]})),'write');
+  return week;
+}
+
+test('more than 200 recipients in one window are all reached, 50 per run, earliest first',async()=>{
+  process.env.REMINDERS_SESSION_SOON_ENABLED='true';
+  const db=await fixture();
+  const session='2098-09-18T19:00:00.000Z';
+  await seedManyPairs(db,{pairs:150,session});
+  const queuedAt=at('2098-09-18T18:00:00.000Z');
+  const runs=[];
+  for(let run=0;run<7;run+=1) runs.push((await enqueueDueReminders(db,{now:queuedAt})).session_soon);
+  assert.deepEqual(runs,[50,50,50,50,50,50,0]);
+  const keys=(await queued(db)).filter(row=>row.payload.kind==='session_soon').map(row=>row.payload.recipient_user_id);
+  assert.equal(new Set(keys).size,300,'every one of the 300 recipients is queued exactly once');
+});
+
+test('the one-hour due-check takes the earliest session first when the bound is reached',async()=>{
+  process.env.REMINDERS_SESSION_SOON_ENABLED='true';
+  const db=await fixture();
+  // The lower group id has the later session, so group order alone would pick it.
+  const {weekId,groups:[later,earlier]}=await seedPrimaryWeek(db,{pairs:[[1,2],[4,2]]});
+  await agree(db,weekId,later,'2098-09-18T13:00:00.000Z');
+  await agree(db,weekId,earlier,'2098-09-18T12:30:00.000Z');
+  assert.equal((await enqueueDueReminders(db,{now:at('2098-09-18T11:55:00.000Z'),limit:2})).session_soon,2);
+  const soon=(await queued(db)).filter(row=>row.payload.kind==='session_soon');
+  assert.deepEqual(soon.map(row=>row.payload.pair_group_id),[earlier,earlier]);
+});
+
+test('the one-hour page cap bounds each run and is reported when it stops the scan early',async()=>{
+  process.env.REMINDERS_SESSION_SOON_ENABLED='true';
+  const db=await fixture();
+  await seedManyPairs(db,{pairs:2,session:'2098-09-18T19:00:00.000Z'});
+  const options={now:at('2098-09-18T18:00:00.000Z'),limit:1,sessionSoonMaxPages:2};
+  assert.deepEqual(await enqueueDueReminders(db,options),
+    {enabled:true,availability_cutoff:0,agree_time:0,session_soon:1,errors:{}});
+  assert.equal((await enqueueDueReminders(db,options)).session_soon,1,'reads past one queued row');
+  const capped=await enqueueDueReminders(db,options);
+  assert.equal(capped.session_soon,0);
+  assert.deepEqual(capped.errors,{session_soon:'PAGE_LIMIT_REACHED'});
+  // The next run with the normal cap reaches the rest of the window.
+  assert.equal((await enqueueDueReminders(db,{...options,sessionSoonMaxPages:'many'})).session_soon,1);
+  assert.equal((await enqueueDueReminders(db,{...options,sessionSoonMaxPages:20})).session_soon,1);
+  assert.deepEqual((await enqueueDueReminders(db,{...options,sessionSoonMaxPages:20})).errors,{},
+    'an exhausted window is not a capped scan');
 });

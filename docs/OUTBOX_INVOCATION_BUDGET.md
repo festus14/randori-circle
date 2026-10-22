@@ -139,6 +139,9 @@ The cron response and `outbox_invocation` log contain only:
 - `app_logs_retention`: `{ran, purged, more}` from the hourly `app_logs`
   purge, `{ran:false, timed_out:true}` or `{ran:false, failed:true}` when it
   did not finish, or `null` when it was skipped because its budget did not fit.
+- only while `REMINDERS_ENABLED` is on, `reminders_enqueued` (new reminders
+  per kind, `null` for a failed kind or check) and `reminder_errors` (bounded
+  codes per kind, or for the whole `due_check`).
 
 `metrics_complete` distinguishes an exact post-run backlog from a deadline-
 bounded response where those two gauges are `null`.

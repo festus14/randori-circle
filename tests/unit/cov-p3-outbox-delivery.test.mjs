@@ -48,7 +48,7 @@ mock.module('../../api/_reminders.js',{exports:{
 }});
 mock.module('../../api/_local-runtime.js',{exports:{
   localIdentityAdapterEnabled:()=>state.local,
-  localAvailabilityScope:()=>state.local,
+  strictLocalPairingRuntime:()=>state.local,
 }});
 
 const {

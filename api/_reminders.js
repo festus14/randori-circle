@@ -31,6 +31,9 @@ export const SESSION_SOON_LOOKAHEAD_MS=SESSION_SOON_LEAD_MS+5*60*1000;
 // agreed it, or delivery ran late, and the email would arrive too late to help.
 export const SESSION_SOON_MIN_LEAD_MS=15*60*1000;
 export const REMINDER_ENQUEUE_LIMIT=50;
+// Pages of `limit` rows read per run while looking for unqueued one-hour
+// reminders (at most 1,000 rows at the default limit).
+export const SESSION_SOON_MAX_PAGES=20;
 export const REMINDER_KINDS=Object.freeze(['availability_cutoff','agree_time','session_soon']);
 
 const MAX_CIRCLES=100;
@@ -356,7 +359,7 @@ function secondaryRecipientSql(filterSql,{agreedTime=false}={}){
     WHERE COALESCE(preference.email_enabled,1)<>0`;
 }
 
-async function withoutQueued(db,intents,limit){
+async function withoutQueued(db,intents){
   if(!intents.length) return intents;
   const keys=intents.map(({payload})=>reminderKey({...payload,template_version:REMINDER_TEMPLATE_VERSION}));
   const queued=await db.execute({
@@ -364,56 +367,81 @@ async function withoutQueued(db,intents,limit){
     args:keys,
   });
   const existing=new Set(queued.rows.map(row=>String(row.idempotency_key)));
-  return intents.filter((_,index)=>!existing.has(keys[index])).slice(0,limit);
+  return intents.filter((_,index)=>!existing.has(keys[index]));
 }
 
-async function sessionSoonIntents(db,{now,limit,localScope,weeks}){
-  // The key includes a fingerprint computed here, so already-queued keys are
-  // filtered after the read. Candidates are the earliest sessions first and
-  // over-fetched, so queued ones cannot starve a later session in the window.
-  const candidates=limit*4;
-  const intents=[];
+function sessionSoonIntent(row,scope){
+  // Legacy free-text agreements never match the normalized-instant check.
+  const instant=normalizeScheduleInstant(String(row.agreed_time));
+  if(instant!==row.agreed_time) return null;
+  const groupId=Number(row.group_id);
+  return {payload:{kind:'session_soon',scope,instant_fingerprint:reminderInstantFingerprint(instant),
+    recipient_user_id:Number(row.user_id),
+    ...(scope==='primary'?{week_id:Number(row.week_id),pair_group_id:groupId}
+      :{publication_id:Number(row.publication_id),group_id:groupId})},
+  notBefore:new Date(Date.parse(instant)-SESSION_SOON_LEAD_MS).toISOString()};
+}
+
+/**
+ * The session key holds a fingerprint computed here, so already-queued keys
+ * can only be filtered after a read. Reads therefore page with a keyset on
+ * (agreed_time, group_id, user_id), earliest session first, until `limit` new
+ * intents are found or the window is exhausted; queued recipients can never
+ * hide a later one. `budget` caps the pages read per run across both scopes
+ * and records when that cap stopped the scan early.
+ */
+async function pagedSessionSoon(db,{scope,readPage,limit,budget}){
+  const fresh=[];
+  let after=null;
+  while(fresh.length<limit){
+    if(budget.pages>=budget.maxPages){ budget.exhausted=true; break; }
+    budget.pages+=1;
+    const rows=await readPage(after,budget.pageSize);
+    const page=rows.map(row=>sessionSoonIntent(row,scope)).filter(Boolean);
+    fresh.push(...(await withoutQueued(db,page)).slice(0,limit-fresh.length));
+    if(rows.length<budget.pageSize) break;
+    const last=rows.at(-1);
+    after=[String(last.agreed_time),Number(last.group_id),Number(last.user_id)];
+  }
+  return fresh;
+}
+
+function keysetSql(after){
+  return after?'AND (recipient.agreed_time,recipient.group_id,recipient.user_id)>(?,?,?)':'';
+}
+
+async function sessionSoonIntents(db,{now,limit,localScope,weeks,budget}){
   const from=new Date(now.getTime()+SESSION_SOON_MIN_LEAD_MS).toISOString();
   const until=new Date(now.getTime()+SESSION_SOON_LOOKAHEAD_MS).toISOString();
-  // Legacy free-text agreements never match the normalized-instant check.
-  const collect=(rows,scope)=>{
-    for(const row of rows){
-      const instant=normalizeScheduleInstant(String(row.agreed_time));
-      if(instant!==row.agreed_time) continue;
-      const groupId=Number(row.group_id);
-      const payload={kind:'session_soon',scope,instant_fingerprint:reminderInstantFingerprint(instant),
-        recipient_user_id:Number(row.user_id),
-        ...(scope==='primary'?{week_id:Number(row.week_id),pair_group_id:groupId}
-          :{publication_id:Number(row.publication_id),group_id:groupId})};
-      intents.push({payload,notBefore:new Date(Date.parse(instant)-SESSION_SOON_LEAD_MS).toISOString()});
-    }
-  };
+  const intents=[];
   // Primary schedules are not cycle-bound: a pair from the previous week can
   // agree a time after the Sunday boundary, so both weeks are in scope.
   const weekIds=[weeks.current,weeks.previous].filter(Boolean).map(week=>Number(week.id));
   if(weekIds.length){
-    const primary=await db.execute({
-      sql:`${primaryRecipientSql(`SELECT pair.week_id,pair.id AS group_id,schedule.agreed_time,
-          pair.user_a_id,pair.user_b_id,pair.user_c_id
-        FROM pair_schedules schedule
-        JOIN pairing_groups pair ON pair.id=schedule.pair_group_id AND pair.week_id=schedule.week_id
-        WHERE schedule.week_id IN (${weekIds.map(()=>'?').join(',')})
-          AND schedule.agreed_time>? AND schedule.agreed_time<=? AND ${humanPrimaryPair(localScope)}`)}
-      ORDER BY recipient.agreed_time,recipient.group_id,recipient.user_id LIMIT ?`,
-      args:[...weekIds,from,until,candidates],
-    });
-    collect(primary.rows,'primary');
-  }
-  if(secondaryCircleSchedulingEnabled()){
-    const instant=now.toISOString();
-    const secondary=await db.execute({
-      sql:`${secondaryRecipientSql(`AND schedule.agreed_time>? AND schedule.agreed_time<=?`,{agreedTime:true})}
+    intents.push(...await pagedSessionSoon(db,{scope:'primary',limit,budget,readPage:async(after,size)=>(
+      await db.execute({
+        sql:`${primaryRecipientSql(`SELECT pair.week_id,pair.id AS group_id,schedule.agreed_time,
+            pair.user_a_id,pair.user_b_id,pair.user_c_id
+          FROM pair_schedules schedule
+          JOIN pairing_groups pair ON pair.id=schedule.pair_group_id AND pair.week_id=schedule.week_id
+          WHERE schedule.week_id IN (${weekIds.map(()=>'?').join(',')})
+            AND schedule.agreed_time>? AND schedule.agreed_time<=? AND ${humanPrimaryPair(localScope)}`)}
+          ${keysetSql(after)}
         ORDER BY recipient.agreed_time,recipient.group_id,recipient.user_id LIMIT ?`,
-      args:[instant,instant,from,until,candidates],
-    });
-    collect(secondary.rows,'secondary');
+        args:[...weekIds,from,until,...(after||[]),size],
+      })).rows}));
   }
-  return withoutQueued(db,intents,limit);
+  if(secondaryCircleSchedulingEnabled()&&intents.length<limit){
+    const instant=now.toISOString();
+    intents.push(...await pagedSessionSoon(db,{scope:'secondary',limit:limit-intents.length,budget,
+      readPage:async(after,size)=>(await db.execute({
+        sql:`${secondaryRecipientSql(`AND schedule.agreed_time>? AND schedule.agreed_time<=?`,{agreedTime:true})}
+          ${keysetSql(after)}
+          ORDER BY recipient.agreed_time,recipient.group_id,recipient.user_id LIMIT ?`,
+        args:[instant,instant,from,until,...(after||[]),size],
+      })).rows}));
+  }
+  return intents;
 }
 
 function dueCheckErrorCode(error){
@@ -429,7 +457,7 @@ function dueCheckErrorCode(error){
  * stopping the others. Returns counts and error codes only.
  */
 export async function enqueueDueReminders(db,{now=()=>new Date(),timeZone,limit=REMINDER_ENQUEUE_LIMIT,
-  localScope=false}={}){
+  localScope=false,sessionSoonMaxPages=SESSION_SOON_MAX_PAGES}={}){
   const counts={availability_cutoff:0,agree_time:0,session_soon:0};
   if(!remindersEnabled()) return Object.freeze({enabled:false,...counts,errors:{}});
   if(!db||typeof db.execute!=='function'||typeof db.batch!=='function'){
@@ -440,8 +468,11 @@ export async function enqueueDueReminders(db,{now=()=>new Date(),timeZone,limit=
   const options={now:instant,timeZone,limit:bound,localScope:localScope===true};
   const errors={};
   let weeks=null;
+  const budget={pages:0,exhausted:false,pageSize:bound,
+    maxPages:Number.isSafeInteger(sessionSoonMaxPages)&&sessionSoonMaxPages>0
+      &&sessionSoonMaxPages<=SESSION_SOON_MAX_PAGES?sessionSoonMaxPages:SESSION_SOON_MAX_PAGES};
   const builders={
-    session_soon:async()=>sessionSoonIntents(db,{...options,weeks:weeks??=await primaryWeeks(db,options)}),
+    session_soon:async()=>sessionSoonIntents(db,{...options,budget,weeks:weeks??=await primaryWeeks(db,options)}),
     agree_time:async()=>agreeTimeIntents(db,{...options,weeks:weeks??=await primaryWeeks(db,options)}),
     availability_cutoff:()=>availabilityCutoffIntents(db,options),
   };
@@ -453,6 +484,9 @@ export async function enqueueDueReminders(db,{now=()=>new Date(),timeZone,limit=
       errors[kind]=dueCheckErrorCode(error);
     }
   }
+  // Not a failure: the count is valid, but the page cap stopped the scan with
+  // more of the window unread, so later recipients wait for the next run.
+  if(budget.exhausted&&!errors.session_soon) errors.session_soon='PAGE_LIMIT_REACHED';
   return Object.freeze({enabled:true,...counts,errors:Object.freeze(errors)});
 }
 

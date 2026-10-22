@@ -226,6 +226,25 @@ test('the fair dispatcher still has a claim for every outbox type',async()=>{
     maxClaims:OUTBOX_CRON_MAX_CLAIMS}),/invalid outbox invocation policy/);
 });
 
+test('nothing is queued when no reminder handler can deliver',async()=>{
+  process.env.REMINDERS_ENABLED='true';
+  delete process.env.RESEND_API_KEY;
+  delete process.env.RESEND_FROM;
+  const before=Number((await realDb.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count);
+  const seen=[];
+  clientOverride={
+    execute(statement){ seen.push(typeof statement==='string'?statement:statement.sql); return realDb.execute(statement); },
+    batch:(...args)=>realDb.batch(...args),
+    transaction:(...args)=>realDb.transaction(...args),
+  };
+  const response=await invoke(cron);
+  assert.equal(response.status,200);
+  assert.equal(response.body.outbox.reminders_enqueued,null);
+  assert.deepEqual(response.body.outbox.reminder_errors,{due_check:'NO_DELIVERY_HANDLER'});
+  assert.equal(seen.some(sql=>/week\.week_label IN|WITH pairs AS|FROM circles WHERE archived_at IS NULL/.test(sql)),false);
+  assert.equal(Number((await realDb.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),before);
+});
+
 test('a slow due-check is abandoned at its own budget and delivery still runs',async()=>{
   process.env.REMINDERS_ENABLED='true';
   let release;

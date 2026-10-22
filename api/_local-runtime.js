@@ -57,11 +57,13 @@ export function localIdentityAdapterEnabled(req){
 }
 
 /**
- * Mirrors how the availability endpoint scopes decisions: a strict local
- * runtime with circle membership disabled stores them under `local` (see
- * `strictLocalPairingRuntime` in api/ops.js). The bundled dev server enables
- * membership, so it uses the primary circle's scope like production.
+ * The one strict local-runtime check for membership-free local pairing and
+ * availability: the loopback runtime above with circle membership disabled.
+ * The availability endpoint then stores decisions under the `local` scope, the
+ * pairing publisher uses the local admin, and reminders read the same scope.
+ * The bundled dev server enables membership, so it uses the primary circle's
+ * scope like production.
  */
-export function localAvailabilityScope(req){
+export function strictLocalPairingRuntime(req){
   return process.env.CIRCLE_MEMBERSHIP_ENABLED!=='true'&&localRuntimeRequest(req);
 }
