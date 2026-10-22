@@ -8,7 +8,7 @@ import {
   withDatabase,
 } from './golden-runtime';
 
-// Issue #341 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 17, ID-83). The
+// Issue #341 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 21, ID-83). The
 // real loopback runtime runs with OUTBOX_PII_RETENTION_ENABLED and
 // ADMIN_DIAGNOSTICS_ENABLED. The invitation, activation and pairing emails of a
 // new pair are delivered by the production `/api/cron/outbox`; once they are

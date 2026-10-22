@@ -2543,6 +2543,8 @@ test('an unmatched database lease rejects a cross-instance-style concurrent exec
 });
 
 test('client telemetry cannot forge runner leases or execution quota rows', async () => {
+  // Each capped client-log insert reports the row it wrote.
+  executeHandler=sql=>sql.includes('INSERT INTO app_logs')?rows([],{rowsAffected:1}):rows();
   const result=await invoke(dataHandler,{
     method:'POST',
     url:'/api/logs',
@@ -2552,10 +2554,14 @@ test('client telemetry cannot forge runner leases or execution quota rows', asyn
   });
   assert.equal(result.status,200);
   assert.equal(result.body.inserted,1);
-  const insert=executed.find(call=>call.sql.includes('INSERT INTO app_logs') && call.args.length===9);
+  // Every /api/logs row is stored with the literal source 'client'; args are
+  // level, event, message, meta, user, route, ua, ip, then user and cap twice
+  // for the conditional hourly cap.
+  const insert=executed.find(call=>call.sql.includes('INSERT INTO app_logs'));
   assert.ok(insert);
-  assert.equal(insert.args[1],'client');
-  assert.equal(insert.args[2],'client_execute_lease_end');
+  assert.match(insert.sql,/SELECT \?,'client',\?/);
+  assert.deepEqual(insert.args.slice(8),[2,200,200]);
+  assert.equal(insert.args[1],'client_execute_lease_end');
 
   executed.length=0;
   const quota=await invoke(dataHandler,{
@@ -2566,8 +2572,8 @@ test('client telemetry cannot forge runner leases or execution quota rows', asyn
     body:{source:'client',event:'execute_attempt',message:'forged quota'},
   });
   assert.equal(quota.status,200);
-  const quotaInsert=executed.find(call=>call.sql.includes('INSERT INTO app_logs') && call.args.length===9);
-  assert.equal(quotaInsert.args[2],'client_execute_attempt');
+  const quotaInsert=executed.find(call=>call.sql.includes('INSERT INTO app_logs'));
+  assert.equal(quotaInsert.args[1],'client_execute_attempt');
 });
 
 test('production client log ingest keeps warn/error, redacts entries, and reads stay admin-only (ID-72)', async () => {
@@ -2575,6 +2581,7 @@ test('production client log ingest keeps warn/error, redacts entries, and reads 
   const post=body=>invoke(dataHandler,{
     method:'POST',url:'/api/logs',query:{endpoint:'logs'},headers:{'x-test-auth':'user'},body,
   });
+  executeHandler=sql=>sql.includes('INSERT INTO app_logs')?rows([],{rowsAffected:1}):rows();
   process.env.VERCEL_ENV='production';
   const ingest=await post({logs:[
     {level:'info',event:'probe',message:'info stays in the browser in production'},
@@ -2583,8 +2590,8 @@ test('production client log ingest keeps warn/error, redacts entries, and reads 
     {level:'bogus',event:'probe',message:'unknown levels become info'},
     null,
     'not an entry',
-    {level:'warn',event:'probe',message:`warn for jane@example.test at /reset#token=${secret}`,
-      route:`/invite?token=abc#invite=${secret}`,meta:{href:`https://x.test/#invite=${secret}`,inviteToken:secret}},
+    {level:'warn',source:'server',event:'probe for kim@example.test',message:`warn for jane@example.test at /reset#token=${secret}`,
+      route:`/invite?token=abc#invite=${secret}`,ua:'agent sid=abc',meta:{href:`https://x.test/#invite=${secret}`,inviteToken:secret}},
     {level:'error',event:'probe',message:'error with a string meta',meta:'Authorization: Bearer abc.def'},
     {level:'error',event:'probe',message:'error with meta_json',meta_json:'{"token":"abc"}'},
   ]});
@@ -2593,15 +2600,19 @@ test('production client log ingest keeps warn/error, redacts entries, and reads 
   const inserts=executed.filter(call=>call.sql.includes('INSERT INTO app_logs'));
   assert.deepEqual(inserts.map(call=>call.args[0]),['warn','error','error']);
   const [warn,stringMeta,jsonMeta]=inserts;
-  assert.equal(warn.args[1],'client');
-  assert.equal(warn.args[3],'warn for [email] at /reset');
-  assert.deepEqual(JSON.parse(warn.args[4]),{href:'https://x.test/',inviteToken:'[redacted]'});
-  assert.equal(warn.args[5],2);
-  assert.equal(warn.args[6],'/invite?token=[redacted]');
-  assert.equal(stringMeta.args[4],'Authorization: Bearer [redacted]');
-  assert.equal(jsonMeta.args[4],'{"token":"[redacted]"}');
+  // Args: level, event, message, meta, user, route, ua, ip; source is the
+  // literal 'client' even though this entry claimed 'server'.
+  assert.ok(inserts.every(call=>/SELECT \?,'client',\?/.test(call.sql)));
+  assert.equal(warn.args[1],'probe for [email]');
+  assert.equal(warn.args[2],'warn for [email] at /reset');
+  assert.deepEqual(JSON.parse(warn.args[3]),{href:'https://x.test/',inviteToken:'[redacted]'});
+  assert.equal(warn.args[4],2);
+  assert.equal(warn.args[5],'/invite?token=[redacted]');
+  assert.equal(warn.args[6],'agent sid=[redacted]');
+  assert.equal(stringMeta.args[3],'Authorization: [redacted]');
+  assert.equal(jsonMeta.args[3],'{"token":"[redacted]"}');
   assert.equal(JSON.stringify(inserts).includes(secret),false);
-  assert.equal(JSON.stringify(inserts).includes('jane@example.test'),false);
+  assert.equal(JSON.stringify(inserts).includes('@example.test'),false);
 
   process.env.VERCEL_ENV='preview';
   executed.length=0;
