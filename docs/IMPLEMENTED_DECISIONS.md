@@ -3755,6 +3755,50 @@ the threshold with the owner, then set `CIRCLE_HEALTH_ENABLED=true` in Vercel
 Production and redeploy. To recover, unset the flag and redeploy; there is no
 stored state. Contract: [`CIRCLE_HEALTH.md`](CIRCLE_HEALTH.md).
 
+## ID-84: Readiness accepts invitation acceptance via email activation
+
+Status: implemented (production hotfix); no migration, no flag.
+
+**Context.** On 2026-10-22 the first invitee joined through password sign-up
+and email activation (`verifyEmailActivation` in `api/_email-activation.js`).
+That path consumes the invitation and the activation, inserts the active
+membership and records `activation.verified` with
+`dedupe_key='activation-verified:'||<activation id>`. Membership readiness
+(`db/membership-readiness.js`) accepted only `membership.backfilled` and
+`invitation.accepted` provenance, so the new account counted as
+`invalidAccountProvenance`. `/api/health/ready` returned 503 and pairing
+readiness (`requireClosedMembership`) failed.
+
+**Decision.**
+- Both `inspectCompletedMembershipRollout` and
+  `inspectMembershipAdoptionReadiness` accept a third account provenance: an
+  invitation in the primary circle used by the account (used, not revoked),
+  its consumed activation in the same circle, and an `activation.verified`
+  event in that circle whose actor and subject are the account, whose
+  invitation is that invitation, and whose dedupe key is
+  `activation-verified:<activation id>`.
+- A new `malformedActivationAudits` count, a `closed_rollout_account_audit_invalid`
+  blocker in both evaluators, rejects any `activation.verified` event whose
+  invitation, activation, account, actor, circle or dedupe key do not line up.
+  `verifyEmailActivation` is the only writer, it runs in one transaction, and
+  it only creates new accounts (sign-up refuses an existing email and the
+  account insert must return a row), so no legitimate activation audit exists
+  without an accepted membership.
+- The activation table arrived in schema v7 and the migration runner inspects
+  adoption from v2. Each evaluator first checks `sqlite_schema` for
+  `auth_email_activations` (read-only, DDL-free). Without it, every
+  `activation.verified` event counts as malformed.
+- The migration runner's adoption evidence fingerprint is unchanged. Its
+  readiness result already comes from the updated evaluator, so a future
+  cutover no longer refuses these accounts. Any activation join changes the
+  fingerprinted accounts, memberships and used invitations, and any change
+  that breaks an activation audit changes the readiness counts that
+  `stateFingerprint` also covers. Leaving it unchanged keeps fingerprints taken
+  before this deploy valid.
+
+**Recovery.** Revert the commit. Readiness then fails again for every account
+that joined by activation.
+
 ## ID-83: Expire recipient data in the email outbox after delivery, behind a flag
 
 Status: implemented behind `OUTBOX_PII_RETENTION_ENABLED` (default off); no

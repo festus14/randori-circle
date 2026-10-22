@@ -9,7 +9,7 @@ import {
 
 // Routes each readiness query to a canned result by its distinctive SQL text.
 // `null` simulates a driver result that omits `rows`.
-function fakeDb({rollout=[{id:1, registrations_closed:1}], primary=[{id:7, created_by:3}], aggregate={}, state={}}={}){
+function fakeDb({rollout=[{id:1, registrations_closed:1}], primary=[{id:7, created_by:3}], aggregate={}, state={}, activationLedger=[{present:1}]}={}){
   const statements=[];
   return {
     statements,
@@ -18,6 +18,7 @@ function fakeDb({rollout=[{id:1, registrations_closed:1}], primary=[{id:7, creat
       statements.push(statement);
       const rows=value=>value===null?{}:{rows:value};
       if(sql.includes('FROM circle_membership_rollout')) return rows(rollout);
+      if(sql.includes('FROM sqlite_schema')) return rows(activationLedger);
       if(sql.includes('is_primary=1')) return rows(primary);
       if(sql.includes('AS completedBackfills')&&!sql.includes('activeOwners')) return rows([aggregate]);
       return rows(state===null?null:[state]);
@@ -27,12 +28,12 @@ function fakeDb({rollout=[{id:1, registrations_closed:1}], primary=[{id:7, creat
 
 const HEALTHY_ADOPTION_STATE={
   activeOwners:1, matchingBackfills:1, invalidAccountProvenance:0, malformedBackfillAudits:0,
-  malformedInvitationAudits:0, uncoveredAccounts:0, orphanMemberships:0,
+  malformedInvitationAudits:0, malformedActivationAudits:0, uncoveredAccounts:0, orphanMemberships:0,
 };
 const HEALTHY_COMPLETED_STATE={
   activeOwners:1, canonicalBackfillActors:1, completedBackfills:1, matchingBackfills:1,
   malformedCompletionAudits:0, invalidAccountProvenance:0, malformedBackfillAudits:0,
-  malformedInvitationAudits:0, orphanMemberships:0,
+  malformedInvitationAudits:0, malformedActivationAudits:0, orphanMemberships:0,
 };
 
 test('every evaluator requires a client with execute()', async ()=>{
@@ -110,7 +111,7 @@ test('a closed adoption rollout needs one valid primary circle and clean audit p
     'closed_rollout_has_orphan_memberships',
   ]);
 
-  for(const key of ['invalidAccountProvenance', 'malformedBackfillAudits']){
+  for(const key of ['invalidAccountProvenance', 'malformedBackfillAudits', 'malformedActivationAudits']){
     const result=await inspectMembershipAdoptionReadiness(fakeDb({...closed, state:{...HEALTHY_ADOPTION_STATE, [key]:1}}));
     assert.deepEqual(result.blockers, ['closed_rollout_account_audit_invalid'], key);
   }
@@ -161,7 +162,7 @@ test('completed rollout readiness validates singleton, primary circle, creator a
     const result=await inspectCompletedMembershipRollout(fakeDb({state:{...HEALTHY_COMPLETED_STATE, [key]:2}}));
     assert.deepEqual(result.blockers, ['closed_rollout_backfill_audit_invalid'], key);
   }
-  for(const key of ['invalidAccountProvenance', 'malformedInvitationAudits']){
+  for(const key of ['invalidAccountProvenance', 'malformedInvitationAudits', 'malformedActivationAudits']){
     const result=await inspectCompletedMembershipRollout(fakeDb({state:{...HEALTHY_COMPLETED_STATE, [key]:1}}));
     assert.deepEqual(result.blockers, ['closed_rollout_account_audit_invalid'], key);
   }
@@ -181,4 +182,37 @@ test('rollout readiness dispatches to steady-state only for a valid closed singl
 
   const wrongId=await inspectMembershipRolloutReadiness(fakeDb({rollout:[{id:2, registrations_closed:1}]}));
   assert.deepEqual(wrongId.blockers, ['rollout_singleton_invalid']);
+});
+
+test('activation provenance SQL keeps positional args aligned with and without the v7 activation ledger', async ()=>{
+  const placeholders=sql=>(sql.match(/\?/g)||[]).length;
+  const cases=[
+    ['adoption', inspectMembershipAdoptionReadiness, {aggregate:{completedBackfills:1}, state:HEALTHY_ADOPTION_STATE}],
+    ['completed', inspectCompletedMembershipRollout, {state:HEALTHY_COMPLETED_STATE}],
+  ];
+  for(const [name, inspect, options] of cases){
+    for(const activationLedger of [[{present:1}], [{present:0}], [], null]){
+      const db=fakeDb({...options, activationLedger});
+      const result=await inspect(db);
+      assert.equal(result.ok, true, `${name} ${JSON.stringify(activationLedger)}`);
+      assert.equal(result.counts.malformedActivationAudits, 0);
+      const probe=db.statements.find(statement=>String(statement.sql||statement).includes('FROM sqlite_schema'));
+      assert.ok(probe, `${name} probes for the activation ledger`);
+      const stateQuery=db.statements.at(-1);
+      assert.equal(placeholders(stateQuery.sql), stateQuery.args.length, `${name} placeholder count`);
+      const present=activationLedger?.[0]?.present===1;
+      assert.equal(stateQuery.sql.includes('auth_email_activations'), present, name);
+      assert.ok(stateQuery.sql.includes(`event.event_type='activation.verified'`), name);
+      assert.ok(stateQuery.sql.includes('AS malformedActivationAudits'), name);
+      // Every positional argument except the backfill dedupe key and creator is the primary circle.
+      const nonPrimary=stateQuery.args.filter(arg=>arg!==7);
+      assert.deepEqual(
+        nonPrimary,
+        name==='adoption'
+          ? ['primary-membership-backfill:7:v1']
+          : [3, 3, 'primary-membership-backfill:7:v1', 3, 'primary-membership-backfill:7:v1', 3, 3],
+        name,
+      );
+    }
+  }
 });
