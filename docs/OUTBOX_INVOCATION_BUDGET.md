@@ -139,6 +139,15 @@ The cron response and `outbox_invocation` log contain only:
 - `app_logs_retention`: `{ran, purged, more}` from the hourly `app_logs`
   purge, `{ran:false, timed_out:true}` or `{ran:false, failed:true}` when it
   did not finish, or `null` when it was skipped because its budget did not fit.
+- only while `OUTBOX_PII_RETENTION_ENABLED` is on (ID-83),
+  `outbox_pii_retention`: `{ran, redacted:{delivered, suppressed, dead_letter,
+  legacy_pairing}, more}` from the hourly outbox personal-data retention that
+  runs after `app_logs` retention with its own 2-second budget, with the same
+  `timed_out`, `failed` and `null` forms. A run that committed some classes
+  before it timed out, failed or hit its budget reports `partial:true` with the
+  committed counts (and `failed_class` when a statement failed).
+- The `outbox_invocation` row is logged at `warn` instead of `success` when
+  either retention run failed, timed out or stopped part-way.
 - only while `REMINDERS_ENABLED` is on, `reminders_enqueued` (new reminders
   per kind, `null` for a failed kind or check) and `reminder_errors` (bounded
   codes per kind, or for the whole `due_check`).
@@ -158,7 +167,10 @@ the existing local response shape and never enters persistent logs.
 - A worker that loses its lease cannot commit a terminal outcome.
 - Events left due after the claim cap or deadline remain eligible for the next
   authenticated invocation.
-- Dead-letter replay remains an explicit audited administrator action.
+- Dead-letter replay remains an explicit audited administrator action. A dead
+  letter whose recipient details retention removed (ID-83, after 30 days) is
+  refused with `409 {code:"outbox_event_redacted"}` and stays dead-lettered;
+  Admin Diagnostics marks it `redacted` and disables its Replay button.
 
 No migration is required; this is scheduling around the schema-v6 outbox.
 

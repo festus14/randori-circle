@@ -188,6 +188,7 @@ test('the outbox cron runs retention after delivery and logs the result with the
   assert.equal(first.metrics.deadline_reached, false);
   const logged = (await db.execute(`SELECT meta_json FROM app_logs WHERE event='outbox_invocation'`)).rows;
   assert.deepEqual(JSON.parse(logged[0].meta_json).app_logs_retention, { ran: true, purged: 1, more: false });
+  assert.equal(await lastInvocationLevel(), 'success');
   const second = await deliverPendingOutbox(db, 'https://randori.example.test', { headers: {} }, performance.now() + 10_000);
   assert.deepEqual({ ...second.metrics.app_logs_retention }, { ran: false, purged: 0, more: false }, 'throttled for the hour');
 });
@@ -207,13 +208,20 @@ test('retention is skipped when its budget does not fit, and a slow or failed ru
   assert.deepEqual(slow.metrics.app_logs_retention, { ran: false, timed_out: true });
   assert.equal(slow.metrics.deadline_reached, false);
   assert.equal(slow.metrics.metrics_complete, true);
+  assert.equal(await lastInvocationLevel(), 'warn', 'a timed-out retention run is a warning, not a success');
 
   const failed = await deliverPendingOutbox(wrappedDb(sql => (sql.includes('app_logs retention ran') ? Promise.reject(new Error('simulated')) : null)),
     'https://randori.example.test', { headers: {} }, performance.now() + 10_000);
   assert.deepEqual(failed.metrics.app_logs_retention, { ran: false, failed: true });
   assert.equal(failed.metrics.metrics_complete, true);
   assert.equal(failed.metrics.logging_complete, true);
+  assert.equal(await lastInvocationLevel(), 'warn', 'a failed retention run is a warning, not a success');
 });
+
+async function lastInvocationLevel() {
+  return String((await db.execute(`SELECT level FROM app_logs WHERE event='outbox_invocation'
+    ORDER BY id DESC LIMIT 1`)).rows[0]?.level);
+}
 
 test('member-written rows can never claim or suppress retention (M1)', async () => {
   await seed([{ offset: '-45 days', message: 'expired' }]);

@@ -28,6 +28,7 @@ import {
 } from './_health.js';
 import { readOutboxMetrics } from './_outbox.js';
 import { readOutboxDeliveryHealth } from './_outbox-health.js';
+import { outboxRedactedSql } from './_outbox-retention.js';
 
 export const ADMIN_DIAGNOSTICS_FORMAT='randori.admin-diagnostics.v1';
 
@@ -286,6 +287,7 @@ async function readDeadLetters(db,nowMs){
     db.execute({
       sql:`SELECT event.id,event.event_type,event.event_version,event.last_error_code,
           event.attempt_count,event.replay_count,event.dead_lettered_at,
+          CASE WHEN ${outboxRedactedSql('event.payload_json')} THEN 1 ELSE 0 END AS redacted,
           (SELECT audit.reason_code FROM outbox_audit_events audit
             WHERE audit.outbox_event_id=event.id AND audit.action='dead_lettered'
             ORDER BY audit.id DESC LIMIT 1) AS reason_code
@@ -310,6 +312,8 @@ async function readDeadLetters(db,nowMs){
       replays:count(row.replay_count),
       deadLetteredAt:isoOrNull(deadLetteredAt),
       ageMs:deadLetteredAt===null?null:Math.max(0,nowMs-deadLetteredAt),
+      // ID-83: retention removed its recipient details, so it cannot be replayed.
+      redacted:Number(row.redacted)===1,
     });
   }).filter(Boolean);
   const totalCount=count(total?.rows?.[0]?.total);

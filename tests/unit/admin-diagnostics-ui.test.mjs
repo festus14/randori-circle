@@ -352,7 +352,8 @@ test('snapshots are validated before anything renders', () => {
   assert.equal(valid.refreshAfterMs, 5 * MINUTE);
   assert.equal(valid.outboxTypes.length, 2);
   assert.deepEqual(valid.deadLetters.items[0], { id: 41, eventType: 'invitation.email.requested', eventVersion: 1,
-    errorCode: 'PROVIDER_REJECTED', providerReason: 'domain_not_verified', attempts: 5, replays: 0, ageMs: 2 * HOUR });
+    errorCode: 'PROVIDER_REJECTED', providerReason: 'domain_not_verified', attempts: 5, replays: 0, ageMs: 2 * HOUR,
+    redacted: false });
   const base = snapshot();
   for (const bad of [null, [], { ...base, ok: false }, { ...base, format: 'other' }, { ...base, checkedAt: 'nope' },
     { ...base, cards: null }, { ...base, cards: { ...base.cards, readiness: { status: 'odd' } } },
@@ -366,7 +367,7 @@ test('snapshots are validated before anything renders', () => {
   assert.equal(loose.refreshAfterMs, 5 * MINUTE);
   assert.deepEqual(loose.outboxTypes, []);
   assert.equal(loose.deadLetters.total, 0);
-  assert.deepEqual(loose.deadLetters.items, [{ id: 3, eventType: 'a.b', eventVersion: 0, errorCode: null, providerReason: null, attempts: 0, replays: 0, ageMs: null }]);
+  assert.deepEqual(loose.deadLetters.items, [{ id: 3, eventType: 'a.b', eventVersion: 0, errorCode: null, providerReason: null, attempts: 0, replays: 0, ageMs: null, redacted: false }]);
   assert.deepEqual(normalizeSnapshot({ ...base, cards: { ...base.cards, deadLetters: { status: 'healthy' } } }).deadLetters.items, []);
 });
 
@@ -377,6 +378,9 @@ test('error and summary copy is specific and never echoes server text', () => {
   assert.match(loadErrorMessage({ invalid: true }), /unexpected response/);
   assert.match(loadErrorMessage(new Error('boom')), /unavailable right now/);
   assert.equal(replayErrorMessage({ http_status: 409 }, 7), 'Event #7 is no longer dead-lettered.');
+  assert.equal(replayErrorMessage({ http_status: 409, code: 'outbox_event_redacted', error: 'server text' }, 7),
+    'Event #7 can’t be replayed: its recipient details were removed after 30 days under the retention policy. Nothing changed.');
+  assert.match(replayErrorMessage({ http_status: 400, code: 'outbox_event_redacted' }, 7), /rejected/);
   assert.match(replayErrorMessage({ http_status: 403 }, 7), /Only global administrators/);
   assert.match(replayErrorMessage({ http_status: 401 }, 7), /Only global administrators/);
   assert.match(replayErrorMessage({ http_status: 400 }, 7), /rejected/);
@@ -577,6 +581,30 @@ test('a confirmed replay uses the selected reason, reloads and keeps focus in th
   assert.equal(elements.adminDiagnosticsStatus.textContent, 'Diagnostics updated.', 'a manual refresh clears the notice');
 });
 
+test('a dead letter redacted by retention is listed with the reason and cannot be replayed (ID-83)', async () => {
+  const base = snapshot();
+  const redactedItem = { ...base.cards.deadLetters.items[0], id: 42, redacted: true };
+  const payload = snapshot({ deadLetters: { ...base.cards.deadLetters, total: 2,
+    items: [base.cards.deadLetters.items[0], redactedItem] } });
+  assert.equal(normalizeSnapshot(payload).deadLetters.items[1].redacted, true);
+  assert.match(deadLetterSummary({ ageMs: null, attempts: 5, replays: 0, providerReason: null, redacted: true }),
+    /recipient details removed by retention; cannot be replayed$/);
+  const { elements, state } = harness({ payloads: [payload] });
+  await openPanel(elements);
+  const [plain, redacted] = elements.adminDeadLetters.byTestId('admin-dead-letter');
+  const [plainButton] = plain.byTestId('admin-dead-letter-replay');
+  const [redactedButton] = redacted.byTestId('admin-dead-letter-replay');
+  assert.equal(plainButton.disabled, false);
+  assert.equal(plainButton.getAttribute('aria-label'), 'Replay event #41');
+  assert.equal(redactedButton.disabled, true);
+  assert.equal(redactedButton.getAttribute('aria-label'), 'Replay event #42 unavailable: recipient details removed');
+  assert.match(redacted.textContent, /recipient details removed by retention; cannot be replayed/);
+  assert.doesNotMatch(plain.textContent, /retention/);
+  await redactedButton.dispatch('click');
+  assert.deepEqual(state.confirms, []);
+  assert.deepEqual(state.replays, []);
+});
+
 test('an unknown reason falls back to operator retry', async () => {
   const { elements, state } = harness({ withReason: false });
   await openPanel(elements);
@@ -593,6 +621,15 @@ test('a replay conflict refreshes the list; other failures keep the row for a re
   assert.equal(conflict.state.loads, 2);
   assert.equal(conflict.elements.adminDiagnosticsStatus.textContent, 'Event #41 is no longer dead-lettered. Diagnostics updated.');
   assert.equal(conflict.elements.adminDeadLettersTitle.focused, 1);
+
+  // ID-83: a dead letter redacted by retention stays listed with its reason.
+  const redacted = harness({ replay: async () => { throw { http_status: 409, code: 'outbox_event_redacted' }; } });
+  await openPanel(redacted.elements);
+  await redacted.elements.adminDeadLetters.byTestId('admin-dead-letter-replay')[0].dispatch('click');
+  await settle();
+  assert.equal(redacted.state.loads, 2);
+  assert.equal(redacted.elements.adminDiagnosticsStatus.textContent,
+    'Event #41 can’t be replayed: its recipient details were removed after 30 days under the retention policy. Nothing changed. Diagnostics updated.');
 
   const failure = harness({ replay: async () => { throw { http_status: 503 }; } });
   await openPanel(failure.elements);

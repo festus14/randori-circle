@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { rememberOutboxStatement } from './_outbox-identity.js';
+import { OutboxEventRedactedError, outboxNotRedactedSql, outboxRedactedSql } from './_outbox-retention.js';
 
 export { outboxStatementIdentity } from './_outbox-identity.js';
 
@@ -917,11 +918,15 @@ export async function replayDeadLetter(db,{
   }
   const instant=await databaseInstant(db);
   const scheduledAt=notBefore===null?instant:canonicalInstant(notBefore,'not-before time');
-  return commitTransition(db,{
+  // ID-83: a dead letter whose recipient retention removed can never be
+  // delivered, so it is not replayable; the guard holds even after the
+  // retention flag is turned off again.
+  const replayed=await commitTransition(db,{
     update:{
       sql:`UPDATE outbox_events SET status='pending',not_before=?,next_attempt_at=?,attempt_count=0,
         lease_owner=NULL,lease_token=NULL,leased_until=NULL,last_error_code=NULL,dead_lettered_at=NULL,
-        replay_count=replay_count+1,updated_at=? WHERE id=? AND status='dead_letter'`,
+        replay_count=replay_count+1,updated_at=? WHERE id=? AND status='dead_letter'
+        AND ${outboxNotRedactedSql()}`,
       args:[scheduledAt,scheduledAt,instant,id],
     },
     audit:()=>auditStatement({
@@ -929,6 +934,14 @@ export async function replayDeadLetter(db,{
       fromStatus:'dead_letter',toStatus:'pending',reasonCode:reason,attemptNumber:0,
     }),
   });
+  if(replayed) return true;
+  const redacted=await db.execute({
+    sql:`SELECT 1 AS redacted FROM outbox_events WHERE id=? AND status='dead_letter'
+      AND ${outboxRedactedSql()} LIMIT 1`,
+    args:[id],
+  });
+  if(redacted.rows?.length) throw new OutboxEventRedactedError();
+  return false;
 }
 
 export async function readOutboxMetrics(db,{eventType=null}={}){
