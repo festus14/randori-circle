@@ -3,6 +3,63 @@ function numericValue(row,name){
   return Number.isSafeInteger(value)&&value>=0?value:0;
 }
 
+// Password sign-up joins through verified email activation
+// (api/_email-activation.js verifyEmailActivation). It atomically creates a new
+// account, consumes the invitation and the activation, inserts the active
+// membership, and records `activation.verified` (never `invitation.accepted`).
+// That writer is the only source of the event and it always creates a new
+// account, so every such event must line up with its invitation, activation,
+// account and circle. The activation ledger arrived in schema v7; on earlier
+// schemas (the migration runner inspects v2+) no activation audit can be valid.
+async function activationLedgerPresent(db){
+  const result=await db.execute(`SELECT COUNT(*) AS present FROM sqlite_schema
+    WHERE type='table' AND name='auth_email_activations'`);
+  return numericValue(result.rows?.[0],'present')===1;
+}
+
+function activationProvenanceSql(present,primaryId){
+  if(!present){
+    return {
+      account:'',accountArgs:[],
+      malformed:`(SELECT COUNT(*) FROM circle_audit_events event
+        WHERE event.event_type='activation.verified')`,
+      malformedArgs:[],
+    };
+  }
+  return {
+    account:`
+          AND NOT EXISTS (
+            SELECT 1 FROM circle_invitations invitation
+            JOIN auth_email_activations activation ON activation.invitation_id=invitation.id
+              AND activation.circle_id=invitation.circle_id AND activation.used_at IS NOT NULL
+            JOIN circle_audit_events event ON event.invitation_id=invitation.id
+            WHERE invitation.circle_id=? AND invitation.used_by=account.id
+              AND invitation.used_at IS NOT NULL AND invitation.revoked_at IS NULL
+              AND event.circle_id=invitation.circle_id
+              AND event.event_type='activation.verified'
+              AND event.actor_user_id=account.id
+              AND event.subject_user_id=account.id
+              AND event.dedupe_key=('activation-verified:'||activation.id)
+          )`,
+    accountArgs:[primaryId],
+    malformed:`(SELECT COUNT(*) FROM circle_audit_events event
+        LEFT JOIN circle_invitations invitation ON invitation.id=event.invitation_id
+        LEFT JOIN auth_email_activations activation ON activation.invitation_id=event.invitation_id
+        LEFT JOIN auth_accounts account ON account.id=event.subject_user_id
+        WHERE event.event_type='activation.verified' AND (
+          event.circle_id<>? OR invitation.id IS NULL OR invitation.circle_id<>?
+          OR invitation.used_at IS NULL OR invitation.revoked_at IS NOT NULL
+          OR invitation.used_by IS NOT account.id
+          OR activation.id IS NULL OR activation.used_at IS NULL
+          OR activation.circle_id IS NOT invitation.circle_id
+          OR account.id IS NULL OR COALESCE(account.is_demo,0)<>0
+          OR event.actor_user_id IS NOT account.id
+          OR event.dedupe_key IS NOT ('activation-verified:'||activation.id)
+        ))`,
+    malformedArgs:[primaryId,primaryId],
+  };
+}
+
 // This evaluator is intentionally DDL-free and returns only bounded aggregate
 // evidence. It is safe to call from request paths and from write transactions
 // that need to re-check the rollout invariant immediately before a mutation.
@@ -43,6 +100,7 @@ export async function inspectMembershipAdoptionReadiness(db){
   }else if(closed===1){
     if(primaryRows.length!==1||!validPrimaryId) blockers.push('closed_rollout_primary_circle_invalid');
     if(primaryRows.length===1&&validPrimaryId){
+      const activation=activationProvenanceSql(await activationLedgerPresent(db),primaryId);
       const stateResult=await db.execute({
         sql:`SELECT
           (SELECT COUNT(*) FROM circle_memberships owner_membership
@@ -83,7 +141,7 @@ export async function inspectMembershipAdoptionReadiness(db){
                   AND event.actor_user_id=account.id
                   AND event.subject_user_id=account.id
                   AND event.dedupe_key=('invite-accepted:'||invitation.id)
-              )) AS invalidAccountProvenance,
+              )${activation.account}) AS invalidAccountProvenance,
           (SELECT COUNT(*) FROM circle_audit_events event
             LEFT JOIN auth_accounts account ON account.id=event.subject_user_id
             LEFT JOIN circle_memberships actor_membership
@@ -108,6 +166,7 @@ export async function inspectMembershipAdoptionReadiness(db){
               OR event.actor_user_id IS NOT account.id
               OR event.dedupe_key IS NOT ('invite-accepted:'||invitation.id)
             )) AS malformedInvitationAudits,
+          ${activation.malformed} AS malformedActivationAudits,
           (SELECT COUNT(*) FROM auth_accounts account
             WHERE COALESCE(account.is_demo,0)=0 AND NOT EXISTS (
               SELECT 1 FROM circle_memberships membership
@@ -122,8 +181,10 @@ export async function inspectMembershipAdoptionReadiness(db){
           primaryId,`primary-membership-backfill:${primaryId}:v1`,
           primaryId,primaryId,
           primaryId,
+          ...activation.accountArgs,
           primaryId,primaryId,
           primaryId,primaryId,
+          ...activation.malformedArgs,
           primaryId,
         ],
       });
@@ -133,6 +194,7 @@ export async function inspectMembershipAdoptionReadiness(db){
       counts.invalidAccountProvenance=numericValue(row,'invalidAccountProvenance');
       counts.malformedBackfillAudits=numericValue(row,'malformedBackfillAudits');
       counts.malformedInvitationAudits=numericValue(row,'malformedInvitationAudits');
+      counts.malformedActivationAudits=numericValue(row,'malformedActivationAudits');
       counts.uncoveredAccounts=numericValue(row,'uncoveredAccounts');
       counts.orphanMemberships=numericValue(row,'orphanMemberships');
       if(counts.activeOwners<1) blockers.push('closed_rollout_has_no_owner');
@@ -140,7 +202,7 @@ export async function inspectMembershipAdoptionReadiness(db){
         blockers.push('closed_rollout_backfill_audit_invalid');
       }
       if(counts.invalidAccountProvenance||counts.malformedBackfillAudits
-        ||counts.malformedInvitationAudits){
+        ||counts.malformedInvitationAudits||counts.malformedActivationAudits){
         blockers.push('closed_rollout_account_audit_invalid');
       }
       if(counts.uncoveredAccounts) blockers.push('closed_rollout_has_uncovered_accounts');
@@ -182,6 +244,7 @@ export async function inspectCompletedMembershipRollout(db){
   if(!Number.isSafeInteger(creatorId)||creatorId<1){
     return {ok:false,registrationState:'closed',blockers:['closed_rollout_backfill_audit_invalid']};
   }
+  const activation=activationProvenanceSql(await activationLedgerPresent(db),primaryId);
   const stateResult=await db.execute({
     sql:`SELECT
       (SELECT COUNT(*) FROM circle_memberships membership
@@ -224,7 +287,7 @@ export async function inspectCompletedMembershipRollout(db){
               AND event.actor_user_id=account.id
               AND event.subject_user_id=account.id
               AND event.dedupe_key=('invite-accepted:'||invitation.id)
-          )) AS invalidAccountProvenance,
+          )${activation.account}) AS invalidAccountProvenance,
       (SELECT COUNT(*) FROM circle_audit_events event
         LEFT JOIN auth_accounts account ON account.id=event.subject_user_id
         WHERE event.event_type='membership.backfilled' AND (
@@ -244,6 +307,7 @@ export async function inspectCompletedMembershipRollout(db){
           OR event.actor_user_id IS NOT account.id
           OR event.dedupe_key IS NOT ('invite-accepted:'||invitation.id)
         )) AS malformedInvitationAudits,
+      ${activation.malformed} AS malformedActivationAudits,
       (SELECT COUNT(*) FROM circle_memberships membership
         LEFT JOIN auth_accounts account ON account.id=membership.user_id
         WHERE membership.status='active' AND account.id IS NULL) AS orphanMemberships`,
@@ -252,9 +316,10 @@ export async function inspectCompletedMembershipRollout(db){
       creatorId,
       primaryId,creatorId,`primary-membership-backfill:${primaryId}:v1`,
       primaryId,creatorId,`primary-membership-backfill:${primaryId}:v1`,
-      primaryId,creatorId,primaryId,primaryId,
+      primaryId,creatorId,primaryId,primaryId,...activation.accountArgs,
       primaryId,creatorId,primaryId,
       primaryId,primaryId,
+      ...activation.malformedArgs,
     ],
   });
   const row=stateResult.rows?.[0];
@@ -267,6 +332,7 @@ export async function inspectCompletedMembershipRollout(db){
     invalidAccountProvenance:numericValue(row,'invalidAccountProvenance'),
     malformedBackfillAudits:numericValue(row,'malformedBackfillAudits'),
     malformedInvitationAudits:numericValue(row,'malformedInvitationAudits'),
+    malformedActivationAudits:numericValue(row,'malformedActivationAudits'),
     orphanMemberships:numericValue(row,'orphanMemberships'),
   };
   if(counts.activeOwners<1) blockers.push('closed_rollout_has_no_owner');
@@ -275,7 +341,7 @@ export async function inspectCompletedMembershipRollout(db){
     blockers.push('closed_rollout_backfill_audit_invalid');
   }
   if(counts.invalidAccountProvenance||counts.malformedBackfillAudits
-    ||counts.malformedInvitationAudits){
+    ||counts.malformedInvitationAudits||counts.malformedActivationAudits){
     blockers.push('closed_rollout_account_audit_invalid');
   }
   if(counts.orphanMemberships) blockers.push('closed_rollout_has_orphan_memberships');
