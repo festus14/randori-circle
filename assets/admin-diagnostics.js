@@ -277,6 +277,10 @@ export function loadErrorMessage(error) {
 /** Status-region copy for a failed replay. */
 export function replayErrorMessage(error, id) {
   const status = Number(error?.http_status);
+  // ID-83: retention removed the recipient of a dead letter older than 30 days.
+  if (status === 409 && error?.code === 'outbox_event_redacted') {
+    return `Event #${id} can’t be replayed: its recipient details were removed after 30 days under the retention policy. Nothing changed.`;
+  }
   if (status === 409) return `Event #${id} is no longer dead-lettered.`;
   if (status === 401 || status === 403) return 'Only global administrators can replay dead letters.';
   if (status === 400) return 'That replay request was rejected. Nothing changed.';

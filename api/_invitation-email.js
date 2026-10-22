@@ -12,6 +12,7 @@ import {
   sealCredentialEnvelope,
 } from './_key-rotation.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
+import { outboxRedactedSql } from './_outbox-retention.js';
 import { classifyPairingProviderError } from './_pairing-email.js';
 import {
   assertCredentialKeyControl,
@@ -286,12 +287,15 @@ export async function invitationEmailEnvelopeRotationMetrics(db,{localRuntime=fa
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
   // Actionable events and resend-retained terminal events must come from one
   // statement snapshot. Separate reads could miss a live invitation whose
-  // latest event moves from pending to delivered between those reads.
+  // latest event moves from pending to delivered between those reads. Rows
+  // redacted by retention (ID-83) hold no envelope and are neither actionable
+  // nor resendable.
   const result=await db.execute({
     sql:`WITH invitation_events AS (
         SELECT event.id,event.status,
           json_extract(event.payload_json,'$.invitation_id') AS invitation_id,
-          json_extract(event.payload_json,'$.credential_envelope') AS envelope
+          json_extract(event.payload_json,'$.credential_envelope') AS envelope,
+          CASE WHEN ${outboxRedactedSql('event.payload_json')} THEN 1 ELSE 0 END AS redacted
         FROM outbox_events event WHERE event.event_type=?
       ), invitation_summaries AS (
         SELECT invitation_id,COUNT(*) AS event_count,MAX(id) AS latest_event_id
@@ -299,14 +303,14 @@ export async function invitationEmailEnvelopeRotationMetrics(db,{localRuntime=fa
       )
       SELECT event.id,event.status,event.envelope,0 AS retained
       FROM invitation_events event
-      WHERE event.status IN ('pending','processing','retry','dead_letter')
+      WHERE event.status IN ('pending','processing','retry','dead_letter') AND event.redacted=0
       UNION ALL
       SELECT latest.id,latest.status,latest.envelope,1 AS retained
       FROM invitation_summaries summary
       JOIN invitation_events latest ON latest.id=summary.latest_event_id
       JOIN circle_invitations invitation ON invitation.id=summary.invitation_id
       JOIN circles circle ON circle.id=invitation.circle_id
-      WHERE summary.event_count<? AND latest.status IN ('delivered','suppressed')
+      WHERE summary.event_count<? AND latest.status IN ('delivered','suppressed') AND latest.redacted=0
         AND invitation.used_at IS NULL AND invitation.used_by IS NULL
         AND invitation.revoked_at IS NULL AND datetime(invitation.expires_at)>datetime('now')
         AND circle.archived_at IS NULL

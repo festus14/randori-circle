@@ -327,6 +327,9 @@ test('error and summary copy is specific and never echoes server text', () => {
   assert.match(loadErrorMessage({ invalid: true }), /unexpected response/);
   assert.match(loadErrorMessage(new Error('boom')), /unavailable right now/);
   assert.equal(replayErrorMessage({ http_status: 409 }, 7), 'Event #7 is no longer dead-lettered.');
+  assert.equal(replayErrorMessage({ http_status: 409, code: 'outbox_event_redacted', error: 'server text' }, 7),
+    'Event #7 can’t be replayed: its recipient details were removed after 30 days under the retention policy. Nothing changed.');
+  assert.match(replayErrorMessage({ http_status: 400, code: 'outbox_event_redacted' }, 7), /rejected/);
   assert.match(replayErrorMessage({ http_status: 403 }, 7), /Only global administrators/);
   assert.match(replayErrorMessage({ http_status: 401 }, 7), /Only global administrators/);
   assert.match(replayErrorMessage({ http_status: 400 }, 7), /rejected/);
@@ -493,6 +496,15 @@ test('a replay conflict refreshes the list; other failures keep the row for a re
   assert.equal(conflict.state.loads, 2);
   assert.equal(conflict.elements.adminDiagnosticsStatus.textContent, 'Event #41 is no longer dead-lettered. Diagnostics updated.');
   assert.equal(conflict.elements.adminDeadLettersTitle.focused, 1);
+
+  // ID-83: a dead letter redacted by retention stays listed with its reason.
+  const redacted = harness({ replay: async () => { throw { http_status: 409, code: 'outbox_event_redacted' }; } });
+  await openPanel(redacted.elements);
+  await redacted.elements.adminDeadLetters.byTestId('admin-dead-letter-replay')[0].dispatch('click');
+  await settle();
+  assert.equal(redacted.state.loads, 2);
+  assert.equal(redacted.elements.adminDiagnosticsStatus.textContent,
+    'Event #41 can’t be replayed: its recipient details were removed after 30 days under the retention policy. Nothing changed. Diagnostics updated.');
 
   const failure = harness({ replay: async () => { throw { http_status: 503 }; } });
   await openPanel(failure.elements);
