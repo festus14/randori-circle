@@ -6,6 +6,8 @@ import { isDeepStrictEqual } from 'node:util';
 
 import { CANONICAL_DOMAIN_REDIRECTS } from './canonical-domain.mjs';
 
+import { PUBLIC_PAGE_FILES } from './public-pages.mjs';
+
 const OUTBOX_WORKFLOW_PATH='.github/workflows/outbox-dispatch.yml';
 const OUTBOX_WATCHDOG_WORKFLOW_PATH='.github/workflows/outbox-dispatch-watchdog.yml';
 const OUTBOX_WATCHDOG_SCRIPT_PATH='scripts/github-outbox-dispatch-watchdog.mjs';
@@ -25,6 +27,9 @@ const REQUIRED_ROOT_FILES = [
   'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
   OUTBOX_WATCHDOG_WORKFLOW_PATH, OUTBOX_WATCHDOG_SCRIPT_PATH, PRODUCTION_SMOKE_WORKFLOW_PATH,
   PRODUCTION_SMOKE_SCRIPT_PATH, EXECUTION_SMOKE_WORKFLOW_PATH, EXECUTION_SMOKE_SCRIPT_PATH,
+  // The public privacy policy and terms (ID-79). Google's OAuth branding page
+  // links to them, so a deploy without them would break Google sign-in review.
+  ...PUBLIC_PAGE_FILES,
 ];
 export const REQUIRED_SECURITY_HEADERS = [
   'content-security-policy',
