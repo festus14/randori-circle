@@ -1,3 +1,4 @@
+import { DELETED_ACCOUNT_SQL } from './_account-deletion.js';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -609,7 +610,7 @@ export async function readCirclePairing(db,{authority,now,timeZone}={}){
           FROM circle_memberships membership
           JOIN auth_accounts account ON account.id=membership.user_id
           JOIN circles circle ON circle.id=membership.circle_id
-          WHERE membership.circle_id=? AND membership.status='active'
+          WHERE membership.circle_id=? AND (membership.status='active' OR account.${DELETED_ACCOUNT_SQL})
             AND circle.is_primary=0 AND circle.archived_at IS NULL
             AND COALESCE(account.is_demo,0)=0 AND account.id IN (${placeholders})
           ORDER BY account.id`,

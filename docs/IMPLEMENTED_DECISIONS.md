@@ -3999,6 +3999,72 @@ deployment, restore both `APP_URL` values, revert the merge commit and
 re-promote. cron-job.org works on either host. Runbook:
 [`PRODUCTION_BOOTSTRAP_GUIDE.md` section 12](PRODUCTION_BOOTSTRAP_GUIDE.md#12-canonical-domain-id-80).
 
+## ID-81: Let members delete their own account by tombstoning it in one transaction, behind a flag
+
+Status: implemented behind `ACCOUNT_DELETION_ENABLED` (default off, and only
+with `CIRCLE_MEMBERSHIP_ENABLED=true`); no migration. Issue #339 (split from
+#338, roadmap #312). Visual design is provisional (`needs-design`).
+
+**Context.** Leaving a circle or being removed only made a membership
+inactive, so members had to ask an owner to delete their data. Partners'
+pairings, completion receipts, schedules, session controls and code documents
+reference the account through RESTRICT keys and immutability triggers, and the
+membership-readiness gate requires every non-demo account to keep its audited
+provenance, so the account row itself cannot be deleted.
+
+**Decision.**
+- `POST /api/auth/account/delete` with exactly `{"confirm":"DELETE"}` deletes
+  the signed-in member's account; `GET` reports eligibility for the settings
+  card. The session alone chooses the account. With the flag off the path is
+  an unknown auth endpoint and `accountDeletion` is not advertised.
+- One write transaction checks the session's recent-auth proof (password or
+  Google, existing `api/_recent-auth.js`) and the rules before any change: the
+  only active owner of a circle is refused with the circles to hand over
+  (`make_owner`, or archive a secondary circle); the last active app admin is
+  refused; demo accounts are refused.
+- The account row is tombstoned: email `deleted-<id>@account-deleted.invalid`,
+  a non-bcrypt password marker, name "Deleted member", profile cleared,
+  `google_sub` cleared, `is_admin=0`, `is_demo` unchanged. Sessions are revoked;
+  recent proofs, session circle contexts, Google identity and email state,
+  password resets, availability, preferences, solo runs, meeting links they
+  added, their AI sessions, consents and quota rows, and their log rows are
+  deleted; chat text becomes "Message deleted"; non-shared pair-run code is
+  cleared; the activation and accepted invitation are scrubbed; unused
+  invitations they sent are revoked and audited; pending invite requests from
+  their email expire; outbox mail to them is suppressed with an
+  `ACCOUNT_DELETED` audit row and their address and envelopes are scrubbed;
+  memberships become inactive members. One `account.deleted` circle audit
+  event per circle carries only ids and time. The inventory lives in code
+  (`ACCOUNT_DATA_INVENTORY`) and a test fails when a new table is not
+  classified.
+- Partners keep their history: every pairing surface resolves the id to
+  "Deleted member", the current primary and secondary pairings keep the
+  tombstone instead of failing closed or hiding the pair, the owner roster
+  hides it, and reactivation is refused.
+- Request paths that write to an account by id skip a tombstone
+  (`LIVE_ACCOUNT_SQL`), so a sign-in, `ADMIN_EMAILS` grant, profile save,
+  Google link, preference save or solo run authenticated before the commit
+  cannot write into it afterwards. Every change is sent as one batch inside the
+  transaction.
+- A retry with the old signed cookie is answered `already_deleted`; the
+  deletion is idempotent and concurrent requests serialize on the write
+  transaction. The same email can join again as a new account.
+- The settings card and dialog are `assets/account-deletion.js`, imported only
+  while the capability is advertised: re-auth, type DELETE, final confirm,
+  then storage is cleared and the landing page shows a notice.
+
+**Alternatives.** A hard delete with cascades (breaks RESTRICT keys,
+immutable receipts and readiness provenance). A new `deleted_at` column (a
+migration and a protected cutover for no gain over the existing columns). An
+asynchronous deletion job (a second state machine and a window where a
+"deleted" member can still sign in). Leaving sent invitations live (a deleted
+account would keep vouching for access).
+
+**Rollout and recovery.** Merge with the flag unset; nothing changes. The
+owner sets `ACCOUNT_DELETION_ENABLED=true` in Vercel Production and redeploys;
+unsetting it hides the endpoint and UI. Deletions are irreversible by design.
+Contract and inventory: [`ACCOUNT_DELETION.md`](ACCOUNT_DELETION.md).
+
 ## ID-84: Readiness accepts invitation acceptance via email activation
 
 Status: implemented (production hotfix); no migration, no flag.

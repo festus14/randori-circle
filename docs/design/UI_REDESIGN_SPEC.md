@@ -936,6 +936,20 @@ markup in later packages.
 - **Agreed time.** A proposal for the time already agreed shows "· agreed" and
   no Accept. Only a different time can be accepted.
 
+### 9.8 Account deletion (issue #339, provisional)
+
+Behind `ACCOUNT_DELETION_ENABLED`; final design pending (`needs-design`).
+Edit profile ends with a **Delete account** card (`#accountDeletion`,
+`.card.onboarding-step`): two `.recovery-steps` lists (what is deleted, what
+stays anonymised), a warning `.rc-banner` for the last-owner and last-admin
+rules with a "Go to Circle" button, and one `.btn.danger` action. The flow is
+one `.modal.rc-dialog` (`#accountDeletionDialog`, the shared
+`openPromiseDialog` focus trap) with three steps: confirm it's you (password
+`.auth-field` or Google), type DELETE (Continue disabled until it matches),
+and the final confirmation with Cancel focused. After deletion the landing
+hero shows a success `.rc-banner` (`#landingAccountDeleted`). No new CSS.
+Logic: `assets/account-deletion.js` (`tests/unit/account-deletion-ui.test.mjs`).
+
 ## 10. Phased implementation plan
 
 ### 10.1 Global constraints for every package

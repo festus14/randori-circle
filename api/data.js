@@ -50,6 +50,7 @@ import {
   readExerciseSuggestions,
 } from './_exercise-suggestions.js';
 import { ensureProgressReadiness, parseProgressQuery, progressDashboardEnabled, readMemberProgress } from './_progress.js';
+import { DELETED_ACCOUNT_PASSWORD_HASH, LIVE_ACCOUNT_SQL } from './_account-deletion.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import {
   canonicalCompletionPair,
@@ -525,10 +526,12 @@ async function loadCurrentPublicationAccounts(db,publication,readerAccess){
       FROM auth_accounts aa
       JOIN circle_memberships cm ON cm.user_id=aa.id
       JOIN circles c ON c.id=cm.circle_id
-      WHERE cm.circle_id=? AND cm.status='active'
+      WHERE cm.circle_id=? AND (cm.status='active' OR aa.password_hash=?)
         AND c.is_primary=1 AND c.archived_at IS NULL
         AND COALESCE(aa.is_demo,0)=0 AND aa.id IN (${placeholders})`,
-    args:[readerAccess.circleId,...ids],
+    // A member who deleted their account mid-cycle stays in the published
+    // pairing as "Deleted member" (issue #339); any other ex-member fails closed.
+    args:[readerAccess.circleId,DELETED_ACCOUNT_PASSWORD_HASH,...ids],
   });
   const accounts=result.rows||[];
   const accountIds=new Set(accounts.map(row=>Number(row.id)));
@@ -1419,7 +1422,7 @@ async function handleProfile(req,res){
     const setSql = cols.map(c=>`${c}=?`).join(', ');
     const args = cols.map(c=>updates[c]).concat([userId]);
     try{
-      await db.execute({ sql:`UPDATE auth_accounts SET ${setSql} WHERE id=?`, args });
+      await db.execute({ sql:`UPDATE auth_accounts SET ${setSql} WHERE id=? AND ${LIVE_ACCOUNT_SQL}`, args });
     }catch(e){ return res.status(500).json({ error:'update failed', detail:String(e.message||e).slice(0,200)}); }
     const rs = await db.execute({ sql:`SELECT id,email,display_name,color,is_available,availability_updated_at,is_admin,bio,tz,interview_focus,leetcode_handle FROM auth_accounts WHERE id=?`, args:[userId] });
     const r = rs.rows[0];
@@ -2756,9 +2759,11 @@ async function handleExecute(req,res){
           args:[...accessArgs,...runArgs],
         })
         : await db.execute({
-          sql:`INSERT INTO session_runs (user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now')) RETURNING id`,
-          args:runArgs,
+          // A solo run never lands on an account deleted after this request was authenticated (issue #339).
+          sql:`WITH live_account AS (SELECT 1 FROM auth_accounts WHERE id=? AND ${LIVE_ACCOUNT_SQL})
+            INSERT INTO session_runs (user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at)
+            SELECT ?,?,?,?,?,?,?,?,?,?,?,?,datetime('now') FROM live_account RETURNING id`,
+          args:[runArgs[0],...runArgs],
         });
       if(accessArgs&&!inserted.rows.length){
         if(canonicalDocument){

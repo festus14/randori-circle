@@ -2,6 +2,7 @@ import { createCipheriv,createDecipheriv,createHash,randomBytes,randomUUID } fro
 import { revokeAccountSessions } from './_db.js';
 import { validateActiveCircleMutationContext } from './_active-circle.js';
 import { requireRecentAuth } from './_recent-auth.js';
+import { DELETED_ACCOUNT_PASSWORD_HASH } from './_account-deletion.js';
 
 export const MEMBER_PAGE_DEFAULT=50;
 export const MEMBER_PAGE_MAX=100;
@@ -45,6 +46,7 @@ export const OWNER_ROSTER_PAGE_SQL=`WITH owner AS (
   FROM owner
   LEFT JOIN candidates ON 1=1
   LEFT JOIN auth_accounts account ON account.id=candidates.user_id
+    AND account.password_hash<>'${DELETED_ACCOUNT_PASSWORD_HASH}'
   ORDER BY candidates.user_id`;
 
 export class MemberRosterQueryError extends Error{
@@ -292,8 +294,10 @@ export async function changeCircleMemberStatus(db,{actorUserId,targetUserId,circ
             WHERE other_owner.circle_id=target.circle_id AND other_owner.role='owner'
               AND other_owner.status='active' AND other_owner.user_id<>target.user_id
           ))
+          AND NOT EXISTS (SELECT 1 FROM auth_accounts deleted_account
+            WHERE deleted_account.id=target.user_id AND deleted_account.password_hash=?)
         RETURNING circle_id,user_id,role,status`,
-      args:[nextStatus,occurredAt,target,priorStatus,actor,selectedCircle,operation],
+      args:[nextStatus,occurredAt,target,priorStatus,actor,selectedCircle,operation,DELETED_ACCOUNT_PASSWORD_HASH],
     });
     const row=changed.rows?.[0];
     if(changed.rows?.length!==1||positiveInteger(Number(row?.user_id))!==target||row?.status!==nextStatus){
