@@ -6,7 +6,10 @@
 // delivery round. Each call:
 //   - claims the current hour by the database clock with one atomic
 //     INSERT ... WHERE NOT EXISTS; the claimed row is also the visible record
-//     of the run. A call inside the hour (or a concurrent one) does nothing;
+//     of the run. A call inside the hour (or a concurrent one) does nothing.
+//     Only a server row without a user counts, so no member-written row
+//     (POST /api/logs always stores source='client' with the member's id)
+//     can suppress retention;
 //   - deletes at most 1000 rows whose created_at is older than 30 days,
 //     oldest first, through idx_logs_created (schema plan 1). No DDL.
 // Deleting is idempotent: rerunning only removes rows that are still past the
@@ -28,7 +31,7 @@ export async function runAppLogRetention(db,{limit=APP_LOG_RETENTION_BATCH_LIMIT
       SELECT 'info','server',?,'app_logs retention ran',datetime('now')
       WHERE NOT EXISTS (
         SELECT 1 FROM app_logs
-        WHERE event=? AND source='server' AND created_at>datetime('now',?)
+        WHERE event=? AND source='server' AND user_id IS NULL AND created_at>datetime('now',?)
       )
       RETURNING id`,
     args:[APP_LOG_RETENTION_EVENT,APP_LOG_RETENTION_EVENT,`-${APP_LOG_RETENTION_INTERVAL_MINUTES} minutes`],

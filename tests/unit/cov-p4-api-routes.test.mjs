@@ -344,8 +344,11 @@ test('client log ingestion normalises entries, protects reserved namespaces and 
   const single=await invoke(dataHandler,{...logs,auth:'member',body:{message:'single',level:'success'}});
   assert.equal(single.body.inserted,1);
   const cyclic={}; cyclic.self=cyclic;
-  const unserializable=await invoke(dataHandler,{...logs,auth:'member',body:{message:'cyclic meta',meta:cyclic}});
+  // Meta is copied to a bounded depth, so even a cyclic object is stored.
+  const unserializable=await invoke(dataHandler,{...logs,auth:'member',headers:{'content-length':'64'},body:{message:'cyclic meta',meta:cyclic}});
   assert.equal(unserializable.body.inserted,1);
+  // Without content-length, a body that cannot be measured is refused (ID-72 addendum).
+  assert.equal((await invoke(dataHandler,{...logs,auth:'member',body:{message:'cyclic meta',meta:cyclic}})).status,413);
 
   // Sixty requests per minute per forwarded IP are accepted; the sixty-first is refused.
   const headers={'x-forwarded-for':'198.51.100.77, 10.0.0.1'};
@@ -368,10 +371,11 @@ test('admin log reads are filtered, bounded and tolerate non-JSON metadata', asy
   assert.equal((await invoke(dataHandler,{...read,auth:'admin'})).status,503);
   clientOverride=null;
 
+  // A client-supplied source is ignored: /api/logs rows are always 'client'.
   await invoke(dataHandler,{url:'/api/data/logs',method:'POST',auth:'member',body:[
     {level:'debug',message:'filter target',event:'filter_event',source:'probe',meta:'not json'},
   ]});
-  const filtered=await invoke(dataHandler,{url:'/api/data/logs?level=debug&event=filter_event&source=probe&limit=5',auth:'admin'});
+  const filtered=await invoke(dataHandler,{url:'/api/data/logs?level=debug&event=filter_event&source=client&limit=5',auth:'admin'});
   assert.equal(filtered.status,200);
   assert.equal(filtered.body.count,1);
   assert.equal(filtered.body.logs[0].meta,'not json');

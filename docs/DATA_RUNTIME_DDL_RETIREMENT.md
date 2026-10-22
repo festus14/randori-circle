@@ -36,7 +36,9 @@ and secondary-circle flows retain their narrower existing readiness guards.
 - Diagnostic logging is best effort. If `app_logs` is unavailable, it falls
   back to process/Sentry reporting and does not attempt schema repair.
 - Client log ingest (`POST /api/logs`) stores only `warn` and `error` in
-  Vercel production and redacts every entry; `app_logs` rows older than 30
+  Vercel production, redacts every entry, always stores `source='client'`,
+  refuses bodies over 256 KB (413) and keeps at most 200 rows per member per
+  hour (429), written in one batch; `app_logs` rows older than 30
   days are purged by the outbox cron
   ([ID-72](IMPLEMENTED_DECISIONS.md#id-72-turn-on-production-client-error-logging-warnerror-signed-in-with-app_logs-retention)).
 
