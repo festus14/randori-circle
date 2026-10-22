@@ -58,7 +58,9 @@ const realFetch=globalThis.fetch;
 let providerCalls=[];
 let provider=null;
 
-function invoke({method='POST',url='/api/cron/execution-smoke',query={},headers={'x-cron-secret':CRON}}={}){
+function invoke(options={}){
+  const {method='POST',url='/api/cron/execution-smoke',query={},headers={'x-cron-secret':CRON}}=options;
+  const body=Object.hasOwn(options,'body')?options.body:{trigger:'deploy'};
   return new Promise((resolve,reject)=>{
     let statusCode=200;
     const responseHeaders={};
@@ -67,7 +69,7 @@ function invoke({method='POST',url='/api/cron/execution-smoke',query={},headers=
       json(payload){ resolve({status:statusCode,headers:responseHeaders,body:payload}); return this; },
       setHeader(name,value){ responseHeaders[String(name).toLowerCase()]=value; },
     };
-    Promise.resolve(opsHandler({method,url,query,headers,body:undefined,socket:{remoteAddress:'203.0.113.9'}},response))
+    Promise.resolve(opsHandler({method,url,query,headers,body,socket:{remoteAddress:'203.0.113.9'}},response))
       .catch(reject);
   });
 }
@@ -126,6 +128,18 @@ test('the route is POST-only, uncached, and accepts CRON_SECRET only',async()=>{
   assert.equal((await realDb.execute('SELECT COUNT(*) AS n FROM app_logs')).rows[0].n,0);
 });
 
+test('the body must be exactly one known trigger, checked before any work',async()=>{
+  for(const body of [undefined,null,'{"trigger":"deploy"}',{},{trigger:'dispatch'},{trigger:'deploy',force:true},
+    [{trigger:'deploy'}]]){
+    const invalid=await invoke({body});
+    assert.equal(invalid.status,400,JSON.stringify(body));
+    assert.deepEqual(invalid.body,{ok:false,error:'invalid smoke request'});
+  }
+  assert.equal((await invoke({headers:{},body:{trigger:'nope'}})).status,401,'authentication comes first');
+  assert.equal(providerCalls.length,0);
+  assert.equal((await realDb.execute('SELECT COUNT(*) AS n FROM app_logs')).rows[0].n,0);
+});
+
 test('an authorized call runs both programs once, then returns the cached result as throttled',async()=>{
   for(const headers of [{'x-cron-secret':CRON},{authorization:`Bearer ${CRON}`}]){
     await realDb.execute('DELETE FROM app_logs');
@@ -147,6 +161,9 @@ test('an authorized call runs both programs once, then returns the cached result
   assert.equal(typeof throttled.body.ageSeconds,'number');
   assert.equal(providerCalls.length,2,'the throttled call creates no execution');
   assert.doesNotMatch(JSON.stringify(throttled.body),/piston|token|stderr|example\.test/i);
+  // Inside the 30-minute spacing even the separate scheduled slot is throttled.
+  assert.equal((await invoke({body:{trigger:'schedule'}})).body.languages.javascript.status,'throttled');
+  assert.equal(providerCalls.length,2);
 });
 
 test('provider failures map to bounded statuses without leaking URLs, tokens or output',async()=>{

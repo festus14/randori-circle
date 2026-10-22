@@ -359,6 +359,21 @@ test('deployability rejects a production smoke workflow that gains secrets, writ
   assert.ok(validateDeploymentContract(anyEnvironment).includes(
     'production smoke must run only for the Vercel Production environment'));
 
+  // GitHub records a "production" deployment for every environment job, and
+  // expression comparison ignores case, so only Vercel-created ones may run it.
+  assert.match(cloneContract().productionSmokeWorkflow,
+    /github\.event\.deployment\.creator\.login == 'vercel\[bot\]'\)/);
+  for(const [from,to] of [
+    [" &&\n      github.event.deployment.creator.login == 'vercel[bot]')",')'],
+    ["creator.login == 'vercel[bot]'","creator.login != ''"],
+  ]){
+    const anyCreator=cloneContract();
+    anyCreator.productionSmokeWorkflow=anyCreator.productionSmokeWorkflow.replace(from,to);
+    assert.notEqual(anyCreator.productionSmokeWorkflow,cloneContract().productionSmokeWorkflow);
+    assert.ok(validateDeploymentContract(anyCreator).includes(
+      'production smoke must ignore deployments that GitHub environment jobs create'),to);
+  }
+
   const missing=cloneContract();
   missing.productionSmokeWorkflow=null;
   assert.ok(validateDeploymentContract(missing).includes('production smoke workflow must be readable'));
@@ -425,6 +440,8 @@ test('deployability rejects a widened, re-triggerable, or replaced execution smo
       ['execution smoke checkout must not persist GitHub credentials']],
     ['        run: node scripts/github-execution-smoke.mjs','        run: node scripts/github-execution-smoke.mjs || true',
       ['execution smoke step must retain its exact fail-closed shape']],
+    ["EXECUTION_SMOKE_TRIGGER: ${{ github.event_name == 'deployment_status' && 'deploy' || 'schedule' }}",
+      "EXECUTION_SMOKE_TRIGGER: 'schedule'",['execution smoke step must retain its exact fail-closed shape']],
     ['        run: node scripts/github-execution-smoke.mjs',
       '        continue-on-error: true\n        run: node scripts/github-execution-smoke.mjs',
       ['execution smoke step must retain its exact fail-closed shape',UNSAFE_EXECUTION_SMOKE]],

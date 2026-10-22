@@ -3,9 +3,9 @@ name: execution-smoke
 # Live check of the configured code-execution provider (#249). It calls the
 # cron-secret-protected /api/cron/execution-smoke route, which runs one fixed
 # trivial JavaScript and one fixed trivial Python program and returns bounded
-# categories only. The route self-throttles (one real run per 30 minutes, two
-# per rolling day); this job fails unless each language is ok, or throttled
-# with a passing cached result.
+# categories only. The route self-throttles (runs 30 minutes apart, one
+# `schedule` run per 20 hours and one `deploy` run per 24 hours); this job
+# fails unless each language is ok, or throttled with a passing cached result.
 #
 # Only Vercel's own Production deployments trigger it. GitHub records a
 # "production" deployment for every job that uses that environment (this one
@@ -55,4 +55,5 @@ jobs:
           APP_URL: ${{ vars.APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           EXECUTION_SMOKE_TIMEOUT_MS: '100000'
+          EXECUTION_SMOKE_TRIGGER: ${{ github.event_name == 'deployment_status' && 'deploy' || 'schedule' }}
         run: node scripts/github-execution-smoke.mjs

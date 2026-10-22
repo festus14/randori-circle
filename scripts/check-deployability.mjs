@@ -16,8 +16,8 @@ const EXECUTION_SMOKE_SCRIPT_PATH='scripts/github-execution-smoke.mjs';
 const SPA_FALLBACK_DESTINATION='/';
 const OUTBOX_WATCHDOG_WORKFLOW_SHA256='3808af3df03c84a1370b7df74bc6c785d349a20796ccb1cf236f5166103f3651';
 const OUTBOX_WATCHDOG_SCRIPT_SHA256='0c854c7892197b6f353fd32a96b5c7b70a6431e6b9ea86a07d2ad59fe0177b34';
-const EXECUTION_SMOKE_WORKFLOW_SHA256='1ce60ced5e8f2fb1151803d986f6644aa6c64fa121c66d992d06951782011da6';
-const EXECUTION_SMOKE_SCRIPT_SHA256='d292c4dfb181adf5b7c9e905daf49d86edda9696407a73d9a7bd4fad0d24b00d';
+const EXECUTION_SMOKE_WORKFLOW_SHA256='5164dcbbdd3d65099cde7ebef84af5464156e0753858e5ff8afaec863cd8a7e9';
+const EXECUTION_SMOKE_SCRIPT_SHA256='eacde79646d11355d0ab717b4f633c128b318537b4dc1ea16489a869e9d4d7ef';
 const REQUIRED_ROOT_FILES = [
   'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
   OUTBOX_WATCHDOG_WORKFLOW_PATH, OUTBOX_WATCHDOG_SCRIPT_PATH, PRODUCTION_SMOKE_WORKFLOW_PATH,
@@ -250,6 +250,8 @@ function validateProductionSmokeWorkflow(workflow){
       'production smoke must run only for successful deployments'],
     [/github\.event\.deployment\.environment == 'Production'/,
       'production smoke must run only for the Vercel Production environment'],
+    [/github\.event\.deployment\.environment == 'Production' &&\n\s+github\.event\.deployment\.creator\.login == 'vercel\[bot\]'\)/,
+      'production smoke must ignore deployments that GitHub environment jobs create'],
     [/^\s{2}schedule:\s*$/m,'production smoke must define a scheduled trigger'],
     [/^\s{2}workflow_dispatch:\s*$/m,'production smoke must support manual runs'],
     [/^permissions:\n  contents: read\n\n/m,'production smoke permissions must be contents: read only'],
@@ -296,7 +298,7 @@ function validateExecutionSmokeWorkflow(workflow){
     [/ref:\s*\$\{\{\s*github\.event\.repository\.default_branch\s*\}\}/,
       'execution smoke must run the default-branch assessor'],
     [/persist-credentials:\s*false/,'execution smoke checkout must not persist GitHub credentials'],
-    [/      - name: Run the live execution smoke check\n        timeout-minutes: 2\n        env:\n          APP_URL: \$\{\{ vars\.APP_URL \}\}\n          CRON_SECRET: \$\{\{ secrets\.CRON_SECRET \}\}\n          EXECUTION_SMOKE_TIMEOUT_MS: '100000'\n        run: node scripts\/github-execution-smoke\.mjs\n?$/,
+    [/      - name: Run the live execution smoke check\n        timeout-minutes: 2\n        env:\n          APP_URL: \$\{\{ vars\.APP_URL \}\}\n          CRON_SECRET: \$\{\{ secrets\.CRON_SECRET \}\}\n          EXECUTION_SMOKE_TIMEOUT_MS: '100000'\n          EXECUTION_SMOKE_TRIGGER: \$\{\{ github\.event_name == 'deployment_status' && 'deploy' \|\| 'schedule' \}\}\n        run: node scripts\/github-execution-smoke\.mjs\n?$/,
       'execution smoke step must retain its exact fail-closed shape'],
   ];
   for(const [pattern,message] of checks){ if(!pattern.test(workflow)) errors.push(message); }

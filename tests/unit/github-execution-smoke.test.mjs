@@ -14,7 +14,8 @@ import {
 } from '../../scripts/github-execution-smoke.mjs';
 
 const SECRET='private-cron-secret-value';
-const ENV={APP_URL:'https://randori.example.test',CRON_SECRET:SECRET,EXECUTION_SMOKE_TIMEOUT_MS:'100000'};
+const ENV={APP_URL:'https://randori.example.test',CRON_SECRET:SECRET,EXECUTION_SMOKE_TIMEOUT_MS:'100000',
+  EXECUTION_SMOKE_TRIGGER:'deploy'};
 const fresh=(javascript='ok',python='ok')=>({
   ok:javascript==='ok'&&python==='ok',checkedAt:'2026-10-20T08:00:00.000Z',
   languages:{javascript:{status:javascript,durationMs:812},python:{status:python,durationMs:905}},
@@ -53,6 +54,9 @@ test('fresh and throttled bodies pass only when every language is ok or throttle
   const cachedFailure=assessExecutionSmoke(throttled('timeout','ok'));
   assert.deepEqual([cachedFailure.ok,cachedFailure.category],[false,'execution_failed'],
     'a throttled response cannot hide the last failure');
+  const lost=assessExecutionSmoke(throttled('result_missing','result_missing',{checkedAt:null}));
+  assert.deepEqual([lost.ok,lost.category,lost.languages.javascript.lastStatus],
+    [false,'execution_failed','result_missing'],'a result that was never saved is a failure');
 });
 
 test('malformed or inconsistent bodies fail closed',()=>{
@@ -91,7 +95,13 @@ test('the request is one authenticated POST to the smoke route with a bounded ti
   assert.equal(requests[0].url,'https://randori.example.test/api/cron/execution-smoke');
   assert.equal(requests[0].init.method,'POST');
   assert.equal(requests[0].init.redirect,'error');
-  assert.deepEqual(requests[0].init.headers,{accept:'application/json',authorization:`Bearer ${SECRET}`});
+  assert.deepEqual(requests[0].init.headers,{accept:'application/json','content-type':'application/json',
+    authorization:`Bearer ${SECRET}`});
+  assert.equal(requests[0].init.body,'{"trigger":"deploy"}');
+  const scheduled=[];
+  await fetchExecutionSmoke({...ENV,EXECUTION_SMOKE_TRIGGER:'schedule'},{
+    fetchImpl:async(url,init)=>{ scheduled.push(init.body); return jsonResponse(fresh()); }});
+  assert.deepEqual(scheduled,['{"trigger":"schedule"}']);
   assert.deepEqual(timers.map(item=>item.ms),[100000]);
   assert.deepEqual(cleared,[7]);
   timers[0].callback();
@@ -101,7 +111,7 @@ test('the request is one authenticated POST to the smoke route with a bounded ti
 test('configuration, HTTP and transport failures map to bounded categories',async()=>{
   for(const environment of [{...ENV,APP_URL:''},{...ENV,APP_URL:'http://randori.example.test'},
     {...ENV,APP_URL:'https://randori.example.test/path'},{...ENV,APP_URL:'https://a b'},{...ENV,CRON_SECRET:''},
-    {EXECUTION_SMOKE_TIMEOUT_MS:'1000'}]){
+    {EXECUTION_SMOKE_TIMEOUT_MS:'1000',EXECUTION_SMOKE_TRIGGER:'schedule'}]){
     let called=false;
     assert.deepEqual(await fetchExecutionSmoke(environment,{fetchImpl:async()=>{ called=true; }}),
       {category:'config_missing'});
@@ -109,6 +119,9 @@ test('configuration, HTTP and transport failures map to bounded categories',asyn
   }
   for(const timeout of [undefined,'0','abc','110001',100000]){
     await assert.rejects(fetchExecutionSmoke({...ENV,EXECUTION_SMOKE_TIMEOUT_MS:timeout}),TypeError);
+  }
+  for(const trigger of [undefined,'','dispatch','Deploy',['deploy']]){
+    await assert.rejects(fetchExecutionSmoke({...ENV,EXECUTION_SMOKE_TRIGGER:trigger}),TypeError);
   }
   const cases=[
     [async()=>jsonResponse({error:'unauthorized cron'},{status:401}),'unauthorized'],
@@ -179,7 +192,29 @@ test('main prints one bounded JSON line, annotates alerts, and sets the exit cod
   assert.equal(denied.exitCode,1);
   assert.match(unauthorized.text,/Category unauthorized; no language result\./);
 
-  for(const [argv,environment] of [[['--force'],ENV],[[],{...ENV,EXECUTION_SMOKE_TIMEOUT_MS:'nope'}]]){
+  // A pass on a cached result says so, because it did not test this deployment.
+  const cached=capture();
+  const cachedRun=await main({argv:[],environment:ENV,stdout:cached.stream,
+    fetchImpl:async()=>jsonResponse(throttled())});
+  assert.equal(cachedRun.exitCode,0);
+  const [cachedLine,notice]=cached.text.trim().split('\n');
+  assert.equal(JSON.parse(cachedLine).status,'healthy');
+  assert.equal(notice,'::notice title=Execution smoke passed on a cached result::Throttled, so nothing ran. '
+    +'The latest real run started 312 seconds ago; this run did not test the current deployment.');
+  const inFlight=capture();
+  await main({argv:[],environment:ENV,stdout:inFlight.stream,
+    fetchImpl:async()=>jsonResponse(throttled(null,null,{ageSeconds:null,checkedAt:null}))});
+  assert.match(inFlight.text,/::notice .*The latest real run started at an unknown time;/);
+
+  const missing=capture();
+  const lost=await main({argv:[],environment:ENV,stdout:missing.stream,
+    fetchImpl:async()=>jsonResponse(throttled('result_missing','result_missing',{checkedAt:null}))});
+  assert.equal(lost.exitCode,1);
+  assert.match(missing.text,/javascript=throttled\(last result_missing\) python=throttled\(last result_missing\)/);
+  assert.doesNotMatch(missing.text,/::notice/);
+
+  for(const [argv,environment] of [[['--force'],ENV],[[],{...ENV,EXECUTION_SMOKE_TIMEOUT_MS:'nope'}],
+    [[],{...ENV,EXECUTION_SMOKE_TRIGGER:'dispatch'}]]){
     const broken=capture();
     const result=await main({argv,environment,stdout:broken.stream,fetchImpl:async()=>jsonResponse(fresh())});
     assert.equal(result.exitCode,1);
@@ -196,7 +231,8 @@ test('main prints one bounded JSON line, annotates alerts, and sets the exit cod
 
 test('the CLI exits 1 with a bounded alert line when configuration is missing',()=>{
   const child=spawnSync(process.execPath,['scripts/github-execution-smoke.mjs'],{encoding:'utf8',timeout:30000,
-    env:{PATH:process.env.PATH,EXECUTION_SMOKE_TIMEOUT_MS:'1000',CRON_SECRET:SECRET}});
+    env:{PATH:process.env.PATH,EXECUTION_SMOKE_TIMEOUT_MS:'1000',EXECUTION_SMOKE_TRIGGER:'schedule',
+      CRON_SECRET:SECRET}});
   assert.equal(child.status,1,child.stderr);
   const [line,annotation]=child.stdout.trim().split('\n');
   assert.equal(JSON.parse(line).category,'config_missing');
@@ -226,7 +262,8 @@ test('the workflow is least-privilege, never runs for pull requests, and ignores
   const run=job.steps.at(-1);
   assert.equal(run.run,'node scripts/github-execution-smoke.mjs');
   assert.deepEqual(run.env,{APP_URL:'${{ vars.APP_URL }}',CRON_SECRET:'${{ secrets.CRON_SECRET }}',
-    EXECUTION_SMOKE_TIMEOUT_MS:'100000'});
+    EXECUTION_SMOKE_TIMEOUT_MS:'100000',
+    EXECUTION_SMOKE_TRIGGER:"${{ github.event_name == 'deployment_status' && 'deploy' || 'schedule' }}"});
   assert.deepEqual(source.match(/(?:secrets|vars)\.[A-Z_]+/g),['vars.APP_URL','secrets.CRON_SECRET']);
   assert.doesNotMatch(source,/pull_request|write|curl|continue-on-error|TURSO_|RESEND_|VERCEL_/);
   assert.equal(job.steps[0].with['persist-credentials'],false);

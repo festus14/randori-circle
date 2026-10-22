@@ -35,13 +35,16 @@ trigger. Deployment runs must be limited to successful `Production`
 deployments created by `vercel[bot]`, and other events must come from the
 default branch. Permissions must stay `contents: read`, actions must be pinned
 to reviewed commits, the job must be serialized and time-bounded, and the
-fail-closed step shape must not change. Its only production material is
-`vars.APP_URL` and `secrets.CRON_SECRET` in the `production` environment.
+fail-closed step shape must not change. That shape includes the trigger value
+it sends: `deploy` for `deployment_status` runs, `schedule` otherwise. Its
+only production material is `vars.APP_URL` and `secrets.CRON_SECRET` in the
+`production` environment.
 
 The creator check is required. GitHub records a lowercase `production`
 deployment for every job that uses the environment, and expression comparison
 ignores case. Without the check, this job's own deployment would trigger it
-again.
+again. The gate requires the same check on `production-smoke`, so environment
+jobs no longer trigger real production-smoke runs.
 
 This is a post-deploy signal, not a merge gate. It is never a required check.
 

@@ -33,7 +33,7 @@ import {
   settleBeforeDeadline,
 } from './_outbox.js';
 import { readOutboxDeliveryHealth } from './_outbox-health.js';
-import { runExecutionSmoke } from './_execution-smoke.js';
+import { parseExecutionSmokeRequest, runExecutionSmoke } from './_execution-smoke.js';
 import {
   emailActivationKeyRotationStatus,
 } from './_email-activation.js';
@@ -561,12 +561,13 @@ async function handleOutboxHealth(req,res){
 }
 
 // Issue #249: live check of the configured execution provider. CRON_SECRET
-// only (it spends sandbox quota), POST only, self-throttled, bounded output.
+// only (it spends sandbox quota), POST only, exactly {"trigger":"schedule"|
+// "deploy"}, self-throttled per trigger, bounded output.
 async function handleExecutionSmoke(req,res){
   res.setHeader('Cache-Control','no-store');
   if(req.method!=='POST') return res.status(405).json({error:'POST only'});
   if(!verifyCronAuth(req)) return res.status(401).json({error:'unauthorized cron'});
-  const outcome=await runExecutionSmoke({getDb:getClient});
+  const outcome=await runExecutionSmoke({trigger:parseExecutionSmokeRequest(req.body),getDb:getClient});
   return res.status(outcome.status).json(outcome.body);
 }
 

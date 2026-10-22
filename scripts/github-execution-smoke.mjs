@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Assessor for the execution-smoke workflow (issue #249).
 //
-// It sends one authenticated POST to /api/cron/execution-smoke on APP_URL and
-// fails unless every language reports `ok`, or `throttled` with a cached
-// result that was `ok` (or no result recorded yet). It prints one JSON line
-// built only from validated, bounded categories: never the response body,
-// the URL, or the secret. Exit codes: 0 healthy, 1 alert.
+// It sends one authenticated POST to /api/cron/execution-smoke on APP_URL with
+// {"trigger": EXECUTION_SMOKE_TRIGGER} ("schedule" or "deploy") and fails
+// unless every language reports `ok`, or `throttled` with a cached result that
+// was `ok` (or a run still inside its result grace). A pass on a cached result
+// adds a ::notice, because that run did not test the current deployment. It
+// prints one JSON line built only from validated, bounded categories: never the
+// response body, the URL, or the secret. Exit codes: 0 healthy, 1 alert.
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
@@ -13,7 +15,8 @@ export const EXECUTION_SMOKE_FORMAT='randori.execution-smoke.v1';
 export const EXECUTION_SMOKE_PATH='/api/cron/execution-smoke';
 const LANGUAGES=Object.freeze(['javascript','python']);
 const STATUSES=new Set(['ok','provider_error','timeout','misconfigured','throttled']);
-const LAST_STATUSES=new Set(['ok','provider_error','timeout','misconfigured']);
+const LAST_STATUSES=new Set(['ok','provider_error','timeout','misconfigured','result_missing']);
+const TRIGGERS=new Set(['schedule','deploy']);
 const MAX_RESPONSE_BYTES=64*1024;
 const MAX_TIMEOUT_MS=110_000;
 const MAX_DURATION_MS=10*60*1000;
@@ -38,6 +41,11 @@ function timeoutMs(value){
   const parsed=typeof value==='string'&&/^[1-9][0-9]*$/.test(value)?Number(value):NaN;
   if(!Number.isSafeInteger(parsed)||parsed>MAX_TIMEOUT_MS) throw new TypeError('execution smoke timeout is invalid');
   return parsed;
+}
+
+function smokeTrigger(value){
+  if(typeof value!=='string'||!TRIGGERS.has(value)) throw new TypeError('execution smoke trigger is invalid');
+  return value;
 }
 
 function languagePasses(entry){
@@ -112,13 +120,14 @@ export async function fetchExecutionSmoke(environment,{fetchImpl=fetch,setTimer=
   const appUrl=String(environment.APP_URL||'');
   const secret=String(environment.CRON_SECRET||'');
   const limit=timeoutMs(environment.EXECUTION_SMOKE_TIMEOUT_MS);
+  const trigger=smokeTrigger(environment.EXECUTION_SMOKE_TRIGGER);
   if(!/^https:\/\/[^/?#\s]+\/?$/.test(appUrl)||!secret) return {category:'config_missing'};
   const controller=new AbortController();
   const timer=setTimer(()=>controller.abort(),limit);
   try{
     const response=await fetchImpl(`${appUrl.replace(/\/$/u,'')}${EXECUTION_SMOKE_PATH}`,{method:'POST',
-      redirect:'error',signal:controller.signal,
-      headers:{accept:'application/json',authorization:`Bearer ${secret}`}});
+      redirect:'error',signal:controller.signal,body:JSON.stringify({trigger}),
+      headers:{accept:'application/json','content-type':'application/json',authorization:`Bearer ${secret}`}});
     if(!response||typeof response.ok!=='boolean'||typeof response.text!=='function'){
       return {category:'malformed_response'};
     }
@@ -137,6 +146,14 @@ export async function fetchExecutionSmoke(environment,{fetchImpl=fetch,setTimer=
 function result({ok,category,languages=null,checkedAt=null,ageSeconds=null}){
   return Object.freeze({ok,kind:'execution-smoke',format:EXECUTION_SMOKE_FORMAT,
     status:ok?'healthy':'alert',alert:!ok,category,checkedAt,ageSeconds,languages});
+}
+
+function cachedNotice(outcome){
+  if(!outcome.ok||!LANGUAGES.some(language=>outcome.languages[language].status==='throttled')) return '';
+  const age=outcome.ageSeconds===null?'at an unknown time':`${outcome.ageSeconds} seconds ago`;
+  // The age is a validated integer, so the command cannot be forged.
+  return `::notice title=Execution smoke passed on a cached result::Throttled, so nothing ran. The latest real run `
+    +`started ${age}; this run did not test the current deployment.\n`;
 }
 
 function annotation(outcome){
@@ -162,7 +179,8 @@ export async function main({argv=process.argv.slice(2),environment=process.env,s
     outcome=result({ok:false,category:'smoke_failure'});
   }
   stdout.write(`${JSON.stringify(outcome)}\n`);
-  if(outcome.alert) stdout.write(annotation(outcome));
+  const command=outcome.alert?annotation(outcome):cachedNotice(outcome);
+  if(command) stdout.write(command);
   return {exitCode:outcome.alert?1:0,result:outcome};
 }
 
