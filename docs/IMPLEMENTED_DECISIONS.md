@@ -3193,7 +3193,8 @@ signed-in member).
   no member-written row can suppress retention. No other reader trusts
   member rows: runner lease and quota checks read `source='runner'`, the
   outbox health and watchdogs read `outbox_events`, Admin Diagnostics (ID-73)
-  takes dispatcher evidence and errors-card freshness only from rows with
+  takes dispatcher evidence and errors-card freshness and the execution smoke
+  check (#249) takes its claims and results only from rows with
   `user_id IS NULL`, and the admin panel shows the stored source.
 - **M2, write volume.** Each member stores at most 200 client rows in any
   rolling hour (`CLIENT_LOG_RECENT_COUNT_SQL`, which searches
