@@ -41,8 +41,8 @@ jobs:
           WATCHDOG_CONTROL_ACTIVATION_AT: '2026-09-21T03:17:00.000Z'
           WATCHDOG_MAX_RUN_AGE_MS: '691200000'
           WATCHDOG_STUCK_AFTER_MS: '5400000'
-          WATCHDOG_SLOT_GRACE_MS: '7200000'
-          WATCHDOG_SLOT_DEADLINE_MS: '12600000'
+          WATCHDOG_SLOT_GRACE_MS: '28800000'
+          WATCHDOG_SLOT_DEADLINE_MS: '34200000'
         run: |
           node scripts/github-backup-restore-watchdog.mjs \
             --mode discover \

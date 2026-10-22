@@ -9,9 +9,17 @@ const WATCHDOG_PATH='.github/workflows/turso-backup-restore-watchdog.yml';
 const DEPLOYABILITY_PATH='.github/workflows/deployability.yml';
 const WORKFLOW_DIGESTS=Object.freeze({
   rehearsal:'b2b9d31604a0e0ae19f2251212c23b4326e22226a887b972b38553dd0f8f34c1',
-  watchdog:'e324e944d6f36f326229ae99c078b9adcad4e53188ea6db2fefbe7515525813b',
+  watchdog:'87ae424278d3fd58d12c7a02071549e63a3b2757e5c379659ff6fb8684e888d7',
   deployability:'be850fb1f41452d17b0b8ae1069fd50da61448e24e1ab1f938d3648edb2c3858',
 });
+// Reviewed watchdog schedule policy (#324). GitHub starts scheduled workflows on
+// a best-effort basis and has started the Monday 03:17 UTC rehearsal about 5h40m
+// late. An eight-hour slot grace keeps a drill that starts that late, and then
+// succeeds, green. The absolute slot deadline adds the 90-minute stuck-run
+// allowance to that grace, so a missing drill alerts at the 11:47 UTC watchdog
+// tick and an unfinished one by 12:47 UTC the same Monday, within one day.
+const WATCHDOG_SLOT_GRACE_MS=8*60*60*1000;
+const WATCHDOG_SLOT_DEADLINE_MS=WATCHDOG_SLOT_GRACE_MS+90*60*1000;
 const PROTECTED_REHEARSAL_RUN=[
   '        run: |',
   '          timeout --signal=TERM --kill-after=3m 28m \\',
@@ -476,9 +484,9 @@ function validateWatchdog(raw){
     &&environmentValue(discovery,'WATCHDOG_STUCK_AFTER_MS')===
       "          WATCHDOG_STUCK_AFTER_MS: '5400000'"
     &&environmentValue(discovery,'WATCHDOG_SLOT_GRACE_MS')===
-      "          WATCHDOG_SLOT_GRACE_MS: '7200000'"
+      `          WATCHDOG_SLOT_GRACE_MS: '${WATCHDOG_SLOT_GRACE_MS}'`
     &&environmentValue(discovery,'WATCHDOG_SLOT_DEADLINE_MS')===
-      "          WATCHDOG_SLOT_DEADLINE_MS: '12600000'"
+      `          WATCHDOG_SLOT_DEADLINE_MS: '${WATCHDOG_SLOT_DEADLINE_MS}'`
     &&exactEnvironment(verification,['WATCHDOG_CONTROL_ACTIVATION_AT','WATCHDOG_MAX_RUN_AGE_MS'])
     &&environmentValue(verification,'WATCHDOG_CONTROL_ACTIVATION_AT')===
       "          WATCHDOG_CONTROL_ACTIVATION_AT: '2026-09-21T03:17:00.000Z'"
