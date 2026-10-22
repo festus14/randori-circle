@@ -3,6 +3,8 @@ import { createServer } from 'node:http';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { publicPageFile } from '../../scripts/public-pages.mjs';
+
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const port = Number(process.env.E2E_PORT || 4173);
 const mime = {
@@ -39,9 +41,10 @@ const server = createServer((request, response) => {
     return;
   }
 
+  // Public pages (/privacy, /terms) are their own static documents, as on Vercel.
   const requested = isStaticAppRoute(url.pathname)
     ? 'index.html'
-    : decodeURIComponent(url.pathname).replace(/^\/+/, '');
+    : publicPageFile(url.pathname) ?? decodeURIComponent(url.pathname).replace(/^\/+/, '');
   const file = resolve(root, requested);
 
   if (file !== root && !file.startsWith(`${root}${sep}`)) {

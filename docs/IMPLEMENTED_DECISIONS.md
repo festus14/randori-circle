@@ -3819,6 +3819,109 @@ the threshold with the owner, then set `CIRCLE_HEALTH_ENABLED=true` in Vercel
 Production and redeploy. To recover, unset the flag and redeploy; there is no
 stored state. Contract: [`CIRCLE_HEALTH.md`](CIRCLE_HEALTH.md).
 
+## ID-79: Serve the privacy policy and terms as static, script-free public pages
+
+Status: implemented; no migration, no flag (the pages must be public while
+signed out). The text is a plain-English draft for the owner to review; it is
+not legal advice.
+
+**Context.** Google sign-in is in Testing, so only listed test users can sign
+in. Publishing it needs Google Cloud's Branding page filled in, which asks for
+an app home page, a privacy policy link and a terms of service link, and
+Google expects the home page to link the privacy policy. Randori had only the
+short in-page "Privacy note" on the landing page.
+
+**Decision.**
+- *Two root documents.* `privacy.html` and `terms.html` live beside
+  `index.html`. Under `cleanUrls`, Vercel serves them at `/privacy` and
+  `/terms` from the filesystem before any rewrite, so they never reach the SPA
+  fallback and never load the app shell; `/privacy.html` redirects to the
+  clean URL. `vercel.json` is unchanged.
+- *One route table.* `scripts/public-pages.mjs` maps the two clean paths to
+  their files. The local dev server and the e2e static server serve them from
+  it (as their own documents, with the usual local headers), the routing
+  contract test checks each resolves to its file under the Vercel model, the
+  deployability check requires both files, the production smoke check fetches
+  both (200, HTML, a `data-public-page` marker, not the shell, the page
+  security headers), and the real-runtime fixture and screenshot pipeline
+  stage them.
+- *Static and tighter.* No scripts, forms, images or inline styles. Each page
+  adds a meta CSP (`default-src 'none'; style-src 'self'; font-src 'self';
+  img-src 'self'; base-uri 'none'; form-action 'none'`) on top of the
+  site-wide header policy, so it can make no API requests (no `/api/logs`, no
+  auth) and load nothing third-party. They share `assets/legal.css`, which
+  copies the Dojo Indigo tokens from `index.html` (a unit test fails on drift)
+  and follows the system colour scheme. Landmarks (banner, main, contentinfo,
+  a "Legal" nav), one `h1`, no skipped heading levels, a skip link and a
+  "Back to Randori Circle" link.
+- *Links.* The landing footer links "Privacy Policy" and "Terms of Service"
+  (replacing the footer's in-page `#landingPrivacy` link; the request form
+  keeps that one). The in-page privacy note now says members also see
+  profile details and who is paired with whom, but not email addresses, and
+  links both pages. Signed-in members get both at the end of the account
+  menu, after a separator (existing order unchanged), opening in a new tab so
+  a live call or room is never dropped. The sign-up dialog shows one line
+  linking both, only in sign-up mode (`#authLegal`).
+- *Browser Sentry reports errors only.* The loader's dashboard config turns
+  on tracing (rate 1), session replay (0.1, and 1 on error) and logs.
+  `Sentry.init` in `randoriSentryConfig` now sets `tracesSampleRate:0`,
+  `replaysSessionSampleRate:0`, `replaysOnErrorSampleRate:0` and
+  `enableLogs:false`, which override those defaults, so the policy's "no
+  session recording or performance tracing in your browser" holds; a unit
+  test pins them. The CSP is unchanged.
+- *Content from the code.* The policy was written from an inventory of the
+  data flows: Google scopes `openid email profile` with `access_type=online`
+  (only `sub`, verified `email` and `name` are used; no picture, no stored
+  access or refresh token), bcrypt password hashes, the 12-hour
+  `randori_session` cookie, every Turso table holding personal data, Vercel
+  (Dublin), Turso, Resend, Sentry, the Vercel Sandbox or self-hosted runner,
+  Google STUN for peer-to-peer calls, cdnjs/jsDelivr/unpkg for the editor,
+  optional consent-gated Groq/OpenAI feedback (off by default), and no
+  analytics. Retention is stated only where code defines it: `app_logs` 30
+  days (ID-72), video signals about an hour, editor and whiteboard drafts 90
+  days, invite requests 30 days (purged weekly, so up to about 37), links 30
+  minutes or 7 days, sessions 12 hours (records 30 days after expiry);
+  everything else while the account exists. Two gaps are stated plainly:
+  email records in the outbox (plain-text recipients for sign-up, reset and
+  pairing mail, encrypted copies for invitations) and unfinished sign-ups
+  (`auth_email_activations`) are not deleted automatically today. Chat
+  retention (90 days) is not described as active because its purge is still
+  disabled. GitHub is listed as a provider (code, issues, scheduled jobs and
+  the weekly restore rehearsal, which keeps only counts and checksums).
+  Circle health (ID-78, flagged off) is disclosed as owner-visible counts
+  per finished week with small or single-pair cells hidden, noting that an
+  all-or-none count shows every pair's state. Practice suggestions (ID-77,
+  flagged off) are disclosed as "attempted" marks a current partner sees.
+  Browser Sentry reports are described with their breadcrumb trail.
+- *Deletion and contact.* There is no self-service deletion (leaving or
+  removal only makes a membership inactive), so the policy explains how to
+  ask: by email, or through the circle owner. Circle owners can't delete
+  accounts; the operator deletes on request and responds within one month.
+  At the
+  owner's request the policy names the operator (Festus Omole, based in the
+  United Kingdom) and publishes one private contact address for privacy and
+  deletion requests and security reports, on both pages; the public issue
+  tracker stays as an option for general questions, with a warning not to
+  post personal information there. A unit test allows exactly that one
+  address.
+- *Google disclosure.* The policy states that Randori's use and transfer of
+  information received from Google APIs adheres to the Google API Services
+  User Data Policy, including the Limited Use requirements, and that the data
+  is not sold, not used for advertising and not transferred except to run the
+  service or when the law requires it.
+
+**Alternatives.** Render the pages inside the SPA (needs JavaScript and the
+app shell, and would send signed-out visitors through auth boot and client
+logging). A Vercel rewrite per page (the filesystem already wins under
+`cleanUrls`). A feature flag (the pages exist to be public). Extracting the
+`index.html` tokens into a shared stylesheet now (a large `index.html` edit
+while other work is in flight; the drift test keeps the copy honest).
+
+**Rollout and recovery.** Merging publishes both pages on the next production
+deploy and the `production-smoke` workflow then checks them. The owner reads
+the text and enters the URLs on Google Cloud's Branding page. To withdraw,
+revert this change.
+
 ## ID-80: Make randoricircle.com the canonical origin; keep the old Vercel alias for the API
 
 Status: implemented as an infrastructure change. No feature flag, migration,
@@ -4059,6 +4162,110 @@ owner sets `OUTBOX_PII_RETENTION_ENABLED=true` in Vercel Production and
 redeploys; the backlog drains at up to 100 rows per class an hour. Redaction
 cannot be undone, and redacted dead letters stay non-replayable after the flag
 is unset.
+
+## ID-82: Keep no raw IP address or user agent in app_logs
+
+Status: implemented; no migration, no flag (privacy hygiene with no
+user-visible change). Issue #340, split out of #338.
+
+**Context.** Every `app_logs` writer copied the first `X-Forwarded-For` entry
+into `ip` and the full `User-Agent` header into `ua`, and kept both for the
+30-day retention (ID-72): client rows from `POST /api/logs`, server rows from
+`api/data.js`, `api/ai.js` and `api/ops.js`, and the runner lease and quota
+rows. Nothing read either column except the admin logs API. Rate limits never
+used them: `auth_rate_limits` keys are already keyed hashes (SHA-256 with the
+JWT secret per 15-minute bucket for auth, HMAC for invitation prepare and
+invite requests), and the runner quota counts by `user_id`. No other table
+stores an address or user agent: `auth_sessions`, `auth_identity_audit_events`,
+`circle_audit_events`, `invite_requests`, `outbox_events` and
+`outbox_audit_events` have no such columns or payload fields. The one other
+place an address reaches the database is WebRTC signalling: offers, answers
+and ICE candidates in `video_signals.payload` can carry network addresses.
+They are needed to connect a call, readable only by the pair, and deleted
+once older than an hour by the clean-up that runs on signalling requests (so
+while no call is in progress, the last call's rows wait for the next one).
+This change leaves them as they are.
+
+**Decision.** `api/_log-privacy.js` reduces both values for every writer
+(`appLogClientFields`); the columns stay.
+- `ip` is NULL on every row with a `user_id`: client rows from
+  `POST /api/logs`, runner rows, and server rows logged for a signed-in
+  member. The account already says who it was, so the address adds nothing.
+- On rows without a user (server and cron events, failures before the user is
+  known), `ip` is `h1:` plus the first 16 hex characters of
+  HMAC-SHA256(key, `randori-log-address-v1` NUL UTC day NUL network). The key
+  is `LOG_ADDRESS_SECRET`, or `JWT_SECRET` when that is unset, so either can
+  rotate without the other; the label keeps the hash domain-separated when
+  the JWT secret is shared. The network is the IPv4 address (IPv4-mapped IPv6
+  collapses to it) or the IPv6 /64 (`clientNetwork` in
+  `api/_client-address.js`, shared with the rate-limit identity). Rows from
+  one source on one UTC day share a value, so a burst can be traced.
+- The hash is pseudonymous, not anonymous. Anyone holding the key can
+  enumerate every IPv4 address for a day (2^32 HMACs, roughly an hour of one
+  core), so they can reverse a value and link it across days. Without the key,
+  values can't be reversed, and the day salt stops them being linked across
+  days. A value that is not an IP literal, or a missing key, stores NULL.
+  Writers never pass a stored hash through: only the admin read path shows an
+  existing `h1:` value as it is.
+- `ua` is a coarse family from a fixed vocabulary: browser and major version
+  plus OS, with the OS major where the user agent has one (`Chrome 131 on
+  Windows 10/11`, `Safari 17 on iOS 17`, `Chrome 131 on Android 14`); `bot`
+  for crawlers (a product named like `Googlebot/2.1`, not a device such as
+  `CUBOT X30`); `other` for anything unrecognised; NULL when absent. No text
+  from the header is ever copied, so device models, build strings and
+  anything a client puts in the header are dropped. A client log entry's own
+  `ua` field is reduced the same way; this replaces the ID-72 addendum's
+  cut-and-redact of that field.
+- The client log redaction (`api/_client-log-policy.js` and the browser
+  logger in `index.html`, kept identical by the shared corpus) now also drops
+  copies a client puts in the entry itself:
+  - IPv4 and IPv6 literals in message, event, route and meta become `[ip]`,
+    keeping an IPv4 `:port`. Loopback addresses, stack-frame `:line:col`,
+    clock times, three-part versions and product versions
+    (`Chrome/131.0.0.0`, `v1.2.3.4`) stay readable.
+  - A bare browser user agent (`Mozilla/5.0 (…) …`) becomes `[user agent]`.
+  - The names `ua`, `ip`, `xff`, `user-agent`/`userAgent`/`user_agent` and
+    `x-forwarded-for` are treated like the secret names: `name=value` pairs,
+    quoted JSON keys and object keys (plus `ipAddress` and `x-real-ip`) lose
+    their value, and `User-Agent:` / `X-Forwarded-For:` lose the rest of the
+    line.
+- A /24 or /48 prefix was not chosen: it links one network across days for
+  anyone who reads the row and says where the client is.
+- The admin logs API (`GET /api/data?endpoint=logs`, the `#logsArea` panel)
+  returns the same fields. Rows written before this change are reduced on the
+  way out (`presentAppLogClient`): NULL for rows with a user, otherwise hashed
+  with their own `created_at` day. Admins see only reduced values either way.
+  Admin Diagnostics never read either column.
+- The salt day comes from the server clock and `created_at` from the database
+  clock; within a moment of UTC midnight they can differ by a day, so anyone
+  checking an address should try both days.
+- The in-memory per-IP limiter for `POST /api/logs` (60 requests a minute per
+  instance) still uses the raw address in process memory only; it is never
+  written anywhere.
+
+**Existing rows.** No backfill. Rows that still hold raw values age out under
+the 30-day `app_logs` retention (ID-72), so 30 days after deploy (plus the
+hourly retention run) none are left in the live database. Turso backups and
+point-in-time history keep them until those age out on their own schedule.
+
+**Sentry.** Server events have `sendDefaultPii:false` and `beforeSend`
+removes `user` (including `ip_address`) and every request header, so no
+address or user agent is sent from the server. The browser SDK is also set to
+`sendDefaultPii:false`, but Sentry sees the browser's address when it receives
+an event, and whether it stores it depends on the loader's SDK version and the
+project's "Prevent Storing of IP Addresses" setting. That setting is outside
+this repository and is left to the owner.
+
+**Privacy Policy.** `privacy.html` (ID-79) now says the error logs keep the
+browser and OS family, no address on entries linked to an account, and a
+daily pseudonymous code (reversible by us, since we hold the key) on the few
+entries without one; admins see those reduced values; and older entries age
+out on the same 30-day schedule. `tests/unit/public-pages.test.mjs` pins the
+wording.
+
+**Rollout and recovery.** Merging changes only what new rows hold and what the
+admin API returns; no schema, flag or production setting changes. Reverting
+the commit restores the previous writers; nothing needs to be cleaned up.
 
 ## ID-85: Judge a managed database by steady-state membership readiness in migrations and the backup rehearsal
 

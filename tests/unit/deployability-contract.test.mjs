@@ -30,6 +30,8 @@ function currentContract() {
       'scripts/production-smoke.mjs',
       '.github/workflows/execution-smoke.yml',
       'scripts/github-execution-smoke.mjs',
+      'privacy.html',
+      'terms.html',
       ...readdirSync('api').filter(file => file.endsWith('.js')).map(file => `api/${file}`),
     ]),
   };
@@ -99,6 +101,16 @@ test('required files and unique routes are part of the contract', () => {
   const errors = validateDeploymentContract(contract);
   assert.ok(errors.includes('required deployment file is missing: package-lock.json'));
   assert.ok(errors.includes(`duplicate rewrite source: ${contract.vercel.rewrites[0].source}`));
+});
+
+test('the public privacy policy and terms pages are required deployment files (ID-79)', () => {
+  const contract = cloneContract();
+  contract.files.delete('privacy.html');
+  contract.files.delete('terms.html');
+
+  const errors = validateDeploymentContract(contract);
+  assert.ok(errors.includes('required deployment file is missing: privacy.html'));
+  assert.ok(errors.includes('required deployment file is missing: terms.html'));
 });
 
 test('the package runtime must match the Node 24 CI and deployment contract', () => {

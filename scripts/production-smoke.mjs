@@ -35,6 +35,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { REQUIRED_SECURITY_HEADERS, securityHeaderIsSafe } from './check-deployability.mjs';
 import { CANONICAL_ORIGIN, LEGACY_ORIGIN, WWW_ORIGIN } from './canonical-domain.mjs';
+import { PUBLIC_PAGE_PATHS } from './public-pages.mjs';
 
 export const DEFAULT_BASE_URL = CANONICAL_ORIGIN;
 export const DEFAULT_EXPECTED_CAPABILITIES = Object.freeze({
@@ -56,6 +57,9 @@ export const APP_ROUTES = Object.freeze([
   '/join/week_1_pair_1',
   '/smoke-check/unknown-route',
 ]);
+// Signed-out static pages (ID-79) that Google's OAuth branding links to. They
+// must be their own documents, not the SPA shell.
+export const PUBLIC_PAGE_ROUTES = PUBLIC_PAGE_PATHS;
 export const STATIC_ASSET = '/assets/calendar-export.js';
 const SHELL_MARKERS = ['<title>Randori Circle</title>', 'id="appMain"'];
 const REDIRECT_STATUSES = new Set([301, 302, 307, 308]);
@@ -133,6 +137,19 @@ function checkAppRoute(result) {
   return problems;
 }
 
+function checkPublicPage(path) {
+  const marker = `data-public-page="${path.slice(1)}"`;
+  return result => {
+    const problems = [];
+    if (result.status !== 200) problems.push(`status ${result.status}`);
+    if (!/^text\/html\b/i.test(result.headers.get('content-type') || '')) problems.push('not text/html');
+    if (!result.body.includes(marker)) problems.push(`missing public page marker ${marker}`);
+    if (result.body.includes('id="appMain"')) problems.push('served the app shell instead of the public page');
+    for (const key of securityHeaderFailures(result.headers)) problems.push(`unsafe or missing ${key}`);
+    return problems;
+  };
+}
+
 function checkApiHeaders(result) {
   const problems = [];
   if (!/^application\/json\b/i.test(result.headers.get('content-type') || '')) problems.push('not application/json');
@@ -200,6 +217,7 @@ export function smokeChecks(origin, { expectedCapabilities = DEFAULT_EXPECTED_CA
   return [
     ...APP_ROUTES.map(path => ({ name: `app route ${path}`, path, check: checkAppRoute })),
     { name: 'index.html redirect', path: '/index.html', check: checkIndexRedirect(origin) },
+    ...PUBLIC_PAGE_ROUTES.map(path => ({ name: `public page ${path}`, path, check: checkPublicPage(path) })),
     { name: 'health live', path: '/api/health/live', check: checkHealth('live') },
     { name: 'health ready', path: '/api/health/ready', check: checkHealth('ready') },
     { name: 'auth capabilities', path: '/api/auth/capabilities',

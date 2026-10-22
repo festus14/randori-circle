@@ -1,0 +1,125 @@
+/* Public legal pages: /privacy and /terms (ID-79).
+   Static, script-free documents that anyone can read while signed out.
+   The tokens below are copied from the Dojo Indigo :root and :root.light
+   blocks in index.html (docs/design/UI_REDESIGN_SPEC.md sections 5.2 and 6);
+   tests/unit/public-pages.test.mjs fails if any value drifts from index.html.
+   Unlike the app, these pages follow the system colour scheme. */
+@font-face{
+  font-family:"Geist";
+  src:url("/assets/fonts/geist-sans-latin-var.woff2") format("woff2");
+  font-weight:400 700; font-style:normal; font-display:swap;
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+2074,U+20AC,U+2122,U+2190-2199,U+2212,U+2215,U+2713-2715,U+FEFF,U+FFFD;
+}
+:root{
+  color-scheme:dark light;
+  --color-canvas:#0B0D12;
+  --color-surface:#12151C;
+  --color-border:#2A3040;
+  --color-text:#EEF0F6;
+  --color-text-secondary:#B4BBCB;
+  --color-text-muted:#8C95A8;
+  --color-action:#8B97FF;
+  --color-action-hover:#A1ABFF;
+  --color-focus:#A5B0FF;
+  --font-sans:"Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --text-sm:0.875rem; --leading-sm:1.4286;
+  --text-md:1rem; --leading-md:1.5;
+  --text-lg:1.125rem; --leading-lg:1.5556;
+  --text-xl:1.375rem; --leading-xl:1.2727;
+  --text-2xl:1.75rem; --leading-2xl:1.2143;
+  --weight-body:450; --weight-emphasis:550; --weight-heading:650;
+  --tracking-tight:-0.02em;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+  --space-5:20px; --space-6:24px; --space-8:32px; --space-12:48px;
+  --radius-sm:8px; --radius-md:12px;
+  --reading-max:680px; --tap-min:44px;
+  --focus-width:3px; --focus-offset:2px;
+  --z-skip-link:700;
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --color-canvas:#F7F8FB;
+    --color-surface:#FFFFFF;
+    --color-border:#DDE1EA;
+    --color-text:#0E1220;
+    --color-text-secondary:#3D4558;
+    --color-text-muted:#5B6478;
+    --color-action:#4F5BD5;
+    --color-action-hover:#4350C4;
+    --color-focus:#4F5BD5;
+  }
+}
+
+*{box-sizing:border-box}
+html{font-size:100%; -webkit-text-size-adjust:100%; text-size-adjust:100%}
+body{
+  margin:0;
+  background:var(--color-canvas);
+  color:var(--color-text);
+  font-family:var(--font-sans);
+  font-size:var(--text-md);
+  line-height:var(--leading-md);
+  font-weight:var(--weight-body);
+  letter-spacing:-0.006em;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+a{color:var(--color-action); text-decoration-thickness:1px; text-underline-offset:.2em}
+a:hover{color:var(--color-action-hover)}
+:where(a,[tabindex]):focus-visible{outline:var(--focus-width) solid var(--color-focus); outline-offset:var(--focus-offset)}
+
+.skip-link{
+  position:fixed; left:var(--space-3); top:var(--space-2); z-index:var(--z-skip-link); transform:translateY(-160%);
+  padding:var(--space-2) var(--space-3); border-radius:var(--radius-sm); background:var(--color-text); color:var(--color-canvas);
+  font-weight:var(--weight-heading); text-decoration:none;
+}
+.skip-link:focus-visible{transform:translateY(0)}
+
+.legal-header{
+  display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:var(--space-3);
+  padding:var(--space-2) var(--space-5); border-bottom:1px solid var(--color-border); background:var(--color-surface);
+}
+.legal-brand{
+  display:inline-flex; align-items:center; gap:var(--space-2); min-height:var(--tap-min);
+  color:var(--color-text); text-decoration:none; font-size:var(--text-lg); line-height:var(--leading-sm);
+  font-weight:var(--weight-heading); letter-spacing:var(--tracking-tight);
+}
+.legal-brand:hover{color:var(--color-text)}
+.legal-brand .mark{width:28px; height:28px; flex:0 0 auto; display:block}
+.legal-brand .mark-accent{stroke:var(--color-action)}
+.legal-brand .wordmark-light{font-weight:var(--weight-body); color:var(--color-text-secondary)}
+.legal-back{display:inline-flex; align-items:center; min-height:var(--tap-min); font-size:var(--text-sm); font-weight:var(--weight-emphasis)}
+
+.legal-main{max-width:var(--reading-max); margin:0 auto; padding:var(--space-8) var(--space-5) var(--space-12)}
+.legal-main:focus{outline:none}
+.legal-main h1,.legal-main h2,.legal-main h3{font-weight:var(--weight-heading); letter-spacing:var(--tracking-tight); color:var(--color-text); text-wrap:balance}
+.legal-main h1{font-size:var(--text-2xl); line-height:var(--leading-2xl); margin:0 0 var(--space-2)}
+.legal-main h2{font-size:var(--text-xl); line-height:var(--leading-xl); margin:var(--space-8) 0 var(--space-3)}
+.legal-main h3{font-size:var(--text-lg); line-height:var(--leading-lg); margin:var(--space-6) 0 var(--space-2)}
+.legal-main p,.legal-main ul{margin:0 0 var(--space-4); color:var(--color-text-secondary)}
+.legal-main ul{padding-left:var(--space-6)}
+.legal-main li{margin-bottom:var(--space-2)}
+.legal-main strong{color:var(--color-text); font-weight:var(--weight-heading)}
+.legal-updated{color:var(--color-text-muted); font-size:var(--text-sm); line-height:var(--leading-sm)}
+.legal-summary{
+  margin:var(--space-6) 0; padding:var(--space-4) var(--space-5);
+  background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-md);
+}
+.legal-main .legal-summary p:last-child,.legal-main .legal-summary ul:last-child{margin-bottom:0}
+
+.legal-footer{border-top:1px solid var(--color-border); padding:var(--space-6) var(--space-5); color:var(--color-text-muted); font-size:var(--text-sm); line-height:var(--leading-sm)}
+.legal-footer-inner{max-width:var(--reading-max); margin:0 auto; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:var(--space-3)}
+.legal-footer ul{list-style:none; display:flex; flex-wrap:wrap; gap:var(--space-1) var(--space-4); margin:0; padding:0}
+.legal-footer a{display:inline-flex; align-items:center; min-height:var(--tap-min)}
+.legal-footer p{margin:0}
+
+@media (max-width:599px){
+  .legal-main{padding:var(--space-6) var(--space-4) var(--space-8)}
+  .legal-header,.legal-footer{padding-left:var(--space-4); padding-right:var(--space-4)}
+}
+@media (forced-colors:active){
+  :where(a,[tabindex]):focus-visible{outline:3px solid Highlight}
+}
+@media print{
+  .skip-link,.legal-back{display:none}
+}

@@ -185,10 +185,16 @@ try{
   // everywhere and applies its own production send policy.
   window.sentryOnLoad=function(){
     try{
+      // ID-79: errors only. These override the loader's dashboard defaults
+      // (tracing, session replay, logs), which the Privacy Policy says are off.
       window.Sentry.init({
         environment:environment,
         enabled:enabled,
         sendDefaultPii:false,
+        tracesSampleRate:0,
+        replaysSessionSampleRate:0,
+        replaysOnErrorSampleRate:0,
+        enableLogs:false,
         beforeSend:gate,
         beforeSendTransaction:gate
       });
@@ -535,6 +541,11 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .account-menu-item .rc-icon{order:-1; color:var(--ink-3)}
 .account-menu-item--warning,.account-menu-item--warning .rc-icon{color:var(--warn)}
 .account-menu-item:hover,.account-menu-item:focus-visible{background:var(--bg-3)}
+/* Privacy Policy and Terms links (ID-79): quieter than the account actions above them. */
+.account-menu-sep{height:1px; margin:var(--space-1) 0; background:var(--border)}
+a.account-menu-item{text-decoration:none}
+a.account-menu-item--legal,a.account-menu-item--legal:hover{color:var(--ink-2); font-weight:var(--weight-body)}
+a.account-menu-item--legal{padding-left:calc(var(--space-3) * 2 + 20px)} /* text lines up with the icon rows */
 .shell-banner{margin:var(--space-3) var(--space-5) 0; align-items:center}
 .shell-banner[hidden]{display:none}
 .shell-banner .rc-icon{color:var(--warn)}
@@ -1368,7 +1379,7 @@ a.btn{text-decoration:none}
 #requestInviteDone:focus,#requestInviteFormError:focus{outline:3px solid var(--color-focus); outline-offset:2px}
 .landing-footer{display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:var(--space-3); padding-top:var(--space-6); border-top:1px solid var(--border); color:var(--ink-3); font-size:var(--text-sm)}
 .landing-footer p{margin:0}
-.landing-footer-links{display:flex; gap:var(--space-4); align-items:center}
+.landing-footer-links{display:flex; flex-wrap:wrap; gap:var(--space-2) var(--space-4); align-items:center}
 .recovery{max-width:var(--reading-max); padding-top:var(--space-10)}
 .recovery-body{display:grid; gap:var(--space-4)}
 .recovery-lead,.recovery-status{margin:0; color:var(--ink-2); font-size:var(--text-md); line-height:var(--leading-md)}
@@ -1720,21 +1731,67 @@ a.btn{text-decoration:none}
   const DECODED={'23':'#','3d':'=','40':'@','2f':'/','2e':'.'};
   const TOKEN=/[^\s"'<>()\\]+/g;
   const LINE_COL=/(?::\d+){1,2}$/;
-  const SECRET_PAIR=/(^|[^a-z0-9_])((?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?)=(["']?)([^\s&#"'<>,;()\\]+)/gi;
-  const SECRET_JSON=/("(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|[\w.+-]+)/gi;
-  const SECRET_ESCAPED_JSON=/(\\"(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?\\"\s*:\s*)(?:\\"[^"]*?\\"|[\w.+-]+)/gi;
+  const SECRET_PAIR=/(^|[^a-z0-9_])((?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf|ua|ip|xff|user[_-]?agent|forwarded[_-]for)(?:[_-]?(?:id|key|token|hash))?s?)=(["']?)([^\s&#"'<>,;()\\]+)/gi;
+  const SECRET_JSON=/("(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf|ua|ip|xff|user[_-]?agent|forwarded[_-]for)(?:[_-]?(?:id|key|token|hash))?s?"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|[\w.+-]+)/gi;
+  const SECRET_ESCAPED_JSON=/(\\"(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf|ua|ip|xff|user[_-]?agent|forwarded[_-]for)(?:[_-]?(?:id|key|token|hash))?s?\\"\s*:\s*)(?:\\"[^"]*?\\"|[\w.+-]+)/gi;
   const AUTH_HEADER=/\b((?:proxy-)?authorization)(\s*[:=]\s*["']?)(?:(?:bearer|basic|token|digest)\s+)?[^\s,;"']+/gi;
   const SECRET_COLON=/\b((?:[a-z0-9]+[_-])?(?:password|passwd|pwd|secret|otp|cookie|credentials?|token)(?:[_-]?(?:id|key|token|hash))?)(\s*:\s*)[^\s,;]+/gi;
   const CODE_COLON=/\b(code)(\s*:\s*["']?)\d{4,10}\b/gi;
   const AUTH_SCHEME=/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
   const JWT=/(^|[^A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g;
   const EMAIL=/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,63}/g;
-  const SECRET_KEY=/token|secret|passw|pwd|authorization|cookie|credential|signature|invite|session|api_?key|private_?key|^(?:code|key|sig|sid|auth|otp)$/i;
+  // Client details the request already carries (ID-82): the address and user
+  // agent are stored reduced or not at all, so a copy inside the text goes too.
+  // The names ua, ip, xff, user-agent and x-forwarded-for join the secret names
+  // above. After a colon only the user-agent and forwarded names count, and
+  // they take the rest of the line, since a user agent holds spaces.
+  const CLIENT_COLON=/\b((?:[a-z0-9]+[_-])?(?:user[_-]?agent|forwarded[_-]for|xff|ua))(\s*:\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"'{}][^\r\n"'{}]*)/gi;
+  // A bare browser user agent: 'Mozilla/5.0 (…)' and the product tokens after it.
+  const USER_AGENT=/\bMozilla\/\d{1,2}\.\d{1,2} \([^()\r\n]{1,200}\)(?: (?:[\w.-]{1,40}\/[\w.+-]{1,40}|\([^()\r\n]{0,200}\)|Mobile))*/g;
+  // IPv4 and IPv6 literals become [ip] (an IPv4 :port stays); loopback stays
+  // readable. A candidate is a short run of hex digits, dots and colons that
+  // starts a token or follows '//', so product versions (Chrome/131.0.0.0,
+  // v1.2.3.4), three-part versions, stack-frame :line:col and clock times are
+  // never addresses.
+  const ADDRESS=/(^|[^0-9A-Za-z_:./-]|\/\/)([0-9A-Fa-f:.]{2,45})(?![0-9A-Za-z_:]|\.[0-9A-Za-z])/g;
+  const OCTET=/^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+  const HEXTET=/^[0-9A-Fa-f]{1,4}$/;
+  const SECRET_KEY=/token|secret|passw|pwd|authorization|cookie|credential|signature|invite|session|api_?key|private_?key|user[_-]?agent|forwarded|ip_?address|^(?:code|key|sig|sid|auth|otp|ua|ip|xff|x[_-]real[_-]ip)$/i;
   function cut(text,max){
     if(text.length<=max) return text;
     let end=max;
     while(end>0&&!CUT_DELIMITER.test(text[end-1])) end-=1;
     return text.slice(0,end)+'[truncated]';
+  }
+  function ipv4Literal(text){
+    const parts=text.split('.');
+    return parts.length===4&&parts.every(part=>OCTET.test(part));
+  }
+  function ipv6Literal(text){
+    const halves=text.split('::');
+    if(halves.length>2) return false;
+    let groups=0;
+    for(let half=0;half<halves.length;half+=1){
+      if(!halves[half]) continue;
+      const parts=halves[half].split(':');
+      for(let index=0;index<parts.length;index+=1){
+        if(HEXTET.test(parts[index])) groups+=1;
+        else if(half===halves.length-1&&index===parts.length-1&&ipv4Literal(parts[index])) groups+=2;
+        else return false;
+      }
+    }
+    return groups>0&&(halves.length===2?groups<8:groups===8);
+  }
+  function loopbackLiteral(text){
+    return /^(?:::ffff:)?127\./i.test(text)||/^(?:0{1,4}:){7}0{0,3}1$|^::1$/.test(text);
+  }
+  function redactAddress(match,lead,candidate){
+    const dots=/\.*$/.exec(candidate)[0];
+    const core=candidate.slice(0,candidate.length-dots.length);
+    const port=/^([\d.]+)(:\d{1,5})$/.exec(core);
+    const address=port&&ipv4Literal(port[1])?port[1]:core;
+    if(!(ipv4Literal(address)||ipv6Literal(address))||loopbackLiteral(address)) return match;
+    return lead+'[ip]'+(address===core?'':port[2])+dots;
   }
   function stripFragment(token){
     const hash=token.indexOf('#');
@@ -1755,8 +1812,11 @@ a.btn{text-decoration:none}
       .replace(SECRET_ESCAPED_JSON,'$1\\"[redacted]\\"')
       .replace(SECRET_COLON,'$1$2[redacted]')
       .replace(CODE_COLON,'$1$2[redacted]')
+      .replace(CLIENT_COLON,'$1$2[redacted]')
+      .replace(USER_AGENT,'[user agent]')
       .replace(JWT,'$1[jwt]')
-      .replace(EMAIL,'[email]');
+      .replace(EMAIL,'[email]')
+      .replace(ADDRESS,redactAddress);
   }
   function redactNode(value,depth,budget){
     if(budget.left<=0) return '[truncated]';
@@ -1965,6 +2025,9 @@ a.btn{text-decoration:none}
           <button id="meSetupGuide" role="menuitem" class="account-menu-item" tabindex="-1">Setup guide<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-check"/></svg></button>
           <button id="meSignOut" role="menuitem" class="account-menu-item" tabindex="-1">Sign out<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-signout"/></svg></button>
           <button id="meSignOutAll" role="menuitem" class="account-menu-item account-menu-item--warning" tabindex="-1">Sign out everywhere<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-signout"/></svg></button>
+          <div role="separator" class="account-menu-sep"></div>
+          <a id="mePrivacy" role="menuitem" class="account-menu-item account-menu-item--legal" tabindex="-1" href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>
+          <a id="meTerms" role="menuitem" class="account-menu-item account-menu-item--legal" tabindex="-1" href="/terms" target="_blank" rel="noopener">Terms of Service</a>
         </div>
         <button id="authBtn" class="btn sm" title="Sign in / up">Sign in</button>
         <button id="signOutBtn" class="pill" style="display:none" title="Sign out">Sign out</button>
@@ -2043,8 +2106,9 @@ a.btn{text-decoration:none}
           </ul>
           <details id="landingPrivacy" class="landing-privacy">
             <summary>Privacy note</summary>
-            <p>Randori Circle is a private practice space run by its owners. Members see the names of the people in their circle. Your editor, whiteboard and chat in a pairing room are shared only with your partner for that week.</p>
+            <p>Randori Circle is a private practice space run by Festus Omole; circle owners decide who joins. Members see the names and profile details of the people in their circle and who is paired with whom each week, but not their email addresses. Your editor, whiteboard and chat in a pairing room are shared only with your partner for that week.</p>
             <p>If you request an invite, the circle owners see your name, email and note so they can decide. A request that isn’t answered expires after 30 days. Once an owner approves or declines it, your name, email and note are removed from the request. If you’re approved, you get a normal invitation email.</p>
+            <p>Read the full <a href="/privacy">Privacy Policy</a> and <a href="/terms">Terms of Service</a>.</p>
           </details>
         </section>
 
@@ -2087,7 +2151,7 @@ a.btn{text-decoration:none}
 
         <div class="landing-footer">
           <p>© Randori Circle · a private mock-interview circle</p>
-          <p class="landing-footer-links"><a href="#landingPrivacy">Privacy</a><button id="landingThemeToggle" class="link-btn" type="button">Switch theme</button></p>
+          <p class="landing-footer-links"><a id="landingPrivacyPolicyLink" href="/privacy" data-testid="landing-privacy-policy-link">Privacy Policy</a><a id="landingTermsLink" href="/terms" data-testid="landing-terms-link">Terms of Service</a><button id="landingThemeToggle" class="link-btn" type="button">Switch theme</button></p>
         </div>
       </div>
     </section>
@@ -2885,6 +2949,7 @@ a.btn{text-decoration:none}
           </div>
         </div>
       </div>
+      <p id="authLegal" class="small muted auth-legal" hidden>By signing up, you agree to the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>. Our <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a> explains how we use your information.</p>
       <div class="auth-dialog-actions">
         <button id="authSignup" class="btn lg auth-submit" type="submit" hidden>Sign up</button>
         <button id="authSignin" class="btn lg auth-submit" type="submit" hidden>Sign in</button>
@@ -4434,6 +4499,9 @@ async function refreshMe(){
     if(activationChange) activationChange.disabled=authBusy;
     if(divider) divider.hidden=pending||!authCapabilitiesLoaded||!googleEnabled||!passwordEnabled;
     if(nameField) nameField.hidden=authMode!=='signup'||!passwordEnabled;
+    // ID-79: sign-up (password or Google) links the Terms and Privacy Policy.
+    const legal=document.getElementById('authLegal');
+    if(legal) legal.hidden=authMode!=='signup'||pending;
     if(name) name.required=authMode==='signup'&&passwordEnabled;
     if(passwordField) passwordField.hidden=authMode==='reset';
     if(passwordHint) passwordHint.hidden=authMode!=='signup';

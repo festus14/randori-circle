@@ -12,10 +12,13 @@ import {
   resolveExpectedCapabilities,
   runProductionSmoke,
 } from '../../scripts/production-smoke.mjs';
+import { PUBLIC_PAGES } from '../../scripts/public-pages.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const ORIGIN = 'https://smoke.example.test';
 const shell = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+const publicPages = Object.fromEntries(Object.entries(PUBLIC_PAGES)
+  .map(([path, file]) => [path, readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8')]));
 const pageHeaders = Object.fromEntries(
   JSON.parse(readFileSync(new URL('../../vercel.json', import.meta.url), 'utf8')).headers
     .find(route => route.source === '/(.*)').headers.map(({ key, value }) => [key.toLowerCase(), value]),
@@ -39,6 +42,7 @@ function fakeOrigin(overrides = {}) {
     if (pathname === '/api/health/ready') return api({ ok: true, status: 'ready' });
     if (pathname === '/api/auth/capabilities') return api(goodCapabilities);
     if (pathname === '/assets/calendar-export.js') return respond(200, { 'content-type': 'text/javascript' }, 'export {};');
+    if (publicPages[pathname]) return respond(200, { 'content-type': 'text/html' }, publicPages[pathname]);
     return respond(200, { 'content-type': 'text/html' }, shell);
   };
   return { fetchImpl, calls: () => calls };
@@ -168,7 +172,7 @@ test('CLI flags override environment configuration and failures print their prob
   assert.equal(out.lines[0], `production smoke: ${ORIGIN}`);
   assert.ok(out.lines.includes('  ok   auth capabilities (200)'));
   assert.ok(out.lines.includes('  FAIL health live (no response): network_error'));
-  assert.equal(out.lines.at(-1), 'production smoke: FAILED 10/11 checks passed');
+  assert.equal(out.lines.at(-1), 'production smoke: FAILED 12/13 checks passed');
 });
 
 test('the script entrypoint exits 2 on invalid configuration without any network access', () => {

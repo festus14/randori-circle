@@ -38,6 +38,7 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from './local-server.mjs';
+import { PUBLIC_PAGES, PUBLIC_PAGE_FILES } from './public-pages.mjs';
 import { parseOptions, readOnlyRequestDecision, VIEWPORTS } from './ui-screenshots-policy.mjs';
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -408,6 +409,18 @@ async function captureLocalPublic(browser, v, base, getOrigin, contexts, recorde
       }
     }
   });
+  // Static privacy policy and terms (ID-79). They follow the system colour
+  // scheme rather than the stored app theme.
+  await recorder.step(`${v}:local-public-pages`, async () => {
+    for (const colorScheme of ['dark', 'light']) {
+      const page = await open();
+      await page.emulateMedia({ colorScheme });
+      for (const path of Object.keys(PUBLIC_PAGES)) {
+        await visit(page, path);
+        await recorder.shot(page, v, `local-${path.slice(1)}${colorScheme === 'light' ? '-light' : ''}`);
+      }
+    }
+  });
 }
 
 async function captureLocal(browser, viewportName, recorder) {
@@ -415,6 +428,7 @@ async function captureLocal(browser, viewportName, recorder) {
   const rootDir = realpathSync(mkdtempSync(join(tmpdir(), 'randori-ui-screens-')));
   mkdirSync(join(rootDir, '.local'), { mode: 0o700 });
   copyFileSync(join(REPOSITORY_ROOT, 'index.html'), join(rootDir, 'index.html'));
+  for (const file of PUBLIC_PAGE_FILES) copyFileSync(join(REPOSITORY_ROOT, file), join(rootDir, file));
   cpSync(join(REPOSITORY_ROOT, 'assets'), join(rootDir, 'assets'), { recursive: true });
   const config = resolveLocalServerConfig({
     rootDir,
