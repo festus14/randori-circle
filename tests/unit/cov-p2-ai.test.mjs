@@ -158,7 +158,7 @@ beforeEach(async()=>{
 afterEach(()=>{
   client?.close();
   activeDb=null;
-  for(const key of ['GROQ_API_KEY','OPENAI_API_KEY','AI_ENABLED','CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED']){
+  for(const key of ['GROQ_API_KEY','OPENAI_API_KEY','AI_ENABLED','CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED','JWT_SECRET']){
     delete process.env[key];
   }
   globalThis.fetch=realFetch;
@@ -226,14 +226,20 @@ test('analysis waits for every participant to consent under the current policy',
 
 test('daily demo and global pools block before quota reservation and log a warning to Sentry',async()=>{
   sentryConfigured=true;
+  process.env.JWT_SECRET='unit-test-secret-at-least-thirty-two-characters';
   const today=new Date().toISOString().slice(0,10);
   await client.execute(`UPDATE auth_accounts SET is_demo=1 WHERE id=2`);
   await client.execute({sql:`INSERT INTO ai_usage (date,calls) VALUES (?,100)`,args:[today]});
-  const demo=await analyze({});
+  const userAgent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15';
+  const demo=await analyze({},{headers:{'user-agent':userAgent}});
   assert.equal(demo.status,429);
   assert.equal(demo.body.demo,true);
   const log=await client.execute(`SELECT level,event,ua,ip,route FROM app_logs`);
-  assert.deepEqual({...log.rows[0]},{level:'warn',event:'ai_quota_daily_demo',ua:'cov-agent',ip:'203.0.113.9',route:'/api/ai/analyze'});
+  // ID-82: a coarse family and a daily keyed hash, never the raw values.
+  const {logAddressHash}=await import('../../api/_log-privacy.js');
+  assert.deepEqual({...log.rows[0]},{level:'warn',event:'ai_quota_daily_demo',ua:'Safari 17 on macOS',
+    ip:logAddressHash('203.0.113.9'),route:'/api/ai/analyze'});
+  assert.match(log.rows[0].ip,/^h1:[0-9a-f]{16}$/);
   assert.equal(sentryMessages.length,1);
   assert.equal(sentryMessages[0].context.level,'warning');
 

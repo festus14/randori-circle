@@ -4162,3 +4162,107 @@ owner sets `OUTBOX_PII_RETENTION_ENABLED=true` in Vercel Production and
 redeploys; the backlog drains at up to 100 rows per class an hour. Redaction
 cannot be undone, and redacted dead letters stay non-replayable after the flag
 is unset.
+
+## ID-82: Keep no raw IP address or user agent in app_logs
+
+Status: implemented; no migration, no flag (privacy hygiene with no
+user-visible change). Issue #340, split out of #338.
+
+**Context.** Every `app_logs` writer copied the first `X-Forwarded-For` entry
+into `ip` and the full `User-Agent` header into `ua`, and kept both for the
+30-day retention (ID-72): client rows from `POST /api/logs`, server rows from
+`api/data.js`, `api/ai.js` and `api/ops.js`, and the runner lease and quota
+rows. Nothing read either column except the admin logs API. Rate limits never
+used them: `auth_rate_limits` keys are already keyed hashes (SHA-256 with the
+JWT secret per 15-minute bucket for auth, HMAC for invitation prepare and
+invite requests), and the runner quota counts by `user_id`. No other table
+stores an address or user agent: `auth_sessions`, `auth_identity_audit_events`,
+`circle_audit_events`, `invite_requests`, `outbox_events` and
+`outbox_audit_events` have no such columns or payload fields. The one other
+place an address reaches the database is WebRTC signalling: offers, answers
+and ICE candidates in `video_signals.payload` can carry network addresses.
+They are needed to connect a call, readable only by the pair, and deleted
+once older than an hour by the clean-up that runs on signalling requests (so
+while no call is in progress, the last call's rows wait for the next one).
+This change leaves them as they are.
+
+**Decision.** `api/_log-privacy.js` reduces both values for every writer
+(`appLogClientFields`); the columns stay.
+- `ip` is NULL on every row with a `user_id`: client rows from
+  `POST /api/logs`, runner rows, and server rows logged for a signed-in
+  member. The account already says who it was, so the address adds nothing.
+- On rows without a user (server and cron events, failures before the user is
+  known), `ip` is `h1:` plus the first 16 hex characters of
+  HMAC-SHA256(key, `randori-log-address-v1` NUL UTC day NUL network). The key
+  is `LOG_ADDRESS_SECRET`, or `JWT_SECRET` when that is unset, so either can
+  rotate without the other; the label keeps the hash domain-separated when
+  the JWT secret is shared. The network is the IPv4 address (IPv4-mapped IPv6
+  collapses to it) or the IPv6 /64 (`clientNetwork` in
+  `api/_client-address.js`, shared with the rate-limit identity). Rows from
+  one source on one UTC day share a value, so a burst can be traced.
+- The hash is pseudonymous, not anonymous. Anyone holding the key can
+  enumerate every IPv4 address for a day (2^32 HMACs, roughly an hour of one
+  core), so they can reverse a value and link it across days. Without the key,
+  values can't be reversed, and the day salt stops them being linked across
+  days. A value that is not an IP literal, or a missing key, stores NULL.
+  Writers never pass a stored hash through: only the admin read path shows an
+  existing `h1:` value as it is.
+- `ua` is a coarse family from a fixed vocabulary: browser and major version
+  plus OS, with the OS major where the user agent has one (`Chrome 131 on
+  Windows 10/11`, `Safari 17 on iOS 17`, `Chrome 131 on Android 14`); `bot`
+  for crawlers (a product named like `Googlebot/2.1`, not a device such as
+  `CUBOT X30`); `other` for anything unrecognised; NULL when absent. No text
+  from the header is ever copied, so device models, build strings and
+  anything a client puts in the header are dropped. A client log entry's own
+  `ua` field is reduced the same way; this replaces the ID-72 addendum's
+  cut-and-redact of that field.
+- The client log redaction (`api/_client-log-policy.js` and the browser
+  logger in `index.html`, kept identical by the shared corpus) now also drops
+  copies a client puts in the entry itself:
+  - IPv4 and IPv6 literals in message, event, route and meta become `[ip]`,
+    keeping an IPv4 `:port`. Loopback addresses, stack-frame `:line:col`,
+    clock times, three-part versions and product versions
+    (`Chrome/131.0.0.0`, `v1.2.3.4`) stay readable.
+  - A bare browser user agent (`Mozilla/5.0 (…) …`) becomes `[user agent]`.
+  - The names `ua`, `ip`, `xff`, `user-agent`/`userAgent`/`user_agent` and
+    `x-forwarded-for` are treated like the secret names: `name=value` pairs,
+    quoted JSON keys and object keys (plus `ipAddress` and `x-real-ip`) lose
+    their value, and `User-Agent:` / `X-Forwarded-For:` lose the rest of the
+    line.
+- A /24 or /48 prefix was not chosen: it links one network across days for
+  anyone who reads the row and says where the client is.
+- The admin logs API (`GET /api/data?endpoint=logs`, the `#logsArea` panel)
+  returns the same fields. Rows written before this change are reduced on the
+  way out (`presentAppLogClient`): NULL for rows with a user, otherwise hashed
+  with their own `created_at` day. Admins see only reduced values either way.
+  Admin Diagnostics never read either column.
+- The salt day comes from the server clock and `created_at` from the database
+  clock; within a moment of UTC midnight they can differ by a day, so anyone
+  checking an address should try both days.
+- The in-memory per-IP limiter for `POST /api/logs` (60 requests a minute per
+  instance) still uses the raw address in process memory only; it is never
+  written anywhere.
+
+**Existing rows.** No backfill. Rows that still hold raw values age out under
+the 30-day `app_logs` retention (ID-72), so 30 days after deploy (plus the
+hourly retention run) none are left in the live database. Turso backups and
+point-in-time history keep them until those age out on their own schedule.
+
+**Sentry.** Server events have `sendDefaultPii:false` and `beforeSend`
+removes `user` (including `ip_address`) and every request header, so no
+address or user agent is sent from the server. The browser SDK is also set to
+`sendDefaultPii:false`, but Sentry sees the browser's address when it receives
+an event, and whether it stores it depends on the loader's SDK version and the
+project's "Prevent Storing of IP Addresses" setting. That setting is outside
+this repository and is left to the owner.
+
+**Privacy Policy.** `privacy.html` (ID-79) now says the error logs keep the
+browser and OS family, no address on entries linked to an account, and a
+daily pseudonymous code (reversible by us, since we hold the key) on the few
+entries without one; admins see those reduced values; and older entries age
+out on the same 30-day schedule. `tests/unit/public-pages.test.mjs` pins the
+wording.
+
+**Rollout and recovery.** Merging changes only what new rows hold and what the
+admin API returns; no schema, flag or production setting changes. Reverting
+the commit restores the previous writers; nothing needs to be cleaned up.

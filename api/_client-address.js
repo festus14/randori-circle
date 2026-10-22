@@ -1,5 +1,6 @@
-// Shared client-address helpers for rate limiting. The platform proxy sets
-// the first X-Forwarded-For entry; the socket address is the local fallback.
+// Shared client-address helpers for rate limiting and the app_logs address
+// hash (ID-82). The platform proxy sets the first X-Forwarded-For entry; the
+// socket address is the local fallback.
 
 export function clientAddress(req){
   return String(req?.headers?.['x-forwarded-for']||req?.socket?.remoteAddress||'unknown')
@@ -29,19 +30,37 @@ function expandIpv6(value){
   return groups.map(group=>group.padStart(4,'0'));
 }
 
+const IPV4=/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
 /**
- * Rate-limit identity for a client address. IPv6 clients usually control a
- * whole /64, so they are keyed by that prefix; IPv4-mapped IPv6 collapses to
- * the IPv4 address. Anything unparseable is used verbatim (bounded).
+ * The network one client address stands for, or null when `value` is not an
+ * IP literal. IPv6 clients usually control a whole /64 (their privacy
+ * addresses rotate inside it), so they are keyed by that prefix; IPv4-mapped
+ * IPv6 collapses to the IPv4 address.
  */
-export function rateLimitAddress(value){
-  const address=String(value||'unknown').trim().slice(0,128)||'unknown';
+export function clientNetwork(value){
+  const address=String(value??'').trim().slice(0,128);
+  const ipv4=IPV4.exec(address);
+  if(ipv4){
+    const octets=ipv4.slice(1).map(Number);
+    return octets.every(octet=>octet<=255)?octets.join('.'):null;
+  }
   const groups=expandIpv6(address);
-  if(!groups) return address;
+  if(!groups) return null;
   if(groups.slice(0,5).every(group=>group==='0000')&&groups[5]==='ffff'){
     const high=parseInt(groups[6],16);
     const low=parseInt(groups[7],16);
     return `${high>>8}.${high&255}.${low>>8}.${low&255}`;
   }
   return `${groups.slice(0,4).join(':')}::/64`;
+}
+
+/**
+ * Rate-limit identity for a client address: its network (see clientNetwork).
+ * Anything unparseable is used verbatim (bounded). Callers only ever store a
+ * keyed hash of this value.
+ */
+export function rateLimitAddress(value){
+  const address=String(value||'unknown').trim().slice(0,128)||'unknown';
+  return clientNetwork(address)??address;
 }
