@@ -66,7 +66,8 @@ test('a signed-in member error lands in app_logs redacted, a visitor sends nothi
     expect((response.request().postData()||'')).not.toContain(secret);
 
     const rows=await withDatabase(golden,async db=>(await db.execute(
-      `SELECT level,source,event,message,meta_json,user_id,route FROM app_logs WHERE message LIKE 'golden%' ORDER BY id`,
+      // The browser prefixes uncaught error messages ("Uncaught Error: …").
+      `SELECT level,source,event,message,meta_json,user_id,route FROM app_logs WHERE message LIKE '%golden % failure%' ORDER BY id`,
     )).rows.map(row=>({
       level:String(row.level),source:String(row.source),event:String(row.event),message:String(row.message),
       meta:String(row.meta_json),userId:Number(row.user_id),route:String(row.route),
