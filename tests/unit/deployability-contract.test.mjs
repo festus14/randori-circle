@@ -374,9 +374,9 @@ test('deployability rejects a production smoke workflow that gains secrets, writ
   // GitHub records a "production" deployment for every environment job, and
   // expression comparison ignores case, so only Vercel-created ones may run it.
   assert.match(cloneContract().productionSmokeWorkflow,
-    /github\.event\.deployment\.creator\.login == 'vercel\[bot\]'\)/);
+    /github\.event\.deployment\.creator\.login == 'vercel\[bot\]' &&\n/);
   for(const [from,to] of [
-    [" &&\n      github.event.deployment.creator.login == 'vercel[bot]')",')'],
+    ["      github.event.deployment.creator.login == 'vercel[bot]' &&\n",''],
     ["creator.login == 'vercel[bot]'","creator.login != ''"],
   ]){
     const anyCreator=cloneContract();
@@ -396,6 +396,93 @@ test('deployability rejects a production smoke workflow that gains secrets, writ
     'package.json must define smoke:production as node scripts/production-smoke.mjs'));
 });
 
+// Issue #342: a run that Vercel's deployment starts is attributed to
+// vercel[bot], so its job's own environment deployment passes the creator
+// check. Its statuses link to the Actions run instead of *.vercel.app.
+const TARGET_URL_CONDITION="!startsWith(github.event.deployment_status.target_url, 'https://github.com/')";
+const GITHUB_STATUS_DEPLOYMENT='production smoke must ignore environment deployments whose status links to GitHub';
+const PRODUCTION_SMOKE_EVENT_DATA='production smoke may read GitHub event data only in its job condition';
+const EXECUTION_SMOKE_EVENT_DATA='execution smoke may read GitHub event data only in its job condition';
+
+test('both smoke workflows ignore deployments whose status links to a GitHub Actions run',()=>{
+  const contract=currentContract();
+  assert.deepEqual(validateDeploymentContract(contract),[]);
+  for(const workflow of [contract.productionSmokeWorkflow,contract.executionSmokeWorkflow]){
+    assert.ok(workflow.includes(`creator.login == 'vercel[bot]' &&\n      ${TARGET_URL_CONDITION})`));
+    // The URL appears once, in the job condition, and never in a step.
+    assert.equal(workflow.split('target_url').length,2);
+    const condition=/^ {4}if: >-\n(?: {6}.+\n)+/m.exec(workflow)[0];
+    assert.ok(condition.includes(TARGET_URL_CONDITION));
+    assert.doesNotMatch(workflow.replace(condition,''),/github\.event\.deployment|target_url/);
+  }
+  // Outside its condition, the execution smoke reads only the reviewed
+  // default-branch ref; the production smoke reads no event data at all.
+  assert.deepEqual(contract.executionSmokeWorkflow.replace(/^ {4}if: >-\n(?: {6}.+\n)+/m,'').match(/github\.event\b[.[\w]*/g),
+    ['github.event.repository.default_branch']);
+  assert.doesNotMatch(contract.productionSmokeWorkflow.replace(/^ {4}if: >-\n(?: {6}.+\n)+/m,''),/github\.event\b(?!_)/);
+});
+
+// Every way a step could read the event payload, outside the job condition.
+const EVENT_DATA_READS=[
+  "${{ github.event['deployment_status']['environment_url'] }}",
+  '${{ toJSON(github.event) }}',
+  '${{ github.event.deployment_status.environment_url }}',
+  '${{ github.EVENT.pull_request.title }}',
+  '${{ github.event }}',
+  "${{ github['event'].deployment.ref }}",
+  '${{ tojson(github) }}',
+  '$GITHUB_EVENT_PATH',
+];
+
+test('deployability rejects every event-data read outside either smoke job condition',()=>{
+  for(const read of EVENT_DATA_READS){
+    const production=cloneContract();
+    production.productionSmokeWorkflow=production.productionSmokeWorkflow.replace(
+      '          SMOKE_BASE_URL: ${{ inputs.base_url }}\n',`          SMOKE_BASE_URL: \${{ inputs.base_url }}\n          EVENT_DATA: ${read}\n`);
+    assert.notEqual(production.productionSmokeWorkflow,cloneContract().productionSmokeWorkflow);
+    assert.deepEqual(validateDeploymentContract(production),[PRODUCTION_SMOKE_EVENT_DATA],read);
+
+    const execution=cloneContract();
+    execution.executionSmokeWorkflow=execution.executionSmokeWorkflow.replace(
+      '        run: node scripts/github-execution-smoke.mjs',`        run: echo "${read}" && node scripts/github-execution-smoke.mjs`);
+    assert.notEqual(execution.executionSmokeWorkflow,cloneContract().executionSmokeWorkflow);
+    const errors=validateDeploymentContract(execution);
+    assert.ok(errors.includes(EXECUTION_SMOKE_EVENT_DATA),`${read}\n${errors.join('\n')}`);
+  }
+  // github.event_name is not payload data, and the reviewed ref is allowed only once.
+  const named=cloneContract();
+  named.productionSmokeWorkflow=named.productionSmokeWorkflow.replace(
+    '          SMOKE_BASE_URL: ${{ inputs.base_url }}\n','          SMOKE_BASE_URL: ${{ inputs.base_url }}\n          EVENT: ${{ github.event_name }}\n');
+  assert.deepEqual(validateDeploymentContract(named),[]);
+  const secondRef=cloneContract();
+  secondRef.executionSmokeWorkflow=secondRef.executionSmokeWorkflow.replace(
+    '          persist-credentials: false\n','          persist-credentials: false\n          ref: ${{ github.event.repository.default_branch }}\n');
+  assert.notEqual(secondRef.executionSmokeWorkflow,cloneContract().executionSmokeWorkflow);
+  assert.ok(validateDeploymentContract(secondRef).includes(EXECUTION_SMOKE_EVENT_DATA));
+});
+
+test('deployability rejects a production smoke that drops or weakens the target URL check',()=>{
+  const step='        run: |\n';
+  for(const [from,to,expected] of [
+    [` &&\n      ${TARGET_URL_CONDITION})`,')',[GITHUB_STATUS_DEPLOYMENT,PRODUCTION_SMOKE_EVENT_DATA]],
+    [TARGET_URL_CONDITION,TARGET_URL_CONDITION.slice(1),[GITHUB_STATUS_DEPLOYMENT]],
+    ["'https://github.com/'","'https://example.com/'",[GITHUB_STATUS_DEPLOYMENT]],
+    [`' &&\n      ${TARGET_URL_CONDITION}`,`' ||\n      ${TARGET_URL_CONDITION}`,[GITHUB_STATUS_DEPLOYMENT,
+      'production smoke must ignore deployments that GitHub environment jobs create']],
+    ['          SMOKE_BASE_URL: ${{ inputs.base_url }}\n',
+      '          SMOKE_BASE_URL: ${{ inputs.base_url }}\n          TARGET: ${{ github.event.deployment_status.target_url }}\n',
+      [PRODUCTION_SMOKE_EVENT_DATA]],
+    [step,`${step}          echo "\${{ github.event.deployment.sha }}"\n`,[PRODUCTION_SMOKE_EVENT_DATA]],
+    [/^ {4}if: >-\n(?: {6}.+\n)+/m,'',[GITHUB_STATUS_DEPLOYMENT,PRODUCTION_SMOKE_EVENT_DATA]],
+  ]){
+    const mutated=cloneContract();
+    mutated.productionSmokeWorkflow=mutated.productionSmokeWorkflow.replace(from,to);
+    assert.notEqual(mutated.productionSmokeWorkflow,cloneContract().productionSmokeWorkflow,from);
+    const errors=validateDeploymentContract(mutated);
+    for(const message of expected) assert.ok(errors.includes(message),`${JSON.stringify(to)} -> ${message}\n${errors.join('\n')}`);
+  }
+});
+
 const UNSAFE_EXECUTION_SMOKE='execution smoke must remain read-only, non-mutating, and limited to its reviewed cron credential';
 
 test('the execution smoke is pinned, least-privilege, and limited to the cron credential',()=>{
@@ -404,7 +491,8 @@ test('the execution smoke is pinned, least-privilege, and limited to the cron cr
   assert.match(contract.executionSmokeWorkflow,/^    environment: production$/m);
   assert.deepEqual(contract.executionSmokeWorkflow.match(/(?:secrets|vars)\.[A-Z_]+/g),
     ['vars.APP_URL','secrets.CRON_SECRET']);
-  assert.match(contract.executionSmokeWorkflow,/github\.event\.deployment\.creator\.login == 'vercel\[bot\]'/);
+  assert.match(contract.executionSmokeWorkflow,/github\.event\.deployment\.creator\.login == 'vercel\[bot\]' &&\n/);
+  assert.ok(contract.executionSmokeWorkflow.includes(`      ${TARGET_URL_CONDITION}) ||\n`));
   assert.doesNotMatch(contract.executionSmokeWorkflow,/pull_request|TURSO_|RESEND_|VERCEL_/);
 });
 
@@ -432,8 +520,18 @@ test('deployability rejects a widened, re-triggerable, or replaced execution smo
       ['execution smoke triggers must be deployment_status, one daily schedule, and workflow_dispatch only']],
     ['  contents: read\n','  contents: write\n',
       ['execution smoke permissions must be contents: read only',UNSAFE_EXECUTION_SMOKE]],
-    ["      github.event.deployment.creator.login == 'vercel[bot]') ||\n","      true) ||\n",
+    ["      github.event.deployment.creator.login == 'vercel[bot]' &&\n",'',
       ['execution smoke must run only for successful Vercel Production deployments or from the default branch']],
+    [` &&\n      ${TARGET_URL_CONDITION})`,')',
+      ['execution smoke must run only for successful Vercel Production deployments or from the default branch',
+        EXECUTION_SMOKE_EVENT_DATA]],
+    [TARGET_URL_CONDITION,TARGET_URL_CONDITION.slice(1),
+      ['execution smoke must run only for successful Vercel Production deployments or from the default branch']],
+    ["'https://github.com/'","'https://vercel.app/'",
+      ['execution smoke must run only for successful Vercel Production deployments or from the default branch']],
+    ["          EXECUTION_SMOKE_TIMEOUT_MS: '100000'\n",
+      "          EXECUTION_SMOKE_TIMEOUT_MS: '100000'\n          TARGET_URL: ${{ github.event.deployment_status.target_url }}\n",
+      ['execution smoke step must retain its exact fail-closed shape',EXECUTION_SMOKE_EVENT_DATA]],
     ["github.event.deployment.environment == 'Production'","github.event.deployment.environment != ''",
       ['execution smoke must run only for successful Vercel Production deployments or from the default branch']],
     ['    environment: production\n','',
