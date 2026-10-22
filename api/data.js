@@ -28,7 +28,16 @@ import {
   secondaryScheduleIdentity,
 } from './_secondary-schedule.js';
 import { scheduleNotificationEvents } from './_schedule-email.js';
-import { clientLogLevelAccepted, redactLogRoute, redactLogText, redactLogValue } from './_client-log-policy.js';
+import {
+  CLIENT_LOG_MAX_BODY_BYTES,
+  CLIENT_LOG_RECENT_COUNT_SQL,
+  CLIENT_LOG_USER_HOURLY_CAP,
+  clientLogBodyBytes,
+  clientLogLevelAccepted,
+  redactLogRoute,
+  redactLogText,
+  redactLogValue,
+} from './_client-log-policy.js';
 import { deliverCommittedOutboxEvents, outboxEventsFromStatements } from './_outbox-immediate.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, messageInsertStatement, messageLimitStateStatement, MessageDataError, MessageInputError, messageReadStatement, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
@@ -703,8 +712,15 @@ async function ensureScheduleReadiness(db){
 async function handleLogs(req,res){
   // POST: client logs ingest, GET: admin fetch
   if(req.method==='POST'){
+    // ID-72 addendum: refuse an oversized body before anything parses it
+    // (req.body is parsed on first access), and measure the parsed body when
+    // no content-length was sent.
+    const declaredLength=Number(req.headers?.['content-length']);
+    const tooLarge={error:'log batch too large',max_bytes:CLIENT_LOG_MAX_BODY_BYTES};
+    if(Number.isFinite(declaredLength)&&declaredLength>CLIENT_LOG_MAX_BODY_BYTES) return res.status(413).json(tooLarge);
     const payload = await getAuthPayload(req);
     if(!payload) return res.status(401).json({error:'authentication required'});
+    if(!Number.isFinite(declaredLength)&&clientLogBodyBytes(req.body)>CLIENT_LOG_MAX_BODY_BYTES) return res.status(413).json(tooLarge);
     let db;
     try{
       db=getClient();
@@ -725,7 +741,7 @@ async function handleLogs(req,res){
     else if(Array.isArray(body.logs)) batch = body.logs;
     else batch = [body];
     const allowedLevels = new Set(['info','warn','error','success','debug']);
-    let inserted=0;
+    const rows=[];
     for(const entry of batch.slice(0,20)){ // cap 20 per request
       if(!entry||typeof entry!=='object') continue;
       let lvl = String(entry.level||'info').toLowerCase();
@@ -733,38 +749,47 @@ async function handleLogs(req,res){
       // ID-72: Vercel production stores client warn/error only. The browser
       // already keeps the other levels local there; this covers any client.
       if(!clientLogLevelAccepted(lvl)) continue;
-      const requestedSource = String(entry.source||'client').slice(0,20);
-      // The runner namespace is a server-side coordination boundary. Never let
-      // browser telemetry create rows that can be mistaken for leases or quota
-      // records, even when an authenticated client supplies those names.
-      let src = requestedSource==='runner' ? 'client' : requestedSource;
-      let ev = entry.event ? redactLogText(entry.event).slice(0,80) : null;
+      // Every row from this endpoint is a client row, whatever `source` says.
+      // Only server code writes 'server' (ops, outbox, retention) and 'runner'
+      // (execution lease and quota) rows, so a member can never forge them.
+      let ev = entry.event ? redactLogText(entry.event,80).slice(0,80) : null;
       if(ev && (ev==='execute_attempt' || ev.startsWith('execute_lease_'))){
         ev=`client_${ev}`.slice(0,80);
       }
       // ID-72: the same redaction as the browser logger (URL fragments,
-      // secret-looking pairs, bearer tokens, JWTs, emails) as a backstop.
-      let msg = redactLogText(entry.message||'').slice(0,2000);
+      // secret-looking pairs, credentials, JWTs, emails) as a backstop. Input
+      // is cut before it is redacted, and meta has a 16k-character budget.
+      const msg = redactLogText(entry.message||'',2000).slice(0,2000);
       if(!msg) continue;
       let metaStr=null;
       try{
-        if(entry.meta!=null) metaStr = typeof entry.meta==='string' ? redactLogText(entry.meta).slice(0,8000) : JSON.stringify(redactLogValue(entry.meta)).slice(0,8000);
-        else if(entry.meta_json) metaStr = redactLogText(entry.meta_json).slice(0,8000);
+        if(entry.meta!=null) metaStr = typeof entry.meta==='string' ? redactLogText(entry.meta,8000).slice(0,8000) : JSON.stringify(redactLogValue(entry.meta)).slice(0,8000);
+        else if(entry.meta_json) metaStr = redactLogText(entry.meta_json,8000).slice(0,8000);
       }catch{}
       let route = entry.route ? redactLogRoute(entry.route).slice(0,300) : null;
       if(!route){
         try{ route = (req.url||'').toString().slice(0,300); }catch{}
       }
-      let ua = entry.ua ? String(entry.ua).slice(0,300) : (req.headers['user-agent']||'').toString().slice(0,300);
-      let entryIp = ip || (req.headers['x-forwarded-for']||'').toString().split(',')[0].trim().slice(0,80);
-      try{
-        await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, userId, route, ua, entryIp]});
-        inserted++;
-      }catch(e){ /* ignore per entry */ }
-      // fire console for visibility in Vercel logs
+      const ua = entry.ua ? redactLogText(entry.ua,300).slice(0,300) : (req.headers['user-agent']||'').toString().slice(0,300);
+      const entryIp = ip || (req.headers['x-forwarded-for']||'').toString().split(',')[0].trim().slice(0,80);
+      rows.push({lvl,ev,msg,statement:{sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,'client',?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, ev, msg, metaStr, userId, route, ua, entryIp]}});
+    }
+    if(!rows.length) return res.json({ok:true, inserted:0});
+    // ID-72 addendum: at most CLIENT_LOG_USER_HOURLY_CAP stored rows per
+    // member per rolling hour, and one write for the whole batch.
+    let accepted;
+    try{
+      const recent=await db.execute({sql:CLIENT_LOG_RECENT_COUNT_SQL,args:[userId,CLIENT_LOG_USER_HOURLY_CAP]});
+      const allowance=CLIENT_LOG_USER_HOURLY_CAP-(Number(recent.rows?.[0]?.count)||0);
+      if(allowance<=0) return res.status(429).json({error:'rate limited — too many logs', retry_after:'3600s'});
+      accepted=rows.slice(0,allowance);
+      await db.batch(accepted.map(row=>row.statement),'write');
+    }catch{ return res.status(503).json({error:'logging unavailable'}); }
+    // fire console for visibility in Vercel logs
+    for(const {lvl,ev,msg} of accepted){
       try{ if(lvl==='error') console.error(`[client][${ev}] ${msg}`); else if(lvl==='warn') console.warn(`[client][${ev}] ${msg}`); else console.log(`[client][${lvl}][${ev}] ${msg}`);}catch{}
     }
-    return res.json({ok:true, inserted});
+    return res.json({ok:true, inserted:accepted.length});
   }
   if(req.method==='GET'){
     // admin only

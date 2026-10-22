@@ -4,7 +4,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  CLIENT_LOG_MAX_BODY_BYTES,
   CLIENT_LOG_PRODUCTION_LEVELS,
+  CLIENT_LOG_USER_HOURLY_CAP,
+  clientLogBodyBytes,
   clientLogLevelAccepted,
   redactLogRoute,
   redactLogText,
@@ -72,8 +75,19 @@ test('values are redacted recursively, bounded, and secret-named keys lose their
   assert.equal(Object.keys(redactLogValue(wide)).length, 30);
 });
 
-test('text redaction coerces and caps its input', () => {
+test('text redaction coerces and cuts its input before redacting', () => {
   assert.equal(redactLogText(undefined), '');
   assert.equal(redactLogText(42), '42');
-  assert.equal(redactLogText('y'.repeat(9000)).length, 8000);
+  assert.equal(redactLogText('y '.repeat(4500)).length, 8000 + '[truncated]'.length);
+  assert.equal(redactLogText('y'.repeat(9000)), '[truncated]');
+  assert.equal(redactLogText('short', 80), 'short');
+});
+
+test('body size is measured for requests without content-length', () => {
+  assert.equal(CLIENT_LOG_MAX_BODY_BYTES, 256 * 1024);
+  assert.equal(CLIENT_LOG_USER_HOURLY_CAP, 200);
+  assert.equal(clientLogBodyBytes({ logs: [{ message: 'é' }] }), Buffer.byteLength('{"logs":[{"message":"é"}]}'));
+  assert.equal(clientLogBodyBytes(undefined), 4);
+  assert.equal(clientLogBodyBytes(() => {}), 0);
+  assert.equal(clientLogBodyBytes({ big: 1n }), Infinity);
 });
