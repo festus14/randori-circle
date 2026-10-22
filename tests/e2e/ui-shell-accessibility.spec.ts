@@ -639,6 +639,52 @@ test('a reminder save revalidates identity and cannot mutate a newly authenticat
   }
 });
 
+test('reminder type badges follow only the confirmed preference and keep it when a save fails', async ({ page }) => {
+  let saveOk = false;
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user: member },
+    '/api/profile': { ok: true, user: { ...member, tz: '' } },
+    '/api/notifications/prefs': request => {
+      if (request.method() === 'GET') {
+        return { ok: true, prefs: { user_id: member.id, email_enabled: true },
+          reminders: { availability_cutoff: true, agree_time: true, session_soon: false, controlled_by: 'email_enabled' } };
+      }
+      const emailEnabled = JSON.parse(request.postData() || '{}').email_enabled === true;
+      return saveOk
+        ? { ok: true, prefs: { user_id: member.id, email_enabled: emailEnabled, sms_enabled: false, phone: null, email: null } }
+        : { _status: 503, error: 'notification preferences unavailable' };
+    },
+  });
+  await resetClientState(page, true, { 'randori-profile-done': '' });
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#view-profile-setup')).toBeVisible();
+  await showReminderStep(page);
+  const reminder = page.locator('#psRemindEmail');
+  const status = page.locator('#psRemindStatus');
+  const types = page.getByTestId('reminder-types');
+  const badges = types.locator('[data-reminder]:visible [data-reminder-state]');
+  await expect(status).toHaveAttribute('data-state', 'ready');
+  await expect(status).toContainText('the reminders below');
+  await expect(types.locator('[data-reminder]:visible')).toHaveCount(2);
+  await expect(badges).toHaveText(['On', 'On']);
+
+  await reminder.uncheck();
+  await expect(status).toHaveAttribute('data-state', 'error');
+  await expect(badges).toHaveText(['On', 'On']);
+
+  saveOk = true;
+  await expect(reminder).toBeEnabled();
+  await reminder.check();
+  await expect(status).toHaveAttribute('data-state', 'saved');
+  await expect(status).toContainText('the reminders below');
+  await expect(badges).toHaveText(['On', 'On']);
+  await expect(reminder).toBeEnabled();
+  await reminder.uncheck();
+  await expect(status).toContainText('Email reminders are off');
+  await expect(status).toHaveAttribute('data-state', 'saved');
+  await expect(badges).toHaveText(['Off', 'Off']);
+});
+
 test('coarse pointers get touch targets and forced colors retain state distinctions', async ({ browser }) => {
   const context = await browser.newContext({
     viewport: { width: 390, height: 760 },

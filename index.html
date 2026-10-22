@@ -5062,29 +5062,34 @@ async function refreshMe(){
       return emailEnabled===null?null:{emailEnabled};
     };
     // Issue #287: the server lists reminder types only while REMINDERS_ENABLED
-    // is on. Every type follows the Email checkbox (per-type toggles need a
+    // is on. Every type follows the Email preference (per-type toggles need a
     // schema change and are deferred), so this list shows state, not controls.
+    // Badges follow the account's confirmed preference, never an unsaved click.
     const reminderTypes=document.getElementById('psRemindTypes');
     let reminderDescriptor=null;
+    let confirmedEmail=null;
     const renderReminderTypes=()=>{
       if(!reminderTypes) return;
       reminderTypes.hidden=!reminderDescriptor;
       if(!reminderDescriptor) return;
-      const on=psEmail?.checked!==false;
+      const on=confirmedEmail!==false;
       reminderTypes.querySelectorAll('[data-reminder]').forEach(item=>{
         item.hidden=reminderDescriptor[item.dataset.reminder]!==true;
         const badge=item.querySelector('[data-reminder-state]');
         if(badge){ badge.textContent=on?'On':'Off'; badge.dataset.tone=on?'success':''; }
       });
     };
-    const acceptReminderDescriptor=result=>{
+    const acceptReminderDescriptor=(result,emailEnabled=null)=>{
       const value=result?.reminders;
       reminderDescriptor=value&&typeof value==='object'&&!Array.isArray(value)
         ?{availability_cutoff:value.availability_cutoff===true,agree_time:value.agree_time===true,
           session_soon:value.session_soon===true}:null;
+      confirmedEmail=emailEnabled;
       renderReminderTypes();
     };
-    psEmail?.addEventListener('change',renderReminderTypes);
+    const reminderOnMessage=prefix=>reminderDescriptor
+      ?`${prefix}We’ll email you about pairing, your sessions and the reminders below.`
+      :`${prefix}We’ll try to email you when you’re paired.`;
     const setReminderState=(state,message)=>{
       window._randori_ui_state?.setRequestState?.(row,status,state,message);
       if(psEmail) psEmail.disabled=!authIdentityHydrated||state==='loading'||state==='saving';
@@ -5125,9 +5130,10 @@ async function refreshMe(){
         const saved=exactPreferenceEnvelope(result,userId);
         if(saved===null) throw new Error('preference response invalid');
         psEmail.checked=saved.emailEnabled;
+        confirmedEmail=saved.emailEnabled;
         renderReminderTypes();
         setReminderState('saved',psEmail.checked
-          ?'Preference saved. We’ll try to email you when you’re paired.'
+          ?reminderOnMessage('Preference saved. ')
           :'Preference saved. Email reminders are off.');
       }catch{
         if(epoch!==preferenceEpoch||userId!==(Number(me?.id||me?.uid)||null)) return;
@@ -5164,13 +5170,13 @@ async function refreshMe(){
         const saved=exactPreferenceEnvelope(j,userId);
         if(saved!==null){
           if(psEmail) psEmail.checked=saved.emailEnabled;
-          acceptReminderDescriptor(j);
+          acceptReminderDescriptor(j,saved.emailEnabled);
           try{
             localStorage.setItem('randori-reminder-email', saved.emailEnabled?'1':'0');
           }catch{}
           hydratedUserId=userId;
           setReminderState('ready',psEmail?.checked
-            ?'Email reminders are on. We’ll try to email you when you’re paired.'
+            ?reminderOnMessage('Email reminders are on. ')
             :'Email reminders are off.');
           return;
         }
