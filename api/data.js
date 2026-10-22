@@ -49,7 +49,7 @@ import {
   readExerciseSuggestions,
 } from './_exercise-suggestions.js';
 import { ensureProgressReadiness, parseProgressQuery, progressDashboardEnabled, readMemberProgress } from './_progress.js';
-import { DELETED_ACCOUNT_PASSWORD_HASH } from './_account-deletion.js';
+import { DELETED_ACCOUNT_PASSWORD_HASH, LIVE_ACCOUNT_SQL } from './_account-deletion.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import {
   canonicalCompletionPair,
@@ -1418,7 +1418,7 @@ async function handleProfile(req,res){
     const setSql = cols.map(c=>`${c}=?`).join(', ');
     const args = cols.map(c=>updates[c]).concat([userId]);
     try{
-      await db.execute({ sql:`UPDATE auth_accounts SET ${setSql} WHERE id=?`, args });
+      await db.execute({ sql:`UPDATE auth_accounts SET ${setSql} WHERE id=? AND ${LIVE_ACCOUNT_SQL}`, args });
     }catch(e){ return res.status(500).json({ error:'update failed', detail:String(e.message||e).slice(0,200)}); }
     const rs = await db.execute({ sql:`SELECT id,email,display_name,color,is_available,availability_updated_at,is_admin,bio,tz,interview_focus,leetcode_handle FROM auth_accounts WHERE id=?`, args:[userId] });
     const r = rs.rows[0];
@@ -2751,9 +2751,11 @@ async function handleExecute(req,res){
           args:[...accessArgs,...runArgs],
         })
         : await db.execute({
+          // A solo run never lands on an account deleted after this request was authenticated (issue #339).
           sql:`INSERT INTO session_runs (user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now')) RETURNING id`,
-          args:runArgs,
+            SELECT ?,?,?,?,?,?,?,?,?,?,?,?,datetime('now')
+            WHERE EXISTS (SELECT 1 FROM auth_accounts WHERE id=? AND ${LIVE_ACCOUNT_SQL}) RETURNING id`,
+          args:[...runArgs,runArgs[0]],
         });
       if(accessArgs&&!inserted.rows.length){
         if(canonicalDocument){

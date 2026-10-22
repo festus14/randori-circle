@@ -1,3 +1,4 @@
+import { LIVE_ACCOUNT_SQL } from './_account-deletion.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { getClient, getCronSecret, getAdminEmails, isoWeekLabel, deterministicColor, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import {
@@ -146,9 +147,13 @@ async function handleNotificationPrefs(req,res){
     const phone = body.phone ? String(body.phone).slice(0,20) : null;
     const email = body.email ? String(body.email).slice(0,120) : null;
     try{
-      await db.execute({sql:"INSERT INTO user_notification_prefs (user_id,email_enabled,sms_enabled,phone,email,updated_at) VALUES (?,?,?,?,?,datetime('now')) ON CONFLICT(user_id) DO UPDATE SET email_enabled=excluded.email_enabled, sms_enabled=excluded.sms_enabled, phone=COALESCE(excluded.phone,phone), email=COALESCE(excluded.email,email), updated_at=datetime('now')", args:[uid,email_enabled,sms_enabled,phone,email]});
+      // A deleted account (issue #339) never gets preferences back.
+      await db.execute({sql:`INSERT INTO user_notification_prefs (user_id,email_enabled,sms_enabled,phone,email,updated_at)
+        SELECT ?,?,?,?,?,datetime('now') WHERE EXISTS (SELECT 1 FROM auth_accounts WHERE id=? AND ${LIVE_ACCOUNT_SQL})
+        ON CONFLICT(user_id) DO UPDATE SET email_enabled=excluded.email_enabled, sms_enabled=excluded.sms_enabled, phone=COALESCE(excluded.phone,phone), email=COALESCE(excluded.email,email), updated_at=datetime('now')`, args:[uid,email_enabled,sms_enabled,phone,email,uid]});
     }catch{
-      try{ await db.execute({sql:"INSERT OR IGNORE INTO user_notification_prefs (user_id,email_enabled,sms_enabled,phone,email) VALUES (?,?,?,?,?)", args:[uid,email_enabled,sms_enabled,phone,email]}); }catch{}
+      try{ await db.execute({sql:`INSERT OR IGNORE INTO user_notification_prefs (user_id,email_enabled,sms_enabled,phone,email)
+        SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM auth_accounts WHERE id=? AND ${LIVE_ACCOUNT_SQL})`, args:[uid,email_enabled,sms_enabled,phone,email,uid]}); }catch{}
       try{ await db.execute({sql:"UPDATE user_notification_prefs SET email_enabled=?, sms_enabled=?, phone=COALESCE(?,phone), email=COALESCE(?,email), updated_at=datetime('now') WHERE user_id=?", args:[email_enabled,sms_enabled,phone,email,uid]}); }catch{}
     }
     try{ await logServerOps("info","notif_prefs_updated","prefs uid "+uid+" email="+email_enabled+" sms="+sms_enabled, {uid,email_enabled,sms_enabled}, req); }catch{}
@@ -700,7 +705,7 @@ async function prepareAdminOperation(ctx,res,ensureReadiness){
   try{
     await ensureReadiness(ctx.db);
     if(ctx.callerConfiguredAdmin&&!ctx.callerIsAdminFlag){
-      await ctx.db.execute({sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=?`,args:[ctx.callerDbRow.id]});
+      await ctx.db.execute({sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=? AND ${LIVE_ACCOUNT_SQL}`,args:[ctx.callerDbRow.id]});
       ctx.callerIsAdminFlag=true;
     }
     return ctx;

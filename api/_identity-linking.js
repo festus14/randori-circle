@@ -1,3 +1,4 @@
+import { LIVE_ACCOUNT_SQL } from './_account-deletion.js';
 import {createHmac,randomBytes} from 'node:crypto';
 
 import {normalizeInvitationEmail} from './_circle-membership.js';
@@ -340,7 +341,7 @@ async function linkGoogleCredentialAttempt(db,payload,{
     }
     const account=await transaction.execute({
       sql:`UPDATE auth_accounts SET google_sub=?
-        WHERE id=? AND (google_sub IS NULL OR google_sub=?)
+        WHERE id=? AND (google_sub IS NULL OR google_sub=?) AND ${LIVE_ACCOUNT_SQL}
           AND NOT EXISTS (SELECT 1 FROM auth_accounts other WHERE other.id<>? AND other.google_sub=?)
         RETURNING id,email`,
       args:[normalizedSubject,id,normalizedSubject,id,normalizedSubject],

@@ -60,6 +60,7 @@ import {
 } from './_password-reset.js';
 import { readRecentAuth, recordRecentAuth, requireRecentAuth } from './_recent-auth.js';
 import {
+  LIVE_ACCOUNT_SQL,
   accountDeletedForSession,
   accountDeletionEnabled,
   deleteAccount,
@@ -805,10 +806,10 @@ async function handleLogin(req,res){
       return res.status(503).json({error:'login temporarily unavailable'});
     }
   }
-  await db.execute({ sql:`UPDATE auth_accounts SET last_login=datetime('now') WHERE id=?`, args:[row.id]}).catch(()=>{});
+  await db.execute({ sql:`UPDATE auth_accounts SET last_login=datetime('now') WHERE id=? AND ${LIVE_ACCOUNT_SQL}`, args:[row.id]}).catch(()=>{});
   const envAdmins = getAdminEmails();
   if (envAdmins.has(e) && !row.is_admin){
-    try{ await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=?`, args:[row.id]}); row.is_admin=1; }catch{}
+    try{ await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=? AND ${LIVE_ACCOUNT_SQL}`, args:[row.id]}); row.is_admin=1; }catch{}
   }
   const is_admin = !!row.is_admin || envAdmins.has(e);
   let token;
@@ -859,7 +860,7 @@ async function handleMe(req,res){
     const is_admin_env = envAdmins.has(String(u.email).toLowerCase());
     const is_admin = is_admin_db || is_admin_env;
     if (is_admin_env && !is_admin_db){
-      try{ await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=?`, args:[u.id]});}catch{}
+      try{ await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=? AND ${LIVE_ACCOUNT_SQL}`, args:[u.id]});}catch{}
     }
     return res.json({ ok:true, user:{ id:u.id, email:u.email, name:u.display_name, color:u.color, created_at:u.created_at, last_login:u.last_login, is_available: !!is_available, isAvailable: !!is_available, availability_updated_at:u.availability_updated_at, is_admin, isAdmin:is_admin, is_admin_db, is_admin_env, is_demo:Number(u.is_demo||0)===1 }});
   }catch(e){
@@ -976,7 +977,7 @@ async function bindGoogleProviderIdentity(db,{issuer,subject,userId}){
   const inserted=await db.execute({
     sql:`INSERT INTO auth_provider_identities (issuer,subject,user_id,created_at,last_login)
       SELECT ?,?,?,datetime('now'),datetime('now')
-      FROM auth_accounts WHERE id=? AND google_sub=?
+      FROM auth_accounts WHERE id=? AND google_sub=? AND ${LIVE_ACCOUNT_SQL}
       ON CONFLICT DO NOTHING RETURNING user_id`,
     args:[issuer,subject,userId,userId,subject],
   });
@@ -1281,7 +1282,7 @@ async function handleGoogleCallback(req,res){
       const refreshed=await db.execute({
         sql:`UPDATE auth_accounts SET last_login=datetime('now'),display_name=COALESCE(?,display_name),
           is_admin=?,google_sub=COALESCE(google_sub,?)
-          WHERE id=? AND (google_sub IS NULL OR google_sub=?) RETURNING id`,
+          WHERE id=? AND (google_sub IS NULL OR google_sub=?) AND ${LIVE_ACCOUNT_SQL} RETURNING id`,
         args:[finalName,is_admin_final?1:0,googleSub,authId,googleSub],
       });
       if(refreshed.rows?.length!==1){
@@ -1300,7 +1301,7 @@ async function handleGoogleCallback(req,res){
         sessionEmail=String(account.email).toLowerCase();
         is_admin_final=!!account.is_admin||getAdminEmails().has(sessionEmail);
         const changed=await db.execute({
-          sql:"UPDATE auth_accounts SET last_login=datetime('now'),display_name=COALESCE(?,display_name),is_admin=? WHERE id=? AND google_sub=? RETURNING id",
+          sql:`UPDATE auth_accounts SET last_login=datetime('now'),display_name=COALESCE(?,display_name),is_admin=? WHERE id=? AND google_sub=? AND ${LIVE_ACCOUNT_SQL} RETURNING id`,
           args:[finalName,is_admin_final?1:0,authId,googleSub],
         });
         if(changed.rows?.length!==1){

@@ -20,6 +20,11 @@ export const DELETED_ACCOUNT_EMAIL_DOMAIN='account-deleted.invalid';
 export const DELETED_MESSAGE_TEXT='Message deleted';
 export const ACCOUNT_DELETED_REASON='ACCOUNT_DELETED';
 export const ACCOUNT_DELETED_AUDIT_EVENT='account.deleted';
+// Request paths that write to an account by id append this to their WHERE
+// clause, so a request authenticated just before a deletion commits cannot
+// write into the tombstone afterwards (sign-in refreshes, ADMIN_EMAILS grants,
+// profile saves, Google linking, solo runs, notification preferences).
+export const LIVE_ACCOUNT_SQL="password_hash<>'!account-deleted'";
 // auth_email_activations.password_hash must be 20-128 characters.
 const SCRUBBED_ACTIVATION_PASSWORD_HASH='!account-deleted-scrubbed';
 const OUTBOX_ACTOR='account-deletion';

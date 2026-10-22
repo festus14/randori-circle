@@ -20,9 +20,9 @@ import { createMigratedDatabase } from '../support/migrated-db.mjs';
 
 const ORIGIN='https://randori.example.test';
 const PASSWORD='correct horse battery';
-const ENV_KEYS=['ACCOUNT_DELETION_ENABLED','ADMIN_EMAILS','APP_URL','CIRCLE_MEMBERSHIP_ENABLED','GOOGLE_CLIENT_ID',
-  'GOOGLE_CLIENT_SECRET','IDENTITY_MANAGEMENT_ENABLED','JWT_SECRET','MULTI_CIRCLE_CONTROL_PLANE_ENABLED','NODE_ENV',
-  'TURSO_AUTH_TOKEN','TURSO_DATABASE_URL'];
+const ENV_KEYS=['ACCOUNT_DELETION_ENABLED','ADMIN_EMAILS','APP_URL','CIRCLE_MEMBERSHIP_ENABLED','EXECUTION_API_URL',
+  'EXECUTION_PROVIDER','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','IDENTITY_MANAGEMENT_ENABLED','JWT_SECRET',
+  'MULTI_CIRCLE_CONTROL_PLANE_ENABLED','NODE_ENV','TURSO_AUTH_TOKEN','TURSO_DATABASE_URL'];
 const previous=Object.fromEntries(ENV_KEYS.map(key=>[key,process.env[key]]));
 const originalFetch=globalThis.fetch;
 const resources=[];
@@ -303,6 +303,111 @@ test('a deletion mid-cycle keeps the circle\'s current pairing readable; another
   await db.execute(`UPDATE circle_memberships SET status='inactive' WHERE user_id=3`);
   const outside=await invoke({handler:dataHandler,endpoint:'weeks',url:'/api/weeks',cookie:ownerCookie});
   assert.deepEqual([outside.statusCode,outside.body],[503,{ok:false,error:'pairing unavailable'}]);
+});
+
+// Runs `action` (a deletion) just before the first statement matching `matcher`
+// that any libSQL client executes, to replay a request that was authenticated
+// before the deletion committed and writes after it.
+function interceptOnce(matcher,action){
+  const probe=createClient({url:':memory:'});
+  const prototype=Object.getPrototypeOf(probe);
+  probe.close();
+  const original=prototype.execute;
+  let fired=false;
+  prototype.execute=async function(statement){
+    const sql=typeof statement==='string'?statement:String(statement?.sql||'');
+    if(!fired&&matcher(sql)){ fired=true; await action(); }
+    return original.call(this,statement);
+  };
+  resources.push(()=>{ prototype.execute=original; });
+  return ()=>fired;
+}
+
+async function deleteNow(cookie){
+  const res=await deletion({cookie,method:'POST',body:{confirm:'DELETE'}});
+  assert.deepEqual([res.statusCode,res.body],[200,{ok:true,status:'deleted'}]);
+}
+
+async function tombstone(db){
+  return {...(await db.execute(`SELECT email,display_name,google_sub,is_admin,last_login,bio FROM auth_accounts WHERE id=2`)).rows[0]};
+}
+
+const TOMBSTONE={email:'deleted-2@account-deleted.invalid',display_name:'Deleted member',google_sub:null,is_admin:0,last_login:null,bio:null};
+
+test('a Google sign-in racing the deletion cannot re-populate or re-link the tombstone',async()=>{
+  const db=await fixture();
+  process.env.ADMIN_EMAILS='member@example.test';
+  const cookie=await signedIn();
+  const start=await invoke({endpoint:'google-start',url:'/api/auth/google/start'});
+  const state=new URL(start.headers.location).searchParams.get('state');
+  const startCookies=cookiesFrom(start.headers);
+  const transaction=decodeGoogleOAuthTransactionCookie(
+    startCookies.find(value=>value.startsWith(`${googleOAuthTransactionCookieName(state)}=`)),state);
+  globalThis.fetch=googleProviderFetch({claims:{email:'member@example.test',name:'Member Again',sub:'member-google-sub',nonce:transaction.nonce}});
+  // The callback has already found the account by its Google subject when the deletion commits.
+  const fired=interceptOnce(sql=>sql.includes('google_sub=COALESCE(google_sub,?)'),()=>deleteNow(cookie));
+  const google=await invoke({endpoint:'google-callback',url:'/api/auth/google/callback',query:{code:'code',state},
+    cookie:startCookies.join('; ')});
+  assert.equal(fired(),true);
+  assert.match(String(google.headers.location),/google_error=identity_mismatch/);
+  assert.equal(cookiesFrom(google.headers).some(value=>value.startsWith('randori_session=')&&value!=='randori_session='),false);
+  assert.deepEqual(await tombstone(db),TOMBSTONE);
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM auth_provider_identities`)).rows[0].count),0);
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM auth_accounts WHERE google_sub='member-google-sub'`)).rows[0].count),0,
+    'the Google account stays free to sign up again');
+});
+
+test('a password sign-in racing the deletion writes neither last_login nor an ADMIN_EMAILS grant into the tombstone',async()=>{
+  const db=await fixture();
+  process.env.ADMIN_EMAILS='member@example.test';
+  await db.execute(`UPDATE auth_accounts SET is_admin=0 WHERE id=2`);
+  // Login: the password matched before the deletion; its last_login and
+  // ADMIN_EMAILS grant must not land afterwards.
+  let cookie=await signedIn();
+  await db.execute(`UPDATE auth_accounts SET is_admin=0,last_login=NULL WHERE id=2`);
+  let fired=interceptOnce(sql=>sql.startsWith(`UPDATE auth_accounts SET last_login=datetime('now') WHERE id=?`),()=>deleteNow(cookie));
+  const login=await invoke({endpoint:'login',method:'POST',body:{email:'member@example.test',password:PASSWORD}});
+  assert.equal(fired(),true);
+  assert.equal(login.statusCode,503,JSON.stringify(login.body));
+  assert.deepEqual(await tombstone(db),TOMBSTONE);
+});
+
+test('/me and a profile save racing the deletion write nothing into the tombstone',async()=>{
+  const db=await fixture();
+  process.env.ADMIN_EMAILS='member@example.test';
+  let cookie=await signedIn();
+  await db.execute(`UPDATE auth_accounts SET is_admin=0 WHERE id=2`);
+  let fired=interceptOnce(sql=>sql.startsWith('UPDATE auth_accounts SET is_admin=1 WHERE id=?'),()=>deleteNow(cookie));
+  const me=await invoke({endpoint:'me',cookie});
+  assert.equal(fired(),true);
+  assert.equal(me.statusCode,200,'the read itself happened before the deletion');
+  assert.deepEqual(await tombstone(db),TOMBSTONE);
+
+  const db2=await fixture();
+  cookie=await signedIn();
+  fired=interceptOnce(sql=>sql.startsWith('UPDATE auth_accounts SET display_name=?'),()=>deleteNow(cookie));
+  await invoke({handler:dataHandler,endpoint:'profile',url:'/api/profile',method:'POST',
+    body:{display_name:'Member Again',bio:'still here'},cookie});
+  assert.equal(fired(),true);
+  assert.deepEqual(await tombstone(db2),TOMBSTONE);
+  // Notification preferences saved after the deletion never come back either.
+  await invoke({handler:opsHandler,endpoint:'notifications-prefs',url:'/api/notifications/prefs',method:'POST',
+    body:{email_enabled:true,email:'member@example.test',phone:'07700900123'},cookie});
+  assert.equal(Number((await db2.execute(`SELECT COUNT(*) AS count FROM user_notification_prefs WHERE user_id=2`)).rows[0].count),0);
+});
+
+test('a solo run executed across the deletion is not saved with the member\'s code',async()=>{
+  const db=await fixture();
+  Object.assign(process.env,{EXECUTION_PROVIDER:'piston',EXECUTION_API_URL:'https://execution.test.example/api/v2/piston/execute'});
+  const cookie=await signedIn();
+  globalThis.fetch=async()=>new Response(JSON.stringify({run:{code:0,stdout:'',stderr:''}}),{status:200});
+  const fired=interceptOnce(sql=>sql.includes('INSERT INTO session_runs'),()=>deleteNow(cookie));
+  const run=await invoke({handler:dataHandler,endpoint:'execute',url:'/api/execute',method:'POST',cookie,
+    body:{language:'javascript',code:'function rollUpFocusBlocks(){ return "my private solution"; }',
+      question_slug:'focus-block-rollup',question_version:1}});
+  assert.equal(fired(),true,JSON.stringify(run.body));
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM session_runs WHERE user_id=2`)).rows[0].count),0);
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM session_runs WHERE code LIKE '%private solution%'`)).rows[0].count),0);
 });
 
 test('the deletion route is wired in vercel.json and the local runtime',()=>{
