@@ -33,6 +33,7 @@ import {
   settleBeforeDeadline,
 } from './_outbox.js';
 import { readOutboxDeliveryHealth } from './_outbox-health.js';
+import { parseExecutionSmokeRequest, runExecutionSmoke } from './_execution-smoke.js';
 import { handleAdminDiagnosticsRequest } from './_admin-diagnostics.js';
 import {
   emailActivationKeyRotationStatus,
@@ -542,6 +543,17 @@ async function handleOutboxHealth(req,res){
   if(!verifyCronAuth(req,{allowOutboxSecret:true})) return res.status(401).json({error:'unauthorized cron'});
   try{ return res.json(await readOutboxDeliveryHealth(getClient())); }
   catch{ return res.status(503).json({ok:false,error:'outbox health unavailable'}); }
+}
+
+// Issue #249: live check of the configured execution provider. CRON_SECRET
+// only (it spends sandbox quota), POST only, exactly {"trigger":"schedule"|
+// "deploy"}, self-throttled per trigger, bounded output.
+async function handleExecutionSmoke(req,res){
+  res.setHeader('Cache-Control','no-store');
+  if(req.method!=='POST') return res.status(405).json({error:'POST only'});
+  if(!verifyCronAuth(req)) return res.status(401).json({error:'unauthorized cron'});
+  const outcome=await runExecutionSmoke({trigger:parseExecutionSmokeRequest(req.body),getDb:getClient});
+  return res.status(outcome.status).json(outcome.body);
 }
 
 async function handleOutboxReplay(req,res){
@@ -1128,6 +1140,7 @@ async function handleOps(req,res,{isWeeklyDue=pairingCronIsDue}={}){
   if (ep==='pairing-run' || pathLower.includes('/pairing/run')) return handlePairingRun(req,res);
   if (ep==='outbox-replay' || pathLower.includes('/outbox/replay')) return handleOutboxReplay(req,res);
   if (ep==='outbox-health' || pathLower.includes('/cron/outbox-health')) return handleOutboxHealth(req,res);
+  if (ep==='execution-smoke' || pathLower.includes('/cron/execution-smoke')) return handleExecutionSmoke(req,res);
   if (ep==='outbox' || pathLower.includes('/cron/outbox')) return handleOutboxWorker(req,res);
   if (ep==='reshuffle' || ep==='promote' || pathLower.includes('reshuffle') || pathLower.includes('promote')) return handleReshuffle(req,res);
   if (ep==='weekly' || pathLower.includes('weekly') || pathLower.includes('/cron/')){
@@ -1141,7 +1154,7 @@ async function handleOps(req,res,{isWeeklyDue=pairingCronIsDue}={}){
 // The flag-off admin diagnostics route answers with exactly this response, so
 // it cannot be told apart from an endpoint that does not exist.
 function unknownOpsEndpoint(res,ep){
-  return res.status(404).json({ error:`unknown ops endpoint '${ep}'`, available:['availability','pairing-run','weekly','outbox','outbox-health','outbox-replay','demo-seed','demo-shuffle','demo-reset'] });
+  return res.status(404).json({ error:`unknown ops endpoint '${ep}'`, available:['availability','pairing-run','weekly','outbox','outbox-health','execution-smoke','outbox-replay','demo-seed','demo-shuffle','demo-reset'] });
 }
 
 export function createOpsHandler({isWeeklyDue=pairingCronIsDue}={}){
