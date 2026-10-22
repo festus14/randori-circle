@@ -14,6 +14,7 @@ through confirmation and retrying the exact action once.
 | Deactivate another owner | Yes | Removes a peer with administrative authority and revokes their sessions |
 | Make owner / Remove owner role | Yes | Adds or removes full circle control for another account |
 | Grant / revoke app admin | Yes | Changes app-wide operator access (logs, outbox replay, demo tools, admin grants) |
+| Delete your own account (issue #339) | Yes | Irreversible; also needs the typed `DELETE` confirmation. See [ACCOUNT_DELETION.md](ACCOUNT_DELETION.md) |
 | Deactivate or reactivate a non-owner member | No | An owner already has this routine membership authority |
 | Leave the circle | No | A member may remove their own access without credential friction |
 | Revoke an invitation | No | The invitation is unaccepted and the existing endpoint is already owner-scoped |

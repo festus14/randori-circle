@@ -36,7 +36,9 @@ const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   // Admin diagnostics view (issue #310).
   'assets/admin-diagnostics.js',
   // Personal progress in History (issue #293, ID-76).
-  'assets/progress-view.js'];
+  'assets/progress-view.js',
+  // Self-service account deletion in Edit profile (issue #339, ID-81).
+  'assets/account-deletion.js'];
 // Operator tools that cannot run under unit tests; see
 // docs/testing/COVERAGE_BASELINE.md ("Excluded from scope"). Their pure
 // decision logic lives in sibling modules that are measured.

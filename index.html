@@ -1978,6 +1978,7 @@ a.btn{text-decoration:none}
     <section id="view-landing" class="view" aria-labelledby="landingTitle" style="display:none">
       <div class="landing">
         <div class="hero">
+          <div id="landingAccountDeleted" class="rc-banner rc-banner--success" data-testid="account-deleted-notice" role="status" hidden></div>
           <p class="landing-eyebrow"><span class="rc-badge">Private · invite-only</span></p>
           <h1 id="landingTitle">Mock interviews with people you trust.</h1>
           <p class="hero-sub">A small private circle that pairs you with a fellow member every week. Agree a time, then solve real coding problems together in a shared editor and whiteboard.</p>
@@ -2194,6 +2195,9 @@ a.btn{text-decoration:none}
             <div class="onboarding-actions"><button id="psSkip" class="btn ghost onboarding-flow-only onboarding-actions-spacer" type="button">Skip for now</button><button id="psRetry" class="btn secondary" type="button" hidden>Retry profile</button><button id="psSave" class="btn" type="button" aria-describedby="psSaveStatus">Save &amp; continue</button></div>
           </div>
         </div>
+
+        <!-- Issue #339: account deletion (ACCOUNT_DELETION_ENABLED), filled by assets/account-deletion.js. Visual design is provisional. -->
+        <section id="accountDeletion" class="card onboarding-step onboarding-edit-only" data-testid="account-deletion" hidden></section>
 
         <div id="setupStepAvailability" class="card onboarding-step onboarding-flow-only" data-step-panel="availability" hidden>
           <div class="card-h"><h2 id="setupAvailabilityTitle" tabindex="-1">Are you in for the next cycle?</h2><p id="setupAvailabilityLead" class="onboarding-lead">Pairs are made from members who say they’re in. Choose for this cycle only.</p></div>
@@ -4205,6 +4209,7 @@ async function refreshMe(){
       ||(capabilities.secondaryCircleScheduling!==undefined&&typeof capabilities.secondaryCircleScheduling!=='boolean')
       ||(capabilities.inviteRequests!==undefined&&typeof capabilities.inviteRequests!=='boolean')
       ||(capabilities.adminDiagnostics!==undefined&&typeof capabilities.adminDiagnostics!=='boolean')
+      ||(capabilities.accountDeletion!==undefined&&typeof capabilities.accountDeletion!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
@@ -4221,6 +4226,7 @@ async function refreshMe(){
       secondaryCircleScheduling:capabilities.secondaryCircleScheduling===true,
       inviteRequests:capabilities.inviteRequests===true,
       adminDiagnostics:capabilities.adminDiagnostics===true,
+      accountDeletion:capabilities.accountDeletion===true,
       registrationMode:mode,
     });
   }
@@ -4667,6 +4673,8 @@ async function refreshMe(){
     window.addEventListener('blur',()=>setOpen(false));
   })();
   const LIFECYCLE_RECENT_ACTION_KEY='randori-lifecycle-recent-action-v1';
+  const ACCOUNT_DELETION_REAUTH_KEY='randori-account-deletion-reauth-v1';
+  let accountDeletionReauthResult=null;
   const identityUi={
     data:null,methods:null,busy:false,message:'',returnFocus:null,mode:'manage',
     requestGeneration:0,googleStartController:null,
@@ -5440,11 +5448,16 @@ async function refreshMe(){
       const identityNotice=qp.get('identity_notice');
       let lifecycleContinuation=false;
       try{ lifecycleContinuation=Boolean(sessionStorage.getItem(LIFECYCLE_RECENT_ACTION_KEY)); }catch{}
+      // Issue #339: a Google step-up started from the account-deletion dialog.
+      let accountDeletionContinuation=false;
+      try{ accountDeletionContinuation=Boolean(sessionStorage.getItem(ACCOUNT_DELETION_REAUTH_KEY)); }catch{}
       if(googleSuccess||ge||googleReauth||identityLinked||identityLinkError||identityNotice){
         setTimeout(async()=>{
           await authCapabilitiesPromise;
           if(ge&&lifecycleContinuation){
             recentConfirmationCancelled('google_error');
+            try{ toast(googleFailureMessage(ge)); }catch{}
+          }else if(ge&&accountDeletionContinuation){
             try{ toast(googleFailureMessage(ge)); }catch{}
           }else if(ge){
             await invitePreparationFinished;
@@ -5474,6 +5487,12 @@ async function refreshMe(){
           window.history.replaceState({},document.title,
             window.location.pathname+(cleanQuery?'?'+cleanQuery:'')+window.location.hash);
           if(googleSuccess){ try{ toast('signed in with Google ✓'); }catch{} }
+          if(accountDeletionContinuation&&!lifecycleContinuation){
+            // assets/account-deletion.js reopens its dialog; the server decides if the proof is recent.
+            accountDeletionReauthResult=googleReauth&&authRefreshCommitted&&me?'success':'error';
+            window._randori_sync_account_deletion?.();
+            return;
+          }
           if(lifecycleContinuation){
             if(googleReauth&&authRefreshCommitted&&me){
               window.dispatchEvent(new CustomEvent('randori:recent-auth-confirmed',{detail:{method:'google'}}));
@@ -7407,6 +7426,44 @@ async function refreshMe(){
   window.addEventListener('randori:admin-diagnostics-ready',mountAdminDiagnostics);
   window.addEventListener('randori:auth-refreshed',()=>window._randori_sync_admin_diagnostics());
   window._randori_sync_admin_diagnostics();
+  // Account deletion in Edit profile (assets/account-deletion.js, issue #339):
+  // imported only for a signed-in member while the server advertises the
+  // capability. The API authorizes every request again.
+  const accountDeletionView={controller:null,loading:null};
+  function accountDeletionAllowed(){ return authCapabilities.accountDeletion===true&&!!me&&me.is_demo!==true; }
+  function browserStorage(name){ try{ return window[name]; }catch{ return null; } }
+  window._randori_sync_account_deletion=()=>{
+    if(accountDeletionView.controller) return accountDeletionView.controller.sync();
+    if(!accountDeletionAllowed()||accountDeletionView.loading) return;
+    accountDeletionView.loading=import('/assets/account-deletion.js').then(module=>{
+      accountDeletionView.controller=module.mountAccountDeletion({doc:document,host:{
+        enabled:accountDeletionAllowed,
+        userId:currentAuthActorId,
+        api,
+        openDialog:openPromiseDialog,
+        navigate:url=>window.location.assign(url),
+        reload:path=>window.location.replace(path),
+        signOutLocally:applyAuthoritativeSignedOutState,
+        storage:{local:browserStorage('localStorage'),session:browserStorage('sessionStorage')},
+        now:()=>Date.now(),
+        takeReauthResult:()=>{ const result=accountDeletionReauthResult; accountDeletionReauthResult=null; return result; },
+        openCircle:()=>document.querySelector('[data-tab="circle"]')?.click(),
+      }});
+      accountDeletionView.controller?.sync();
+    }).catch(()=>{ accountDeletionView.loading=null; });
+  };
+  window.addEventListener('randori:auth-refreshed',()=>window._randori_sync_account_deletion());
+  Promise.resolve(authCapabilitiesPromise).then(()=>window._randori_sync_account_deletion(),()=>{});
+  window._randori_sync_account_deletion();
+  // One-time notice after the deletion reload (no account data is stored).
+  (function showAccountDeletedNotice(){
+    let deleted=false;
+    try{ deleted=sessionStorage.getItem('randori-account-deleted-v1')==='1'; sessionStorage.removeItem('randori-account-deleted-v1'); }catch{}
+    const notice=document.getElementById('landingAccountDeleted');
+    if(!deleted||!notice) return;
+    notice.hidden=false;
+    setTimeout(()=>{ notice.textContent='Your account was deleted. Thank you for practising with Randori Circle.'; },50);
+  })();
   async function copyLatestInviteLink(){
     if(activeCircleRole!=='owner'||!latestInviteUrl) return;
     const operation=captureCircleControlOperation();

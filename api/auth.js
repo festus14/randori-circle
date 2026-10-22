@@ -59,6 +59,14 @@ import {
   requestPasswordReset,
 } from './_password-reset.js';
 import { readRecentAuth, recordRecentAuth, requireRecentAuth } from './_recent-auth.js';
+import {
+  accountDeletedForSession,
+  accountDeletionEnabled,
+  deleteAccount,
+  ensureAccountDeletionReadiness,
+  parseAccountDeletionRequest,
+  readAccountDeletionEligibility,
+} from './_account-deletion.js';
 import { inviteRequestIntakeAvailable, inviteRequestsEnabled } from './_invite-request-config.js';
 import { deliverCommittedOutboxEvents } from './_outbox-immediate.js';
 import {
@@ -330,6 +338,8 @@ async function handleCapabilities(req,res){
       // Issue #310: advertised only while the flag is on. The diagnostics API
       // still authorizes every request as a global administrator.
       ...(process.env.ADMIN_DIAGNOSTICS_ENABLED==='true'?{adminDiagnostics:true}:{}),
+      // Issue #339: advertised only while the flag (and circle membership) is on.
+      ...(accountDeletionEnabled()?{accountDeletion:true}:{}),
       ...(circleMembershipEnabled()&&process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED==='true'
         ?{multiCircleControlPlane:true}:{}),
       ...(multiCircleAvailabilityEnabled()?{multiCircleAvailability:true}:{}),
@@ -885,6 +895,79 @@ async function handleLogoutAll(req,res){
   return res.json({ok:true});
 }
 
+// --- account deletion (issue #339, ACCOUNT_DELETION_ENABLED) ---
+// GET reports whether the signed-in member may delete their account; POST
+// with exactly {"confirm":"DELETE"} deletes it. The session alone chooses the
+// account. With the flag off the endpoint answers like an unknown one.
+const ACCOUNT_DELETION_REFUSALS=Object.freeze({
+  demo_account:[403,'demo accounts cannot be deleted'],
+  last_owner:[409,'make another member an owner or archive the circle first'],
+  last_admin:[409,'make another member an app admin first'],
+});
+
+function accountDeletionRefusal(res,result){
+  const refusal=ACCOUNT_DELETION_REFUSALS[result.reason];
+  if(!refusal) return res.status(401).json({error:'authentication required'});
+  return res.status(refusal[0]).json({error:refusal[1],code:result.reason,
+    ...(result.circles?{circles:result.circles}:{})});
+}
+
+async function handleAccountDeletion(req,res,ep){
+  if(!accountDeletionEnabled()) return unknownAuthEndpoint(res,ep);
+  if(req.method!=='GET'&&req.method!=='POST'){
+    res.setHeader('Allow','GET, POST');
+    return res.status(405).json({error:'GET or POST only'});
+  }
+  const unavailable=()=>res.status(503).json({error:'account deletion temporarily unavailable'});
+  let db,payload;
+  try{
+    db=getClient();
+    await ensureAuthReadiness(db);
+    await ensureAccountDeletionReadiness(db);
+    payload=await verifyRequestAuth(req,db);
+  }catch{ return unavailable(); }
+  if(!payload){
+    // A lost response must not turn a retry into a confusing failure: the same
+    // signed session of an already deleted account is answered as done.
+    const signed=req.method==='POST'?verifySignedRequestAuth(req):null;
+    try{
+      if(signed&&await accountDeletedForSession(db,{userId:signed.id,sessionHash:signed.sessionHash})){
+        appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
+        return res.json({ok:true,status:'already_deleted'});
+      }
+    }catch{ return unavailable(); }
+    return res.status(401).json({error:'authentication required'});
+  }
+  const adminEmails=getAdminEmails();
+  if(req.method==='GET'){
+    let eligibility;
+    try{ eligibility=await readAccountDeletionEligibility(db,{userId:payload.id,adminEmails}); }
+    catch{ return unavailable(); }
+    if(eligibility.ok) return res.json({ok:true,eligible:true});
+    if(!ACCOUNT_DELETION_REFUSALS[eligibility.reason]) return res.status(401).json({error:'authentication required'});
+    return res.json({ok:true,eligible:false,code:eligibility.reason,
+      ...(eligibility.circles?{circles:eligibility.circles}:{})});
+  }
+  try{ parseAccountDeletionRequest(req.body); }
+  catch{ return res.status(400).json({error:'type DELETE to confirm',code:'confirmation_required'}); }
+  try{ await enforceAuthRateLimit(db,req,'identity-mutation',String(payload.id)); }
+  catch(error){
+    if(error?.statusCode===429) return res.status(429).json({error:'too many attempts; try again later'});
+    return unavailable();
+  }
+  let result;
+  try{ result=await deleteAccount(db,{userId:payload.id,sessionHash:payload.sessionHash,adminEmails}); }
+  catch(error){
+    if(error?.code==='RECENT_AUTH_REQUIRED'){
+      return res.status(403).json({error:'recent authentication required',code:'recent_auth_required'});
+    }
+    return unavailable();
+  }
+  if(!result.ok) return accountDeletionRefusal(res,result);
+  appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
+  return res.json({ok:true,status:result.status});
+}
+
 async function bindGoogleProviderIdentity(db,{issuer,subject,userId}){
   const inserted=await db.execute({
     sql:`INSERT INTO auth_provider_identities (issuer,subject,user_id,created_at,last_login)
@@ -1303,6 +1386,16 @@ async function handleGoogleCallback(req,res){
   res.end();
 }
 
+const AVAILABLE_AUTH_ENDPOINTS=Object.freeze(['capabilities','signup','activation-resend','activation-verify','password-reset-request','password-reset-consume','recent-auth','identities','identity-password','identity-google-unlink','login','logout','logout-all','me','google/start','google/reauth/start','google/link/start','google/callback']);
+
+function unknownAuthEndpoint(res,ep){
+  return res.status(404).json({ error:`unknown auth endpoint '${ep}'`, available:AVAILABLE_AUTH_ENDPOINTS, hint:'endpoint query param ?endpoint=signup etc' });
+}
+
+function accountDeletionRoute(ep,urlPath){
+  return ep==='account-delete'||urlPath.startsWith('/api/auth/account/delete');
+}
+
 export default async function handler(req,res){
   setAuthResponseHeaders(res);
   const ep = getEndpoint(req);
@@ -1316,6 +1409,8 @@ export default async function handler(req,res){
     'password-reset-consume','recent-auth','identity-password','identity-google-unlink','google-link-start',
     'google-reauth-start','google-start']
     .some(name=>ep===name||ep.includes(name))
+    // With the flag off the deletion path stays indistinguishable from an unknown endpoint.
+    ||(accountDeletionEnabled()&&accountDeletionRoute(ep,urlPath))
     ||urlPath.includes('/activation/resend')||urlPath.includes('/activation/verify')
     ||urlPath.includes('/password-reset/')||urlPath.includes('/recent-auth')
     ||urlPath.includes('/identities/password')||urlPath.includes('/identities/google')
@@ -1324,6 +1419,7 @@ export default async function handler(req,res){
   if(req.method==='POST'&&!logoutMutation&&credentialMutation&&!verifyAuthMutationOrigin(req)){
     return res.status(403).json({error:'same-origin request required'});
   }
+  if (accountDeletionRoute(ep,urlPath)) return handleAccountDeletion(req,res,ep);
   // also detect google via path that contains google
   if (ep.includes('google')) {
     if(ep.includes('unlink')||urlPath.includes('/identities/google')) return handleGoogleUnlink(req,res);
@@ -1362,5 +1458,5 @@ export default async function handler(req,res){
   if (urlPath.includes('logout-all')) return handleLogoutAll(req,res);
   if (urlPath.includes('logout')) return handleLogout(req,res);
   if (urlPath.includes('/me')) return handleMe(req,res);
-  return res.status(404).json({ error:`unknown auth endpoint '${ep}'`, available:['capabilities','signup','activation-resend','activation-verify','password-reset-request','password-reset-consume','recent-auth','identities','identity-password','identity-google-unlink','login','logout','logout-all','me','google/start','google/reauth/start','google/link/start','google/callback'], hint:'endpoint query param ?endpoint=signup etc' });
+  return unknownAuthEndpoint(res,ep);
 }

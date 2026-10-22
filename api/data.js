@@ -32,6 +32,7 @@ import { clientLogLevelAccepted, redactLogRoute, redactLogText, redactLogValue }
 import { deliverCommittedOutboxEvents, outboxEventsFromStatements } from './_outbox-immediate.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, messageInsertStatement, messageLimitStateStatement, MessageDataError, MessageInputError, messageReadStatement, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensureProgressReadiness, parseProgressQuery, progressDashboardEnabled, readMemberProgress } from './_progress.js';
+import { DELETED_ACCOUNT_PASSWORD_HASH } from './_account-deletion.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import {
   canonicalCompletionPair,
@@ -506,10 +507,12 @@ async function loadCurrentPublicationAccounts(db,publication,readerAccess){
       FROM auth_accounts aa
       JOIN circle_memberships cm ON cm.user_id=aa.id
       JOIN circles c ON c.id=cm.circle_id
-      WHERE cm.circle_id=? AND cm.status='active'
+      WHERE cm.circle_id=? AND (cm.status='active' OR aa.password_hash=?)
         AND c.is_primary=1 AND c.archived_at IS NULL
         AND COALESCE(aa.is_demo,0)=0 AND aa.id IN (${placeholders})`,
-    args:[readerAccess.circleId,...ids],
+    // A member who deleted their account mid-cycle stays in the published
+    // pairing as "Deleted member" (issue #339); any other ex-member fails closed.
+    args:[readerAccess.circleId,DELETED_ACCOUNT_PASSWORD_HASH,...ids],
   });
   const accounts=result.rows||[];
   const accountIds=new Set(accounts.map(row=>Number(row.id)));
