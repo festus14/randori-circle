@@ -2356,8 +2356,10 @@ async function handleStats(req,res){
   res.setHeader('Cache-Control','private, no-store');
   // Issue #333 (ID-86): circle-wide totals are for signed-in members only.
   // Polling total_sessions would otherwise show anyone when sessions are
-  // confirmed. The public landing never calls this route (UI redesign WP-L1),
-  // and a signed-out request is refused before any database read.
+  // confirmed. The public landing never calls this route (UI redesign WP-L1).
+  // A request with no validly signed session is refused before the database
+  // is opened. A signed but revoked or expired session is refused after the
+  // session lookup in verifyRequestAuth. Neither reads any stats table.
   const payload=await getAuthPayload(req);
   if(!payload) return res.status(401).json({error:'authentication required'});
   const userId=authenticatedUserId(payload);

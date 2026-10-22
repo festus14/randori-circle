@@ -4397,8 +4397,10 @@ anonymous visitors), so no signed-out page reads these numbers.
 
 **Decision.**
 - Signed-out visitors do not need any of these numbers. `handleStats` checks
-  the session first and returns `401 {"error":"authentication required"}`
-  before it opens the database, so a refused request reads no table. A session
+  the session first and returns `401 {"error":"authentication required"}`.
+  A request with no validly signed session is refused before the database is
+  opened. A signed but revoked or expired session is refused after the session
+  lookup in `verifyRequestAuth`. Neither reads any stats table. A session
   whose subject is not a positive integer id is refused the same way
   (`authenticatedUserId`, as `/api/weeks` does).
 - A signed-in member's response is unchanged: the same totals, `your_*` counts
@@ -4411,7 +4413,8 @@ anonymous visitors), so no signed-out page reads these numbers.
 
 **Remaining exposure.** A signed-in member can still poll the all-time,
 unsuppressed `total_sessions`. That is recorded for the circle health
-threshold review in `docs/CIRCLE_HEALTH.md` ("What is not hidden").
+threshold review in `docs/CIRCLE_HEALTH.md` ("`/api/stats` outside these
+rules").
 
 **Alternatives.** Rounding or caching the public totals per day (still
 discloses activity, and no signed-out page shows them). Dropping only
