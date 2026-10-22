@@ -699,6 +699,7 @@ function apiRoute(pathname,query){
   const dataEndpoints=new Map([
     ['/api/circle','circle'],['/api/weeks','weeks'],['/api/history','history'],['/api/progress','progress'],['/api/init','init'],
     ['/api/profile','profile'],['/api/my-pair','my-pair'],['/api/pair-recap','pair-recap'],
+    ['/api/exercise-suggestions','exercise-suggestions'],
     ['/api/session-completion','session-completion'],['/api/session-controls','session-controls'],['/api/meeting-link','meeting-link'],
     ['/api/stats','stats'],['/api/schedule','schedule'],['/api/messages','messages'],
     ['/api/questions','questions'],['/api/runs','runs'],['/api/leetcode','leetcode'],
@@ -720,7 +721,7 @@ function apiRoute(pathname,query){
     ['/api/admin/outbox/replay','outbox-replay'],['/api/admin/diagnostics','admin-diagnostics'],
     ['/api/admin/demo-seed','demo-seed'],
     ['/api/admin/demo-shuffle','demo-shuffle'],['/api/admin/demo-reset','demo-reset'],
-    ['/api/notifications/prefs','notifications-prefs'],
+    ['/api/notifications/prefs','notifications-prefs'],['/api/circle/health','circle-health'],
   ]);
   if(opsEndpoints.has(pathname)){
     query.endpoint=opsEndpoints.get(pathname);
