@@ -349,7 +349,9 @@ test('the snapshot aggregates outbox health by event type without private data',
   assert.deepEqual(deadLetters.replayReasonCodes, OUTBOX_REPLAY_REASON_CODES);
   assert.equal(deadLetters.items.length, 2);
   assert.deepEqual(Object.keys(deadLetters.items[0]).sort(),
-    ['ageMs', 'attempts', 'deadLetteredAt', 'errorCode', 'eventType', 'eventVersion', 'id', 'providerReason', 'replays']);
+    ['ageMs', 'attempts', 'deadLetteredAt', 'errorCode', 'eventType', 'eventVersion', 'id', 'providerReason', 'redacted',
+      'replays']);
+  assert.equal(deadLetters.items[0].redacted, false);
   assert.equal(deadLetters.items[0].providerReason, 'domain_not_verified');
   assert.equal(deadLetters.items[0].errorCode, 'PROVIDER_REJECTED');
   assert.equal(deadLetters.items[0].attempts, 5);
@@ -778,7 +780,7 @@ test('unexpected stored values are bounded before they leave the server', async 
   const { deadLetters } = (await readAdminDiagnostics(fake, { env: {}, checkReadiness: ready })).cards;
   assert.equal(deadLetters.total, 0);
   assert.deepEqual(deadLetters.items, [{ id: 7, eventType: 'other', eventVersion: 0, errorCode: null, providerReason: null,
-    attempts: 0, replays: 2, deadLetteredAt: null, ageMs: null }]);
+    attempts: 0, replays: 2, deadLetteredAt: null, ageMs: null, redacted: false }]);
 });
 
 // ---------------------------------------------------------------- handler

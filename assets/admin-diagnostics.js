@@ -298,6 +298,7 @@ function validDeadLetter(item) {
     attempts: wholeNumber(source.attempts),
     replays: wholeNumber(source.replays),
     ageMs: source.ageMs === null || source.ageMs === undefined ? null : finite(source.ageMs),
+    redacted: source.redacted === true,
   });
 }
 
@@ -341,6 +342,10 @@ export function loadErrorMessage(error) {
 /** Status-region copy for a failed replay. */
 export function replayErrorMessage(error, id) {
   const status = Number(error?.http_status);
+  // ID-83: retention removed the recipient of a dead letter older than 30 days.
+  if (status === 409 && error?.code === 'outbox_event_redacted') {
+    return `Event #${id} can’t be replayed: its recipient details were removed after 30 days under the retention policy. Nothing changed.`;
+  }
   if (status === 409) return `Event #${id} is no longer dead-lettered.`;
   if (status === 401 || status === 403) return 'Only global administrators can replay dead letters.';
   if (status === 400) return 'That replay request was rejected. Nothing changed.';
@@ -354,6 +359,7 @@ export function deadLetterSummary(item) {
     `replayed ${item.replays}×`,
   ];
   if (item.providerReason) parts.push(`provider: ${item.providerReason}`);
+  if (item.redacted) parts.push('recipient details removed by retention; cannot be replayed');
   return parts.join(' · ');
 }
 
@@ -555,9 +561,15 @@ export function mountAdminDiagnostics({
       button.type = 'button';
       button.className = 'btn secondary sm';
       button.dataset.testid = 'admin-dead-letter-replay';
-      button.setAttribute('aria-label', `Replay event #${item.id}`);
       button.textContent = 'Replay';
-      button.addEventListener('click', () => { void replay(item, button); });
+      if (item.redacted) {
+        // ID-83: the server refuses it; say why instead of offering it.
+        button.disabled = true;
+        button.setAttribute('aria-label', `Replay event #${item.id} unavailable: recipient details removed`);
+      } else {
+        button.setAttribute('aria-label', `Replay event #${item.id}`);
+        button.addEventListener('click', () => { void replay(item, button); });
+      }
       actions.appendChild(button);
       row.append(main, actions);
       rows.push(row);
