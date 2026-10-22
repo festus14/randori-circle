@@ -251,3 +251,11 @@ test('the sign-up dialog links the Terms and Privacy Policy only while signing u
     assert.match(form, new RegExp(`id="${id}"`, 'u'), `${id} is kept`);
   }
 });
+
+test('the privacy policy describes self-service account deletion only where it is switched on (issue #339)', () => {
+  const text = visibleText(pages['/privacy']);
+  assert.match(text, /Where account deletion is switched on, open Edit profile from the account menu and choose Delete account/u);
+  assert.match(text, /your name shown as “Deleted member”/u);
+  assert.match(text, /If the option isn’t switched on, or you can no longer sign in, email/u);
+  assert.doesNotMatch(text, /There isn’t a delete button yet/u);
+});
