@@ -23,6 +23,7 @@ import {
   EXECUTION_SMOKE_STATUSES,
   EXECUTION_SMOKE_TRIGGER_WINDOWS,
   executionSmokeLanguagePasses,
+  latestExecutionSmokeLanguages,
   parseExecutionSmokeRequest,
   readLatestExecutionSmoke,
   recordExecutionSmoke,
@@ -384,6 +385,43 @@ test('the latest-run reader and throttled body fail closed on missing or odd row
   const failingRead=await runExecutionSmoke({trigger:'deploy',env:SANDBOX,execute:async()=>okRun(),
     getDb:()=>throttledDb(()=>{ throw new Error('read failed'); })});
   assert.deepEqual(failingRead,{status:503,body:{ok:false,error:'execution smoke unavailable'}});
+});
+
+test('the latest-run reader takes a bounded lookback; the default stays one day',async()=>{
+  // A claim older than a day is outside the default lookback but inside a longer one.
+  await insertRun({trigger:'schedule',age:'-30 hours',
+    meta:JSON.stringify({javascript:{status:'ok',durationMs:700},python:{status:'timeout',durationMs:45000}})});
+  assert.equal(await readLatestExecutionSmoke(db),null);
+  assert.equal(await readLatestExecutionSmoke(db,{lookback:'-1 day'}),null);
+  const older=await readLatestExecutionSmoke(db,{lookback:'-30 days'});
+  assert.equal(older.saved,true);
+  assert.ok(older.claimAgeSeconds>=30*3600&&older.claimAgeSeconds<30*3600+60,String(older.claimAgeSeconds));
+  assert.match(older.checkedAt,/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  assert.deepEqual(older.languages,{javascript:{status:'ok',durationMs:700},python:{status:'timeout',durationMs:45000}});
+  assert.ok(await readLatestExecutionSmoke(db,{lookback:'-31 hours'}));
+  for(const lookback of ['-0 days','30 days','-1 weeks','-1 day; DROP TABLE app_logs','-12345 days',7,null]){
+    await assert.rejects(readLatestExecutionSmoke(db,{lookback}),TypeError,String(lookback));
+  }
+});
+
+test('the per-language report keeps the throttled rules, with pending for a run in flight',()=>{
+  const missing={status:'result_missing',durationMs:null};
+  assert.deepEqual(latestExecutionSmokeLanguages(null),{javascript:missing,python:missing});
+  const unsaved=claimAgeSeconds=>latestExecutionSmokeLanguages({claimAgeSeconds,saved:false,checkedAt:null,languages:null});
+  assert.deepEqual(unsaved(10),{javascript:{status:'pending',durationMs:null},python:{status:'pending',durationMs:null}});
+  assert.deepEqual(unsaved(EXECUTION_SMOKE_RESULT_GRACE_SECONDS).python,{status:'pending',durationMs:null});
+  assert.deepEqual(unsaved(EXECUTION_SMOKE_RESULT_GRACE_SECONDS+1),{javascript:missing,python:missing});
+  assert.deepEqual(unsaved(null),{javascript:missing,python:missing});
+  assert.deepEqual(latestExecutionSmokeLanguages({claimAgeSeconds:30,saved:true,checkedAt:'2026-10-20T07:00:00Z',
+    languages:{javascript:{status:'ok',durationMs:700},python:null}}),
+  {javascript:{status:'ok',durationMs:700},python:missing});
+  // The same claim gives the same verdict through the throttled body.
+  const latest={claimAgeSeconds:30,saved:true,checkedAt:null,languages:{javascript:{status:'misconfigured',durationMs:null},
+    python:{status:'ok',durationMs:5}}};
+  const body=throttledExecutionSmokeBody(latest);
+  for(const [language,entry] of Object.entries(latestExecutionSmokeLanguages(latest))){
+    assert.deepEqual(entry,{status:body.languages[language].lastStatus,durationMs:body.languages[language].durationMs});
+  }
 });
 
 test('each language failure maps to its own status and the result is saved as a warning',async()=>{

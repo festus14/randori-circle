@@ -1,10 +1,11 @@
 // Admin-only, read-only operational diagnostics (issue #310, ID-73).
 //
-// One GET returns aggregate health for the outbox, code execution, database
-// readiness, the migration ledger and recent error categories. Everything is
-// counts, fixed categories, timestamps and numeric outbox event ids (needed
-// for the audited replay endpoint). It never returns emails, tokens, payloads,
-// idempotency keys, code, URLs or free-form log messages.
+// One GET returns aggregate health for the outbox, code execution (including
+// the latest provider smoke check, #343), database readiness, the migration
+// ledger and recent error categories. Everything is counts, fixed categories,
+// timestamps and numeric outbox event ids (needed for the audited replay
+// endpoint). It never returns emails, tokens, payloads, idempotency keys, code,
+// URLs, program output or free-form log messages.
 //
 // The feature is off unless ADMIN_DIAGNOSTICS_ENABLED=true. Only a global
 // administrator can read it: an existing account with is_admin=1, not a demo
@@ -16,8 +17,10 @@ import {
   readMigrationLedger,
   validateMigrationLedger,
 } from '../db/migration-ledger-readiness.js';
+import { APP_LOG_RETENTION_DAYS } from './_app-log-retention.js';
 import { parseEmailProviderReason } from './_email-provider-reason.js';
 import { resolveExecutionProvider } from './_execution.js';
+import { latestExecutionSmokeLanguages, readLatestExecutionSmoke } from './_execution-smoke.js';
 import {
   coalescedDatabaseReadiness,
   databaseReadinessConfiguration,
@@ -40,8 +43,15 @@ export const OUTBOX_DELIVERY_MAX_AGE_MS=15*MINUTE;
 // Schedulers call the worker every five minutes; each completed invocation
 // writes one `outbox_invocation` row. Three missed runs make the card stale.
 export const OUTBOX_DISPATCH_EVIDENCE_MAX_AGE_MS=15*MINUTE;
-// Daily smoke cadence planned by #249 plus a two-hour grace.
+// Daily smoke cadence (#249) plus a two-hour grace; the card's evidence is the
+// newer of the latest member run and the latest smoke run (#343).
 export const EXECUTION_EVIDENCE_MAX_AGE_MS=26*HOUR;
+// The execution smoke runs daily at 07:29 UTC (plus after deploys); its latest
+// result is stale after a day and a two-hour grace (#343).
+export const EXECUTION_SMOKE_MAX_AGE_MS=26*HOUR;
+// The latest smoke claim is looked up over the whole app_logs retention, so a
+// check that stopped running shows as stale instead of as never run.
+export const EXECUTION_SMOKE_REPORT_LOOKBACK=`-${APP_LOG_RETENTION_DAYS} days`;
 // The outbox worker logs every few minutes, so an hour without any log row
 // means error counts may be incomplete.
 export const LOG_EVIDENCE_MAX_AGE_MS=HOUR;
@@ -329,6 +339,44 @@ export function executionConfiguration(env=process.env){
   return Object.freeze({provider:resolved.provider,configured:resolved.configured===true,reason});
 }
 
+/**
+ * The admin view of the latest execution smoke run (#343), built from
+ * readLatestExecutionSmoke and latestExecutionSmokeLanguages so the claim,
+ * result and grace rules are the ones the smoke route uses. `status` is
+ * `passed` (every language ok), `pending` (the latest claim has no result yet
+ * and is inside the result grace), `failed` (any other outcome, including
+ * `result_missing`) or `none` (no claim in the lookback). `checkedAt` is when
+ * the result was saved; evidence dates from the result, or from the claim when
+ * no result was saved, and is stale after 26 hours. Statuses, durations and
+ * times only: never program output, provider URLs or error text. The card
+ * verdict folds it in through executionCardWithSmoke.
+ */
+export function executionSmokeSummary(latest,nowMs){
+  if(!latest){
+    return Object.freeze({status:'none',category:null,checkedAt:null,languages:null,
+      evidence:evidence(nowMs,null,EXECUTION_SMOKE_MAX_AGE_MS)});
+  }
+  const languages=latestExecutionSmokeLanguages(latest);
+  const statuses=Object.values(languages).map(entry=>entry.status);
+  let status='failed';
+  if(statuses.every(value=>value==='ok')) status='passed';
+  else if(statuses.every(value=>value==='pending')) status='pending';
+  const resultAt=latest.saved?parseDiagnosticsInstant(latest.checkedAt):null;
+  const claimAt=latest.claimAgeSeconds===null?null:nowMs-latest.claimAgeSeconds*1000;
+  return Object.freeze({
+    status,
+    category:null,
+    checkedAt:isoOrNull(resultAt),
+    languages:Object.freeze(Object.fromEntries(Object.entries(languages)
+      .map(([language,entry])=>[language,Object.freeze(entry)]))),
+    evidence:evidence(nowMs,resultAt??claimAt,EXECUTION_SMOKE_MAX_AGE_MS),
+  });
+}
+
+async function readExecutionSmoke(db,nowMs){
+  return executionSmokeSummary(await readLatestExecutionSmoke(db,{lookback:EXECUTION_SMOKE_REPORT_LOOKBACK}),nowMs);
+}
+
 async function readExecutionCard(db,nowMs,env){
   const configuration=executionConfiguration(env);
   const names=Object.keys(EXECUTION_EVENTS);
@@ -367,9 +415,42 @@ async function readExecutionCard(db,nowMs,env){
     recent24h:Object.freeze(recent24h),
     lastOutcome,
     evidence:evidence(nowMs,latestAt,EXECUTION_EVIDENCE_MAX_AGE_MS),
-    // Seam for #249: the scheduled provider smoke check will report here.
-    smoke:Object.freeze({status:'deferred',issue:249,reason:'smoke_check_not_built'}),
   });
+}
+
+// Smoke language statuses that are a real provider outcome rather than a
+// missing result.
+const SMOKE_PROVIDER_FAILURES=new Set(['provider_error','timeout','misconfigured']);
+
+/**
+ * Fold the latest smoke result into the execution card verdict (#343, owner
+ * decision on the PR #348 review). Newer evidence wins:
+ * - A fresh smoke failure (under 26 hours) newer than the latest member run
+ *   makes the card `degraded`: `smoke_failed` when a language reports a
+ *   provider outcome, `smoke_result_missing` when only results are missing.
+ * - A fresh passing smoke lifts a card with no member runs (`unknown`) to
+ *   `healthy`.
+ * - A `failed` card (provider not configured) stays failed, a member run newer
+ *   than the smoke keeps its own verdict, and a pending, absent, unreadable or
+ *   stale smoke changes nothing.
+ * Freshness dates from the newer of the latest member run and the smoke.
+ */
+export function executionCardWithSmoke(card,smoke,nowMs){
+  const memberAt=parseDiagnosticsInstant(card.evidence?.at);
+  const smokeAt=parseDiagnosticsInstant(smoke?.evidence?.at);
+  const fresh=smokeAt!==null&&smoke.evidence.stale===false;
+  let {status,category}=card;
+  if(status!=='failed'&&fresh&&smoke.status==='failed'&&(memberAt===null||smokeAt>memberAt)){
+    status='degraded';
+    const provider=Object.values(smoke.languages||{}).some(entry=>SMOKE_PROVIDER_FAILURES.has(entry?.status));
+    category=provider?'smoke_failed':'smoke_result_missing';
+  }else if(status==='unknown'&&fresh&&smoke.status==='passed'){
+    status='healthy';
+    category=null;
+  }
+  const newest=memberAt===null?smokeAt:Math.max(memberAt,smokeAt??memberAt);
+  return Object.freeze({...card,status,category,
+    evidence:evidence(nowMs,newest,EXECUTION_EVIDENCE_MAX_AGE_MS),smoke});
 }
 
 // ---------------------------------------------------------------------------
@@ -523,18 +604,23 @@ function unavailable(maxAgeMs){
   })});
 }
 
+const SMOKE_UNAVAILABLE=Object.freeze({...unavailable(EXECUTION_SMOKE_MAX_AGE_MS),checkedAt:null,languages:null});
+
 /**
  * Build the diagnostics snapshot. Each card is read independently, so one
- * failing source shows as `unavailable` instead of hiding the others. Only
- * the database clock read is fatal.
+ * failing source shows as `unavailable` instead of hiding the others. The
+ * execution smoke is read on its own too: a failing smoke read makes only
+ * `execution.smoke` unavailable, and a failing execution read keeps the smoke
+ * result. Only the database clock read is fatal.
  */
 export async function readAdminDiagnostics(db,{env=process.env,checkReadiness=defaultReadiness}={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client required');
   const nowMs=await databaseNow(db);
-  const [outbox,deadLetters,execution,readiness,errors]=await Promise.all([
+  const [outbox,deadLetters,execution,smoke,readiness,errors]=await Promise.all([
     settle(()=>readOutboxCard(db,nowMs)),
     settle(()=>readDeadLetters(db,nowMs)),
     settle(()=>readExecutionCard(db,nowMs,env)),
+    settle(()=>readExecutionSmoke(db,nowMs)),
     settle(()=>readReadinessCard(db,nowMs,{env,checkReadiness})),
     settle(()=>readErrorsCard(db,nowMs)),
   ]);
@@ -548,7 +634,9 @@ export async function readAdminDiagnostics(db,{env=process.env,checkReadiness=de
       deadLetters:deadLetters.ok?deadLetters.value:unavailable(DIAGNOSTICS_SNAPSHOT_MAX_AGE_MS),
       outboxWatchdog:WATCHDOG_CARDS.outboxWatchdog,
       backupWatchdog:WATCHDOG_CARDS.backupWatchdog,
-      execution:execution.ok?execution.value:unavailable(EXECUTION_EVIDENCE_MAX_AGE_MS),
+      execution:execution.ok
+        ?executionCardWithSmoke(execution.value,smoke.ok?smoke.value:SMOKE_UNAVAILABLE,nowMs)
+        :Object.freeze({...unavailable(EXECUTION_EVIDENCE_MAX_AGE_MS),smoke:smoke.ok?smoke.value:SMOKE_UNAVAILABLE}),
       readiness:readiness.ok?readiness.value:unavailable(DIAGNOSTICS_SNAPSHOT_MAX_AGE_MS),
       errors:errors.ok?errors.value:unavailable(LOG_EVIDENCE_MAX_AGE_MS),
     }),

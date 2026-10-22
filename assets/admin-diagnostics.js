@@ -40,6 +40,32 @@ export const STATUS_VIEW = Object.freeze({
   deferred: Object.freeze({ label: 'Deferred', tone: 'info' }),
 });
 
+// The execution card's provider smoke check (#343, ID-73 addendum).
+export const SMOKE_STATUS_VIEW = Object.freeze({
+  passed: Object.freeze({ label: 'Passed', tone: 'success' }),
+  failed: Object.freeze({ label: 'Failed', tone: 'danger' }),
+  pending: Object.freeze({ label: 'Running', tone: 'info' }),
+  none: Object.freeze({ label: 'No data', tone: 'neutral' }),
+  unavailable: Object.freeze({ label: 'Unavailable', tone: 'danger' }),
+});
+
+const SMOKE_LANGUAGES = Object.freeze([['javascript', 'JavaScript'], ['python', 'Python']]);
+
+// Why a fresh smoke result newer than the latest member run degrades the card.
+const EXECUTION_SMOKE_CATEGORY_COPY = Object.freeze({
+  smoke_failed: 'The provider smoke check failed after the latest member run.',
+  smoke_result_missing: 'The latest provider smoke check saved no result.',
+});
+
+const SMOKE_LANGUAGE_COPY = Object.freeze({
+  ok: 'ok',
+  provider_error: 'provider error',
+  timeout: 'timed out',
+  misconfigured: 'misconfigured',
+  result_missing: 'no result saved',
+  pending: 'running',
+});
+
 export const REPLAY_REASON_LABELS = Object.freeze({
   OPERATOR_RETRY: 'Operator retry',
   PROVIDER_RECOVERED: 'Provider recovered',
@@ -146,8 +172,43 @@ function executionLines(card) {
   const recent = record(card.recent24h) || {};
   lines.push(`Last 24 h: ${wholeNumber(recent.success)} succeeded, ${wholeNumber(recent.failed)} failed, ${wholeNumber(recent.unavailable)} unavailable.`);
   lines.push(card.lastOutcome ? `Latest run: ${String(card.lastOutcome)}.` : 'No runs recorded yet.');
-  lines.push('Scheduled provider smoke check: not built yet (#249).');
+  if (EXECUTION_SMOKE_CATEGORY_COPY[card.category]) lines.push(EXECUTION_SMOKE_CATEGORY_COPY[card.category]);
   return lines;
+}
+
+/**
+ * View model for the execution card's latest provider smoke check, or null
+ * when the card carries none. Fixed copy per status and language; the age
+ * adds the time since the snapshot was fetched, like card evidence.
+ */
+export function smokeView(smoke, elapsedMs = 0) {
+  const source = record(smoke);
+  if (!source) return null;
+  const status = SMOKE_STATUS_VIEW[source.status] ? source.status : 'unavailable';
+  const state = evidenceState(source.evidence, elapsedMs);
+  let lines = [];
+  let evidence = '';
+  if (status === 'unavailable') {
+    lines = ['The latest smoke result could not be read. Try Refresh.'];
+  } else {
+    if (status !== 'none') {
+      const languages = record(source.languages) || {};
+      const parts = SMOKE_LANGUAGES.map(([key, name]) => `${name}: ${SMOKE_LANGUAGE_COPY[record(languages[key])?.status] || 'unknown'}`);
+      lines = [`${parts.join(' · ')}.`];
+    }
+    const cadence = `expected at least every ${formatDuration(state.maxAgeMs)}`;
+    const last = source.checkedAt ? 'Last smoke result' : 'Last smoke run started';
+    evidence = state.ageMs === null ? `No smoke run recorded yet; ${cadence}.` : `${last} ${formatDuration(state.ageMs)} ago; ${cadence}.`;
+  }
+  return Object.freeze({
+    status,
+    label: SMOKE_STATUS_VIEW[status].label,
+    tone: SMOKE_STATUS_VIEW[status].tone,
+    // An unreadable result is never fresh evidence.
+    stale: status === 'unavailable' || state.stale,
+    lines: Object.freeze(lines),
+    evidence,
+  });
 }
 
 function ledgerLine(ledger) {
@@ -219,6 +280,9 @@ export function cardView(id, card, elapsedMs = 0) {
     stale: state.stale,
     evidence: status === 'deferred' || status === 'unavailable' ? '' : evidenceText(id, source.evidence, elapsedMs),
     lines: Object.freeze(lines),
+    // Read separately on the server, so it still shows when the rest of the
+    // execution card is unavailable.
+    smoke: id === 'execution' ? smokeView(source.smoke, elapsedMs) : null,
   });
 }
 
@@ -394,6 +458,23 @@ export function mountAdminDiagnostics({
     return wrap;
   }
 
+  // The execution card's smoke check: a heading row with its own status and
+  // Stale badges, the per-language line, and its age.
+  function smokeNodes(view) {
+    const head = doc.createElement('div');
+    head.className = 'admin-diag-card-head';
+    head.dataset.testid = 'admin-diagnostics-smoke';
+    head.dataset.status = view.status;
+    const title = doc.createElement('b');
+    title.className = 'small';
+    title.textContent = 'Provider smoke check';
+    const staleBadge = badge('Stale', 'warning', 'admin-diagnostics-smoke-stale');
+    head.append(title, badge(view.label, view.tone, 'admin-diagnostics-smoke-status'), staleBadge);
+    const evidenceNode = paragraph('', 'small muted');
+    evidenceNode.dataset.testid = 'admin-diagnostics-smoke-evidence';
+    return { head, staleBadge, evidenceNode, nodes: [head, ...view.lines.map(line => paragraph(line)), evidenceNode] };
+  }
+
   // Card nodes are kept so the periodic tick can update stale badges and
   // evidence ages in place, without replacing anything that may hold focus.
   let cardNodes = new Map();
@@ -421,7 +502,9 @@ export function mountAdminDiagnostics({
       const evidenceNode = paragraph('', 'small muted admin-diag-evidence');
       section.appendChild(evidenceNode);
       if (id === 'outbox' && view.status !== 'unavailable') section.appendChild(outboxTable(snapshot.outboxTypes));
-      cardNodes.set(id, { section, staleBadge, evidenceNode });
+      const smoke = view.smoke ? smokeNodes(view.smoke) : null;
+      if (smoke) section.append(...smoke.nodes);
+      cardNodes.set(id, { section, staleBadge, evidenceNode, smoke });
       return section;
     });
     cards.replaceChildren(...nodes);
@@ -436,6 +519,12 @@ export function mountAdminDiagnostics({
       nodes.staleBadge.hidden = !view.stale;
       if (nodes.evidenceNode.textContent !== view.evidence) nodes.evidenceNode.textContent = view.evidence;
       nodes.evidenceNode.hidden = !view.evidence;
+      if (nodes.smoke && view.smoke) {
+        nodes.smoke.head.dataset.stale = view.smoke.stale ? 'true' : 'false';
+        nodes.smoke.staleBadge.hidden = !view.smoke.stale;
+        if (nodes.smoke.evidenceNode.textContent !== view.smoke.evidence) nodes.smoke.evidenceNode.textContent = view.smoke.evidence;
+        nodes.smoke.evidenceNode.hidden = !view.smoke.evidence;
+      }
     }
   }
 
@@ -640,6 +729,7 @@ export function mountAdminDiagnostics({
 const api = Object.freeze({
   CARD_ORDER,
   REPLAY_REASON_LABELS,
+  SMOKE_STATUS_VIEW,
   SNAPSHOT_FORMAT,
   STATUS_VIEW,
   TICK_MS,
@@ -653,6 +743,7 @@ const api = Object.freeze({
   mountAdminDiagnostics,
   normalizeSnapshot,
   replayErrorMessage,
+  smokeView,
 });
 
 if (typeof window !== 'undefined' && window) {

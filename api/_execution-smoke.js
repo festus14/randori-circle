@@ -178,12 +178,17 @@ function storedLanguages(metaJson){
   }));
 }
 
+const LOOKBACK_PATTERN=/^-[1-9]\d{0,3} (?:minute|hour|day)s?$/;
+
 /**
- * Read the latest claim of the last day and the result saved for that exact
- * claim, with database-clock ages. Returns null when there is no claim.
- * Rejects on database errors so the caller can fail closed.
+ * Read the latest claim inside `lookback` (default: the last day, the longest
+ * trigger window) and the result saved for that exact claim, with
+ * database-clock ages. Returns null when there is no claim. Rejects on
+ * database errors so the caller can fail closed. Admin diagnostics (#343)
+ * reads with a longer lookback so a check that stopped running shows as stale.
  */
-export async function readLatestExecutionSmoke(db){
+export async function readLatestExecutionSmoke(db,{lookback=EXECUTION_SMOKE_CLAIM_LOOKBACK}={}){
+  if(typeof lookback!=='string'||!LOOKBACK_PATTERN.test(lookback)) throw new TypeError('invalid smoke lookback');
   const result=await db.execute({
     sql:`WITH latest AS (
         SELECT id, created_at FROM app_logs
@@ -197,7 +202,7 @@ export async function readLatestExecutionSmoke(db){
       LEFT JOIN app_logs saved ON saved.event=? AND saved.source=? AND saved.user_id IS NULL
         AND saved.message=CAST(latest.id AS TEXT)
       ORDER BY saved.id DESC LIMIT 1`,
-    args:[CLAIM_EVENT,LOG_SOURCE,EXECUTION_SMOKE_CLAIM_LOOKBACK,RESULT_EVENT,LOG_SOURCE],
+    args:[CLAIM_EVENT,LOG_SOURCE,lookback,RESULT_EVENT,LOG_SOURCE],
   });
   const row=result?.rows?.[0];
   if(!row) return null;
@@ -229,6 +234,21 @@ export function throttledExecutionSmokeBody(latest){
   }
   return {ok:allPass(languages),checkedAt:latest?latest.checkedAt:null,
     ageSeconds:latest?latest.claimAgeSeconds:null,languages};
+}
+
+/**
+ * Per-language outcome of the latest run for read-only reports (admin
+ * diagnostics, #343). It is the throttled body's `lastStatus` and
+ * `durationMs`, so the rules stay identical: a recorded status from the result
+ * saved for the latest claim, `result_missing` for an unreadable entry or once
+ * an unsaved claim is past the result grace (or with no claim at all), and
+ * `pending` where the throttled body has null (still inside the grace).
+ */
+export function latestExecutionSmokeLanguages(latest){
+  const {languages}=throttledExecutionSmokeBody(latest);
+  return Object.fromEntries(EXECUTION_SMOKE_LANGUAGES.map(language=>[language,{
+    status:languages[language].lastStatus??'pending',durationMs:languages[language].durationMs,
+  }]));
 }
 
 /**
