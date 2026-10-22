@@ -9,14 +9,17 @@ production mutation by itself.
 Canonical production origin and Google callback:
 
 ```text
-APP_URL       https://randori-circle-self.vercel.app
-Google origin https://randori-circle-self.vercel.app
-Callback      https://randori-circle-self.vercel.app/api/auth/google/callback
+APP_URL       https://randoricircle.com
+Google origin https://randoricircle.com
+Callback      https://randoricircle.com/api/auth/google/callback
 ```
 
 `APP_URL` must be exactly that origin: HTTPS, no path, query, fragment, or
 credentials (`api/_auth-config.js`). The callback is derived from it; a
-trailing slash, another host, or a preview URL fails closed.
+trailing slash, another host, or a preview URL fails closed. The old Vercel
+alias `https://randori-circle-self.vercel.app` redirects page paths to the
+canonical origin and still serves `/api/*`. While the move settles, the Google
+client lists both origins and both callbacks (section 12, ID-80).
 
 ## Never do these
 
@@ -231,7 +234,7 @@ Scope every value to **Production** only.
 
 | Name | Value |
 | --- | --- |
-| `APP_URL` | `https://randori-circle-self.vercel.app` |
+| `APP_URL` | `https://randoricircle.com` |
 | `TURSO_DATABASE_URL` | Production `libsql://` URL |
 | `TURSO_AUTH_TOKEN` | DB auth token |
 | `JWT_SECRET` | Generated hex |
@@ -299,8 +302,9 @@ deliberately enabling those optional providers. Sentry is environment-scoped
 (or, off Vercel, `SENTRY_ENVIRONMENT=production`), never under the local
 runtime, `NODE_ENV=test` or CI, and previews stay silent unless
 `SENTRY_ENABLE_PREVIEW=true` is set for the Preview environment. The browser
-loader in `index.html` reports only from `https://randori-circle-self.vercel.app`;
-update its `PRODUCTION_ORIGIN` together with `APP_URL`. The same origin check
+loader in `index.html` reports only from `https://randoricircle.com` (the old
+`*.vercel.app` alias is tagged preview); update its `PRODUCTION_ORIGIN` together
+with `APP_URL`. The same origin check
 makes the browser logger send only signed-in, redacted `warn`/`error` entries
 to `/api/logs` (ID-72); they appear in the admin logs panel and are kept 30
 days. After saving, redeploy the
@@ -320,8 +324,11 @@ variables only at build/deploy time.
    These three non-sensitive scopes do not need Google verification.
 4. [Credentials](https://console.cloud.google.com/apis/credentials) → Create
    credentials → OAuth client ID → **Web application**, name `Randori Web`.
-   - Authorized JavaScript origin: `https://randori-circle-self.vercel.app`
-   - Authorized redirect URI: `https://randori-circle-self.vercel.app/api/auth/google/callback`
+   - Authorized JavaScript origins: `https://randoricircle.com` and, during
+     the canonical-domain transition (section 12), `https://randori-circle-self.vercel.app`
+   - Authorized redirect URIs: `https://randoricircle.com/api/auth/google/callback`
+     and, during the transition, `https://randori-circle-self.vercel.app/api/auth/google/callback`
+   - Branding → Authorized domains: `randoricircle.com`
 5. Copy Client ID → `GOOGLE_CLIENT_ID` and Client secret →
    `GOOGLE_CLIENT_SECRET` in Vercel Production. Redeploy.
 
@@ -354,7 +361,7 @@ For each environment, set **Deployment branches → Selected branches → `main`
 
 | Kind | Name | Value |
 | --- | --- | --- |
-| Variable | `APP_URL` | `https://randori-circle-self.vercel.app` |
+| Variable | `APP_URL` | `https://randoricircle.com` |
 | Secret | `CRON_SECRET` | Identical to Vercel `CRON_SECRET` |
 
 Do not add a required reviewer; it runs every five minutes. The hourly
@@ -492,7 +499,7 @@ fingerprint; rehearse, inspect, and decide. Details:
 
 ## 9. Bootstrap administrator and data-only initialization
 
-1. Sign in at `https://randori-circle-self.vercel.app` with Google, using the
+1. Sign in at `https://randoricircle.com` with Google, using the
    email in both `ADMIN_EMAILS` and `SIGNUP_ALLOWLIST`.
 2. Confirm `GET /api/auth/me` reports `is_admin: true`.
 3. In that signed-in tab's developer console run:
@@ -665,9 +672,9 @@ GitHub delays the schedule. The links still expire after 30 minutes.
 ## 11. Verify
 
 ```bash
-curl -s https://randori-circle-self.vercel.app/api/health/live
-curl -s -o /dev/null -w '%{http_code}\n' https://randori-circle-self.vercel.app/api/health
-curl -s https://randori-circle-self.vercel.app/api/auth/capabilities
+curl -s https://randoricircle.com/api/health/live
+curl -s -o /dev/null -w '%{http_code}\n' https://randoricircle.com/api/health
+curl -s https://randoricircle.com/api/auth/capabilities
 gh run list --workflow outbox-dispatch.yml --limit 3
 ```
 
@@ -685,6 +692,197 @@ rehearsal. `execution-smoke` turns green once the database is ready and
 If Google stays false, check that `APP_URL` exactly matches the origin, the
 Production scoping, `IDENTITY_MANAGEMENT_ENABLED=false`, and that you
 redeployed. Never weaken a gate to make a check pass.
+
+## 12. Canonical domain (ID-80)
+
+The canonical production origin is `https://randoricircle.com`. Both
+`randoricircle.com` and `www.randoricircle.com` are attached to the Vercel
+project. `vercel.json` adds two host-conditional redirects, pinned by
+`scripts/canonical-domain.mjs` and `npm run check:deployability`. Vercel runs
+them after the cleanUrls redirects and before headers, static files and every
+rewrite, including the SPA fallback:
+
+| Host | Paths | Destination | Status |
+| --- | --- | --- | --- |
+| `www.randoricircle.com` | all | `https://randoricircle.com/<path>` | 308, permanent |
+| `randori-circle-self.vercel.app` | all except `/api` and `/api/*` | `https://randoricircle.com/<path>` | 307, temporary |
+
+- The query string is kept, and browsers keep the `#fragment` across a
+  redirect, so old `/invite#invite=…`, `/verify#token=…` and
+  `/reset-password#token=…` links still land on the right page.
+- Preview and deployment URLs (`*-festus14s-projects.vercel.app`) never match.
+- The old alias keeps serving `/api/*` without a redirect, so cron-job.org, the
+  GitHub workflows and in-flight API calls keep working on it. It stays
+  attached as an API alias.
+- The old-alias redirect is temporary so that a rollback is not pinned in
+  browser caches.
+
+### Switch order
+
+Vercel reads `APP_URL` only when a build starts. A Production build that starts
+after the `APP_URL` change but without the redirects would leave members on the
+old alias without Google sign-in, so the Vercel change and the merge go back to
+back.
+
+**Preflight.** Every item must hold before step 1:
+
+```bash
+gh pr view 344 --json mergeStateStatus -q .mergeStateStatus     # CLEAN (up to date with main)
+gh pr checks 344                                                # every check passes
+curl -s -o /dev/null -w '%{http_code}\n' https://randori-circle-self.vercel.app/api/health/ready   # 200
+gh pr list --state open -L 200 --json number,autoMergeRequest \
+  -q '.[] | select(.autoMergeRequest != null) | .number'        # prints nothing: no auto-merge armed
+```
+
+Also check Vercel → Deployments: no Production build is building or queued.
+Hobby builds one at a time, and a queued build reads the environment when it
+starts, so it would pick up the new `APP_URL` without the redirects.
+
+1. **Google OAuth client** ([GOOGLE_OAUTH.md](../GOOGLE_OAUTH.md)): add the
+   origin `https://randoricircle.com` and the redirect URI
+   `https://randoricircle.com/api/auth/google/callback`, and keep the old-alias
+   entries. Add `randoricircle.com` to Authorized domains and point the
+   branding homepage, privacy and terms links at it.
+2. **GitHub `production` environment**: variable
+   `APP_URL=https://randoricircle.com` (outbox dispatcher, its watchdog and
+   `execution-smoke`). They call only `/api/*` routes, which both hosts serve,
+   so this step is safe on its own.
+3. **Vercel Production** `APP_URL=https://randoricircle.com`, then at once
+   `gh pr merge 344 --merge` (not `--auto`). Do not redeploy by hand; the merge
+   deploys it. If the merge does not go through straight away (the PR fell
+   behind, a check is re-running, a conflict), set Vercel `APP_URL` back to
+   `https://randori-circle-self.vercel.app` before anything else deploys, and
+   start again from the preflight.
+4. **Confirm the deploy.** The deployments API matches `environment`
+   case-insensitively and Vercel creates the record when the build starts, so
+   select Vercel's own Production record for the merge commit and require a
+   `success` status on it:
+
+   ```bash
+   SHA=$(gh pr view 344 --json mergeCommit -q .mergeCommit.oid)
+   ID=$(gh api "repos/festus14/randori-circle/deployments?sha=$SHA&per_page=100" \
+     -q '[.[] | select(.environment=="Production" and .creator.login=="vercel[bot]")][0].id')
+   gh api "repos/festus14/randori-circle/deployments/$ID/statuses" -q '.[0].state'   # success
+   ```
+
+   An empty `ID`, or a latest state of `pending` or `in_progress`, means the
+   build has not finished: wait and run it again. Do not verify until it says
+   `success`. Even then this only shows that Vercel built the merge commit for
+   Production. The checks in step 6 are the real confirmation that the domains
+   serve it.
+5. **cron-job.org**: change the job URL to
+   `https://randoricircle.com/api/cron/outbox`
+   ([OUTBOX_EXTERNAL_SCHEDULER.md](OUTBOX_EXTERNAL_SCHEDULER.md)), then use
+   "Test run" and expect HTTP 200.
+6. **Verify**:
+
+   ```bash
+   curl -s https://randoricircle.com/api/auth/capabilities                # googleOAuth:true
+   curl -s https://randori-circle-self.vercel.app/api/auth/capabilities   # googleOAuth:false
+   curl -sI 'https://randori-circle-self.vercel.app/invite?x=1'           # 307 to https://randoricircle.com/invite?x=1
+   curl -sI 'https://www.randoricircle.com/invite?x=1'                    # 308 to https://randoricircle.com/invite?x=1
+   curl -s -o /dev/null -w '%{http_code}\n' https://randori-circle-self.vercel.app/api/health/live  # 200
+   npm run smoke:production
+   ```
+
+   Then sign in with Google at `https://randoricircle.com`, and check that the
+   next `outbox-dispatch` and `outbox-dispatch-watchdog` runs are green.
+
+`npm run smoke:production` now defaults to `https://randoricircle.com` and adds
+three checks there:
+
+- the old alias redirects `/invite?smoke=canonical-domain` temporarily to the
+  canonical host with the same path and query;
+- the old alias answers `/api/health/live` with 200 and no redirect (liveness,
+  so a database outage is not reported as an alias-routing failure);
+- www redirects permanently to the apex, keeping path and query.
+
+Google sign-in is advertised only on the `APP_URL` host, so the script uses it
+to tell which host `APP_URL` names. While that is still the old alias, the
+three checks are skipped with the reason printed, `googleOAuth` is expected on
+the old alias instead of the canonical host, and one guard check runs: the old
+alias must still serve `/invite?smoke=canonical-domain` itself. That covers the
+time before the deploy and the deploy race. If the old alias already redirects
+it to the canonical host, the check fails with "APP_URL names the old alias but
+its pages redirect away; Google sign-in is unreachable". That is the broken
+state of merging before the switch, or of `APP_URL` drifting back during a
+rollback. With `--base-url https://randori-circle-self.vercel.app` the script
+follows the canonical redirect for page paths and checks the page it lands on.
+
+### What members notice
+
+- **One more sign-in.** The session cookie is host-only, so a session on the
+  old alias is not sent to `randoricircle.com`. Every member signs in again
+  once. Browser-local settings are per origin too (last tab and room, the local
+  code cache, the reminder toggle) and start fresh. Server data is unaffected.
+- **Unsynced editor edits stay behind.** Code edits that were still queued for
+  sync (`randori-crdt-pending-v1` in the old origin's local storage) are not
+  carried to the new origin. Edits that already synced are on the server.
+- **A sign-in in flight can fail once.** A Google sign-in started on the old
+  alias before the deploy returns to the old alias's
+  `/api/auth/google/callback`. Once the new `APP_URL` is live, that callback
+  answers with a raw `503 {"error":"Google sign-in is unavailable"}`. Signing
+  in again from `https://randoricircle.com` works.
+- **Old links keep working.** Invitation, verification, reset and pairing links
+  in emails already sent point at the old alias. They land on the canonical
+  host through the redirect, with their fragment. New emails link to
+  `randoricircle.com` because they are built from `APP_URL`.
+- **Google sign-in follows `APP_URL`.** It works only on the `APP_URL` host.
+  If this merged before `APP_URL` was switched, every page on the old alias
+  would redirect to a host where Google sign-in is not offered. Google-only
+  members could not sign in at all; only accounts that also have a password
+  could. That is why the merge waits for steps 1 to 3, and why the smoke check
+  fails in that state.
+
+### Side effects to check
+
+- **HSTS.** Pages send `Strict-Transport-Security: max-age=31536000;
+  includeSubDomains`, so browsers that visit `randoricircle.com` require HTTPS on
+  every `*.randoricircle.com` host for a year. Any subdomain added later, such
+  as an email click-tracking domain, must serve HTTPS.
+- **Sentry.** If the Sentry project limits Allowed Domains, add
+  `randoricircle.com`. Browser events now come only from that origin.
+- **A deploy inside the switch window.** If a Production build without the
+  redirects starts after Vercel has the new `APP_URL`, it runs its own, older
+  smoke script, whose base URL is still the old alias. That script fails on
+  `auth capabilities`: `googleOAuth` is now false on the old alias. Members on
+  the old alias then have no Google sign-in. Rolling back to a deployment from
+  before the switch is different: that deployment has the old `APP_URL` baked
+  in and serves pages on the old alias, so the smoke check stays green.
+
+### Rollback
+
+1. **Instant Rollback.** In Vercel → Deployments, roll back to the last
+   Production deployment before #344. It has the old `APP_URL` baked in and no
+   redirects, so production is consistent again at once. On the Hobby plan,
+   Instant Rollback may only go back to the immediately previous Production
+   deployment (verify this in the dashboard before relying on it). If other
+   merges have landed since #344, that target would not be the pre-#344
+   deployment. In that case, freeze merges and go straight to steps 2 to 4.
+2. **Environment.** Set Vercel Production `APP_URL` back to
+   `https://randori-circle-self.vercel.app`, and the GitHub `production`
+   variable `APP_URL` likewise.
+3. **Revert the merge** on `main`, with GitHub's Revert button on #344 or
+   `git revert -m 1 <merge sha>` in a pull request, and merge it. Its build
+   reads the restored `APP_URL`.
+4. **Re-promote.** When the revert's Production deployment is Ready, promote it
+   (or undo the rollback) so production follows `main` again. After an Instant
+   Rollback, Vercel may stop assigning the production domains to new
+   Production deployments until the rollback is undone. Check that
+   `randoricircle.com`, `www.randoricircle.com` and the old alias all point at
+   the revert deployment.
+5. cron-job.org can stay on either URL, because both hosts serve `/api/*`.
+
+The Google client still lists both origins, so it needs no change. The old-alias
+redirect is a 307, so browsers have not cached it. Members sign in once more on
+the old host. The www 308 may stay cached in browsers that visited www; it
+points at the apex, which keeps serving the app.
+
+### After the transition
+
+Keep the old alias attached in Vercel, and keep its page redirect, so links in
+old emails keep working. Once cron-job.org uses the canonical URL and no
+rollback is expected, remove the old-alias entries from the Google client.
 
 ## Related runbooks
 

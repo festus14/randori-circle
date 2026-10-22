@@ -4,7 +4,9 @@
 // capture read-only live here so they can be unit tested.
 import { resolve } from 'node:path';
 
-export const DEFAULT_PROD_URL = 'https://randori-circle-self.vercel.app';
+import { CANONICAL_ORIGIN } from './canonical-domain.mjs';
+
+export const DEFAULT_PROD_URL = CANONICAL_ORIGIN;
 
 export const VIEWPORTS = Object.freeze({
   mobile: {
