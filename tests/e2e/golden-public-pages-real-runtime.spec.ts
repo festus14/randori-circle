@@ -1,14 +1,14 @@
 import AxeBuilder from '@axe-core/playwright';
 import {BrowserContext,expect,Page,test} from '@playwright/test';
 
-import {newGoldenPage,signInOwner,startGoldenRuntime,type GoldenRuntime} from './golden-runtime';
+import {newGoldenPage,openSignin,signInOwner,startGoldenRuntime,type GoldenRuntime} from './golden-runtime';
 
 // Golden path 19 (ID-79): the public Privacy Policy and Terms of Service that
 // Google's OAuth branding page links to. A signed-out visitor finds both from
 // the landing page, each loads as its own static document (not the app shell)
 // with a main heading and a way back, and neither page makes any API request:
 // no /api/logs, no auth, nothing. A signed-in member reaches both from the
-// account menu. Runs on the real loopback runtime; Vercel serves the same
+// account menu, in a new tab so a live call or room is never dropped. Runs on the real loopback runtime; Vercel serves the same
 // files through cleanUrls (pinned by tests/unit/vercel-routing-contract.test.mjs).
 
 const PAGES=[
@@ -118,17 +118,27 @@ test('a signed-out visitor opens the Privacy Policy and Terms from the landing p
       expect(paths.filter(path=>!ALLOWED_PAGE_REQUESTS.has(path)),item.path).toEqual([]);
     }
 
-    // A signed-in member finds both in the account menu and comes back still signed in.
+    // The sign-in dialog does not show the sign-up legal line (sign-up does: golden-runtime's
+    // acceptInvitationThroughUi checks it on the invitation journeys).
+    await openSignin(page);
+    await expect(page.locator('#authLegal')).toBeHidden();
+
+    // A signed-in member opens both from the account menu in a new tab; the app tab stays put.
     await signInOwner(page,golden);
+    const appUrl=page.url();
     for(const item of PAGES){
       await page.locator('#meLabel').click();
       const menuItem=page.getByRole('menu',{name:'Account'}).getByRole('menuitem',{name:item.menuItem,exact:true});
       await expect(menuItem).toBeVisible();
       await expect(menuItem).toHaveAttribute('href',item.path);
+      await expect(menuItem).toHaveAttribute('target','_blank');
+      const opened=context.waitForEvent('page');
       await menuItem.click();
-      await expectPublicPage(page,golden,item);
-      await page.getByTestId('public-page-back').click();
-      await expect(page).toHaveURL(`${golden.url}/`);
+      const legalPage=await opened;
+      await legalPage.waitForLoadState('load');
+      await expectPublicPage(legalPage,golden,item);
+      await legalPage.close();
+      expect(page.url()).toBe(appUrl);
       await expect(page.locator('#meLabel')).toBeVisible();
     }
     const signedIn=await requestsMadeBy(context,golden,'/privacy');

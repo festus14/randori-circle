@@ -72,6 +72,23 @@ for (const [name, href, environment, flags] of [
   });
 }
 
+test('browser Sentry reports errors only: no tracing, session replay or logs on any origin (ID-79)', () => {
+  // The loader's dashboard config enables tracing, replay and logs; these
+  // init options override it, and the Privacy Policy promises they are off.
+  for (const [href, flags] of [[`${PRODUCTION_ORIGIN}/`, {}], ['https://randori-circle-git-x.vercel.app/', {}],
+    ['http://127.0.0.1:4173/', {}], [`${PRODUCTION_ORIGIN}/`, { webdriver: true }]]) {
+    const { options } = runConfig(href, flags);
+    assert.equal(options.tracesSampleRate, 0, href);
+    assert.equal(options.replaysSessionSampleRate, 0, href);
+    assert.equal(options.replaysOnErrorSampleRate, 0, href);
+    assert.equal(options.enableLogs, false, href);
+    assert.equal(options.sendDefaultPii, false, href);
+    assert.equal('integrations' in options, false, 'no integrations (such as replay) are added in code');
+  }
+  const privacy = readFileSync(new URL('../../privacy.html', import.meta.url), 'utf8');
+  assert.match(privacy, /We don’t use Sentry’s session recording or performance tracing in your browser\./);
+});
+
 test('the client logger forwarding is only installed when Sentry is enabled', () => {
   assert.match(html, /if\(window\.Sentry&&window\.__randoriSentry&&window\.__randoriSentry\.enabled\)\{\s*window\._sentryReady=true;/);
 });

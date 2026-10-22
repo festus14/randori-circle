@@ -191,6 +191,8 @@ export async function acceptInvitationThroughUi(page:Page,golden:GoldenRuntime,i
   await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
   await page.getByTestId('invite-continue').click();
   await expect(page.getByRole('dialog',{name:'Join Randori Circle'})).toBeVisible();
+  // Sign-up links the Terms and Privacy Policy (ID-79).
+  await expect(page.locator('#authLegal').getByRole('link',{name:'Terms of Service'})).toBeVisible();
   await page.locator('#authEmail').fill(user.email);
   await page.locator('#authName').fill(user.name);
   await page.locator('#authPass').fill(MEMBER_PASSWORD);

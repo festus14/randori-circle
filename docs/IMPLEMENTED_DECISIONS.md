@@ -3373,9 +3373,18 @@ short in-page "Privacy note" on the landing page.
 - *Links.* The landing footer links "Privacy Policy" and "Terms of Service"
   (replacing the footer's in-page `#landingPrivacy` link; the request form
   keeps that one). The in-page privacy note now says members also see
-  profile details but not email addresses, and links both pages. Signed-in
-  members get both at the end of the account menu, after a separator, so the
-  existing menu order is unchanged.
+  profile details and who is paired with whom, but not email addresses, and
+  links both pages. Signed-in members get both at the end of the account
+  menu, after a separator (existing order unchanged), opening in a new tab so
+  a live call or room is never dropped. The sign-up dialog shows one line
+  linking both, only in sign-up mode (`#authLegal`).
+- *Browser Sentry reports errors only.* The loader's dashboard config turns
+  on tracing (rate 1), session replay (0.1, and 1 on error) and logs.
+  `Sentry.init` in `randoriSentryConfig` now sets `tracesSampleRate:0`,
+  `replaysSessionSampleRate:0`, `replaysOnErrorSampleRate:0` and
+  `enableLogs:false`, which override those defaults, so the policy's "no
+  session recording or performance tracing in your browser" holds; a unit
+  test pins them. The CSP is unchanged.
 - *Content from the code.* The policy was written from an inventory of the
   data flows: Google scopes `openid email profile` with `access_type=online`
   (only `sub`, verified `email` and `name` are used; no picture, no stored
@@ -3386,15 +3395,23 @@ short in-page "Privacy note" on the landing page.
   optional consent-gated Groq/OpenAI feedback (off by default), and no
   analytics. Retention is stated only where code defines it: `app_logs` 30
   days (ID-72), video signals about an hour, editor and whiteboard drafts 90
-  days, invite requests 30 days, links 30 minutes or 7 days, sessions 12
-  hours; everything else while the account exists. Chat retention (90 days)
-  is not described as active because its purge is still disabled.
+  days, invite requests 30 days (purged weekly, so up to about 37), links 30
+  minutes or 7 days, sessions 12 hours (records 30 days after expiry);
+  everything else while the account exists. Two gaps are stated plainly:
+  email records in the outbox (plain-text recipients for sign-up, reset and
+  pairing mail, encrypted copies for invitations) and unfinished sign-ups
+  (`auth_email_activations`) are not deleted automatically today. Chat
+  retention (90 days) is not described as active because its purge is still
+  disabled. GitHub is listed as a provider (code, issues, scheduled jobs and
+  the weekly restore rehearsal, which keeps only counts and checksums).
 - *Deletion and contact.* There is no self-service deletion (leaving or
   removal only makes a membership inactive), so the policy explains how to
   ask: the circle owner or the public issue tracker, with a warning not to
-  post personal information there. No email address is published; an HTML
-  comment `<!-- CONTACT_EMAIL: owner to add -->` in `privacy.html` marks where
-  the owner can add one.
+  post personal information there. Circle owners can't delete accounts; the
+  operator deletes on request and responds within one month. No email
+  address or name is published; HTML comments `<!-- CONTACT_EMAIL: owner to
+  add -->` and `<!-- CONTROLLER_NAME: owner to add -->` in `privacy.html` mark
+  where the owner can add them.
 - *Google disclosure.* The policy states that Randori's use and transfer of
   information received from Google APIs adheres to the Google API Services
   User Data Policy, including the Limited Use requirements, and that the data

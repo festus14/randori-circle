@@ -67,6 +67,7 @@ for (const [path, html] of Object.entries(pages)) {
     assert.match(html, /<link rel="stylesheet" href="\/assets\/legal\.css"\/>/u);
     // Not the app shell, and nothing that could call /api/logs or auth.
     assert.doesNotMatch(html, /<script\b/iu);
+    assert.doesNotMatch(html, /<style\b|http-equiv="refresh"/iu);
     assert.doesNotMatch(html, /\son[a-z]+\s*=/iu, 'no inline event handlers');
     assert.doesNotMatch(html, /\sstyle\s*=/iu, 'no inline styles (blocked by the page CSP)');
     assert.doesNotMatch(html, /id="appMain"|\/api\//u);
@@ -133,7 +134,8 @@ for (const [path, html] of Object.entries(pages)) {
 test('the privacy policy keeps one marked spot for a future contact email', () => {
   const privacy = pages['/privacy'];
   assert.equal(privacy.match(/<!-- CONTACT_EMAIL: owner to add -->/gu)?.length, 1);
-  assert.doesNotMatch(pages['/terms'], /CONTACT_EMAIL/u);
+  assert.equal(privacy.match(/<!-- CONTROLLER_NAME: owner to add -->/gu)?.length, 1);
+  assert.doesNotMatch(pages['/terms'], /CONTACT_EMAIL|CONTROLLER_NAME/u);
   assert.match(privacy, /<h2 id="contact">/u);
 });
 
@@ -147,11 +149,32 @@ test('the privacy policy carries the Google API Services User Data Policy disclo
   assert.match(text, /not used for advertising/u);
 });
 
+test('the privacy policy states the retention gaps and providers the code really has', () => {
+  const text = visibleText(pages['/privacy']);
+  for (const phrase of [
+    // Outbox and unfinished sign-ups are never purged today.
+    /Email records : our email queue keeps a record of each email it sends\. For sign-up, password-reset and pairing emails this includes the recipient’s email address; for invitations it is an encrypted copy\. These records are not deleted automatically at the moment/u,
+    /Unfinished sign-ups : if you start signing up with a password but don’t confirm your email, we keep your email address, name and password hash\. They are not deleted automatically at the moment/u,
+    /The encrypted copy is kept with our email records/u,
+    /our email queue also keeps an encrypted copy so it can send or retry the email/u,
+    // Sentry's loader reaches every visitor; tracing and replay are off in code.
+    /your browser downloads Sentry’s error-reporting script from Sentry’s servers/u,
+    /GitHub hosts our code and public issue tracker and runs our scheduled maintenance jobs/u,
+    /you are signed out only if it was your last active circle/u,
+    /who is paired with whom each week/u,
+    /They can’t delete accounts themselves, but can remove you from the circle and pass your request on\./u,
+  ]) {
+    assert.match(text, phrase);
+  }
+  assert.doesNotMatch(text, /no third-party trackers|stores secret links only as hashes|including the recipient’s address, while the account exists/u);
+});
+
 test('the terms cover the required topics in plain language', () => {
   const text = visibleText(pages['/terms']);
   for (const phrase of [/free community tool for practising coding interviews/u, /“as is”/u, /without any warranty/u,
     /Abuse the code runner/u, /Harass anyone/u, /access other people’s data/u, /Disrupt the service/u,
-    /owner can remove a member/u, /update the “Last updated” date/u, /law of England and Wales/u]) {
+    /owner can remove a member/u, /update the “Last updated” date/u, /law of England and Wales/u,
+    /You must be at least 16 to use Randori Circle\./u, /bring a claim in the courts where you live/u]) {
     assert.match(text, phrase);
   }
 });
@@ -187,9 +210,24 @@ test('the signed-out landing links the full privacy policy and terms; members ge
   assert.match(note, /<a href="\/privacy">Privacy Policy<\/a>/u);
   const menu = indexHtml.match(/<div id="meMenu" role="menu"[^>]*>([\s\S]*?)\n {8}<\/div>/u)?.[1];
   assert.ok(menu, 'account menu');
-  assert.match(menu, /<a id="mePrivacy" role="menuitem" class="account-menu-item account-menu-item--legal" tabindex="-1" href="\/privacy">Privacy Policy<\/a>/u);
-  assert.match(menu, /<a id="meTerms" role="menuitem" class="account-menu-item account-menu-item--legal" tabindex="-1" href="\/terms">Terms of Service<\/a>/u);
+  // New tab, so following them never drops a live call or room.
+  assert.match(menu, /<a id="mePrivacy" role="menuitem" class="account-menu-item account-menu-item--legal" tabindex="-1" href="\/privacy" target="_blank" rel="noopener">Privacy Policy<\/a>/u);
+  assert.match(menu, /<a id="meTerms" role="menuitem" class="account-menu-item account-menu-item--legal" tabindex="-1" href="\/terms" target="_blank" rel="noopener">Terms of Service<\/a>/u);
   // The account actions keep their order ahead of the legal links.
   const order = [...menu.matchAll(/id="(me[A-Za-z]+)"/gu)].map(match => match[1]);
   assert.deepEqual(order, ['meIdentity', 'meProfile', 'meSetupGuide', 'meSignOut', 'meSignOutAll', 'mePrivacy', 'meTerms']);
+});
+
+test('the sign-up dialog links the Terms and Privacy Policy only while signing up', () => {
+  const line = indexHtml.match(/<p id="authLegal" class="small muted auth-legal" hidden>([\s\S]*?)<\/p>/u)?.[1];
+  assert.ok(line, 'sign-up legal line');
+  assert.match(line, /<a href="\/terms" target="_blank" rel="noopener">Terms of Service<\/a>/u);
+  assert.match(line, /<a href="\/privacy" target="_blank" rel="noopener">Privacy Policy<\/a>/u);
+  // It sits inside the auth form, before the submit buttons, and the dialog render shows it only in sign-up mode.
+  const form = indexHtml.match(/<form id="authForm"[\s\S]*?<\/form>/u)?.[0] || '';
+  assert.ok(form.indexOf('id="authLegal"') > 0 && form.indexOf('id="authLegal"') < form.indexOf('id="authSignup"'));
+  assert.match(indexHtml, /const legal=document\.getElementById\('authLegal'\);\n\s*if\(legal\) legal\.hidden=authMode!=='signup'\|\|pending;/u);
+  for (const id of ['authSignup', 'authSignin', 'authGoogle', 'authNameField', 'authModeSwitch']) {
+    assert.match(form, new RegExp(`id="${id}"`, 'u'), `${id} is kept`);
+  }
 });
