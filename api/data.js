@@ -37,6 +37,7 @@ import {
   parseExerciseSuggestionsQuery,
   readExerciseSuggestions,
 } from './_exercise-suggestions.js';
+import { ensureProgressReadiness, parseProgressQuery, progressDashboardEnabled, readMemberProgress } from './_progress.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import {
   canonicalCompletionPair,
@@ -151,6 +152,8 @@ function resolveDataRoute(req,endpoint){
   if(endpoint==='circle'||path.includes('/circle')) return 'circle';
   if(endpoint==='weeks'||path.includes('/weeks')) return 'weeks';
   if(endpoint==='history'||path.includes('/history')) return 'history';
+  // Issue #293: with the flag off the route stays unknown, exactly as before.
+  if(progressDashboardEnabled()&&(endpoint==='progress'||path.includes('/progress'))) return 'progress';
   if(endpoint==='stats'||path.includes('/stats')) return 'stats';
   if(endpoint==='init'||path.includes('/init')) return 'init';
   if(endpoint==='profile'||path.includes('/profile')) return 'profile';
@@ -1100,7 +1103,35 @@ async function handleHistory(req,res){
     return { pg_id:r.pg_id, week_id:r.week_id, week_label:r.week_label, week_start:r.week_start, is_ai:!!r.is_ai_pair, topic:r.topic, topic_kind:r.topic_kind, partner_id:partnerIds[0]??null, partner_name:partnerNames.join(' & '), partner_ids:partnerIds, partner_names:partnerNames, you_are_a:isA, completion };
   }); }catch{ return res.status(503).json({error:'history unavailable'}); }
   const partnerCounts={}; enriched.forEach(e=>{ if(!e.is_ai) e.partner_names.forEach(name=>{ partnerCounts[name]=(partnerCounts[name]||0)+1; }); });
-  return res.json({ ok:true, user:{ id:payload.id, name:payload.name }, history:enriched, partner_counts:partnerCounts, total:enriched.length });
+  return res.json({ ok:true, user:{ id:payload.id, name:payload.name }, history:enriched, partner_counts:partnerCounts, total:enriched.length,
+    // Issue #293: tells the History view to load /api/progress; absent while the flag is off.
+    ...(progressDashboardEnabled()?{progress:{enabled:true}}:{}) });
+}
+
+// Issue #293 personal progress. The session alone chooses whose records are
+// read; `user_id` exists only so a request for another member is an explicit
+// 404, indistinguishable from a member that does not exist.
+async function handleProgress(req,res){
+  res.setHeader('Cache-Control','private, no-store');
+  if(req.method!=='GET'){
+    res.setHeader('Allow','GET');
+    return res.status(405).json({error:'GET only'});
+  }
+  const userId=authenticatedUserId(await getAuthPayload(req));
+  if(!userId) return res.status(401).json({error:'authentication required'});
+  let query;
+  // parseProgressQuery throws only ProgressInputError, whose messages are fixed strings.
+  try{ query=parseProgressQuery(req); }
+  catch(error){ return res.status(400).json({error:error.message}); }
+  if(query.userId!==null&&query.userId!==userId) return res.status(404).json({error:'progress not found'});
+  try{
+    const db=getClient();
+    await ensureProgressReadiness(db);
+    const progress=await readMemberProgress(db,{userId,versionKey:getJwtSecret(),verifyAttestation:verifyRunAttestation});
+    return res.json({ok:true,...progress});
+  }catch{
+    return res.status(503).json({error:'progress unavailable'});
+  }
 }
 
 async function handleSessionCompletion(req,res){
@@ -2747,7 +2778,7 @@ async function handleExecute(req,res){
 }
 
 const MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS=new Set([
-  'runs','session_runs','session-runs','weeks','history','stats','my-pair','mypair','my_pair',
+  'runs','session_runs','session-runs','weeks','history','progress','stats','my-pair','mypair','my_pair',
   'pair-recap','session-completion','session-controls','meeting-link','schedule','messages','message','execute','run',
   'exercise-suggestions',
 ]);
@@ -2789,6 +2820,7 @@ export default async function handler(req,res){
   if(route==='circle') return await handleCircle(req,res);
   if(route==='weeks') return await handleWeeks(req,res);
   if(route==='history') return await handleHistory(req,res);
+  if(route==='progress') return await handleProgress(req,res);
   if(route==='stats') return await handleStats(req,res);
   if(route==='init') return await handleInit(req,res);
   if(route==='profile') return await handleProfile(req,res);
