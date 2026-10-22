@@ -2752,10 +2752,10 @@ async function handleExecute(req,res){
         })
         : await db.execute({
           // A solo run never lands on an account deleted after this request was authenticated (issue #339).
-          sql:`INSERT INTO session_runs (user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at)
-            SELECT ?,?,?,?,?,?,?,?,?,?,?,?,datetime('now')
-            WHERE EXISTS (SELECT 1 FROM auth_accounts WHERE id=? AND ${LIVE_ACCOUNT_SQL}) RETURNING id`,
-          args:[...runArgs,runArgs[0]],
+          sql:`WITH live_account AS (SELECT 1 FROM auth_accounts WHERE id=? AND ${LIVE_ACCOUNT_SQL})
+            INSERT INTO session_runs (user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at)
+            SELECT ?,?,?,?,?,?,?,?,?,?,?,?,datetime('now') FROM live_account RETURNING id`,
+          args:[runArgs[0],...runArgs],
         });
       if(accessArgs&&!inserted.rows.length){
         if(canonicalDocument){

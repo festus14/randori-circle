@@ -401,6 +401,12 @@ test('a solo run executed across the deletion is not saved with the member\'s co
   Object.assign(process.env,{EXECUTION_PROVIDER:'piston',EXECUTION_API_URL:'https://execution.test.example/api/v2/piston/execute'});
   const cookie=await signedIn();
   globalThis.fetch=async()=>new Response(JSON.stringify({run:{code:0,stdout:'',stderr:''}}),{status:200});
+  // A live account's solo run is saved as usual.
+  const saved=await invoke({handler:dataHandler,endpoint:'execute',url:'/api/execute',method:'POST',cookie,
+    body:{language:'javascript',code:'function rollUpFocusBlocks(){ return []; }',question_slug:'focus-block-rollup',question_version:1}});
+  assert.equal(saved.statusCode,200,JSON.stringify(saved.body));
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM session_runs WHERE user_id=2`)).rows[0].count),1);
+  await db.execute(`DELETE FROM session_runs`);
   const fired=interceptOnce(sql=>sql.includes('INSERT INTO session_runs'),()=>deleteNow(cookie));
   const run=await invoke({handler:dataHandler,endpoint:'execute',url:'/api/execute',method:'POST',cookie,
     body:{language:'javascript',code:'function rollUpFocusBlocks(){ return "my private solution"; }',
