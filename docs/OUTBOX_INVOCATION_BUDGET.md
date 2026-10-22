@@ -76,7 +76,10 @@ under the eight-claim cap, so every type keeps a first-round claim. Reminders
 are queued by a bounded due-check (at most 50 new intents per kind) inside the
 same timeboxed preparation step as the legacy pairing bridge, with its own
 5-second slice, so a slow due-check is abandoned (reported as
-`reminders_enqueued: null`) rather than holding back the delivery rounds. While `REMINDERS_ENABLED`
+`reminders_enqueued: null` with `reminder_errors.due_check`) rather than
+holding back the delivery rounds. Kinds fail independently and any reminder
+error logs the invocation at `warn` level. A unit test fails clearly if the
+number of outbox types ever exceeds the eight-claim cap. While `REMINDERS_ENABLED`
 is off the due-check makes no query; the handler stays registered so any queued
 reminder drains as `suppressed`.
 
@@ -136,6 +139,9 @@ The cron response and `outbox_invocation` log contain only:
 - `app_logs_retention`: `{ran, purged, more}` from the hourly `app_logs`
   purge, `{ran:false, timed_out:true}` or `{ran:false, failed:true}` when it
   did not finish, or `null` when it was skipped because its budget did not fit.
+- only while `REMINDERS_ENABLED` is on, `reminders_enqueued` (new reminders
+  per kind, `null` for a failed kind or check) and `reminder_errors` (bounded
+  codes per kind, or for the whole `due_check`).
 
 `metrics_complete` distinguishes an exact post-run backlog from a deadline-
 bounded response where those two gauges are `null`.
