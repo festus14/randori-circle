@@ -3334,7 +3334,19 @@ The deferred #249 seam is replaced by `execution.smoke`, still behind
   saved.
 - Its evidence dates from the result, or from the claim when no result was
   saved, and is stale after 26 hours (the daily 07:29 UTC run plus two hours).
-  It never changes the card verdict, which still follows member runs.
+- The card verdict folds the smoke in (owner decision on the PR #348 review);
+  newer evidence wins:
+  - A fresh smoke failure (under 26 hours) newer than the latest member run
+    makes the card `degraded`. The category is `smoke_failed` when a language
+    reports a provider outcome, and `smoke_result_missing` when only results
+    are missing.
+  - A fresh passing smoke lifts a card with no member runs (`unknown`,
+    `no_runs`) to `healthy`.
+  - Nothing else changes the verdict. A `failed` card (provider not
+    configured) stays failed. A member run newer than the smoke keeps its own
+    verdict. A pending, absent, unreadable or stale smoke changes nothing.
+  - The card's freshness is the newer of the latest member run and the smoke.
+    The existing 26-hour execution threshold already matches the daily smoke.
 - The smoke is read separately. A failing smoke read makes only
   `execution.smoke` `unavailable`, and a failing execution read keeps the
   smoke result. It returns no URLs, secrets, program output or error text.

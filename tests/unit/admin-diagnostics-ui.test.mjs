@@ -260,6 +260,13 @@ test('execution card shows the provider state and the latest smoke check', () =>
     'Provider piston has no valid endpoint, so Run is unavailable.');
   assert.equal(cardView('execution', { ...card, status: 'failed', configured: false, reason: 'misconfigured', provider: null }).lines[0],
     'Provider  has no valid endpoint, so Run is unavailable.');
+  // A fresh smoke failure newer than the latest member run explains the Degraded badge.
+  const smokeFailed = cardView('execution', { ...card, status: 'degraded', category: 'smoke_failed' });
+  assert.deepEqual([smokeFailed.label, smokeFailed.lines.at(-1)],
+    ['Degraded', 'The provider smoke check failed after the latest member run.']);
+  assert.equal(cardView('execution', { ...card, status: 'degraded', category: 'smoke_result_missing' }).lines.at(-1),
+    'The latest provider smoke check saved no result.');
+  assert.equal(cardView('execution', { ...card, status: 'degraded', category: 'last_run_failed' }).lines.length, 3);
   const unknown = cardView('execution', { status: 'unknown', configured: true, provider: 'piston', lastOutcome: null });
   assert.deepEqual([unknown.label, unknown.tone, unknown.lines[1], unknown.lines[2]],
     ['No data', 'neutral', 'Last 24 h: 0 succeeded, 0 failed, 0 unavailable.', 'No runs recorded yet.']);

@@ -51,6 +51,12 @@ export const SMOKE_STATUS_VIEW = Object.freeze({
 
 const SMOKE_LANGUAGES = Object.freeze([['javascript', 'JavaScript'], ['python', 'Python']]);
 
+// Why a fresh smoke result newer than the latest member run degrades the card.
+const EXECUTION_SMOKE_CATEGORY_COPY = Object.freeze({
+  smoke_failed: 'The provider smoke check failed after the latest member run.',
+  smoke_result_missing: 'The latest provider smoke check saved no result.',
+});
+
 const SMOKE_LANGUAGE_COPY = Object.freeze({
   ok: 'ok',
   provider_error: 'provider error',
@@ -166,6 +172,7 @@ function executionLines(card) {
   const recent = record(card.recent24h) || {};
   lines.push(`Last 24 h: ${wholeNumber(recent.success)} succeeded, ${wholeNumber(recent.failed)} failed, ${wholeNumber(recent.unavailable)} unavailable.`);
   lines.push(card.lastOutcome ? `Latest run: ${String(card.lastOutcome)}.` : 'No runs recorded yet.');
+  if (EXECUTION_SMOKE_CATEGORY_COPY[card.category]) lines.push(EXECUTION_SMOKE_CATEGORY_COPY[card.category]);
   return lines;
 }
 

@@ -42,7 +42,8 @@ export const OUTBOX_DELIVERY_MAX_AGE_MS=15*MINUTE;
 // Schedulers call the worker every five minutes; each completed invocation
 // writes one `outbox_invocation` row. Three missed runs make the card stale.
 export const OUTBOX_DISPATCH_EVIDENCE_MAX_AGE_MS=15*MINUTE;
-// Daily smoke cadence planned by #249 plus a two-hour grace.
+// Daily smoke cadence (#249) plus a two-hour grace; the card's evidence is the
+// newer of the latest member run and the latest smoke run (#343).
 export const EXECUTION_EVIDENCE_MAX_AGE_MS=26*HOUR;
 // The execution smoke runs daily at 07:29 UTC (plus after deploys); its latest
 // result is stale after a day and a two-hour grace (#343).
@@ -343,7 +344,8 @@ export function executionConfiguration(env=process.env){
  * `result_missing`) or `none` (no claim in the lookback). `checkedAt` is when
  * the result was saved; evidence dates from the result, or from the claim when
  * no result was saved, and is stale after 26 hours. Statuses, durations and
- * times only: never program output, provider URLs or error text.
+ * times only: never program output, provider URLs or error text. The card
+ * verdict folds it in through executionCardWithSmoke.
  */
 export function executionSmokeSummary(latest,nowMs){
   if(!latest){
@@ -410,6 +412,41 @@ async function readExecutionCard(db,nowMs,env){
     lastOutcome,
     evidence:evidence(nowMs,latestAt,EXECUTION_EVIDENCE_MAX_AGE_MS),
   });
+}
+
+// Smoke language statuses that are a real provider outcome rather than a
+// missing result.
+const SMOKE_PROVIDER_FAILURES=new Set(['provider_error','timeout','misconfigured']);
+
+/**
+ * Fold the latest smoke result into the execution card verdict (#343, owner
+ * decision on the PR #348 review). Newer evidence wins:
+ * - A fresh smoke failure (under 26 hours) newer than the latest member run
+ *   makes the card `degraded`: `smoke_failed` when a language reports a
+ *   provider outcome, `smoke_result_missing` when only results are missing.
+ * - A fresh passing smoke lifts a card with no member runs (`unknown`) to
+ *   `healthy`.
+ * - A `failed` card (provider not configured) stays failed, a member run newer
+ *   than the smoke keeps its own verdict, and a pending, absent, unreadable or
+ *   stale smoke changes nothing.
+ * Freshness dates from the newer of the latest member run and the smoke.
+ */
+export function executionCardWithSmoke(card,smoke,nowMs){
+  const memberAt=parseDiagnosticsInstant(card.evidence?.at);
+  const smokeAt=parseDiagnosticsInstant(smoke?.evidence?.at);
+  const fresh=smokeAt!==null&&smoke.evidence.stale===false;
+  let {status,category}=card;
+  if(status!=='failed'&&fresh&&smoke.status==='failed'&&(memberAt===null||smokeAt>memberAt)){
+    status='degraded';
+    const provider=Object.values(smoke.languages||{}).some(entry=>SMOKE_PROVIDER_FAILURES.has(entry?.status));
+    category=provider?'smoke_failed':'smoke_result_missing';
+  }else if(status==='unknown'&&fresh&&smoke.status==='passed'){
+    status='healthy';
+    category=null;
+  }
+  const newest=memberAt===null?smokeAt:Math.max(memberAt,smokeAt??memberAt);
+  return Object.freeze({...card,status,category,
+    evidence:evidence(nowMs,newest,EXECUTION_EVIDENCE_MAX_AGE_MS),smoke});
 }
 
 // ---------------------------------------------------------------------------
@@ -593,10 +630,9 @@ export async function readAdminDiagnostics(db,{env=process.env,checkReadiness=de
       deadLetters:deadLetters.ok?deadLetters.value:unavailable(DIAGNOSTICS_SNAPSHOT_MAX_AGE_MS),
       outboxWatchdog:WATCHDOG_CARDS.outboxWatchdog,
       backupWatchdog:WATCHDOG_CARDS.backupWatchdog,
-      execution:Object.freeze({
-        ...(execution.ok?execution.value:unavailable(EXECUTION_EVIDENCE_MAX_AGE_MS)),
-        smoke:smoke.ok?smoke.value:SMOKE_UNAVAILABLE,
-      }),
+      execution:execution.ok
+        ?executionCardWithSmoke(execution.value,smoke.ok?smoke.value:SMOKE_UNAVAILABLE,nowMs)
+        :Object.freeze({...unavailable(EXECUTION_EVIDENCE_MAX_AGE_MS),smoke:smoke.ok?smoke.value:SMOKE_UNAVAILABLE}),
       readiness:readiness.ok?readiness.value:unavailable(DIAGNOSTICS_SNAPSHOT_MAX_AGE_MS),
       errors:errors.ok?errors.value:unavailable(LOG_EVIDENCE_MAX_AGE_MS),
     }),

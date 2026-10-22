@@ -30,6 +30,7 @@ import {
   adminDiagnosticsEnabled,
   authorizeGlobalAdmin,
   evidence,
+  executionCardWithSmoke,
   executionConfiguration,
   executionSmokeSummary,
   handleAdminDiagnosticsRequest,
@@ -459,8 +460,10 @@ test('execution shows the latest smoke result per language with its age, under t
   assert.equal(smoke.evidence.at, smoke.checkedAt);
   assert.ok(Math.abs(smoke.evidence.ageMs - 3 * HOUR) < MINUTE, String(smoke.evidence.ageMs));
   assert.deepEqual([smoke.evidence.maxAgeMs, smoke.evidence.stale], [EXECUTION_SMOKE_MAX_AGE_MS, false]);
-  // The smoke never changes the card verdict, which still follows member runs.
-  assert.equal((await readAdminDiagnostics(db, { env, checkReadiness: ready })).cards.execution.category, 'no_runs');
+  // With no member runs, a fresh passing smoke makes the card healthy and fresh.
+  const lifted = (await readAdminDiagnostics(db, { env, checkReadiness: ready })).cards.execution;
+  assert.deepEqual([lifted.status, lifted.category, lifted.lastOutcome, lifted.evidence.stale], ['healthy', null, null, false]);
+  assert.equal(lifted.evidence.at, smoke.evidence.at);
 
   // A newer run with a failing language.
   await smokeRun({ ageMs: HOUR, meta: JSON.stringify({ javascript: { status: 'ok', durationMs: 600 }, python: { status: 'timeout', durationMs: 45000 } }) });
@@ -507,6 +510,86 @@ test('the smoke result goes stale after 26 hours and is found over the whole log
   await smokeRun({ ageMs: (APP_LOG_RETENTION_DAYS + 1) * DAY });
   smoke = await smokeOf();
   assert.deepEqual([smoke.status, smoke.languages, smoke.evidence.at, smoke.evidence.stale], ['none', null, null, true]);
+});
+
+test('a fresh smoke failure newer than the latest member run degrades the execution card', async () => {
+  const env = { EXECUTION_PROVIDER: 'vercel-sandbox' };
+  await log({ source: 'runner', event: 'execute_success', level: 'success', userId: ids.owner, at: sqliteTime(-2 * HOUR) });
+  await smokeRun({ ageMs: HOUR, meta: JSON.stringify({ javascript: { status: 'ok', durationMs: 600 }, python: { status: 'provider_error', durationMs: 900 } }) });
+  let card = (await readAdminDiagnostics(db, { env, checkReadiness: ready })).cards.execution;
+  assert.deepEqual([card.status, card.category, card.lastOutcome], ['degraded', 'smoke_failed', 'success']);
+  assert.equal(card.evidence.at, card.smoke.evidence.at, 'freshness dates from the newer smoke');
+  // A member success newer than the smoke failure keeps the card healthy.
+  await log({ source: 'runner', event: 'execute_success', level: 'success', userId: ids.owner, at: sqliteTime(-MINUTE) });
+  card = (await readAdminDiagnostics(db, { env, checkReadiness: ready })).cards.execution;
+  assert.deepEqual([card.status, card.category], ['healthy', null]);
+  assert.ok(card.evidence.ageMs < 2 * MINUTE);
+  // An unconfigured provider stays failed whatever the smoke says.
+  const unconfigured = (await readAdminDiagnostics(db, { env: {}, checkReadiness: ready })).cards.execution;
+  assert.deepEqual([unconfigured.status, unconfigured.category], ['failed', 'not_set']);
+  assertNoPrivateData(card);
+});
+
+test('the execution verdict follows each smoke rule', () => {
+  const NOW = Date.parse('2026-10-22T12:00:00.000Z');
+  const card = ({ status = 'healthy', category = null, lastOutcome = 'success', memberAgeMs = 2 * HOUR } = {}) => Object.freeze({
+    status, category, provider: 'vercel-sandbox', configured: status !== 'failed', reason: status === 'failed' ? 'not_set' : null,
+    recent24h: { success: 1, failed: 0, unavailable: 0 }, lastOutcome,
+    evidence: evidence(NOW, memberAgeMs === null ? null : NOW - memberAgeMs, EXECUTION_EVIDENCE_MAX_AGE_MS),
+  });
+  const smoke = (status, ageMs, languages = null) => Object.freeze({
+    status, category: null, checkedAt: null, languages,
+    evidence: evidence(NOW, ageMs === null ? null : NOW - ageMs, EXECUTION_SMOKE_MAX_AGE_MS),
+  });
+  const timeout = { javascript: { status: 'ok', durationMs: 5 }, python: { status: 'timeout', durationMs: 45000 } };
+  const missing = { javascript: { status: 'result_missing', durationMs: null }, python: { status: 'result_missing', durationMs: null } };
+  const ok = { javascript: { status: 'ok', durationMs: 5 }, python: { status: 'ok', durationMs: 6 } };
+  const verdict = (base, latest) => {
+    const result = executionCardWithSmoke(base, latest, NOW);
+    return [result.status, result.category];
+  };
+  const unknown = card({ status: 'unknown', category: 'no_runs', lastOutcome: null, memberAgeMs: null });
+
+  // Fresh failures newer than the latest member run (or with none) degrade the card.
+  assert.deepEqual(verdict(card(), smoke('failed', HOUR, timeout)), ['degraded', 'smoke_failed']);
+  assert.deepEqual(verdict(card(), smoke('failed', HOUR, missing)), ['degraded', 'smoke_result_missing']);
+  assert.deepEqual(verdict(card(), smoke('failed', HOUR, { ...ok, python: missing.python })), ['degraded', 'smoke_result_missing']);
+  assert.deepEqual(verdict(card(), smoke('failed', HOUR, null)), ['degraded', 'smoke_result_missing']);
+  assert.deepEqual(verdict(unknown, smoke('failed', HOUR, timeout)), ['degraded', 'smoke_failed']);
+  assert.deepEqual(verdict(card({ status: 'degraded', category: 'last_run_failed', lastOutcome: 'failed' }), smoke('failed', HOUR, timeout)),
+    ['degraded', 'smoke_failed']);
+  // A failed card stays failed; a newer (or same-time) member run keeps its verdict.
+  assert.deepEqual(verdict(card({ status: 'failed', category: 'not_set' }), smoke('failed', HOUR, timeout)), ['failed', 'not_set']);
+  assert.deepEqual(verdict(card({ memberAgeMs: 30 * MINUTE }), smoke('failed', HOUR, timeout)), ['healthy', null]);
+  assert.deepEqual(verdict(card({ memberAgeMs: HOUR }), smoke('failed', HOUR, timeout)), ['healthy', null]);
+  // Pending, absent, unreadable or stale smoke changes nothing.
+  const unavailableSmoke = Object.freeze({ status: 'unavailable', category: 'read_failed', checkedAt: null, languages: null,
+    evidence: { at: null, ageMs: null, maxAgeMs: EXECUTION_SMOKE_MAX_AGE_MS, stale: true } });
+  for (const latest of [smoke('pending', MINUTE), smoke('none', null), unavailableSmoke,
+    smoke('failed', EXECUTION_SMOKE_MAX_AGE_MS + MINUTE, timeout), smoke('passed', EXECUTION_SMOKE_MAX_AGE_MS + MINUTE, ok)]) {
+    assert.deepEqual(verdict(card(), latest), ['healthy', null], latest.status);
+    assert.deepEqual(verdict(unknown, latest), ['unknown', 'no_runs'], latest.status);
+  }
+  // A fresh pass lifts only a card with no member runs.
+  assert.deepEqual(verdict(unknown, smoke('passed', HOUR, ok)), ['healthy', null]);
+  assert.deepEqual(verdict(card({ status: 'degraded', category: 'last_run_failed', lastOutcome: 'failed' }), smoke('passed', MINUTE, ok)),
+    ['degraded', 'last_run_failed']);
+  assert.deepEqual(verdict(card({ status: 'failed', category: 'not_set', lastOutcome: null, memberAgeMs: null }), smoke('passed', HOUR, ok)),
+    ['failed', 'not_set']);
+
+  // Freshness is the newer of the two times; a missing smoke time leaves the member's.
+  const fresher = executionCardWithSmoke(card({ memberAgeMs: 30 * HOUR }), smoke('passed', HOUR, ok), NOW);
+  assert.deepEqual([fresher.evidence.ageMs, fresher.evidence.stale, fresher.evidence.maxAgeMs], [HOUR, false, EXECUTION_EVIDENCE_MAX_AGE_MS]);
+  assert.equal(executionCardWithSmoke(card({ memberAgeMs: HOUR }), smoke('passed', 3 * HOUR, ok), NOW).evidence.ageMs, HOUR);
+  assert.equal(executionCardWithSmoke(card({ memberAgeMs: HOUR }), unavailableSmoke, NOW).evidence.ageMs, HOUR);
+  const nothing = executionCardWithSmoke(unknown, smoke('none', null), NOW);
+  assert.deepEqual([nothing.evidence.at, nothing.evidence.stale], [null, true]);
+  const pendingOnly = executionCardWithSmoke(unknown, smoke('pending', MINUTE), NOW);
+  assert.deepEqual([pendingOnly.status, pendingOnly.evidence.ageMs], ['unknown', MINUTE]);
+  // Everything else on the card is kept, and the smoke rides along.
+  const merged = executionCardWithSmoke(card(), smoke('failed', HOUR, timeout), NOW);
+  assert.ok(Object.isFrozen(merged));
+  assert.deepEqual([merged.provider, merged.lastOutcome, merged.recent24h.success, merged.smoke.status], ['vercel-sandbox', 'success', 1, 'failed']);
 });
 
 test('the smoke summary maps every latest-run shape to a bounded status', () => {
