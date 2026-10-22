@@ -38,6 +38,26 @@ async function refresh(page:Page){
   return response.json();
 }
 
+const MODULE_PATH='/assets/admin-diagnostics.js';
+
+/** Records every request for the lazily loaded diagnostics module. */
+function recordModuleRequests(page:Page){
+  const requests:string[]=[];
+  page.on('request',request=>{ if(new URL(request.url()).pathname===MODULE_PATH) requests.push(request.url()); });
+  return requests;
+}
+
+/** Reloads, waits for capabilities and the session to settle, and opens Circle. */
+async function reloadSettled(page:Page){
+  const capabilities=page.waitForResponse(pathIs('/api/auth/capabilities','GET'));
+  const me=page.waitForResponse(pathIs('/api/auth/me','GET'));
+  await page.reload({waitUntil:'domcontentloaded'});
+  await Promise.all([capabilities,me]);
+  await page.locator('[data-tab="circle"]').click();
+  await expect(page.locator('#view-circle')).toBeVisible();
+  await expect(page.locator('#peopleList')).toHaveAttribute('aria-busy','false');
+}
+
 const card=(page:Page,id:string)=>page.locator(`[data-testid="admin-diagnostics-card"][data-card="${id}"]`);
 
 async function expectDiagnosticsAccessible(page:Page){
@@ -68,23 +88,34 @@ test('admin diagnostics: a global admin reads every card, sees stale evidence, a
     const member=pair.member.page;
     expect(pair.owner.user.is_admin).toBe(true);
 
-    // Visitors, members, ordinary owners and demo admins are refused, and the
-    // member never sees the disclosure.
+    // Visitors, members, ordinary owners and demo admins are refused. The
+    // member and the demo admin never see the disclosure or download its script.
     const visitor=await newGoldenPage(browser,golden);
     await openApp(visitor.page,golden);
     expect((await json(visitor.page,'/api/admin/diagnostics')).status).toBe(401);
+    const memberModule=recordModuleRequests(member);
+    await reloadSettled(member);
     expect((await json(member,'/api/admin/diagnostics')).status).toBe(403);
-    await member.locator('[data-tab="circle"]').click();
-    await expect(member.locator('#view-circle')).toBeVisible();
     await expect(member.getByTestId('admin-diagnostics')).toBeHidden();
     await withDatabase(golden,db=>db.execute({sql:`UPDATE circle_memberships SET role='owner' WHERE user_id=?`,args:[pair.member.user.id]}));
     expect((await json(member,'/api/admin/diagnostics')).body).toEqual({ok:false,error:'global admin required'});
     await withDatabase(golden,db=>db.execute({sql:`UPDATE auth_accounts SET is_admin=1,is_demo=1 WHERE id=?`,args:[pair.member.user.id]}));
     expect((await json(member,'/api/admin/diagnostics')).status).toBe(403);
+    await reloadSettled(member);
+    expect((await json(member,'/api/auth/me')).body.user).toMatchObject({is_admin:true,is_demo:true});
+    await expect(member.getByTestId('admin-diagnostics')).toBeHidden();
+    // Other admin UI is unchanged for a demo admin.
+    await member.locator('[data-tab="pair"]').click();
+    await expect(member.locator('#pairDiagnostics')).toBeVisible();
+    expect(memberModule).toEqual([]);
     await withDatabase(golden,db=>db.execute({sql:`UPDATE auth_accounts SET is_admin=0,is_demo=0 WHERE id=?`,args:[pair.member.user.id]}));
 
-    // The admin opens Circle › Diagnostics with the keyboard.
-    await owner.locator('[data-tab="circle"]').click();
+    // The admin's browser loads the module once the session and capability
+    // settle (the positive control for the checks above), then opens Circle ›
+    // Diagnostics with the keyboard.
+    const ownerModule=recordModuleRequests(owner);
+    await reloadSettled(owner);
+    await expect.poll(()=>ownerModule.length).toBe(1);
     const diagnostics=owner.getByTestId('admin-diagnostics');
     await expect(diagnostics).toBeVisible();
     const firstLoad=owner.waitForResponse(pathIs('/api/admin/diagnostics','GET'));
@@ -187,13 +218,16 @@ test('admin diagnostics: a global admin reads every card, sees stale evidence, a
     await expect(owner.locator('#pairDiagnostics')).toHaveAttribute('open','');
     await expect(owner.locator('#pairDiagnostics > summary')).toBeFocused();
 
-    // Turning the flag off hides the view and the API is a plain 404.
+    // Turning the flag off hides the view, the script is not downloaded, and
+    // the API answers like an unknown endpoint.
     process.env.ADMIN_DIAGNOSTICS_ENABLED='false';
-    expect((await json(owner,'/api/admin/diagnostics')).status).toBe(404);
-    await owner.reload({waitUntil:'domcontentloaded'});
-    await owner.locator('[data-tab="circle"]').click();
-    await expect(owner.locator('#view-circle')).toBeVisible();
+    const flagOff=await json(owner,'/api/admin/diagnostics');
+    expect(flagOff.status).toBe(404);
+    expect(flagOff.body.error).toBe("unknown ops endpoint 'admin-diagnostics'");
+    ownerModule.splice(0);
+    await reloadSettled(owner);
     await expect(owner.getByTestId('admin-diagnostics')).toBeHidden();
+    expect(ownerModule).toEqual([]);
     expect(golden.external).toEqual([]);
   }finally{
     await golden.close();

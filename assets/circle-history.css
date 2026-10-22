@@ -225,6 +225,8 @@
 /* Admin Diagnostics (issue 310). Tokens and rc- components only; the visual
    design is provisional (needs-design). */
 .admin-diag-toolbar { justify-content: space-between; }
+#adminDiagnosticsAge { margin: 0; }
+#adminDiagnosticsAge:empty { display: none; }
 .admin-diag-grid {
   display: grid; gap: var(--space-3);
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));

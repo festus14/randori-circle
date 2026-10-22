@@ -3156,12 +3156,16 @@ did the backup drill pass, is Run working?".
 - `GET /api/admin/diagnostics` (rewritten to `/api/ops?endpoint=admin-diagnostics`,
   no new function) returns one aggregate snapshot,
   `randori.admin-diagnostics.v1`, with `Cache-Control: no-store`. While the flag
-  is off it is a plain `404` with no session or database access, and
-  `/api/auth/capabilities` does not advertise `adminDiagnostics`.
+  is off it returns the same `404` as an unknown ops endpoint, with no session
+  or database access, and `/api/auth/capabilities` does not advertise
+  `adminDiagnostics`.
 - Access: only a global administrator — a live session on an account with
   `is_admin=1` and `is_demo=0` and, when circle membership is enforced, an
-  active membership in a non-archived circle. `ADMIN_EMAILS` alone and the
-  circle owner role grant nothing. `401` without a session, `403` otherwise.
+  active membership in a non-archived circle. Accounts listed in `ADMIN_EMAILS`
+  qualify once they are `is_admin=1`, which sign-in and `/api/auth/me` set on
+  their next call. The circle owner role alone grants nothing. `401` without a
+  session, `403` otherwise. `/api/auth/me` now also returns `is_demo`, so the
+  browser hides the view (and skips loading it) for demo admins too.
 - Every read is a `SELECT`. Cards: **Outbox delivery** (`readOutboxDeliveryHealth`
   and `readOutboxMetrics` plus one per-type due/lease/dead-letter aggregate,
   judged with the watchdog's 15-minute threshold); **Code execution** (the

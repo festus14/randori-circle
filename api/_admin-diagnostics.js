@@ -555,11 +555,13 @@ export async function readAdminDiagnostics(db,{env=process.env,checkReadiness=de
  */
 export async function handleAdminDiagnosticsRequest(req,res,{
   verifyRequestAuth,getClient,env=process.env,read=readAdminDiagnostics,
+  notFound=()=>res.status(404).json({ok:false,error:'not found'}),
 }){
+  // Flag off: no session or database access, and no headers of its own.
+  // api/ops.js passes its unknown-endpoint response as `notFound`, so the
+  // route cannot be told apart from one that does not exist.
+  if(!adminDiagnosticsEnabled(env)) return notFound();
   res.setHeader('Cache-Control','no-store');
-  // Flag off: indistinguishable from an unknown route, with no session or
-  // database access.
-  if(!adminDiagnosticsEnabled(env)) return res.status(404).json({ok:false,error:'not found'});
   if(req.method!=='GET'){
     res.setHeader('Allow','GET');
     return res.status(405).json({ok:false,error:'GET only'});

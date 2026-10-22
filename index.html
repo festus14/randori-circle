@@ -2384,6 +2384,7 @@ a.btn{text-decoration:none}
             <button id="adminDiagnosticsRefresh" data-testid="admin-diagnostics-refresh" class="btn secondary sm" type="button">Refresh</button>
             <span id="adminDiagnosticsStatus" data-testid="admin-diagnostics-status" class="small muted" role="status" aria-live="polite"></span>
           </div>
+          <p id="adminDiagnosticsAge" data-testid="admin-diagnostics-age" class="small muted"></p>
           <div id="adminDiagnosticsCards" data-testid="admin-diagnostics-cards" class="admin-diag-grid"></div>
           <section class="admin-diag-section" aria-labelledby="adminDeadLettersTitle">
             <h4 id="adminDeadLettersTitle" class="circle-subtitle" tabindex="-1">Dead letters</h4>
@@ -7366,7 +7367,9 @@ async function refreshMe(){
   // shown only for global admins while the server advertises the capability,
   // so nobody else downloads it. The API authorizes every request again;
   // replay reuses the audited endpoint.
-  function adminDiagnosticsAllowed(){ return authCapabilities.adminDiagnostics===true&&!!me&&isAdmin(); }
+  // Mirrors the server gate (is_admin=1, not demo) so a demo admin never
+  // downloads the module only to be refused. Other admin UI is unchanged.
+  function adminDiagnosticsAllowed(){ return authCapabilities.adminDiagnostics===true&&!!me&&isAdmin()&&me.is_demo!==true; }
   function openRelatedDiagnostics(id){
     const details=document.getElementById(id);
     if(!details||details.hidden){ toast('That tool is not available right now.'); return; }

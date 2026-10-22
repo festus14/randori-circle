@@ -22,7 +22,10 @@ mock.module('../../api/_db.js', {
     getClient: () => realDb,
     getJwtSecret: () => 'unit-test-secret-at-least-thirty-two-characters',
     getCronSecret: () => 'cron-secret-for-admin-diagnostics-route',
-    getAdminEmails: () => new Set(['plain.owner@example.test']),
+    // api/ops.js imports this for the demo endpoints; the diagnostics route
+    // never calls it (it reads is_admin, which /api/auth/me and login set for
+    // ADMIN_EMAILS accounts).
+    getAdminEmails: () => new Set(),
     deterministicColor: () => '#123456',
     issueSession: async () => 'session',
     issueSessionInTransaction: async () => 'session',
@@ -72,7 +75,8 @@ before(async () => {
     args: [email, 'x'.repeat(60), 'Name', '#123456', admin, demo],
   })).lastInsertRowid);
   ids.admin = await insert('global.admin@example.test', 1, 0);
-  // Listed in ADMIN_EMAILS but is_admin=0: the legacy env admin is not a global admin here.
+  // An ordinary account (is_admin=0). ADMIN_EMAILS accounts become is_admin=1
+  // on their next sign-in or /api/auth/me call, and only then qualify.
   ids.owner = await insert('plain.owner@example.test', 0, 0);
   ids.demo = await insert('demo.admin@example.test', 1, 1);
 });
@@ -98,13 +102,16 @@ test('vercel.json rewrites the public path to the grouped ops handler', () => {
   assert.deepEqual(rewrite, { source: '/api/admin/diagnostics', destination: '/api/ops?endpoint=admin-diagnostics' });
 });
 
-test('with the flag off the route is a plain 404 and never checks the session', async () => {
+test('with the flag off the route answers exactly like an unknown ops endpoint and never checks the session', async () => {
   sessionPayload = { id: ids.admin };
-  for (const request of [{}, { url: '/api/admin/diagnostics', query: {} }]) {
-    const result = await invoke(request);
-    assert.equal(result.status, 404);
-    assert.deepEqual(result.body, { ok: false, error: 'not found' });
-  }
+  const unknown = await invoke({ url: '/api/ops?endpoint=no-such-endpoint', query: { endpoint: 'no-such-endpoint' } });
+  assert.equal(unknown.status, 404);
+  const flagOff = await invoke();
+  assert.deepEqual(flagOff, { ...unknown, body: { ...unknown.body, error: "unknown ops endpoint 'admin-diagnostics'" } });
+  assert.deepEqual(flagOff.headers, {});
+  assert.deepEqual(flagOff.body.available, unknown.body.available);
+  const byPath = await invoke({ url: '/api/admin/diagnostics', query: {} });
+  assert.deepEqual([byPath.status, byPath.body.error], [404, "unknown ops endpoint 'diagnostics'"]);
   assert.equal(verifyCalls, 0);
 });
 

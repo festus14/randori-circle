@@ -93,16 +93,18 @@ class FakeElement {
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture({ withReason = true, withLinks = true } = {}) {
+function fixture({ withReason = true, withLinks = true, withAge = true } = {}) {
   const elements = {
     adminDiagnostics: new FakeElement('details', 'adminDiagnostics'),
     adminDiagnosticsRefresh: new FakeElement('button', 'adminDiagnosticsRefresh'),
     adminDiagnosticsStatus: new FakeElement('span', 'adminDiagnosticsStatus'),
+    adminDiagnosticsAge: new FakeElement('p', 'adminDiagnosticsAge'),
     adminDiagnosticsCards: new FakeElement('div', 'adminDiagnosticsCards'),
     adminDeadLetters: new FakeElement('ul', 'adminDeadLetters'),
     adminDeadLettersTitle: new FakeElement('h4', 'adminDeadLettersTitle'),
   };
   elements.adminDiagnostics.hidden = true;
+  if (!withAge) delete elements.adminDiagnosticsAge;
   if (withReason) {
     elements.adminReplayReason = new FakeElement('select', 'adminReplayReason');
     elements.adminReplayReason.value = 'OPERATOR_RETRY';
@@ -381,7 +383,8 @@ test('opening the disclosure loads and renders every card and the dead letters',
   assert.equal(rows[0].dataset.eventId, '41');
   assert.match(rows[0].textContent, /#41 invitation\.email\.requested v1PROVIDER_REJECTEDDead-lettered 2 h ago · 5 attempts · replayed 0× · provider: domain_not_verified/);
   assert.equal(rows[0].byTestId('admin-dead-letter-replay')[0].getAttribute('aria-label'), 'Replay event #41');
-  assert.equal(elements.adminDiagnosticsStatus.textContent, 'Checked 2026-10-20 12:00 UTC.');
+  assert.equal(elements.adminDiagnosticsStatus.textContent, 'Diagnostics updated.');
+  assert.equal(elements.adminDiagnosticsAge.textContent, 'Checked 2026-10-20 12:00 UTC.');
   assert.equal(elements.adminDiagnostics.getAttribute('aria-busy'), 'false');
 });
 
@@ -399,7 +402,8 @@ test('stale badges and the snapshot notice update in place as time passes', asyn
   assert.equal(cardNode(elements, 'readiness').dataset.stale, 'true');
   assert.equal(staleBadge(elements, 'outbox').hidden, true, '2 + 6 minutes is inside the 15-minute cadence');
   assert.equal(elements.adminDiagnostics.dataset.stale, 'true');
-  assert.equal(elements.adminDiagnosticsStatus.textContent, 'This snapshot is 6 min old. Refresh for current data.');
+  assert.equal(elements.adminDiagnosticsStatus.textContent, 'This snapshot is out of date. Refresh for current data.');
+  assert.equal(elements.adminDiagnosticsAge.textContent, 'Checked 2026-10-20 12:00 UTC · 6 min ago.');
   state.now += 10 * MINUTE;
   controller.tick();
   assert.equal(staleBadge(elements, 'outbox').hidden, false);
@@ -467,10 +471,10 @@ test('a confirmed replay uses the selected reason, reloads and keeps focus in th
   assert.equal(state.loads, 2);
   assert.equal(elements.adminDeadLetters.byTestId('admin-dead-letter').length, 0);
   assert.equal(elements.adminDeadLetters.textContent, 'No dead letters.');
-  assert.equal(elements.adminDiagnosticsStatus.textContent, 'Event #41 is queued for delivery again. Checked 2026-10-20 12:00 UTC.');
+  assert.equal(elements.adminDiagnosticsStatus.textContent, 'Event #41 is queued for delivery again. Diagnostics updated.');
   assert.equal(elements.adminDeadLettersTitle.focused, 1);
   await elements.adminDiagnosticsRefresh.dispatch('click');
-  assert.equal(elements.adminDiagnosticsStatus.textContent, 'Checked 2026-10-20 12:00 UTC.', 'a manual refresh clears the notice');
+  assert.equal(elements.adminDiagnosticsStatus.textContent, 'Diagnostics updated.', 'a manual refresh clears the notice');
 });
 
 test('an unknown reason falls back to operator retry', async () => {
@@ -487,7 +491,7 @@ test('a replay conflict refreshes the list; other failures keep the row for a re
   await conflict.elements.adminDeadLetters.byTestId('admin-dead-letter-replay')[0].dispatch('click');
   await settle();
   assert.equal(conflict.state.loads, 2);
-  assert.match(conflict.elements.adminDiagnosticsStatus.textContent, /^Event #41 is no longer dead-lettered\. Checked/);
+  assert.equal(conflict.elements.adminDiagnosticsStatus.textContent, 'Event #41 is no longer dead-lettered. Diagnostics updated.');
   assert.equal(conflict.elements.adminDeadLettersTitle.focused, 1);
 
   const failure = harness({ replay: async () => { throw { http_status: 503 }; } });
@@ -612,7 +616,8 @@ test('the controller defaults to the real clock', async () => {
   // Snapshot age is measured from when this browser received it, so a skewed
   // device clock cannot make fresh data look stale.
   assert.equal(elements.adminDiagnostics.dataset.stale, 'false');
-  assert.equal(elements.adminDiagnosticsStatus.textContent, 'Checked 2026-10-20 12:00 UTC.');
+  assert.equal(elements.adminDiagnosticsStatus.textContent, 'Diagnostics updated.');
+  assert.equal(elements.adminDiagnosticsAge.textContent, 'Checked 2026-10-20 12:00 UTC.');
 });
 
 test('a replay confirmed after access was withdrawn is not sent', async () => {
@@ -623,4 +628,101 @@ test('a replay confirmed after access was withdrawn is not sent', async () => {
   await fixtureHarness.elements.adminDeadLetters.byTestId('admin-dead-letter-replay')[0].dispatch('click');
   assert.equal(state.confirms.length, 1);
   assert.deepEqual(state.replays, []);
+});
+
+function countWrites(element) {
+  const property = Object.getOwnPropertyDescriptor(FakeElement.prototype, 'textContent');
+  const counter = { writes: 0 };
+  Object.defineProperty(element, 'textContent', {
+    get() { return property.get.call(this); },
+    set(value) { counter.writes += 1; property.set.call(this, value); },
+  });
+  return counter;
+}
+
+test('a Refresh while a replay is in flight keeps Replay usable and still reports the replay', async () => {
+  let finish;
+  const { elements, state } = harness({
+    payloads: [snapshot(), snapshot(), snapshot()],
+    replay: () => new Promise((resolve, reject) => { finish = { resolve, reject }; }),
+  });
+  await openPanel(elements);
+  await elements.adminDeadLetters.byTestId('admin-dead-letter-replay')[0].dispatch('click');
+  assert.equal(elements.adminDiagnosticsStatus.textContent, 'Replaying event #41…');
+  await elements.adminDiagnosticsRefresh.dispatch('click');
+  assert.equal(state.loads, 2);
+  assert.equal(elements.adminDiagnosticsStatus.textContent, 'Diagnostics updated.');
+  finish.resolve({ ok: true, replayed: true });
+  await settle();
+  assert.equal(state.loads, 3, 'the replay reloads after the Refresh');
+  assert.equal(elements.adminDiagnosticsStatus.textContent, 'Event #41 is queued for delivery again. Diagnostics updated.');
+  assert.equal(elements.adminDeadLettersTitle.focused, 1);
+  await elements.adminDeadLetters.byTestId('admin-dead-letter-replay')[0].dispatch('click');
+  assert.equal(state.confirms.length, 2, 'Replay still works');
+  finish.reject({ http_status: 503 });
+  await settle();
+  // A failure after another Refresh also releases the Replay buttons.
+  await elements.adminDiagnosticsRefresh.dispatch('click');
+  await elements.adminDeadLetters.byTestId('admin-dead-letter-replay')[0].dispatch('click');
+  assert.equal(state.confirms.length, 3);
+});
+
+test('a replay whose request settles during a Refresh is reported once the Refresh is superseded', async () => {
+  let release;
+  let finish;
+  const slow = () => new Promise(resolve => { release = () => resolve(snapshot()); });
+  const after = snapshot({ deadLetters: { status: 'healthy', total: 0, items: [], evidence: fresh(5 * MINUTE) } });
+  const { elements, state } = harness({
+    payloads: [snapshot(), slow, after],
+    replay: () => new Promise(resolve => { finish = resolve; }),
+  });
+  await openPanel(elements);
+  await elements.adminDeadLetters.byTestId('admin-dead-letter-replay')[0].dispatch('click');
+  void elements.adminDiagnosticsRefresh.dispatch('click');
+  await settle();
+  finish({ ok: true });
+  await settle();
+  release();
+  await settle();
+  assert.equal(state.loads, 3);
+  assert.equal(elements.adminDeadLetters.textContent, 'No dead letters.', 'the stale Refresh response is ignored');
+  assert.equal(elements.adminDiagnosticsStatus.textContent, 'Event #41 is queued for delivery again. Diagnostics updated.');
+});
+
+test('a failed reload after a successful replay still says the replay happened', async () => {
+  const { elements } = harness({ payloads: [snapshot(), { http_status: 503 }] });
+  await openPanel(elements);
+  await elements.adminDeadLetters.byTestId('admin-dead-letter-replay')[0].dispatch('click');
+  await settle();
+  assert.equal(elements.adminDiagnosticsStatus.textContent,
+    'Event #41 is queued for delivery again. Diagnostics are unavailable right now. Try Refresh.');
+  assert.equal(elements.adminDiagnosticsAge.textContent, '');
+});
+
+test('the live status announces only the move to stale; the age line updates quietly', async () => {
+  const { controller, elements, state } = harness();
+  await openPanel(elements);
+  const status = countWrites(elements.adminDiagnosticsStatus);
+  for (const minutes of [1, 2, 3, 4, 5]) {
+    state.now = Date.parse('2026-10-20T12:00:00.000Z') + minutes * MINUTE;
+    controller.tick();
+    assert.equal(elements.adminDiagnosticsAge.textContent, `Checked 2026-10-20 12:00 UTC · ${minutes} min ago.`);
+  }
+  assert.equal(status.writes, 0, 'no announcement while the snapshot is fresh');
+  for (const minutes of [6, 7, 8, 20]) {
+    state.now = Date.parse('2026-10-20T12:00:00.000Z') + minutes * MINUTE;
+    controller.tick();
+  }
+  assert.equal(status.writes, 1, 'one announcement for the move to stale');
+  assert.equal(elements.adminDiagnosticsStatus.textContent, 'This snapshot is out of date. Refresh for current data.');
+  assert.equal(elements.adminDiagnosticsAge.textContent, 'Checked 2026-10-20 12:00 UTC · 20 min ago.');
+});
+
+test('the controller works without the age line', async () => {
+  const { elements, state, controller } = harness({ withAge: false });
+  await openPanel(elements);
+  state.now += 10 * MINUTE;
+  controller.tick();
+  assert.equal(elements.adminDiagnostics.dataset.stale, 'true');
+  assert.equal(elements.adminDiagnosticsStatus.textContent, 'This snapshot is out of date. Refresh for current data.');
 });

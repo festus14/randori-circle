@@ -719,8 +719,12 @@ test('me validates signed and stored sessions and clears cookies for lapsed memb
   assert.equal(me.body.user.isAvailable,true,'null availability defaults to available');
   assert.equal(me.body.user.is_admin_env,true);
   assert.equal(me.body.user.is_admin_db,false);
+  assert.equal(me.body.user.is_demo,false,'a missing is_demo value is not a demo account');
   S.sql=sqlRoutes([[/FROM auth_accounts WHERE id/,[{...user,is_available:0,is_admin:1}]]]);
   assert.equal((await call({endpoint:'me',method:'GET'})).body.user.isAvailable,false);
+  // #310: the browser hides admin diagnostics from demo admins, as the API does.
+  S.sql=sqlRoutes([[/FROM auth_accounts WHERE id/,[{...user,is_admin:1,is_demo:1}]]]);
+  assert.equal((await call({endpoint:'me',method:'GET'})).body.user.is_demo,true);
   S.sql=()=>{ throw new Error('db'); };
   assert.equal((await call({endpoint:'me',method:'GET'})).body.error,'invalid session');
 });

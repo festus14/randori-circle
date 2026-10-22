@@ -231,6 +231,8 @@ test('threshold constants match the reviewed watchdog workflows', () => {
   assert.match(backup, new RegExp(`WATCHDOG_MAX_RUN_AGE_MS: '${BACKUP_WATCHDOG_CADENCE_MS}'`));
   assert.match(outboxEnv, /"cron":"37 \* \* \* \*"/, 'the outbox watchdog runs hourly');
   assert.equal(OUTBOX_WATCHDOG_CADENCE_MS, HOUR);
+  // Three missed five-minute scheduler runs, the watchdog's delivery threshold.
+  assert.equal(OUTBOX_DISPATCH_EVIDENCE_MAX_AGE_MS, 15 * MINUTE);
 });
 
 test('the advertised replay reason codes are exactly the ones the audited replay accepts', async () => {
@@ -589,18 +591,23 @@ function invoke(options, { method = 'GET', env = { ADMIN_DIAGNOSTICS_ENABLED: 't
     env: { ...env, ...options.env },
     ...(options.read ? { read: options.read } : {}),
     ...(options.verifyRequestAuth ? { verifyRequestAuth: options.verifyRequestAuth } : {}),
+    ...(options.notFound ? { notFound: options.notFound } : {}),
   };
   return handleAdminDiagnosticsRequest({ method, headers: {} }, res, deps).then(() => ({ status: statusCode, body, headers, calls }));
 }
 
-test('the route is a 404 with no session or database access while the flag is off', async () => {
+test('the route is a 404 with no session, database access or headers of its own while the flag is off', async () => {
   for (const env of [{}, { ADMIN_DIAGNOSTICS_ENABLED: 'false' }]) {
     const result = await invoke({}, { env });
     assert.equal(result.status, 404);
     assert.deepEqual(result.body, { ok: false, error: 'not found' });
     assert.deepEqual(result.calls, { verify: 0, client: 0 });
-    assert.equal(result.headers['cache-control'], 'no-store');
+    assert.deepEqual(result.headers, {});
   }
+  // The caller's unknown-route response is used verbatim.
+  let used = 0;
+  const custom = await invoke({ notFound: () => { used += 1; } }, { env: {} });
+  assert.deepEqual([used, custom.status, custom.body, custom.calls], [1, 200, undefined, { verify: 0, client: 0 }]);
 });
 
 test('the route refuses other methods, anonymous callers and non-admins', async () => {

@@ -311,6 +311,9 @@ export function mountAdminDiagnostics({
   const list = el('adminDeadLetters');
   const deadTitle = el('adminDeadLettersTitle');
   const reasonSelect = el('adminReplayReason');
+  // Not a live region: the snapshot age changes every tick, and announcing it
+  // each minute would be noise. Only the move to stale is announced.
+  const age = el('adminDiagnosticsAge');
   const noop = Object.freeze({ sync() {}, refresh: async () => {}, tick() {}, reset() {} });
   if (!panel || !refreshButton || !status || !cards || !list) return noop;
 
@@ -319,7 +322,11 @@ export function mountAdminDiagnostics({
   let pending = false;
   let replaying = false;
   let epoch = 0;
+  // Bumped only by reset() (identity change or access withdrawn). A Refresh
+  // bumps `epoch` but not this, so an in-flight replay still reports.
+  let session = 0;
   let notice = '';
+  let snapshotStale = false;
 
   function setStatus(text) {
     if (status.textContent !== text) status.textContent = text;
@@ -470,21 +477,30 @@ export function mountAdminDiagnostics({
     list.replaceChildren(...rows);
   }
 
-  function snapshotStatus() {
-    const elapsed = Math.max(0, now() - fetchedAt);
-    const prefix = notice ? `${notice} ` : '';
-    if (elapsed > snapshot.refreshAfterMs) {
-      panel.dataset.stale = 'true';
-      return `${prefix}This snapshot is ${formatDuration(elapsed)} old. Refresh for current data.`;
+  function snapshotAgeMs() {
+    return Math.max(0, now() - fetchedAt);
+  }
+
+  // Returns true when this call moved the snapshot from fresh to stale.
+  function updateSnapshotFreshness() {
+    const elapsed = snapshotAgeMs();
+    const stale = elapsed > snapshot.refreshAfterMs;
+    panel.dataset.stale = stale ? 'true' : 'false';
+    if (age) {
+      const ago = elapsed >= 60 * 1000 ? ` · ${formatDuration(elapsed)} ago` : '';
+      age.textContent = `Checked ${formatInstant(snapshot.checkedAt)}${ago}.`;
     }
-    panel.dataset.stale = 'false';
-    return `${prefix}Checked ${formatInstant(snapshot.checkedAt)}.`;
+    const became = stale && !snapshotStale;
+    snapshotStale = stale;
+    return became;
   }
 
   function render() {
     renderCards();
     renderDeadLetters();
-    setStatus(snapshotStatus());
+    snapshotStale = false;
+    updateSnapshotFreshness();
+    setStatus(`${notice ? `${notice} ` : ''}Diagnostics updated.`);
   }
 
   function clear() {
@@ -492,9 +508,12 @@ export function mountAdminDiagnostics({
     cards.replaceChildren();
     list.replaceChildren();
     panel.dataset.stale = 'false';
+    snapshotStale = false;
+    if (age) age.textContent = '';
   }
 
   function reset() {
+    session += 1;
     epoch += 1;
     snapshot = null;
     pending = false;
@@ -525,7 +544,8 @@ export function mountAdminDiagnostics({
       if (started !== epoch) return;
       snapshot = null;
       clear();
-      setStatus(loadErrorMessage(error));
+      // A replay notice survives a failed reload: the replay itself succeeded.
+      setStatus(`${notice ? `${notice} ` : ''}${loadErrorMessage(error)}`);
     } finally {
       if (started === epoch) {
         pending = false;
@@ -548,29 +568,32 @@ export function mountAdminDiagnostics({
       return;
     }
     if (!host.enabled()) return;
-    const started = epoch;
+    const owner = session;
     replaying = true;
     button.disabled = true;
     setStatus(`Replaying event #${item.id}…`);
+    let failure = null;
+    let failed = false;
     try {
       await host.replay(item.id, reason);
-      if (started !== epoch) return;
-      notice = `Event #${item.id} is queued for delivery again.`;
-      replaying = false;
-      await load({ keepNotice: true });
-      deadTitle?.focus?.();
     } catch (error) {
-      if (started !== epoch) return;
-      replaying = false;
-      if (Number(error?.http_status) === 409) {
-        notice = replayErrorMessage(error, item.id);
-        await load({ keepNotice: true });
-        deadTitle?.focus?.();
-        return;
-      }
-      button.disabled = false;
-      setStatus(replayErrorMessage(error, item.id));
+      failed = true;
+      failure = error;
     }
+    // Cleared however the request ended, so a Refresh that ran meanwhile
+    // cannot leave every Replay button inert.
+    replaying = false;
+    if (owner !== session) return;
+    if (failed && Number(failure?.http_status) !== 409) {
+      button.disabled = false;
+      setStatus(replayErrorMessage(failure, item.id));
+      return;
+    }
+    notice = failed ? replayErrorMessage(failure, item.id) : `Event #${item.id} is queued for delivery again.`;
+    // A new load supersedes any Refresh still in flight, so the list reflects
+    // the replay and keeps the notice.
+    await load({ keepNotice: true });
+    deadTitle?.focus?.();
   }
 
   function sync() {
@@ -587,7 +610,7 @@ export function mountAdminDiagnostics({
   function tick() {
     if (!snapshot || pending) return;
     updateFreshness();
-    setStatus(snapshotStatus());
+    if (updateSnapshotFreshness()) setStatus('This snapshot is out of date. Refresh for current data.');
   }
 
   panel.addEventListener('toggle', () => {

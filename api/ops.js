@@ -1134,7 +1134,7 @@ async function handleOps(req,res,{isWeeklyDue=pairingCronIsDue}={}){
   }
   // Issue #310: admin-only diagnostics, a 404 unless ADMIN_DIAGNOSTICS_ENABLED=true.
   if (ep==='admin-diagnostics' || pathLower.includes('/admin/diagnostics')){
-    return handleAdminDiagnosticsRequest(req,res,{verifyRequestAuth,getClient});
+    return handleAdminDiagnosticsRequest(req,res,{verifyRequestAuth,getClient,notFound:()=>unknownOpsEndpoint(res,ep)});
   }
   if (ep==='notifications-prefs' || ep==='notifications' || ep==='prefs' || ep.includes('notification') || pathLower.includes('notifications') || pathLower.includes('notif') ) return handleNotificationPrefs(req,res);
   if (availabilityRequest) return handleAvailability(req,res);
@@ -1151,6 +1151,12 @@ async function handleOps(req,res,{isWeeklyDue=pairingCronIsDue}={}){
   }
   if (pathLower.includes('reshuffle')) return handleReshuffle(req,res);
   if (pathLower.includes('weekly')) return handleWeekly(req,res,{isDue:isWeeklyDue});
+  return unknownOpsEndpoint(res,ep);
+}
+
+// The flag-off admin diagnostics route answers with exactly this response, so
+// it cannot be told apart from an endpoint that does not exist.
+function unknownOpsEndpoint(res,ep){
   return res.status(404).json({ error:`unknown ops endpoint '${ep}'`, available:['availability','pairing-run','weekly','outbox','outbox-health','outbox-replay','demo-seed','demo-shuffle','demo-reset'] });
 }
 
