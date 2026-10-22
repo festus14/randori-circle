@@ -9,14 +9,15 @@
 //
 // Solo requests read only the requesting member's history. A pair request is
 // authorized with `api/_pair-access.js` for the room's pair, and only while
-// that pair belongs to the newest pairing week (the current pair). The
-// partner's history is read on the server and leaves it as one boolean per
-// exercise ("attempted by your partner"): never a score, code, date, run id or
-// user id. Nothing here writes, and there is no request-path DDL.
+// that pair belongs to the newest non-demo pairing week (the current pair).
+// The partner's history is reduced on the server to the set of exercises they
+// attempted: their attempt times never reach the selection rule, so nothing in
+// the response (reasons included) depends on them, and it leaves the server as
+// one boolean per exercise ("attempted by your partner"): never a score, code,
+// date, run id or user id. Nothing here writes, and there is no request-path
+// DDL.
 //
 // Everything is behind EXERCISE_SUGGESTIONS_ENABLED (default off).
-import { createHash } from 'node:crypto';
-
 import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 
@@ -31,7 +32,6 @@ export const DIFFICULTY_LEVELS=Object.freeze(['Easy','Medium','Hard']);
 
 const MAX_SLUG_LENGTH=120;
 const MAX_SNAPSHOT_BYTES=32*1024;
-const MAX_CODE_BYTES=20*1024;
 const SLUG=/^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const QUESTION_REF=/^([a-z0-9]+(?:-[a-z0-9]+)*)(?:@[1-9]\d*)?$/;
 const SQLITE_DATETIME=/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
@@ -110,7 +110,8 @@ export function parseExerciseSuggestionsQuery(req){
     }
     for(const slug of query.hidden.split(',')){
       if(!validSlug(slug)) throw new ExerciseSuggestionsInputError('hidden must be a comma-separated list of exercise slugs');
-      if(!hidden.includes(slug)) hidden.push(slug);
+      if(hidden.includes(slug)) throw new ExerciseSuggestionsInputError('hidden must not repeat an exercise');
+      hidden.push(slug);
     }
     if(hidden.length>MAX_HIDDEN_SLUGS){
       throw new ExerciseSuggestionsInputError(`at most ${MAX_HIDDEN_SLUGS} hidden exercises are supported`);
@@ -135,7 +136,7 @@ async function probeExerciseSuggestionsSchema(db){
   await db.execute(`SELECT id,user_id,week_id,pair_group_id,question_slug,language,code,test_cases_snapshot,
     results_json,passed_count,total_count,created_at FROM session_runs LIMIT 0`);
   await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0`);
-  await db.execute(`SELECT id FROM pairing_weeks LIMIT 0`);
+  await db.execute(`SELECT id,is_demo FROM pairing_weeks LIMIT 0`);
   await db.execute(`SELECT week_id,user_id,source FROM pairing_participants LIMIT 0`);
   await db.execute(`SELECT week_id,pair_group_id,user_id,participant_source,confirmed_at
     FROM session_completion_receipts LIMIT 0`);
@@ -175,7 +176,10 @@ export function attemptInstant(value){
 
 /**
  * The exercise and time of one run, only if its server attestation verifies.
- * Mirrors the run feed's "verified" rule; anything unverifiable is ignored,
+ * This is the run feed's "verified" rule minus one step: the stored code is
+ * not read, so a v3 run's code is not re-hashed against `code_hash`. The HMAC
+ * still binds that hash with the member, exercise, room and results, and an
+ * attempt does not depend on the code. Anything unverifiable is ignored,
  * never an error, so one bad row cannot hide a member's other history.
  */
 export function verifiedRunAttempt(row,verifyAttestation){
@@ -203,8 +207,7 @@ export function verifiedRunAttempt(row,verifyAttestation){
     const pairGroupId=positiveSafeInteger(row.pair_group_id);
     if(!weekId||!pairGroupId||weekId!==positiveSafeInteger(snapshot.week_id)
       ||pairGroupId!==positiveSafeInteger(snapshot.pair_group_id)
-      ||typeof row.code!=='string'||Buffer.byteLength(row.code,'utf8')>MAX_CODE_BYTES
-      ||createHash('sha256').update(row.code,'utf8').digest('hex')!==snapshot.code_hash
+      ||!/^[a-f0-9]{64}$/.test(String(snapshot.code_hash||''))
       ||!positiveSafeInteger(snapshot.document_revision)
       ||!/^[a-f0-9]{64}$/.test(String(snapshot.document_state_hash||''))
       ||!/^[a-f0-9]{64}$/.test(String(snapshot.document_version||''))) return null;
@@ -262,51 +265,74 @@ const COMPLETED_SESSION_EXERCISES_SQL=`WITH mine AS (
   )
   SELECT completed.completed_at,snapshot.question_id AS question_ref
     FROM completed
-    JOIN pair_room_snapshots snapshot
-      ON snapshot.week_id=completed.week_id AND snapshot.pair_group_id=completed.pair_group_id
+    CROSS JOIN pair_room_snapshots snapshot
+    WHERE snapshot.week_id=completed.week_id AND snapshot.pair_group_id=completed.pair_group_id
   UNION ALL
   SELECT completed.completed_at,document.question_slug AS question_ref
     FROM completed
-    JOIN pair_code_documents document
-      ON document.week_id=completed.week_id AND document.pair_group_id=completed.pair_group_id
-     AND document.revision>1`;
+    CROSS JOIN pair_code_documents document
+    WHERE document.week_id=completed.week_id AND document.pair_group_id=completed.pair_group_id
+      AND document.revision>1`;
+// CROSS JOIN keeps the few completed sessions as the outer loop so both
+// tables are read by their (week_id,pair_group_id) key even without ANALYZE
+// statistics, instead of scanning every snapshot or code document.
+
+// The newest RUNS_PER_EXERCISE runs of each wanted exercise, found through the
+// (user_id,question_slug) index, which covers the rowid ordering. Only the
+// columns the attestation needs are read: never the code.
+function runsStatement(member,list){
+  return {
+    sql:`WITH wanted(slug) AS (VALUES ${list.map(()=>'(?)').join(',')})
+      SELECT sr.id,sr.user_id,sr.week_id,sr.pair_group_id,sr.question_slug,sr.language,
+        sr.test_cases_snapshot,sr.results_json,sr.passed_count,sr.total_count,sr.created_at
+      FROM wanted
+      JOIN session_runs sr ON sr.id IN (
+        SELECT recent.id FROM session_runs recent
+        WHERE recent.user_id=? AND recent.question_slug=wanted.slug
+        ORDER BY recent.id DESC LIMIT ?
+      )`,
+    args:[...list,member,RUNS_PER_EXERCISE],
+  };
+}
+
+function memberCatalogue(userId,slugs){
+  const member=positiveSafeInteger(userId);
+  if(!member) throw new TypeError('userId must be a positive safe integer');
+  return {member,list:[...new Set((Array.isArray(slugs)?slugs:[]).filter(validSlug))]};
+}
+
+/** The two read statements for one member (empty with no catalogue slugs). */
+export function memberAttemptStatements(userId,slugs){
+  const {member,list}=memberCatalogue(userId,slugs);
+  if(!list.length) return [];
+  return [runsStatement(member,list),{sql:COMPLETED_SESSION_EXERCISES_SQL,args:[member,MAX_COMPLETED_SESSIONS]}];
+}
+
+/** `Map<slug, latestEpochMs>` from the two result sets of memberAttemptStatements. */
+export function memberAttemptsFromResults(userId,slugs,[runs,sessions]=[],verifyAttestation){
+  const {member,list}=memberCatalogue(userId,slugs);
+  const catalogue=new Set(list);
+  const history=new Map();
+  for(const row of runs?.rows||[]){
+    if(positiveSafeInteger(row?.user_id)!==member) continue;
+    const attempt=verifiedRunAttempt(row,verifyAttestation);
+    if(attempt&&catalogue.has(attempt.slug)) recordAttempt(history,attempt.slug,attempt.at);
+  }
+  for(const row of sessions?.rows||[]){
+    const slug=questionRefSlug(row?.question_ref);
+    if(slug&&catalogue.has(slug)) recordAttempt(history,slug,attemptInstant(row.completed_at));
+  }
+  return history;
+}
 
 /**
  * One member's attempted exercises as `Map<slug, latestEpochMs>`, limited to
  * the given catalogue slugs. Reads only rows owned by `userId`.
  */
 export async function readMemberAttempts(db,{userId,slugs,verifyAttestation}){
-  const member=positiveSafeInteger(userId);
-  if(!member) throw new TypeError('userId must be a positive safe integer');
-  const catalogue=new Set((Array.isArray(slugs)?slugs:[]).filter(validSlug));
-  const history=new Map();
-  if(!catalogue.size) return history;
-  const list=[...catalogue];
-  const runs=await db.execute({
-    sql:`SELECT id,user_id,week_id,pair_group_id,question_slug,language,code,test_cases_snapshot,
-        results_json,passed_count,total_count,created_at
-      FROM (
-        SELECT sr.id,sr.user_id,sr.week_id,sr.pair_group_id,sr.question_slug,sr.language,sr.code,
-          sr.test_cases_snapshot,sr.results_json,sr.passed_count,sr.total_count,sr.created_at,
-          ROW_NUMBER() OVER (PARTITION BY sr.question_slug ORDER BY sr.id DESC) AS slug_rank
-        FROM session_runs sr
-        WHERE sr.user_id=? AND sr.question_slug IN (${list.map(()=>'?').join(',')})
-      ) ranked
-      WHERE slug_rank<=?
-      ORDER BY id DESC`,
-    args:[member,...list,RUNS_PER_EXERCISE],
-  });
-  for(const row of runs?.rows||[]){
-    if(positiveSafeInteger(row?.user_id)!==member) continue;
-    const attempt=verifiedRunAttempt(row,verifyAttestation);
-    if(attempt&&catalogue.has(attempt.slug)) recordAttempt(history,attempt.slug,attempt.at);
-  }
-  const sessions=await db.execute({sql:COMPLETED_SESSION_EXERCISES_SQL,args:[member,MAX_COMPLETED_SESSIONS]});
-  for(const row of sessions?.rows||[]){
-    const slug=questionRefSlug(row?.question_ref);
-    if(slug&&catalogue.has(slug)) recordAttempt(history,slug,attemptInstant(row.completed_at));
-  }
-  return history;
+  const statements=memberAttemptStatements(userId,slugs);
+  const results=statements.length?await db.batch(statements,'read'):[];
+  return memberAttemptsFromResults(userId,slugs,results,verifyAttestation);
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +350,8 @@ function partnerMembershipJoins(){
 
 /**
  * Solo when no room is given. For a room, the viewer must pass the shared pair
- * access check and the pair must be in the newest pairing week; otherwise
+ * access check and the pair must be in the newest pairing week that is not a
+ * demo week (an admin demo shuffle must not hide real pairs); otherwise
  * `null` (the caller answers 404). Partners are the other signed-in members of
  * that pair who are still active members of the same circle.
  */
@@ -337,7 +364,7 @@ export async function resolveSuggestionAudience(db,{viewerId,room=null}){
     sql:`WITH access AS (${authPairAccessSql()}),
       current_access AS (
         SELECT access.* FROM access
-        WHERE access.week_id=(SELECT MAX(week.id) FROM pairing_weeks week)
+        WHERE access.week_id=(SELECT MAX(week.id) FROM pairing_weeks week WHERE COALESCE(week.is_demo,0)=0)
       )
       SELECT participant.user_id AS partner_id
         FROM current_access
@@ -413,9 +440,16 @@ function historyEntries(history){
   return [];
 }
 
+// Only the slugs of a history (Map, plain object or list); times are dropped.
+function slugSet(value){
+  if(value instanceof Map) return new Set(value.keys());
+  if(!value||typeof value!=='object') return new Set();
+  return typeof value[Symbol.iterator]==='function'?new Set(value):new Set(Object.keys(value));
+}
+
 /**
- * The hardest difficulty level among the most recent attempted exercises in
- * the combined history, or null with no rated history.
+ * The hardest difficulty level among the member's most recent attempted
+ * exercises, or null with no rated history.
  */
 export function recentDifficultyLevel(latestBySlug,levelBySlug){
   const recent=[...latestBySlug.entries()]
@@ -466,41 +500,49 @@ function difficultyReason(level,recent){
 }
 
 /**
- * Pick up to `limit` exercises nobody in `histories` has attempted.
+ * Pick up to `limit` exercises neither the member nor a partner has attempted.
+ *
+ * `mine` is the member's own history (`Map` or object of slug -> epoch ms).
+ * `partnerAttempted` is only the set of slugs partners attempted: their times
+ * are deliberately not accepted, so they cannot change any pick or reason.
  *
  * Rule (deterministic and explainable):
- *  - candidates: active exercises no member has attempted and the viewer has
- *    not hidden;
- *  - coverage of a topic: how many attempted exercises (any member) carry it;
- *    a candidate's coverage is that of its least-covered topic;
- *  - target difficulty: one step above the hardest of the 3 most recent
- *    attempts (Easy with no history, capped at Hard);
+ *  - candidates: active exercises nobody has attempted and the member has not
+ *    hidden;
+ *  - coverage of a topic: how many attempted exercises (member or partner)
+ *    carry it; a candidate's coverage is that of its least-covered topic;
+ *  - target difficulty: one step above the hardest of the member's own 3 most
+ *    recent attempts (Easy with no history, capped at Hard);
  *  - order: lowest coverage, then closest to the target difficulty, then the
  *    easier of two equally distant levels, then slug;
  *  - after each pick its topics count as covered once more, so the next pick
  *    prefers a different topic.
  */
-export function selectExerciseSuggestions({exercises=[],histories=[],hidden=[],limit=MAX_SUGGESTIONS,pair=false}={}){
+export function selectExerciseSuggestions({
+  exercises=[],mine=new Map(),partnerAttempted=[],hidden=[],limit=MAX_SUGGESTIONS,pair=false,
+}={}){
   const catalogue=normalizeSuggestionCatalogue(exercises);
   const bySlug=new Map(catalogue.map(exercise=>[exercise.slug,exercise]));
-  const latestBySlug=new Map();
-  for(const history of Array.isArray(histories)?histories:[]){
-    for(const [slug,at] of historyEntries(history)){
-      if(!bySlug.has(slug)) continue;
-      const instant=Number.isFinite(Number(at))?Number(at):0;
-      if(!latestBySlug.has(slug)||instant>latestBySlug.get(slug)) latestBySlug.set(slug,instant);
-    }
+  const ownLatest=new Map();
+  for(const [slug,at] of historyEntries(mine)){
+    if(!bySlug.has(slug)) continue;
+    // Map and object keys are unique, so each slug is seen once.
+    ownLatest.set(slug,Number.isFinite(Number(at))?Number(at):0);
   }
+  const attempted=new Set(ownLatest.keys());
+  for(const slug of slugSet(partnerAttempted)) if(bySlug.has(slug)) attempted.add(slug);
   const coverage=new Map();
-  for(const slug of latestBySlug.keys()){
+  for(const slug of attempted){
     for(const topic of bySlug.get(slug).topics) coverage.set(topic,(coverage.get(topic)||0)+1);
   }
   const levelBySlug=new Map(catalogue.map(exercise=>[exercise.slug,difficultyLevel(exercise.difficulty)]));
-  const recent=recentDifficultyLevel(latestBySlug,levelBySlug);
+  const recent=recentDifficultyLevel(ownLatest,levelBySlug);
   const target=recent===null?0:Math.min(DIFFICULTY_LEVELS.length-1,recent+1);
   const hiddenSet=new Set(Array.isArray(hidden)?hidden:[]);
-  const unattempted=catalogue.filter(exercise=>!latestBySlug.has(exercise.slug));
+  const unattempted=catalogue.filter(exercise=>!attempted.has(exercise.slug));
   let candidates=unattempted.filter(exercise=>!hiddenSet.has(exercise.slug));
+  // Hidden exercises that could otherwise be suggested (for "Show n hidden").
+  const hiddenCount=unattempted.length-candidates.length;
   const max=Number.isSafeInteger(limit)&&limit>0?Math.min(limit,MAX_SUGGESTIONS):MAX_SUGGESTIONS;
   const virtual=new Map(coverage);
   const coverageOf=exercise=>exercise.topics.length
@@ -541,14 +583,14 @@ export function selectExerciseSuggestions({exercises=[],histories=[],hidden=[],l
   let emptyReason=null;
   if(!catalogue.length) emptyReason='no_exercises';
   else if(!suggestions.length) emptyReason=unattempted.length?'all_hidden':'all_attempted';
-  return {suggestions,emptyReason,recentLevel:recent,targetLevel:target};
+  return {suggestions,emptyReason,hiddenCount,recentLevel:recent,targetLevel:target};
 }
 
 /** One boolean pair per attempted catalogue exercise; nothing else. */
 export function attemptedMarkers(exercises,mine,partner){
   const catalogue=normalizeSuggestionCatalogue(exercises);
-  const own=new Set(historyEntries(mine).map(([slug])=>slug));
-  const theirs=new Set(historyEntries(partner).map(([slug])=>slug));
+  const own=slugSet(mine);
+  const theirs=slugSet(partner);
   return catalogue
     .filter(exercise=>own.has(exercise.slug)||theirs.has(exercise.slug))
     .map(exercise=>({slug:exercise.slug,by_me:own.has(exercise.slug),by_partner:theirs.has(exercise.slug)}))
@@ -560,30 +602,36 @@ export function attemptedMarkers(exercises,mine,partner){
  * viewer's current pair.
  */
 export async function readExerciseSuggestions(db,{viewerId,room=null,hidden=[],exercises=[],verifyAttestation}){
-  if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
+  if(!db||typeof db.execute!=='function'||typeof db.batch!=='function'){
+    throw new TypeError('database client is required');
+  }
   const audience=await resolveSuggestionAudience(db,{viewerId,room});
   if(!audience) return null;
-  const catalogue=normalizeSuggestionCatalogue(exercises);
-  const slugs=catalogue.map(exercise=>exercise.slug);
-  const mine=await readMemberAttempts(db,{userId:viewerId,slugs,verifyAttestation});
-  const partnerHistories=[];
-  for(const partnerId of audience.partnerIds){
-    partnerHistories.push(await readMemberAttempts(db,{userId:partnerId,slugs,verifyAttestation}));
-  }
-  const partner=new Map();
-  for(const history of partnerHistories){
-    for(const [slug,at] of history) recordAttempt(partner,slug,at);
-  }
+  const slugs=normalizeSuggestionCatalogue(exercises).map(exercise=>exercise.slug);
+  const members=[viewerId,...audience.partnerIds];
+  const perMember=members.map(userId=>memberAttemptStatements(userId,slugs));
+  const statements=perMember.flat();
+  const results=statements.length?await db.batch(statements,'read'):[];
+  let offset=0;
+  const histories=perMember.map((memberStatements,index)=>{
+    const slice=results.slice(offset,offset+memberStatements.length);
+    offset+=memberStatements.length;
+    return memberAttemptsFromResults(members[index],slugs,slice,verifyAttestation);
+  });
+  const [mine,...partnerHistories]=histories;
+  // Partners contribute only which exercises they attempted, never when.
+  const partnerAttempted=new Set(partnerHistories.flatMap(history=>[...history.keys()]));
   const pair=audience.partnerIds.length>0;
   const selection=selectExerciseSuggestions({
-    exercises,histories:[mine,...partnerHistories],hidden,limit:MAX_SUGGESTIONS,pair,
+    exercises,mine,partnerAttempted,hidden,limit:MAX_SUGGESTIONS,pair,
   });
   return {
     mode:pair?'pair':'solo',
     room_id:audience.roomId,
     partner_count:audience.partnerIds.length,
-    attempted:attemptedMarkers(exercises,mine,partner),
+    attempted:attemptedMarkers(exercises,mine,partnerAttempted),
     suggestions:selection.suggestions,
+    hidden_count:selection.hiddenCount,
     empty_reason:selection.emptyReason,
   };
 }

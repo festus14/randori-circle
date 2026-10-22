@@ -161,11 +161,16 @@ async function seededDatabase(){
   return db;
 }
 
-function tracing(delegate,statements){
+function tracing(delegate,statements,batches=[]){
   return {
     async execute(statement){
       statements.push(typeof statement==='string'?statement:statement.sql);
       return delegate.execute(statement);
+    },
+    async batch(list,mode){
+      batches.push({mode,count:list.length});
+      for(const statement of list) statements.push(statement.sql);
+      return delegate.batch(list,mode);
     },
     close(){ return delegate.close(); },
   };
@@ -231,8 +236,9 @@ test('only signed-in GET requests with a valid query reach the database',async()
 
 test('solo suggestions use only the member\'s own verified runs and completed sessions',async()=>{
   const statements=[];
+  const batches=[];
   const db=currentDb;
-  currentDb=tracing(db,statements);
+  currentDb=tracing(db,statements,batches);
   const response=await invoke();
   assert.equal(response.status,200,JSON.stringify(response.body));
   assert.equal(response.body.mode,'solo');
@@ -257,6 +263,8 @@ test('solo suggestions use only the member\'s own verified runs and completed se
   assert.ok(statements.length>0);
   assert.ok(statements.every(sql=>/^\s*(SELECT|WITH)\b/i.test(sql)),statements.join('\n---\n'));
   assert.ok(!statements.some(sql=>/\b(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\b/i.test(sql)));
+  // History is one read batch (runs + completed sessions for the member).
+  assert.deepEqual(batches,[{mode:'read',count:2}]);
   currentDb=db;
 });
 
@@ -280,7 +288,7 @@ test('a pair room adds only "attempted by your partner" and never the partner\'s
 
   // Privacy shape: booleans only, no scores, code, dates, ids, names or emails.
   assert.deepEqual(Object.keys(response.body).sort(),
-    ['attempted','empty_reason','mode','ok','partner_count','room_id','suggestions']);
+    ['attempted','empty_reason','hidden_count','mode','ok','partner_count','room_id','suggestions']);
   for(const marker of response.body.attempted) assert.deepEqual(Object.keys(marker).sort(),['by_me','by_partner','slug']);
   for(const suggestion of response.body.suggestions){
     assert.deepEqual(Object.keys(suggestion).sort(),['difficulty','reason','slug','title','topic','version']);
@@ -304,6 +312,49 @@ test('hidden exercises are left out of suggestions but keep their markers',async
   assert.ok(!suggested.includes('coaching-route-sums'));
   assert.equal(suggested[0],'command-message-segmentation');
   assert.ok(response.body.attempted.some(marker=>marker.slug==='focus-block-rollup'));
+  // Only the hidden exercise that could be suggested is counted.
+  assert.equal(response.body.hidden_count,1);
+  const repeated=await invoke({query:{hidden:'coaching-route-sums,coaching-route-sums'}});
+  assert.equal(repeated.status,400);
+  assert.deepEqual(repeated.body,{error:'hidden must not repeat an exercise'});
+});
+
+test('the partner\'s attempt times cannot change the response',async()=>{
+  // The member's own recent work tops out at Medium. A partner's Hard run is
+  // moved from before to after it; the response must stay byte-identical.
+  await currentDb.execute(soloRun({userId:4,slug:'coaching-route-sums',createdAt:'2026-09-01 10:00:00'}));
+  const before=await invoke({query:{room_id:'week_11_pair_30'}});
+  await currentDb.execute(`UPDATE session_runs SET created_at='2026-09-30 10:00:00'
+    WHERE user_id=4 AND question_slug='coaching-route-sums'`);
+  const after=await invoke({query:{room_id:'week_11_pair_30'}});
+  assert.equal(before.status,200);
+  assert.equal(JSON.stringify(after.body),JSON.stringify(before.body));
+  assert.ok(before.body.suggestions.every(item=>/recent Medium exercises\.$/.test(item.reason.text)));
+  assert.ok(!before.body.suggestions.some(item=>item.slug==='coaching-route-sums'));
+});
+
+test('another member\'s newer runs on the same exercise never crowd out the member\'s own',async()=>{
+  // The per-exercise lookup is limited to the member's rows in SQL. Without
+  // that filter these three newer runs would fill the three-run window and the
+  // member's older verified run would be missed.
+  for(const day of [20,21,22]){
+    await currentDb.execute(soloRun({userId:6,slug:'focus-block-rollup',createdAt:`2026-09-${day} 10:00:00`}));
+  }
+  const response=await invoke();
+  assert.equal(response.status,200);
+  assert.ok(response.body.attempted.some(marker=>marker.slug==='focus-block-rollup'&&marker.by_me));
+});
+
+test('a demo pairing week does not make the real current pair stale',async()=>{
+  await currentDb.execute(`INSERT INTO pairing_weeks (id,week_label,week_start,is_demo)
+    VALUES (12,'2026-W40-demo','2026-09-28T07:00:00.000Z',1)`);
+  const response=await invoke({query:{room_id:'week_11_pair_30'}});
+  assert.equal(response.status,200);
+  assert.equal(response.body.mode,'pair');
+  // A newer real week still retires the old pair.
+  await currentDb.execute(`INSERT INTO pairing_weeks (id,week_label,week_start,is_demo)
+    VALUES (13,'2026-W41','2026-10-05T07:00:00.000Z',0)`);
+  assert.equal((await invoke({query:{room_id:'week_11_pair_30'}})).status,404);
 });
 
 test('cross-pair, stale-pair and cross-circle requests are refused with the same 404',async()=>{
@@ -369,12 +420,10 @@ test('a schema that is not ready, or a failing read, answers 503 without details
 
   const db=await seededDatabase();
   let reads=0;
-  currentDb={async execute(statement){
-    reads+=1;
-    const sql=typeof statement==='string'?statement:statement.sql;
-    if(/ROW_NUMBER/.test(sql)) throw new Error('disk I/O error at /secret/path');
-    return db.execute(statement);
-  }};
+  currentDb={
+    async execute(statement){ reads+=1; return db.execute(statement); },
+    async batch(){ reads+=1; throw new Error('disk I/O error at /secret/path'); },
+  };
   const failed=await invoke();
   assert.equal(failed.status,503);
   assert.deepEqual(failed.body,{error:'exercise suggestions unavailable'});

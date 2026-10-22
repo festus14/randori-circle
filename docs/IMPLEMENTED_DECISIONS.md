@@ -3141,7 +3141,7 @@ retention table (needs a migration).
 installs the logger. To stop client ingestion quickly, revert this change;
 retention is independent and can stay.
 
-## ID-73: Suggest next exercises from verified history, without a migration
+## ID-77: Suggest next exercises from verified history, without a migration
 
 Status: implemented behind `EXERCISE_SUGGESTIONS_ENABLED` (default off); no
 migration. Issue #296 (post-MVP roadmap #312). The visual design is
@@ -3158,36 +3158,54 @@ a sensible next difficulty was. Run history (#20) and session completion
   read-only (`SELECT` only, no request-path DDL). With the flag off it returns
   `404 {code:'feature_disabled'}`, and `GET /api/questions` is byte-for-byte
   unchanged; with the flag on, `/api/questions` adds
-  `features:{exercise_suggestions:true}` and the client shows the feature.
+  `features:{exercise_suggestions:true}` and only then does the client fetch
+  `/assets/exercise-suggestions.js` (on demand, never a static script tag).
 - Response: `{ok, mode:'solo'|'pair', room_id, partner_count,
   attempted:[{slug, by_me, by_partner}], suggestions:[{slug, version, title,
-  difficulty, topic, reason:{code, difficulty_step, text}}], empty_reason}`
-  where `empty_reason` is `null`, `all_attempted`, `all_hidden` or
-  `no_exercises`. Errors: 400 (unknown, repeated or malformed query; more than
-  50 hidden slugs), 401, 404 `pair not found`, 405, 503.
+  difficulty, topic, reason:{code, difficulty_step, text}}], hidden_count,
+  empty_reason}` where `hidden_count` counts only hidden exercises that could
+  otherwise be suggested and `empty_reason` is `null`, `all_attempted`,
+  `all_hidden` or `no_exercises`. Errors: 400 (unknown, repeated or malformed
+  query parameter; a slug repeated in `hidden`; more than 50 hidden slugs),
+  401, 404 `pair not found`, 405, 503.
 - "Attempted" means a verified run (a `session_runs` row whose server
-  attestation still verifies, the same rule as the run feed's "verified"
-  label; the newest three runs per exercise are checked) or a completed
+  attestation still verifies; the newest three runs per exercise are checked)
+  or a completed
   session (every signed-in participant confirmed; the room's workspace
   exercise and any edited shared code document count). Only active catalogue
-  exercises are considered.
+  exercises are considered. The run check is the run feed's "verified" rule
+  without reading the stored code: the HMAC still binds the code hash with the
+  member, exercise, room and results, and an attempt does not depend on the
+  code.
+- Reads are bounded: one `db.batch(…,'read')` with two statements per member.
+  Runs come from a per-exercise `ORDER BY id DESC LIMIT 3` lookup on the
+  `(user_id,question_slug)` index (covering, flat as history grows; about
+  0.4 ms at 8,000 runs locally), never `code`. Completed sessions are capped at
+  200 and joined to snapshots and code documents by key with `CROSS JOIN`, so
+  the plan does not depend on `ANALYZE` statistics.
 - Solo requests read only the requesting member's rows. A `room_id` is
   authorized with `api/_pair-access.js` (including the active primary-circle
   membership join while `CIRCLE_MEMBERSHIP_ENABLED` is on), and only while the
-  pair is in the newest pairing week (the current pair). Partners are the other
+  pair is in the newest non-demo pairing week (the current pair; an admin demo
+  shuffle does not retire real pairs). Partners are the other
   signed-in participants of that pair who are still active members of the same
   circle. Another pair's room, an older pair, a removed member and a member of
   another circle all get the same 404. The client then falls back to solo.
-- Privacy: the partner's history leaves the server only as `by_partner`
-  booleans. No scores, code, dates, run ids, user ids or names are returned.
+- Privacy: the partner's history is reduced on the server to the set of
+  exercises they attempted before the rule runs, so their attempt times cannot
+  change any pick, `difficulty_step` or reason (a test moves a partner's run
+  and requires a byte-identical response). It leaves the server only as
+  `by_partner` booleans. No scores, code, dates, run ids, user ids or names
+  are returned.
   The pair card says so: "Your partner sees only which exercises you have
   attempted, never scores, code or dates."
 - Selection rule (deterministic, unit-tested): candidates are active exercises
   nobody in the request has attempted and the member has not hidden. A topic's
   coverage is how many attempted exercises carry it (tags; the pattern when an
   exercise has no tags), and a candidate's coverage is that of its
-  least-covered topic. The target difficulty is one step above the hardest of
-  the three most recent attempts (Easy with no history, capped at Hard). Order:
+  least-covered topic; partner attempts count here and for exclusion only.
+  The target difficulty is one step above the hardest of the member's own
+  three most recent attempts (Easy with no history, capped at Hard). Order:
   lowest coverage, then closest to the target, then the easier of two equally
   distant levels, then slug. After each pick its topics count once more, so
   the next pick prefers another topic. At most three. Each suggestion carries

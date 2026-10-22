@@ -11,7 +11,8 @@
 // it; it is sent with each request only so the server can skip those
 // exercises when choosing.
 //
-// Loaded as a classic script; node tests import the same file.
+// Loaded on demand by the catalogue only when the server advertises the
+// feature (EXERCISE_SUGGESTIONS_ENABLED); node tests import the same file.
 (function installExerciseSuggestions(root) {
   const STORAGE_PREFIX = 'randori-hidden-suggestions:';
   const MAX_HIDDEN = 50;
@@ -99,9 +100,12 @@
       });
     }
     const partnerCount = Number(body.partner_count);
+    const hiddenCount = Number(body.hidden_count);
     return {
       mode: body.mode,
       partnerCount: Number.isSafeInteger(partnerCount) && partnerCount > 0 ? Math.min(partnerCount, 2) : 0,
+      // Hidden exercises that could otherwise be suggested (server-counted).
+      hiddenCount: Number.isSafeInteger(hiddenCount) && hiddenCount > 0 ? Math.min(hiddenCount, MAX_HIDDEN) : 0,
       markers,
       suggestions,
       emptyReason: EMPTY_REASONS.includes(body.empty_reason) ? body.empty_reason : null,
@@ -291,7 +295,7 @@
       const view = result?.ok ? normalizeResponse(result.body) : null;
       state.key = view ? key : null;
       publish(view);
-      renderSuggestions(doc, targets, view, { hiddenCount: hidden.length });
+      renderSuggestions(doc, targets, view, { hiddenCount: view?.hiddenCount || 0 });
       return view;
     }
 

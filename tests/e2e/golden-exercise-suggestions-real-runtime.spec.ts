@@ -14,7 +14,7 @@ import {
   waitForWorkspace,
 } from './golden-runtime';
 
-// Issue #296 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 15). The real
+// Issue #296 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 17). The real
 // loopback runtime runs with EXERCISE_SUGGESTIONS_ENABLED. Markers and
 // suggestions come from the production `/api/exercise-suggestions` handler;
 // the only replaced boundary is code execution (as in golden paths 8 and 10).
@@ -110,9 +110,16 @@ test('pair suggestions: attempted markers after a run, partner privacy, keyboard
     await expect(owner.locator('#catalogList .catalog-card[data-slug="focus-block-rollup"] [data-testid="catalog-attempted"]'))
       .toHaveText('Attempted by you');
     await expect(owner.locator('#questionSelect option[value="focus-block-rollup"]')).toHaveText(/ · attempted by you$/);
+    // The runner's own recent Easy work steps their suggestions up to Medium.
+    await expect.poll(()=>suggestedSlugs(owner)).toEqual([
+      'compatible-review-orders','connectivity-checkpoints','coverage-gap-finder',
+    ]);
+    await expect(ownerCard.locator('.catalog-suggestion-reason').first())
+      .toHaveText('Neither of you has practised backtracking yet. One step up from your recent Easy exercises.');
 
-    // The partner sees only "attempted by your partner" and suggestions one
-    // step up from the pair's recent Easy work, on topics neither has covered.
+    // The partner sees only "attempted by your partner". Their difficulty
+    // comes from their own (empty) history, so they stay on Easy; the
+    // partner's exercise is skipped and its topics count as covered.
     const memberLoaded=suggestionsResponse(member,pair.room);
     await member.reload({waitUntil:'domcontentloaded'});
     await waitForWorkspace(member,pair.room);
@@ -128,22 +135,24 @@ test('pair suggestions: attempted markers after a run, partner privacy, keyboard
     await expect(member.locator('#catalogList .catalog-card[data-slug="focus-block-rollup"] [data-testid="catalog-attempted"]'))
       .toHaveText('Attempted by your partner');
     await expect.poll(()=>suggestedSlugs(member)).toEqual([
-      'compatible-review-orders','connectivity-checkpoints','coverage-gap-finder',
+      'balanced-template-markers','capacity-upgrade-index','command-prefix-census',
     ]);
-    await expect(member.getByTestId('exercise-suggestions').locator('.catalog-suggestion-reason').first())
-      .toHaveText('Neither of you has practised backtracking yet. One step up from your recent Easy exercises.');
+    await expect(member.getByTestId('exercise-suggestions').locator('.catalog-suggestion-reason').nth(1))
+      .toHaveText('Neither of you has practised binary search yet. An Easy exercise is a good place to start.');
 
     // Keyboard only: hide the first suggestion; focus moves to the next one
     // and the hide list is stored for this member in this browser only.
-    const hide=member.getByRole('button',{name:'Hide Compatible Review Orders from suggestions'});
+    const hide=member.getByRole('button',{name:'Hide Balanced Template Markers from suggestions'});
     await hide.focus();
     const hidden=suggestionsResponse(member);
     await member.keyboard.press('Enter');
-    expect(new URL((await hidden).url()).searchParams.get('hidden')).toBe('compatible-review-orders');
-    await expect.poll(()=>suggestedSlugs(member)).not.toContain('compatible-review-orders');
+    expect(new URL((await hidden).url()).searchParams.get('hidden')).toBe('balanced-template-markers');
+    await expect.poll(()=>suggestedSlugs(member)).toEqual([
+      'capacity-upgrade-index','command-prefix-census','mentor-level-widths',
+    ]);
     await expect(member.getByTestId('exercise-suggestion-open').first()).toBeFocused();
     expect(await member.evaluate(id=>localStorage.getItem(`randori-hidden-suggestions:${id}`),pair.member.user.id))
-      .toBe('["compatible-review-orders"]');
+      .toBe('["balanced-template-markers"]');
     const showHidden=member.getByTestId('exercise-suggestions-show-hidden');
     await expect(showHidden).toHaveText('Show 1 hidden exercise');
 
@@ -161,7 +170,7 @@ test('pair suggestions: attempted markers after a run, partner privacy, keyboard
     const restored=suggestionsResponse(member);
     await member.keyboard.press('Enter');
     expect(new URL((await restored).url()).searchParams.has('hidden')).toBe(false);
-    await expect.poll(()=>suggestedSlugs(member)).toContain('compatible-review-orders');
+    await expect.poll(()=>suggestedSlugs(member)).toContain('balanced-template-markers');
 
     await expectSuggestionsAccessible(member);
 

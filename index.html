@@ -16,7 +16,6 @@
 <script src="/assets/landing.js"></script>
 <script src="/assets/pairing-view.js"></script>
 <script src="/assets/catalogue-view.js"></script>
-<script src="/assets/exercise-suggestions.js" defer></script>
 <script src="/assets/home-dashboard.js"></script>
 <script src="/assets/onboarding-flow.js"></script>
 <script>
@@ -12769,6 +12768,23 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // With the flag off nothing here runs and every label stays unchanged.
   let exerciseSuggestions=null;
   let exerciseSuggestionsEnabled=false;
+  // The client module is fetched only after the server advertises the feature,
+  // so pages with the flag off never download it.
+  const SUGGESTIONS_SCRIPT='/assets/exercise-suggestions.js';
+  let suggestionsScriptLoad=null;
+  function loadSuggestionsScript(){
+    if(window._randori_exercise_suggestions) return Promise.resolve(true);
+    if(suggestionsScriptLoad) return suggestionsScriptLoad;
+    suggestionsScriptLoad=new Promise(resolve=>{
+      const script=document.createElement('script');
+      script.src=SUGGESTIONS_SCRIPT;
+      script.onload=()=>resolve(true);
+      // A failed fetch can be retried by the next refresh.
+      script.onerror=()=>{ script.remove(); suggestionsScriptLoad=null; resolve(false); };
+      document.head.appendChild(script);
+    });
+    return suggestionsScriptLoad;
+  }
   function suggestionsController(){
     if(exerciseSuggestions||!exerciseSuggestionsEnabled) return exerciseSuggestions;
     const api=window._randori_exercise_suggestions;
@@ -12797,7 +12813,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   function refreshExerciseSuggestions(options){
     if(!exerciseSuggestionsEnabled||catalogueFetchState!=='loaded') return;
-    void suggestionsController()?.refresh(options);
+    if(exerciseSuggestions){ void exerciseSuggestions.refresh(options); return; }
+    void loadSuggestionsScript().then(loaded=>{
+      if(loaded&&exerciseSuggestionsEnabled) void suggestionsController()?.refresh(options);
+    });
   }
   function attemptedText(slug,format){
     const marker=exerciseSuggestions?.marker(slug);

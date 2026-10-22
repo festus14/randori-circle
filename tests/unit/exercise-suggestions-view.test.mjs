@@ -94,9 +94,17 @@ function body(overrides = {}) {
   };
 }
 
-test('the module installs one frozen global and the page loads it with the suggestion section', () => {
+test('the module installs one frozen global; the page fetches it only once the feature is advertised', () => {
   assert.ok(Object.isFrozen(api));
-  assert.match(html, /<script src="\/assets\/exercise-suggestions\.js" defer><\/script>/);
+  // Never a static script tag: with the flag off the 14 KB module is not loaded.
+  assert.doesNotMatch(html, /<script[^>]*exercise-suggestions\.js/);
+  assert.match(html, /const SUGGESTIONS_SCRIPT='\/assets\/exercise-suggestions\.js';/);
+  assert.match(html, /exerciseSuggestionsEnabled=j\.features\?\.exercise_suggestions===true;/);
+  const refresh = /function refreshExerciseSuggestions\(options\)\{([\s\S]*?)\n  \}/.exec(html)?.[1] || '';
+  const gate = refresh.indexOf("if(!exerciseSuggestionsEnabled||catalogueFetchState!=='loaded') return;");
+  assert.ok(gate >= 0 && gate < refresh.indexOf('loadSuggestionsScript()'), refresh);
+  // The gated refresh is the only caller of the loader.
+  assert.equal((html.match(/(?<!function )loadSuggestionsScript\(\)/g) || []).length, 1);
   const section = /<section id="exerciseSuggestions"[^>]*>/.exec(html)?.[0] || '';
   assert.match(section, /data-testid="exercise-suggestions"/);
   assert.match(section, /\shidden>$/);
@@ -165,6 +173,10 @@ test('responses are validated whole: one bad field makes the result unusable', (
     reason: 'Neither of you has practised trees yet. One step up from your recent Medium exercises.',
   }]);
   assert.equal(view.emptyReason, null);
+  assert.equal(view.hiddenCount, 0);
+  assert.equal(api.normalizeResponse(body({ hidden_count: 2 })).hiddenCount, 2);
+  assert.equal(api.normalizeResponse(body({ hidden_count: 500 })).hiddenCount, 50);
+  assert.equal(api.normalizeResponse(body({ hidden_count: -1 })).hiddenCount, 0);
 
   const lenient = api.normalizeResponse(body({
     partner_count: 9,
@@ -401,7 +413,7 @@ test('a slower, older response never overwrites a newer one', async () => {
 
 test('hiding stores the slug for this member, asks again and moves focus to the next suggestion', async () => {
   const storage = memoryStorage();
-  const fixture = controllerFixture({ storage, responses: [{}, {}, { body: body({ suggestions: [], empty_reason: 'all_hidden' }) }, {}] });
+  const fixture = controllerFixture({ storage, responses: [{}, { body: body({ hidden_count: 1 }) }, { body: body({ suggestions: [], empty_reason: 'all_hidden', hidden_count: 2 }) }, {}] });
   fixture.controller.setEnabled(true);
   await fixture.controller.refresh();
   assert.equal(await fixture.controller.hide('Bad Slug'), null);
@@ -409,11 +421,15 @@ test('hiding stores the slug for this member, asks again and moves focus to the 
   assert.equal(storage.values.get('randori-hidden-suggestions:2'), '["coaching-route-sums"]');
   assert.equal(fixture.calls.at(-1).path, '/api/exercise-suggestions?hidden=coaching-route-sums');
   assert.equal(fixture.parts.list.querySelector('.catalog-suggestion-open').focused, true);
+  // The button count comes from the server: only exercises that could be suggested.
+  assert.equal(fixture.parts.showHidden.textContent, 'Show 1 hidden exercise');
   // When nothing is left the Show hidden button takes focus.
   await fixture.controller.hide('focus-block-rollup');
   assert.equal(fixture.parts.showHidden.hidden, false);
+  assert.equal(fixture.parts.showHidden.textContent, 'Show 2 hidden exercises');
   assert.equal(fixture.parts.showHidden.focused, true);
   await fixture.controller.showHidden();
+  assert.equal(fixture.parts.showHidden.hidden, true);
   assert.equal(storage.values.has('randori-hidden-suggestions:2'), false);
   assert.equal(fixture.calls.at(-1).path, '/api/exercise-suggestions');
   // With no suggestion and no hidden exercise, focus falls back to the heading.
