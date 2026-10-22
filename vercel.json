@@ -129,6 +129,10 @@
       "destination": "/api/data?endpoint=history"
     },
     {
+      "source": "/api/progress",
+      "destination": "/api/data?endpoint=progress"
+    },
+    {
       "source": "/api/init",
       "destination": "/api/data?endpoint=init"
     },
