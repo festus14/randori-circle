@@ -119,7 +119,7 @@ export function cycleLabel(cycle, weekLabel) {
 }
 
 export function footnoteText(health) {
-  const notes = ['Only finished cycles are shown; this week\'s pairs are on the Pairing tab.'];
+  const notes = ['A cycle appears two days after it ends, once late confirmations are in; this week\'s pairs are on the Pairing tab.'];
   if (!health.completionTracked) notes.push('This circle does not record completed sessions.');
   notes.push(health.attendanceTracked
     ? 'Time to agree a session will appear once it is recorded.'
@@ -166,7 +166,7 @@ export function renderDefinitions(doc, list) {
     list.append(element(doc, 'dt', { text: metric.label }), element(doc, 'dd', { text: metric.help }));
   }
   list.append(element(doc, 'dt', { text: 'Hidden' }),
-    element(doc, 'dd', { text: 'Pair counts are hidden for cycles with fewer than 3 pairs, and when exactly one pair is in or out of a count, so a number cannot point to a single pair. When every pair, or no pair, did something, the number says so.' }));
+    element(doc, 'dd', { text: 'Pair counts are hidden for cycles with fewer than 4 pairs, and when exactly one pair is in or out of a count, so a number cannot point to a single pair. When every pair, or no pair, did something, the number says so, which tells you what each pair did.' }));
 }
 
 /**

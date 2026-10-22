@@ -9,24 +9,35 @@
 // row or migration is added; see docs/CIRCLE_HEALTH.md.
 //
 // Privacy model (docs/CIRCLE_HEALTH.md "Privacy"):
-// - The current cycle is never returned, so polling cannot show a pair acting.
+// - A cycle is returned only once it has ended and the receipt grace (plus a
+//   clock margin) has passed, and completion counts only receipts confirmed
+//   within the grace, so a shown completed count never changes. Agreements
+//   have no history; a partner who later clears or accepts an agreement in a
+//   past week's room can still change a shown agreed count (rare).
 // - Available, paired, solo and the number of pairs describe the published
 //   pairing, which every member of the circle already saw, and are shown.
 // - Agreed a time, completed and repeat pairs are counted in pairs, because
 //   people act in pairs. They are hidden whenever a cycle has fewer than
 //   CIRCLE_HEALTH_MIN_PAIRS pairs, and otherwise whenever exactly one pair is
 //   in or out of the count. Agreed and completed are hidden together. With
-//   these rules no hidden value is determined by the rest of the response;
-//   tests/unit/circle-health-privacy.test.mjs checks every pair state for 1-6
-//   pairs. A shown 0 or "every pair" still tells the owner that every pair
-//   did, or did not, do it.
+//   these rules no hidden value is determined by the rest of a single
+//   response; tests/unit/circle-health-privacy.test.mjs checks every pair
+//   state for 1-6 pairs. A shown 0 or "every pair" still tells the owner that
+//   every pair did, or did not, do it.
 //
 // This module deliberately imports nothing that unit tests commonly replace
 // (no _db.js, _active-circle.js or _circle-membership.js), so the capability
 // check in auth.js and the route in ops.js can load it safely.
 import { resolvePairingCycle } from './_pairing-cycle.js';
 
-export const CIRCLE_HEALTH_MIN_PAIRS=3;
+// With 3 pairs every shown agreed or completed count would be 0 or 3, so it
+// would always disclose every pair; from 4 pairs a middle value is possible.
+export const CIRCLE_HEALTH_MIN_PAIRS=4;
+// Late completion confirmations: only receipts confirmed within this grace
+// after the cycle ends count, and a cycle is shown only after the grace plus
+// a margin for clock skew between the app and the database has passed.
+export const CIRCLE_HEALTH_RECEIPT_GRACE_MS=48*60*60*1000;
+export const CIRCLE_HEALTH_CLOCK_MARGIN_MS=60*60*1000;
 export const CIRCLE_HEALTH_WINDOW=8;
 export const CIRCLE_HEALTH_LOOKBACK=8;
 export const CIRCLE_HEALTH_VERSION=1;
@@ -214,9 +225,9 @@ const OWNER_GUARD=`owner AS (SELECT 1 FROM circle_memberships membership
       AND membership.status='active' AND circle.archived_at IS NULL AND circle.is_primary=?
     LIMIT 1)`;
 
-// Most recent finished primary weeks by their unique ISO week label: a
-// descending range scan of idx_pairing_weeks_week_label below the current
-// cycle. Demo and non-ISO legacy labels are skipped.
+// Most recent settled primary weeks by their unique ISO week label: a
+// descending range scan of idx_pairing_weeks_week_label below the bound
+// computed in readCircleHealth. Demo and non-ISO legacy labels are skipped.
 const PRIMARY_WEEKS=(limit)=>`SELECT week.id FROM pairing_weeks week
     WHERE week.week_label GLOB ${ISO_WEEK_GLOB} AND COALESCE(week.is_demo,0)=0 AND week.week_label<?
     ORDER BY week.week_label DESC LIMIT ${limit}`;
@@ -250,7 +261,7 @@ export const CIRCLE_HEALTH_SQL=Object.freeze({
     WHERE schedule.week_id IN (SELECT id FROM recent) AND schedule.agreed_time IS NOT NULL
       AND EXISTS (SELECT 1 FROM owner)`,
   primaryReceipts:`WITH ${OWNER_GUARD}, recent AS (${PRIMARY_WEEKS(CIRCLE_HEALTH_WINDOW)})
-    SELECT receipt.week_id,receipt.pair_group_id,receipt.user_id,receipt.participant_source
+    SELECT receipt.week_id,receipt.pair_group_id,receipt.user_id,receipt.participant_source,receipt.confirmed_at
     FROM session_completion_receipts receipt
     WHERE receipt.week_id IN (SELECT id FROM recent) AND EXISTS (SELECT 1 FROM owner)`,
   secondaryPublications:`WITH ${OWNER_GUARD}
@@ -277,7 +288,20 @@ function groupKey(cycleId,groupId){
   return `${cycleId}:${groupId}`;
 }
 
-function normalizePrimary([,weekResult,participantResult,groupResult,scheduleResult,receiptResult]){
+/** End of the weekly cycle that starts at `weekStart`, or null if unknown. */
+function cycleEndMs(weekStart,timeZone){
+  const start=parseStoredInstant(weekStart);
+  return start===null?null:Date.parse(resolvePairingCycle({now:new Date(start),timeZone,state:'current'}).endsAt);
+}
+
+function normalizePrimary([,weekResult,participantResult,groupResult,scheduleResult,receiptResult],{timeZone}={}){
+  // Receipts confirmed after the grace never count, so a cycle's completed
+  // count is fixed by the time it is shown. A week without a valid start has
+  // no known end, so none of its receipts count.
+  const receiptCutoff=new Map(rows(weekResult).map(row=>{
+    const end=cycleEndMs(row.week_start,timeZone);
+    return [positiveId(row.id),end===null?null:end+CIRCLE_HEALTH_RECEIPT_GRACE_MS];
+  }));
   const participants=new Map();
   for(const row of rows(participantResult)){
     const weekId=positiveId(row.week_id);
@@ -292,6 +316,9 @@ function normalizePrimary([,weekResult,participantResult,groupResult,scheduleRes
   }
   const receipts=new Map();
   for(const row of rows(receiptResult)){
+    const cutoff=receiptCutoff.get(positiveId(row.week_id));
+    const confirmedAt=parseStoredInstant(row.confirmed_at);
+    if(cutoff==null||confirmedAt===null||confirmedAt>=cutoff) continue;
     const key=groupKey(positiveId(row.week_id),positiveId(row.pair_group_id));
     if(!receipts.has(key)) receipts.set(key,[]);
     receipts.get(key).push({userId:positiveId(row.user_id),source:String(row.participant_source||'')});
@@ -358,23 +385,23 @@ function normalizeSecondary([,publicationResult,groupResult,scheduleResult]){
   }));
 }
 
-function primaryStatements(guard,current,depth){
+function primaryStatements(guard,bound,depth){
   return [
     {sql:CIRCLE_HEALTH_SQL.guardedOwner,args:guard},
-    {sql:CIRCLE_HEALTH_SQL.primaryWeeks,args:[...guard,current,depth]},
-    {sql:CIRCLE_HEALTH_SQL.primaryParticipants,args:[...guard,current]},
-    {sql:CIRCLE_HEALTH_SQL.primaryGroups,args:[...guard,current]},
-    {sql:CIRCLE_HEALTH_SQL.primarySchedules,args:[...guard,current]},
-    {sql:CIRCLE_HEALTH_SQL.primaryReceipts,args:[...guard,current]},
+    {sql:CIRCLE_HEALTH_SQL.primaryWeeks,args:[...guard,bound,depth]},
+    {sql:CIRCLE_HEALTH_SQL.primaryParticipants,args:[...guard,bound]},
+    {sql:CIRCLE_HEALTH_SQL.primaryGroups,args:[...guard,bound]},
+    {sql:CIRCLE_HEALTH_SQL.primarySchedules,args:[...guard,bound]},
+    {sql:CIRCLE_HEALTH_SQL.primaryReceipts,args:[...guard,bound]},
   ];
 }
 
-function secondaryStatements(guard,circleId,current,depth){
+function secondaryStatements(guard,circleId,bound,depth){
   return [
     {sql:CIRCLE_HEALTH_SQL.guardedOwner,args:guard},
-    {sql:CIRCLE_HEALTH_SQL.secondaryPublications,args:[...guard,circleId,current,depth]},
-    {sql:CIRCLE_HEALTH_SQL.secondaryGroups,args:[...guard,circleId,current,depth]},
-    {sql:CIRCLE_HEALTH_SQL.secondarySchedules,args:[...guard,circleId,current,CIRCLE_HEALTH_WINDOW]},
+    {sql:CIRCLE_HEALTH_SQL.secondaryPublications,args:[...guard,circleId,bound,depth]},
+    {sql:CIRCLE_HEALTH_SQL.secondaryGroups,args:[...guard,circleId,bound,depth]},
+    {sql:CIRCLE_HEALTH_SQL.secondarySchedules,args:[...guard,circleId,bound,CIRCLE_HEALTH_WINDOW]},
   ];
 }
 
@@ -383,8 +410,9 @@ function secondaryStatements(guard,circleId,current,depth){
  *
  * `circleId` is the server-resolved active circle; pass null in single-circle
  * mode to use the actor's primary circle. Returns `{ok:false}` for anyone who
- * is not an active owner of an unarchived circle. Only cycles before the
- * current one (in PAIRING_TIME_ZONE) are read; an invalid time zone throws.
+ * is not an active owner of an unarchived circle. Only cycles that ended at
+ * least the receipt grace plus the clock margin ago (in PAIRING_TIME_ZONE) are
+ * read; an invalid time zone throws.
  */
 export async function readCircleHealth(db,{actorUserId,circleId=null,now=Date.now(),timeZone}={}){
   const actor=positiveId(actorUserId);
@@ -393,7 +421,10 @@ export async function readCircleHealth(db,{actorUserId,circleId=null,now=Date.no
     ||(circleId!==null&&!requestedCircle)){
     throw new TypeError('valid circle health query required');
   }
-  const current=resolvePairingCycle({now:new Date(now),timeZone,state:'current'}).cycleId;
+  // A cycle has ended by `settled` exactly when it comes before the cycle that
+  // contains `settled`, so that cycle's id is an exclusive upper bound.
+  const settled=new Date(now-CIRCLE_HEALTH_RECEIPT_GRACE_MS-CIRCLE_HEALTH_CLOCK_MARGIN_MS);
+  const bound=resolvePairingCycle({now:settled,timeZone,state:'current'}).cycleId;
   const ownerRows=rows(await db.execute(requestedCircle
     ?{sql:CIRCLE_HEALTH_SQL.ownerByCircle,args:[actor,requestedCircle]}
     :{sql:CIRCLE_HEALTH_SQL.ownerOfPrimary,args:[actor]}));
@@ -404,10 +435,10 @@ export async function readCircleHealth(db,{actorUserId,circleId=null,now=Date.no
   const guard=[actor,ownedCircle,primary?1:0];
   const depth=CIRCLE_HEALTH_WINDOW+CIRCLE_HEALTH_LOOKBACK;
   const results=await db.batch(primary
-    ?primaryStatements(guard,current,depth)
-    :secondaryStatements(guard,ownedCircle,current,depth),'read');
+    ?primaryStatements(guard,bound,depth)
+    :secondaryStatements(guard,ownedCircle,bound,depth),'read');
   if(rows(results?.[0]).length!==1) return Object.freeze({ok:false,reason:'owner_required'});
-  const cycles=primary?normalizePrimary(results):normalizeSecondary(results);
+  const cycles=primary?normalizePrimary(results,{timeZone}):normalizeSecondary(results);
   return Object.freeze({
     ok:true,
     circleId:ownedCircle,

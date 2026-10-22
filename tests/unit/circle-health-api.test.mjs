@@ -98,10 +98,11 @@ before(async()=>{
       args:[hash,Number(userId),nowSeconds-60,nowSeconds+3600],
     })),
   ],'write');
-  await insertPrimaryWeek(realDb,{ ...week(0),participants:[101,102,103,104,105,106],groups:[
+  await insertPrimaryWeek(realDb,{ ...week(0),participants:[101,102,103,104,105,106,107,108],groups:[
     { members:[101,102],agreed:new Date(Date.now()-6*86400000).toISOString(),receipts:[101,102] },
     { members:[103,104],agreed:new Date(Date.now()-5*86400000).toISOString(),receipts:[103,104] },
     { members:[105,106],agreed:new Date(Date.now()-5*86400000).toISOString(),receipts:[105,106] },
+    { members:[107,108],agreed:new Date(Date.now()-5*86400000).toISOString(),receipts:[107,108] },
   ] });
   await insertPrimaryWeek(realDb,{ ...week(1),participants:[101,102],groups:[{ members:[101,102] }] });
   await insertSecondaryPublication(realDb,{ circleId:20,cycleId:'2025-W40',startsAt:'2025-09-28T07:00:00.000Z',
@@ -175,8 +176,8 @@ test('an active owner and a co-owner read the primary health in single-circle mo
     assert.equal('circle_context_version' in result.body,false);
     const [newest,older]=result.body.health.cycles;
     assert.equal(newest.cycle_id,'2025-W40');
-    assert.deepEqual(newest.metrics.completed_pairs,{ status:'ok',value:3 });
-    assert.deepEqual(newest.metrics.scheduled_pairs,{ status:'ok',value:3 });
+    assert.deepEqual(newest.metrics.completed_pairs,{ status:'ok',value:4 });
+    assert.deepEqual(newest.metrics.scheduled_pairs,{ status:'ok',value:4 });
     assert.deepEqual(older.metrics.scheduled_pairs,{ status:'suppressed',value:null },'one pair');
     assert.doesNotMatch(JSON.stringify(result.body),/@|User \d/);
   }
@@ -253,6 +254,15 @@ test('multi-circle: no selection, or a selected archived circle, is refused',asy
   }
 });
 
+test('an invalid PAIRING_TIME_ZONE fails closed with a generic 503',async()=>{
+  process.env.PAIRING_TIME_ZONE='Not/AZone';
+  const failed=await invoke({ user:1 });
+  assert.equal(failed.status,503);
+  assert.deepEqual(failed.body,{ error:'circle health unavailable' });
+  const logged=await realDb.execute(`SELECT meta_json FROM app_logs WHERE event='circle_health_fail' ORDER BY id DESC LIMIT 1`);
+  assert.deepEqual(JSON.parse(String(logged.rows[0].meta_json)),{ code:'TypeError' });
+});
+
 test('a read failure returns a generic 503 and logs only an error code',async()=>{
   clientOverride={
     execute:statement=>realDb.execute(statement),
@@ -262,7 +272,8 @@ test('a read failure returns a generic 503 and logs only an error code',async()=
   const failed=await invoke({ user:1 });
   assert.equal(failed.status,503);
   assert.deepEqual(failed.body,{ error:'circle health unavailable' });
-  const logged=await realDb.execute(`SELECT message,meta_json,route,ip FROM app_logs WHERE event='circle_health_fail'`);
+  const logged=await realDb.execute(`SELECT message,meta_json,route,ip FROM app_logs
+    WHERE event='circle_health_fail' AND meta_json LIKE '%SQLITE_IOERR%'`);
   assert.equal(logged.rows.length,1);
   assert.deepEqual(JSON.parse(String(logged.rows[0].meta_json)),{ code:'SQLITE_IOERR' });
   assert.equal(logged.rows[0].route,null);

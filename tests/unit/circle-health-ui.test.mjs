@@ -92,7 +92,7 @@ function withMetrics(overrides) {
 function response(cycles = [cycle()], health = {}) {
   return {
     ok: true,
-    health: { version: 1, scope: 'primary', window_cycles: 8, lookback_cycles: 8, min_pairs: 3, completion_tracked: true,
+    health: { version: 1, scope: 'primary', window_cycles: 8, lookback_cycles: 8, min_pairs: 4, completion_tracked: true,
       attendance_outcomes_tracked: false, generated_at: '2026-10-27T12:00:00.000Z', cycles, ...health },
   };
 }
@@ -145,7 +145,7 @@ test('a response is rendered only when every cycle and cell is valid', () => {
   assert.equal(health.scope, 'primary');
   assert.equal(health.completionTracked, true);
   assert.equal(health.attendanceTracked, false);
-  assert.equal(health.minimumPairs, 3);
+  assert.equal(health.minimumPairs, 4);
   assert.deepEqual(health.cycles.map(item => item.cycle_id), ['2026-W43', '2026-W42']);
   for (const invalid of [
     null, { ok: false }, { ok: true }, response([], { scope: 'tertiary' }), response([], { completion_tracked: 'yes' }),
@@ -180,9 +180,9 @@ test('secondary circles drop the completion column and every footnote is accurat
     { scope: 'secondary', completion_tracked: false, attendance_outcomes_tracked: true }));
   assert.ok(visibleMetrics(primary).some(metric => metric.key === 'completed_pairs'));
   assert.ok(!visibleMetrics(secondary).some(metric => metric.key === 'completed_pairs'));
-  assert.equal(footnoteText(primary), 'Only finished cycles are shown; this week\'s pairs are on the Pairing tab. '
+  assert.equal(footnoteText(primary), 'A cycle appears two days after it ends, once late confirmations are in; this week\'s pairs are on the Pairing tab. '
     + 'Cancellations, no-shows and time to agree a session will appear once they are recorded.');
-  assert.equal(footnoteText(secondary), 'Only finished cycles are shown; this week\'s pairs are on the Pairing tab. '
+  assert.equal(footnoteText(secondary), 'A cycle appears two days after it ends, once late confirmations are in; this week\'s pairs are on the Pairing tab. '
     + 'This circle does not record completed sessions. Time to agree a session will appear once it is recorded.');
 });
 
@@ -227,7 +227,7 @@ test('an owner sees the panel load once per circle context and reuse it', async 
   const doc = fakeDocument();
   const host = fakeHost();
   const controller = mountCircleHealth({ doc, host });
-  assert.match(doc.elements.get('circleHealthDefinitions').textContent, /Agreed a time.*Repeat pairs.*Hidden.*fewer than 3 pairs/s);
+  assert.match(doc.elements.get('circleHealthDefinitions').textContent, /Agreed a time.*Repeat pairs.*Hidden.*fewer than 4 pairs/s);
   assert.equal(await controller.show(), true);
   const panel = doc.elements.get('circleHealthPanel');
   assert.equal(panel.hidden, false);

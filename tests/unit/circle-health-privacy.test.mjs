@@ -152,8 +152,8 @@ test('no hidden cell can be recovered from the response for 1-6 pairs, in either
   assert.ok(totalHidden > 0);
 });
 
-test('with one or two pairs, agreed, completed and repeat are hidden in every state', () => {
-  for (const pairs of [1, 2]) {
+test('with one to three pairs, agreed, completed and repeat are hidden in every state', () => {
+  for (const pairs of [1, 2, 3]) {
     for (const world of enumerate(pairs, { model: 'independent', tracked: true })) {
       for (const [metric] of PRIVATE) assert.equal(world.metrics[metric].status, 'suppressed', `${pairs} pairs ${metric}`);
       assert.deepEqual(world.metrics.pairs, { status: 'ok', value: pairs });
@@ -166,7 +166,12 @@ test('the owner learns another pair\'s state only from a shown 0 or "every pair"
     for (const shape of SHAPES) {
       const worlds = enumerate(pairs, shape);
       const result = ownerInference(worlds, pairs, shape.tracked);
-      assert.deepEqual(result.unexplained, [], `${pairs} pairs ${JSON.stringify(shape)}`);
+      const label = `${pairs} pairs ${JSON.stringify(shape)}`;
+      assert.deepEqual(result.unexplained, [], label);
+      // Below the pair floor the owner learns nothing about another pair; from
+      // four pairs a unanimous count discloses at most 12.5% of cases.
+      if (pairs < 4) assert.equal(result.determined, 0, label);
+      else assert.ok(result.determined / result.cases <= 0.125, label);
       t.diagnostic(`${pairs} pairs ${JSON.stringify(shape)}: another pair's attribute determined in `
         + `${(100 * result.determined / result.cases).toFixed(1)}% of cases, all by a unanimous count`);
     }

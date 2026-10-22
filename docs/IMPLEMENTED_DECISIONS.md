@@ -3348,12 +3348,14 @@ third-party tracker would conflict with a private circle.
 
 **Decision.**
 - `GET /api/circle/health` (rewrite to `/api/ops?endpoint=circle-health`)
-  returns, for the selected circle's last 8 **finished** cycles, member counts
+  returns, for the selected circle's last 8 **settled** cycles, member counts
   for available, paired and solo, the number of pairs, the number of pairs
   that agreed a time and that completed (primary circles only), and the
-  repeat-pair rate against the 8 cycles before. The current cycle is never
-  returned. Cancellations, no-shows and the median time to agreement are in
-  the contract as `not_tracked`.
+  repeat-pair rate against the 8 cycles before. A cycle is settled 49 hours
+  after it ends: completion counts only receipts confirmed within 48 hours of
+  the end, and the extra hour covers clock skew, so a shown completed count
+  never changes. The current cycle is never returned. Cancellations, no-shows
+  and the median time to agreement are in the contract as `not_tracked`.
 - Everything is computed per request with read-only statements over the
   existing publication, schedule, completion-receipt (ID-55) and v13/v16
   secondary tables: no table, cache row, index or migration. One `read` batch
@@ -3362,14 +3364,16 @@ third-party tracker would conflict with a private circle.
   may read it (ID-69); members, demoted or inactive owners, archived circles
   and other circles get 403.
 - Suppression runs on the server before the response is built, counted in
-  pairs because people act in pairs. With fewer than 3 pairs, agreed,
-  completed and repeat are always hidden. With 3 or more, a count is hidden
+  pairs because people act in pairs. With fewer than 4 pairs, agreed,
+  completed and repeat are always hidden (with 3 pairs only 0 or 3 could
+  show, and both disclose every pair). With 4 or more, a count is hidden
   when exactly one pair is in or out of it, and agreed and completed are
   hidden together. An exhaustive test over every pair state for 1 to 6 pairs
-  shows no hidden cell is determined by the rest of the response. A shown 0
-  or "every pair" still tells an owner every pair's state; that is the only
-  way the owner learns another named pair's state, and the same test checks
-  it. Available, paired, solo and pairs describe the published pairing, which
+  shows no hidden cell is determined by the rest of a response. A shown 0 or
+  "every pair" still tells an owner every pair's state; that is the only way
+  the owner learns another named pair's state (2.7% to 12.5% of cases for 4
+  to 6 pairs), the same test checks it, and the Privacy Policy will say so
+  once #336 merges. Available, paired, solo and pairs describe the published pairing, which
   every member saw, and are shown. The response has no ids, names or emails.
 - The flag gates the route (404 with no storage access), the `circleHealth`
   capability and the owner card. The card's module is imported only when the
@@ -3381,8 +3385,13 @@ group read: `pairing_groups` has no `week_id` index, so that read scans the
 table, as `/api/stats` and history already do. A `pairing_groups(week_id)`
 index stays on the backlog for a future managed migration.
 
-**Residual risk.** Receipts and schedules can still be written for a finished
-cycle, so comparing two views can show that a count moved (not which pair).
+**Residual risk.** Agreements have no history, so a partner who clears an
+agreement, or accepts a new future time, in a past week's room after that
+cycle appears can change its agreed count or turn it Hidden; comparing the
+two views can reveal the new count and, with what the owner knows, possibly
+which pair changed. It needs someone to act on a past week's room, which the
+product does not prompt. Late completion confirmations no longer have this
+effect.
 
 **Deferred.** The median time from pairing to agreement needs a stored
 agreement timestamp (`pair_schedules.updated_at` changes on later proposals).

@@ -8,13 +8,14 @@ The visual design is provisional (`needs-design`).
 ## What it is
 
 An owner-only **Circle health** card at the bottom of the Circle tab. It shows
-one row per cycle for the last 8 **finished** cycles of the selected circle,
-newest first, so an owner can see where the weekly loop drops off:
-availability, pairing, agreeing a time, or the session itself. Every number is
-a total for the whole circle. There are no per-member rows, no client events,
-no cookies and no third-party scripts; the CSP is unchanged. The current
-cycle is not included (its pairs are on the Pairing tab), so watching the
-card cannot show a pair acting in real time.
+one row per cycle for the last 8 **settled** cycles of the selected circle
+(cycles that ended at least 49 hours ago), newest first, so an owner can see
+where the weekly loop drops off: availability, pairing, agreeing a time, or
+the session itself. Every number is a total for the whole circle. There are
+no per-member rows, no client events, no cookies and no third-party scripts;
+the CSP is unchanged. The current cycle and the one that just ended are not
+included (this week's pairs are on the Pairing tab), so watching the card
+cannot show a pair acting in real time.
 
 ## Flag and capability
 
@@ -60,7 +61,7 @@ Responses are `Cache-Control: private, no-store`.
     "scope": "primary",
     "window_cycles": 8,
     "lookback_cycles": 8,
-    "min_pairs": 3,
+    "min_pairs": 4,
     "completion_tracked": true,
     "attendance_outcomes_tracked": false,
     "generated_at": "2026-10-27T12:00:00.000Z",
@@ -99,15 +100,17 @@ number), `suppressed`, `no_data` (the cycle had no pairs) or `not_tracked`.
 | `solo` | members | odd member (legacy AI/solo group) | `is_solo` group |
 | `pairs` | pairs | number of two- or three-person groups | number of two-person groups |
 | `scheduled_pairs` | pairs | groups with an agreed time (`pair_schedules.agreed_time`; a legacy free-text agreement counts) | groups with `circle_pair_schedules.agreed_time` |
-| `completed_pairs` | pairs | groups with a unanimous completion receipt set (same rule as `/api/stats`, ID-55) | `not_tracked`: secondary circles have no completion capability |
-| `repeat_pair_percent` | % of pairs | groups whose members were also grouped together in any of the 8 finished cycles before | same |
+| `completed_pairs` | pairs | groups with a unanimous completion receipt set (same rule as `/api/stats`, ID-55), counting only receipts confirmed less than 48 hours after the cycle ended | `not_tracked`: secondary circles have no completion capability |
+| `repeat_pair_percent` | % of pairs | groups whose members were also grouped together in any of the 8 settled cycles before | same |
 | `median_hours_to_agreed_time` | | `not_tracked` (deferred, below) | `not_tracked` |
 | `cancelled`, `no_show` | | `not_tracked` until #291 | `not_tracked` until #291 |
 
 What pairs did is counted in **pairs**, because people act in pairs. Only
 weeks with an ISO label (`YYYY-Www`) and `is_demo=0` count; demo seeds and
-unmanaged legacy labels are skipped. A cycle is finished when its id is
-before the current cycle in `PAIRING_TIME_ZONE`.
+unmanaged legacy labels are skipped. A cycle is settled once its end plus
+the 48-hour receipt grace and a 1-hour clock margin has passed: the server
+reads only cycles before the one that contains "now minus 49 hours" in
+`PAIRING_TIME_ZONE`.
 
 **Deferred: time from pairing to agreement.** The issue asks for the median
 time from pairing to an agreed time. The moment a pair agreed is not stored
@@ -120,25 +123,28 @@ agreement timestamp exists and it can be released under the rules below.
 ## Privacy
 
 Enforced in `api/_circle-health.js` before the response is built; the browser
-only displays what it is given. `min_pairs` is 3.
+only displays what it is given. `min_pairs` is 4.
 
-1. **Finished cycles only.** The current cycle is never returned.
+1. **Settled cycles only.** The current cycle is never returned, and a cycle
+   that ended appears only after 49 hours (below, "Late changes").
 2. **Published pairing facts are shown.** `available`, `paired`, `solo` and
    `pairs` describe the published pairing, which every member of the circle
    saw when it was published.
-3. **Pair floor.** In a cycle with 1 or 2 pairs, `scheduled_pairs`,
+3. **Pair floor.** In a cycle with 1 to 3 pairs, `scheduled_pairs`,
    `completed_pairs` and `repeat_pair_percent` are always hidden, whatever
-   their value, so "hidden" carries no information.
-4. **Edge counts.** With 3 or more pairs, a pair count is hidden when exactly
+   their value, so "hidden" carries no information. Three pairs is under the
+   floor because the edge rule below would leave only 0 or 3 visible, and a
+   shown 0 or 3 always discloses every pair.
+4. **Edge counts.** With 4 or more pairs, a pair count is hidden when exactly
    one pair is in it or exactly one pair is out of it (a single pair is 2
    members, under the 3-member threshold). `repeat_pair_percent` follows the
-   same rule on the number of repeat pairs.
+   same rule on the number of repeat pairs. 0 and "every pair" stay visible.
 5. **Agreed and completed together.** If either `scheduled_pairs` or
    `completed_pairs` is an edge count, both are hidden. Without this, an owner
    who assumes completed pairs also agreed a time could narrow one hidden
    count from the other shown one.
 
-**What is guaranteed.** No hidden cell is determined by the rest of the
+**What is guaranteed.** No hidden cell is determined by the rest of a single
 response. `tests/unit/circle-health-privacy.test.mjs` runs the production code
 over every state of every pair (agreed, completed, repeat) for 1 to 6 pairs,
 with and without a legacy triad and a solo member, in two world models: any
@@ -150,16 +156,32 @@ can be recovered.
 **What is not hidden.** An owner also knows their own pair's state. A shown
 count of 0 or "every pair" tells the owner that every pair did, or did not,
 do that thing, so the state of each named pair follows. The same test checks
-that this is the only way the owner learns another pair's state: with the
-owner in one pair, another pair's agreed, completed or repeat state is
-determined in 2.7% to 25% of cases (higher with fewer pairs), and every one
-of those cases is a shown 0 or "every pair". A count in between never
-determines a named pair.
+that this is the only way the owner learns another pair's state, and bounds
+how often it happens: with 1 to 3 pairs never; with 4 to 6 pairs, another
+pair's agreed, completed or repeat state is determined in 2.7% to 12.5% of
+cases, every one of them a shown 0 or "every pair". A count in between never
+determines a named pair. Members are told this (below).
 
-**Late changes.** Completion receipts (and schedules) can still be written for
-a finished cycle, so a finished cycle's numbers can change. Comparing two
-views can show that a count moved, without saying which pair moved it; a
-change into an edge count shows as "Hidden".
+**Late changes.** Completion receipts can be written for any past week, so
+completion counts only receipts confirmed less than 48 hours after the cycle
+ended, and a cycle appears only after that grace plus a 1-hour margin for
+clock skew between the app and the database (`confirmed_at` is set by the
+database). From the moment a cycle appears, a late confirmation cannot change
+its completed count. Agreements have no history (`pair_schedules.updated_at`
+changes on every later proposal), so they are read as they are now. If a
+partner clears an agreement, or accepts a newly proposed future time, in a
+past week's room after that cycle appears, its agreed count can change or
+turn Hidden. An owner comparing the two views can then work out the new
+count, and, with what the owner knows about the pairs, possibly which pair
+changed. This needs a partner to act on a past week's room, which the product
+does not prompt, so it should be rare.
+
+**What members are told.** Suggested Privacy Policy copy (to be added when
+#336 merges): "Circle owners see weekly counts for their circle: how many
+members took part and were paired, and how many pairs agreed a time and
+completed a session, including when that was all pairs or none. Counts that
+could point to a single pair are hidden, and the owner never sees who did
+what."
 
 The response contains no ids, names or emails. Review the threshold with the
 owner before turning the flag on (issue #292 "Dependencies / risks").
@@ -184,12 +206,12 @@ database. N is the circle's members per cycle.
 | Statement | Index | Rows read (about) |
 | --- | --- | --- |
 | owner check (twice) | `idx_circle_memberships_circle_active`, circle by rowid | 2 |
-| primary weeks (16 finished) | range scan `week_label < current` of `idx_pairing_weeks_week_label` | 16 + skipped demo weeks |
+| primary weeks (16 settled) | range scan `week_label < bound` of `idx_pairing_weeks_week_label` | 16 + skipped demo weeks |
 | primary participants (8 weeks) | `uq_pairing_participants_completion_owner` (covering) | 8·N |
 | primary groups (16 weeks) | **none: full scan of `pairing_groups`** | every stored group |
 | primary schedules (8 weeks) | `uq_pair_schedules_meeting_agreement` (covering) | ≤ 4·N |
 | primary receipts (8 weeks) | `session_completion_receipts` primary key | ≤ 8·N |
-| secondary publications (16 finished) | `idx_circle_pairing_publications_circle_cycle` | 16 |
+| secondary publications (16 settled) | `idx_circle_pairing_publications_circle_cycle` | 16 |
 | secondary groups (16) | `circle_pairing_groups (publication_id, …)` | ≤ 8·N |
 | secondary schedules (8) | `circle_pair_schedules (publication_id, group_id)` | ≤ 4·N |
 
@@ -234,11 +256,14 @@ states, flip the constant, and add the columns to `METRICS` in
   property above.
 - `tests/unit/circle-health.test.mjs`: a hand-built primary history (current,
   demo, legacy and lookback-only weeks, a triad, a legacy free-text
-  agreement) and secondary circles; every suppression rule; owners,
-  co-owners, demoted, inactive, archived and cross-circle callers; demotion,
-  deactivation and archive racing the read; a receipt from outside a pair.
+  agreement, receipts inside and after the grace) and secondary circles;
+  every suppression rule; the 49-hour boundary; a late confirmation that must
+  not change a shown count; owners, co-owners, demoted, inactive, archived
+  and cross-circle callers; demotion, deactivation and archive racing the
+  read; a receipt from outside a pair.
 - `tests/unit/circle-health-api.test.mjs`: route wiring through the ops
-  handler with the real active-circle module.
+  handler with the real active-circle module, including a 503 for an invalid
+  `PAIRING_TIME_ZONE`.
 - `tests/unit/circle-health-ui.test.mjs`: response validation and the card
   controller, including a refused circle context that must not leave the card
   stuck.

@@ -6,6 +6,7 @@ import {insertPrimaryWeek} from '../support/circle-health-fixture.mjs';
 import {
   createPairedCircle,
   json,
+  openApp,
   pathIs,
   startGoldenRuntime,
   withDatabase,
@@ -22,6 +23,7 @@ const ENV_KEYS=['CIRCLE_HEALTH_ENABLED'] as const;
 const HOUR=3600_000;
 const ok=(value:number)=>({status:'ok',value});
 const untracked={status:'not_tracked',value:null};
+const hidden={status:'suppressed',value:null};
 
 async function expectPanelAccessible(page:Page){
   for(const width of [1280,390]){
@@ -54,8 +56,10 @@ test('circle health: an owner sees fixture-exact metrics for recent finished cyc
     const ownerId=pair.owner.user.id;
     const memberId=pair.member.user.id;
 
-    // The UI published the current cycle, which is never returned. Add two
-    // earlier, finished cycles with seven more members in the primary circle.
+    // The UI published the current cycle, which is never returned. A cycle
+    // shows only 49 h after it ends (48 h receipt grace + 1 h clock margin),
+    // so the history goes into the two cycles before the one containing
+    // now - 49 h, with seven more members in the primary circle.
     const current=await withDatabase(golden,async db=>{
       const week=(await db.execute(`SELECT week_label,week_start FROM pairing_weeks ORDER BY id DESC LIMIT 1`)).rows[0];
       const circleId=Number((await db.execute(`SELECT id FROM circles WHERE is_primary=1 AND archived_at IS NULL`)).rows[0].id);
@@ -66,7 +70,8 @@ test('circle health: an owner sees fixture-exact metrics for recent finished cyc
         await db.execute({sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status) VALUES (?,?,'member','active')`,
           args:[circleId,id]});
       }
-      const previous=resolvePairingCycle({now:new Date(Date.parse(String(week.week_start))-1)});
+      const settled=resolvePairingCycle({now:new Date(Date.now()-49*HOUR)});
+      const previous=resolvePairingCycle({now:new Date(Date.parse(settled.startsAt)-1)});
       const older=resolvePairingCycle({now:new Date(Date.parse(previous.startsAt)-1)});
       const published=Date.parse(previous.startsAt);
       const at=(hours:number)=>new Date(published+hours*HOUR).toISOString();
@@ -80,7 +85,7 @@ test('circle health: an owner sees fixture-exact metrics for recent finished cyc
           {members:[9103,9104],agreed:at(60),receipts:[9103]},
           {members:[9105,9106],agreed:at(72)},
         ]});
-      // Older cycle: 7 available, one solo, nothing agreed.
+      // Older cycle: 7 available, one solo, 3 pairs: under the pair floor.
       await insertPrimaryWeek(db,{label:older.cycleId,weekStart:older.startsAt,publishedAt:older.startsAt,
         participants:[9101,9102,9103,9104,9105,9106,9107],groups:[
           {members:[9101,9102]},{members:[9103,9104]},{members:[9105,9106]},{members:[9107]},
@@ -100,8 +105,8 @@ test('circle health: an owner sees fixture-exact metrics for recent finished cyc
       repeat_pair_percent:ok(50),...deferred,
     });
     expect(older.metrics).toEqual({
-      available:ok(7),paired:ok(6),solo:ok(1),pairs:ok(3),scheduled_pairs:ok(0),completed_pairs:ok(0),
-      repeat_pair_percent:ok(0),...deferred,
+      available:ok(7),paired:ok(6),solo:ok(1),pairs:ok(3),scheduled_pairs:hidden,completed_pairs:hidden,
+      repeat_pair_percent:hidden,...deferred,
     });
     expect(JSON.stringify(api.body)).not.toMatch(new RegExp(`@|Fixture|Golden|Owner|user_id|${current.label}`));
 
@@ -113,10 +118,10 @@ test('circle health: an owner sees fixture-exact metrics for recent finished cyc
     expect(await rowCells(owner,current.previous).allTextContents())
       .toEqual(['8','8','0','4 of 4','2 of 4','50%']);
     expect(await rowCells(owner,current.older).allTextContents())
-      .toEqual(['7','6','1','0 of 3','0 of 3','0%']);
+      .toEqual(['7','6','1','Hidden','Hidden','Hidden']);
     await expect(owner.getByTestId('circle-health-table').locator('thead th'))
       .toHaveText(['Cycle','Available','Paired','Solo','Agreed a time','Completed','Repeat pairs']);
-    await expect(panel).toContainText('Only finished cycles are shown');
+    await expect(panel).toContainText('A cycle appears two days after it ends');
 
     // Keyboard only: open the definitions and refresh.
     const summary=panel.locator('summary');
@@ -135,10 +140,12 @@ test('circle health: an owner sees fixture-exact metrics for recent finished cyc
     await expect(owner.locator('#circleHealthTableWrap')).toBeFocused();
     await expectPanelAccessible(owner);
 
-    // A member never sees the panel, never loads the module, and is refused
-    // by the server.
+    // A member never sees the panel, never loads the module (watched from a
+    // fresh page load), and is refused by the server.
     const memberModuleRequests:string[]=[];
     member.on('request',request=>{ if(new URL(request.url()).pathname==='/assets/circle-health.js') memberModuleRequests.push(request.url()); });
+    await openApp(member,golden);
+    await expect(member.locator('#meLabel')).toContainText(pair.member.name);
     await member.locator('[data-tab="circle"]').click();
     await expect(member.getByTestId('circle-members')).toBeVisible();
     await expect(member.getByTestId('circle-health')).toBeHidden();

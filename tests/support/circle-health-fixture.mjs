@@ -15,8 +15,10 @@ export function sqliteDateTime(value) {
 /**
  * Insert one primary-circle week.
  *
- * groups: [{members:[a,b] | [a,b,c] | [a], ai?:true, agreed?:string, receipts?:number[]}]
+ * groups: [{members:[a,b] | [a,b,c] | [a], ai?:true, agreed?:string,
+ *   receipts?:Array<number | {userId:number, at:string}>}]
  * A one-member group is stored as the legacy AI/solo pair (user_a = user_b).
+ * Receipts are confirmed one hour after the week starts unless `at` is given.
  * Omit `publishedAt` to store a legacy week without a publication run.
  */
 export async function insertPrimaryWeek(db, {
@@ -59,11 +61,13 @@ export async function insertPrimaryWeek(db, {
         args: [weekId, groupId, group.agreed],
       });
     }
-    for (const userId of group.receipts || []) {
+    for (const receipt of group.receipts || []) {
+      const userId = typeof receipt === 'number' ? receipt : receipt.userId;
+      const at = typeof receipt === 'number' ? new Date(Date.parse(weekStart) + 3600000).toISOString() : receipt.at;
       await db.execute({
         sql: `INSERT INTO session_completion_receipts (week_id,pair_group_id,user_id,participant_source,
             pair_user_a_id,pair_user_b_id,pair_user_c_id,confirmed_at) VALUES (?,?,?,'auth',?,?,?,?)`,
-        args: [weekId, groupId, userId, a, b, c, new Date(Date.parse(weekStart) + 3 * 86400000).toISOString()],
+        args: [weekId, groupId, userId, a, b, c, at],
       });
     }
   }
