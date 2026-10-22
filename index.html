@@ -857,6 +857,17 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis);
 }
 .catalog-chip--pattern{color:var(--ink)}
+/* Issue #296 (behind EXERCISE_SUGGESTIONS_ENABLED; provisional design). */
+.catalog-chip--attempted{border-color:var(--info); background:var(--info-surface); color:var(--info)}
+.catalog-suggestions{display:grid; gap:var(--space-2); padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--card)}
+.catalog-suggestions .q-section-title{margin:0}
+.catalog-suggestion-list{list-style:none; margin:0; padding:0; display:grid; gap:var(--space-3)}
+.catalog-suggestion{display:flex; align-items:flex-start; justify-content:space-between; gap:var(--space-2); min-width:0}
+.catalog-suggestion-main{display:grid; gap:var(--space-1); min-width:0}
+.catalog-suggestion-open{display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2); min-height:var(--tap-min); padding:0; border:0; background:none; color:var(--ink); font:inherit; text-align:left; cursor:pointer}
+.catalog-suggestion-open:focus-visible{outline:3px solid var(--color-focus); outline-offset:2px; border-radius:var(--radius-xs)}
+@media(hover:hover){ .catalog-suggestion-open:hover .catalog-card-title{text-decoration:underline} }
+.catalog-suggestion-reason,.catalog-suggestions-note{margin:0}
 .catalog-item--skeleton{display:grid; gap:var(--space-2); padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--card)}
 .catalog-skeleton-title{display:block; height:14px; width:55%; border-radius:var(--radius-xs)}
 .catalog-skeleton-line{display:block; height:12px; width:90%; border-radius:var(--radius-xs)}
@@ -2600,6 +2611,16 @@ a.btn{text-decoration:none}
                   <label class="small muted" for="questionSelect">Exercise</label>
                   <select id="questionSelect" class="select"></select>
                 </div>
+                <section id="exerciseSuggestions" class="catalog-suggestions" data-testid="exercise-suggestions" aria-labelledby="exerciseSuggestionsTitle" hidden>
+                  <h4 id="exerciseSuggestionsTitle" class="q-section-title" tabindex="-1">Suggested for you</h4>
+                  <ol id="exerciseSuggestionList" class="catalog-suggestion-list" data-testid="exercise-suggestion-list"></ol>
+                  <div id="exerciseSuggestionsEmpty" class="catalog-empty" data-testid="exercise-suggestions-empty" hidden>
+                    <p id="exerciseSuggestionsEmptyTitle" class="catalog-state-title"></p>
+                    <p id="exerciseSuggestionsEmptyMessage" class="small muted"></p>
+                  </div>
+                  <p id="exerciseSuggestionsNote" class="small muted catalog-suggestions-note"></p>
+                  <button id="exerciseSuggestionsShowHidden" class="btn ghost sm" type="button" data-testid="exercise-suggestions-show-hidden" data-suggestions-action="show-hidden" hidden>Show hidden exercises</button>
+                </section>
                 <div data-testid="catalog-filters" class="catalog-filters">
                   <label class="small muted catalog-search">Search
                     <input id="catalogSearch" data-testid="catalog-search" class="input" type="search" autocomplete="off" placeholder="Title, pattern or topic" />
@@ -12975,6 +12996,90 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return question?.title||'';
   }
 
+  // Issue #296: attempted markers and suggested next exercises, only while the
+  // server advertises them with the catalogue (EXERCISE_SUGGESTIONS_ENABLED).
+  // With the flag off nothing here runs and every label stays unchanged.
+  let exerciseSuggestions=null;
+  let exerciseSuggestionsEnabled=false;
+  // The client module is fetched only after the server advertises the feature,
+  // so pages with the flag off never download it.
+  const SUGGESTIONS_SCRIPT='/assets/exercise-suggestions.js';
+  let suggestionsScriptLoad=null;
+  function loadSuggestionsScript(){
+    if(window._randori_exercise_suggestions) return Promise.resolve(true);
+    if(suggestionsScriptLoad) return suggestionsScriptLoad;
+    suggestionsScriptLoad=new Promise(resolve=>{
+      const script=document.createElement('script');
+      script.src=SUGGESTIONS_SCRIPT;
+      script.onload=()=>resolve(true);
+      // A failed fetch can be retried by the next refresh.
+      script.onerror=()=>{ script.remove(); suggestionsScriptLoad=null; resolve(false); };
+      document.head.appendChild(script);
+    });
+    return suggestionsScriptLoad;
+  }
+  function suggestionsController(){
+    if(exerciseSuggestions||!exerciseSuggestionsEnabled) return exerciseSuggestions;
+    const api=window._randori_exercise_suggestions;
+    const section=document.getElementById('exerciseSuggestions');
+    if(!api||!section) return null;
+    let storage=null;
+    try{ storage=window.localStorage; }catch{}
+    const byId=id=>document.getElementById(id);
+    exerciseSuggestions=api.createController({
+      doc:document,
+      targets:{
+        section,title:byId('exerciseSuggestionsTitle'),list:byId('exerciseSuggestionList'),
+        empty:byId('exerciseSuggestionsEmpty'),emptyTitle:byId('exerciseSuggestionsEmptyTitle'),
+        emptyMessage:byId('exerciseSuggestionsEmptyMessage'),note:byId('exerciseSuggestionsNote'),
+        showHidden:byId('exerciseSuggestionsShowHidden'),
+      },
+      fetchImpl:(path,init)=>fetch(path,init),
+      storage,
+      getUserId:()=>window._randori_auth?.me?.id??window._randori_auth?.me?.uid??null,
+      getRoom:()=>authorizedPairExecutionRoom()||'',
+      getCatalogueSlugs:()=>CUSTOM_QUESTIONS.map(question=>question.slug),
+      onMarkers:()=>{ refreshCatalogueOptionLabels(); renderCatalogueList(); },
+      onSelect:selectSuggestedExercise,
+    });
+    exerciseSuggestions.setEnabled(true);
+    return exerciseSuggestions;
+  }
+  function refreshExerciseSuggestions(options){
+    if(!exerciseSuggestionsEnabled||catalogueFetchState!=='loaded') return;
+    if(exerciseSuggestions){ void exerciseSuggestions.refresh(options); return; }
+    void loadSuggestionsScript().then(loaded=>{
+      if(loaded&&exerciseSuggestionsEnabled) void suggestionsController()?.refresh(options);
+    });
+  }
+  function attemptedText(slug,format){
+    const marker=exerciseSuggestions?.marker(slug);
+    return marker?window._randori_exercise_suggestions?.[format]?.(marker,{partnerCount:exerciseSuggestions.partnerCount})||'':'';
+  }
+  function catalogueOptionLabel(question){
+    return question.title+(question.version!=null?' · v'+question.version:'')+attemptedText(question.slug,'optionSuffix');
+  }
+  function refreshCatalogueOptionLabels(){
+    for(const option of document.getElementById('questionSelect')?.options||[]){
+      if(option.dataset.custom!=='1'||option.dataset.workspaceFiltered==='1') continue;
+      const question=CUSTOM_QUESTIONS.find(item=>item.slug===option.value&&positiveVersion(item.version)===positiveVersion(option.dataset.questionVersion));
+      if(question) option.textContent=catalogueOptionLabel(question);
+    }
+  }
+  // A suggestion opens through the exercise select, like a catalogue card;
+  // filters that hide it are cleared first.
+  function selectSuggestedExercise(slug,version){
+    const sel=document.getElementById('questionSelect');
+    if(!sel||catalogueFetchState!=='loaded') return false;
+    const find=()=>[...sel.options].find(item=>item.value===slug&&item.dataset.workspacePlaceholder!=='1'
+      &&(version==null||positiveVersion(item.dataset.questionVersion)===version));
+    let option=find();
+    if(!option&&catalogueFiltersActive()){ resetCatalogueFilters(); option=find(); }
+    if(!option||sel.disabled) return false;
+    if(sel.value!==option.value){ sel.value=option.value; sel.dispatchEvent(new Event('change',{bubbles:true})); }
+    return true;
+  }
+
   // Exercise cards for the current filter result. The selected exercise is
   // marked; it never changes because a filter hides it.
   function renderCatalogueList(){
@@ -12982,13 +13087,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const list=document.getElementById('catalogList');
     const matches=catalogueFiltersActive()?filteredCatalogueQuestions():CUSTOM_QUESTIONS;
     const selected={slug:activeQuestionSlug,version:activeQuestionVersion};
-    catalogueView.renderExerciseList(document,list,matches.map(question=>catalogueView.exerciseCard(question,selected)));
+    catalogueView.renderExerciseList(document,list,matches.map(question=>catalogueView.exerciseCard(question,selected,{
+      attempted:attemptedText(question.slug,'markerLabel'),
+    })));
   }
 
   function appendCatalogueOption(sel,question){
     const option=document.createElement('option');
     option.value=question.slug;
-    option.textContent=question.title+(question.version!=null?' · v'+question.version:'');
+    option.textContent=catalogueOptionLabel(question);
     option.dataset.custom='1';
     option.dataset.questionVersion=String(question.version);
     sel.appendChild(option);
@@ -13132,7 +13239,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(r.ok && j.ok && Array.isArray(j.questions)){
         CUSTOM_QUESTIONS=j.questions;
         catalogueFetchState='loaded';
+        exerciseSuggestionsEnabled=j.features?.exercise_suggestions===true;
+        if(!exerciseSuggestionsEnabled) exerciseSuggestions?.setEnabled(false);
         mergeIntoSelect();
+        refreshExerciseSuggestions();
         catalogueFailureCount=0;
         if(catalogueRetryTimer){ clearTimeout(catalogueRetryTimer); catalogueRetryTimer=null; }
         document.getElementById('qCustomCount').textContent='• '+j.questions.length+' available';
@@ -13293,13 +13403,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(browse&&catalogueFiltersActive()) browse.open=true;
   }
   ['input','change'].forEach(type=>document.querySelector('[data-testid="catalog-filters"]')?.addEventListener(type,revealCatalogueList));
-  function clearCatalogueFilters(){
+  function resetCatalogueFilters(){
     Object.assign(catalogueFilterState,{search:'',difficulty:'all',type:'all',language:'all'});
     if(catalogSearch) catalogSearch.value='';
     if(catalogDifficulty) catalogDifficulty.value='all';
     if(catalogType) catalogType.value='all';
     if(catalogLanguage) catalogLanguage.value='all';
     applyCatalogueFilters();
+  }
+  function clearCatalogueFilters(){
+    resetCatalogueFilters();
     catalogSearch?.focus();
   }
   document.getElementById('catalogClearFilters')?.addEventListener('click',clearCatalogueFilters);
@@ -13632,6 +13745,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           }
           if(runOutEl){ runOutEl.innerHTML=cards.join(''); }
           try{ window._randori_runs && window._randori_runs.refresh && window._randori_runs.refresh(); }catch{}
+          try{ refreshExerciseSuggestions({force:true}); }catch{}
           // The Results panel already shows the outcome; the toast is for
           // members who are looking at another panel.
           if(window.toast&&!document.getElementById('roomPanel-results')?.checkVisibility?.()) window.toast(summary.headline);
@@ -13751,10 +13865,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return fetchCustomQuestions();
   }
   window.addEventListener('randori:auth-refreshed',event=>{
-    if(event.detail?.signedIn!==true) return;
+    if(event.detail?.signedIn!==true){ refreshExerciseSuggestions(); return; }
     if(catalogueFetchState==='loading') catalogueRetryAfterSignIn=true;
     else if(catalogueFetchState==='failed') void restartCatalogueLoad();
+    else refreshExerciseSuggestions();
   });
+  // Pair and solo suggestions follow the room the member is in (issue #296).
+  window.addEventListener('randori:room-change',()=>{ setTimeout(()=>refreshExerciseSuggestions(),0); });
+  window.addEventListener('randori:workspace-hydrated',()=>refreshExerciseSuggestions());
+  window.addEventListener('randori:workspace-deactivated',()=>refreshExerciseSuggestions());
 
   // initial load
   const startCatalogueLoad=()=>setTimeout(fetchCustomQuestions,400);
@@ -13777,6 +13896,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     selectWorkspaceQuestion,
     selectedIdentity,
     selectedQuestion:selectedCatalogueQuestion,
+    get suggestions(){ return exerciseSuggestions?.view||null; },
   };
   window._randori_catalog_filters={
     get state(){

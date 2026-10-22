@@ -42,6 +42,12 @@ import {
 } from './_client-log-policy.js';
 import { deliverCommittedOutboxEvents, outboxEventsFromStatements } from './_outbox-immediate.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, messageInsertStatement, messageLimitStateStatement, MessageDataError, MessageInputError, messageReadStatement, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
+import {
+  ensureExerciseSuggestionsReadiness,
+  exerciseSuggestionsEnabled,
+  parseExerciseSuggestionsQuery,
+  readExerciseSuggestions,
+} from './_exercise-suggestions.js';
 import { ensureProgressReadiness, parseProgressQuery, progressDashboardEnabled, readMemberProgress } from './_progress.js';
 import { DELETED_ACCOUNT_PASSWORD_HASH } from './_account-deletion.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
@@ -166,6 +172,7 @@ function resolveDataRoute(req,endpoint){
   if(endpoint==='my-pair'||endpoint==='mypair'||endpoint==='my_pair'
     ||path.includes('my-pair')||path.includes('my_pair')) return 'my-pair';
   if(endpoint==='pair-recap'||path.includes('/pair-recap')) return 'pair-recap';
+  if(endpoint==='exercise-suggestions'||path.includes('/exercise-suggestions')) return 'exercise-suggestions';
   if(endpoint==='session-completion'||path.includes('/session-completion')) return 'session-completion';
   if(endpoint==='session-controls'||path.includes('/session-controls')) return 'session-controls';
   if(endpoint==='meeting-link'||path.includes('/meeting-link')) return 'meeting-link';
@@ -2061,7 +2068,49 @@ async function handleQuestions(req,res){
   }
 
   const questions=listPublicExercises();
+  // Issue #296: advertised only while the flag is on, so the response is
+  // unchanged for everyone while EXERCISE_SUGGESTIONS_ENABLED is unset.
+  if(exerciseSuggestionsEnabled()){
+    return res.json({ok:true,questions,count:questions.length,features:{exercise_suggestions:true}});
+  }
   return res.json({ok:true,questions,count:questions.length});
+}
+
+// Issue #296: attempted markers and suggested next exercises (flag, read-only).
+async function handleExerciseSuggestions(req,res){
+  res.setHeader('Cache-Control','private, no-store');
+  if(!exerciseSuggestionsEnabled()){
+    return res.status(404).json({error:'exercise suggestions are not available',code:'feature_disabled'});
+  }
+  if(req.method!=='GET'){
+    res.setHeader('Allow','GET');
+    return res.status(405).json({error:'GET only'});
+  }
+  const payload=await getAuthPayload(req);
+  if(!payload) return res.status(401).json({error:'authentication required'});
+  const userId=authenticatedUserId(payload);
+  if(!userId) return res.status(401).json({error:'authentication required'});
+  let input;
+  // The parser only throws ExerciseSuggestionsInputError with a safe message.
+  try{ input=parseExerciseSuggestionsQuery(req); }
+  catch(error){ return res.status(400).json({error:error.message}); }
+  let db;
+  let exercises;
+  try{
+    db=getClient();
+    await ensureExerciseSuggestionsReadiness(db);
+    exercises=listPublicExercises();
+  }catch{ return res.status(503).json({error:'exercise suggestions unavailable'}); }
+  try{
+    const result=await readExerciseSuggestions(db,{
+      viewerId:userId,room:input.room,hidden:input.hidden,exercises,
+      verifyAttestation:verifyRunAttestation,
+    });
+    if(!result) return res.status(404).json({error:'pair not found'});
+    return res.json({ok:true,...result});
+  }catch{
+    return res.status(503).json({error:'exercise suggestions unavailable'});
+  }
 }
 
 function runResultsDigest(resultsJson){
@@ -2765,6 +2814,7 @@ async function handleExecute(req,res){
 const MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS=new Set([
   'runs','session_runs','session-runs','weeks','history','progress','stats','my-pair','mypair','my_pair',
   'pair-recap','session-completion','session-controls','meeting-link','schedule','messages','message','execute','run',
+  'exercise-suggestions',
 ]);
 
 async function requireSingleCircleDataFeature(req,res,endpoint){
@@ -2810,6 +2860,7 @@ export default async function handler(req,res){
   if(route==='profile') return await handleProfile(req,res);
   if(route==='my-pair') return await handleMyPair(req,res);
   if(route==='pair-recap') return await handlePairRecap(req,res);
+  if(route==='exercise-suggestions') return await handleExerciseSuggestions(req,res);
   if(route==='session-completion') return await handleSessionCompletion(req,res);
   if(route==='session-controls') return await handleSessionControls(req,res);
   if(route==='meeting-link') return await handleMeetingLink(req,res);
@@ -2819,7 +2870,7 @@ export default async function handler(req,res){
   if(route==='health') return await handleHealth(req,res);
   if(route==='logs') return await handleLogs(req,res);
   if(route==='questions') return await handleQuestions(req,res);
-  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','pair-recap','session-completion','session-controls','meeting-link','schedule','messages','questions'] });
+  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','pair-recap',...(exerciseSuggestionsEnabled()?['exercise-suggestions']:[]),'session-completion','session-controls','meeting-link','schedule','messages','questions'] });
   }catch(e){
     const failedEndpoint=getEndpoint(req);
     const failedPath=String(req?.url||'').toLowerCase();

@@ -157,6 +157,10 @@
       "destination": "/api/data?endpoint=pair-recap"
     },
     {
+      "source": "/api/exercise-suggestions",
+      "destination": "/api/data?endpoint=exercise-suggestions"
+    },
+    {
       "source": "/api/session-completion",
       "destination": "/api/data?endpoint=session-completion"
     },
