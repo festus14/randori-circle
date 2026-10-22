@@ -125,7 +125,7 @@ test('reminders: one agree-a-time nudge, a one-hour reminder, and a cutoff remin
     expect(soon.outbox.reminders_enqueued.session_soon).toBe(2);
     const soonMail=soon.reminder_delivery.captured||[];
     expect(soonMail.map(entry=>entry.kind)).toEqual(['reminder-session-soon','reminder-session-soon']);
-    expect(soonMail[0].subject).toBe('Your Randori session starts in about an hour');
+    expect(soonMail[0].subject).toBe('Your Randori session starts soon');
     expectOnlyLink(soonMail,roomLink);
 
     // The member reviews the reminder list under notification preferences and
@@ -165,6 +165,26 @@ test('reminders: one agree-a-time nudge, a one-hour reminder, and a cutoff remin
     ]);
     expect(cutoffMail[0].subject).toBe('Are you in for the next Randori cycle?');
     expectOnlyLink(cutoffMail,`${golden.url}/?view=pair`);
+
+    // The member turns email back on but saves an explicit choice on the
+    // Pairing page first: the reminder reads the same availability scope the
+    // dev runtime writes, so nothing is queued for them.
+    await member.locator('[data-tab="pair"]').click();
+    await expect(member.getByTestId('availability-card')).toBeVisible();
+    const skip=member.locator('#availSkip');
+    await expect(skip).toBeEnabled();
+    const decided=member.waitForResponse(pathIs('/api/settings/availability','POST'));
+    await skip.click();
+    expect((await decided).status()).toBe(200);
+    await expect(skip).toHaveAttribute('aria-pressed','true');
+    const reenabled=await json(member,'/api/notifications/prefs','POST',{email_enabled:true});
+    expect(reenabled.status,JSON.stringify(reenabled.body)).toBe(200);
+    restoreServerTime=fixServerTime(new Date(Date.parse(cutoffAt)-22*3600_000).toISOString());
+    const decidedRun=await drainOutbox(owner);
+    restoreServerTime();
+    restoreServerTime=()=>{};
+    expect(decidedRun.outbox.reminders_enqueued.availability_cutoff).toBe(0);
+    expect(decidedRun.reminder_delivery.captured||[]).toEqual([]);
 
     // The stored outbox payloads never contain an address, a name, or a link.
     const payloads=await withDatabase(golden,async db=>(await db.execute(`SELECT payload_json FROM outbox_events
