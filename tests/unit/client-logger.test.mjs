@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import vm from 'node:vm';
 
-import { redactLogText } from '../../api/_client-log-policy.js';
+import { redactLogText, redactLogValue } from '../../api/_client-log-policy.js';
 
 const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
 const PRODUCTION_ORIGIN = 'https://randori-circle-self.vercel.app';
@@ -77,28 +77,104 @@ const REDACTION_CORPUS = [
   ['    at boot (https://randori-circle-self.vercel.app/reset#token=abc:12:34)', '    at boot (https://randori-circle-self.vercel.app/reset:12:34)'],
   ['at https://randori-circle-self.vercel.app/#token=abc.def:1697:23', 'at https://randori-circle-self.vercel.app/:1697:23'],
   ['redirect to /verify#token=abc then /invite#invite=xyz', 'redirect to /verify then /invite'],
-  ['hash was #invite=xyz', 'hash was #invite=[redacted]'],
+  ['hash was #invite=xyz and #/invite/SECRET', 'hash was  and '],
   ['/api/data?endpoint=x&token=abc123&view=code -> 401', '/api/data?endpoint=x&token=[redacted]&view=code -> 401'],
-  ['g_token=one access_token=two x-api-key=three cycleKey=kept', 'g_token=[redacted] access_token=[redacted] x-api-key=[redacted] cycleKey=kept'],
+  ['g_token=one access_token=two x-api-key=three x_session=four cycleKey=kept', 'g_token=[redacted] access_token=[redacted] x-api-key=[redacted] x_session=[redacted] cycleKey=kept'],
+  ['accessToken=a apiKey=b inviteToken=c refreshToken=d sessionId=e session_id=f sid=g', 'accessToken=[redacted] apiKey=[redacted] inviteToken=[redacted] refreshToken=[redacted] sessionId=[redacted] session_id=[redacted] sid=[redacted]'],
   ['/oauth?code=one-time&state=s', '/oauth?code=[redacted]&state=s'],
   ['body {"invite_token":"se\\"cret","ok":true}', 'body {"invite_token":"[redacted]","ok":true}'],
-  ['Authorization: Bearer abc.def-ghi', 'Authorization: Bearer [redacted]'],
+  ['body {"accessToken":"abc","otp":123456,"code":987654,"ok":true}', 'body {"accessToken":"[redacted]","otp":"[redacted]","code":"[redacted]","ok":true}'],
+  ['escaped {\\"token\\":\\"S\\",\\"ok\\":true}', 'escaped {\\"token\\":\\"[redacted]\\",\\"ok\\":true}'],
+  ['Authorization: Bearer abc.def-ghi', 'Authorization: [redacted]'],
+  ['Authorization: Token abc123, authorization=Bearer xyz', 'Authorization: [redacted], authorization=[redacted]'],
+  ['retry with Bearer abc.def', 'retry with Bearer [redacted]'],
+  ['password: hunter2 and secret : s3', 'password: [redacted] and secret : [redacted]'],
   ['jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature_part', 'jwt [jwt]'],
   ['member alice.smith+x@example.co.uk failed', 'member [email] failed'],
+  ['MEMBER JANE.DOE@EXAMPLE.COM FAILED', 'MEMBER [email] FAILED'],
+  ['/api/members?q=jane%40example.com -> 500', '/api/members?q=[email] -> 500'],
+  ['%23token%3Dsecret and ?next=%2Finvite%23invite%3DSSSS', ' and ?next=/invite'],
   ['firefox frame boot@https://x.test/a.js:1:2 and pkg@1.2.3', 'firefox frame boot@https://x.test/a.js:1:2 and pkg@1.2.3'],
   ['issue #123 in #logsArea and ?view=code', 'issue #123 in #logsArea and ?view=code'],
   ['/'.repeat(50) + '#fragment', '/'.repeat(50)],
   ['x'.repeat(100) + '@example.test', 'x'.repeat(36) + '[email]'],
+  ['headers: {Authorization: "Bearer abc.def"}', 'headers: {Authorization: "[redacted]"}'],
+  ["{ Authorization: 'Bearer abc' } and Authorization=\"Bearer abc\"", "{ Authorization: '[redacted]' } and Authorization=\"[redacted]\""],
+  ['token="abc" password=\'x\' activationToken=y x-csrf=z', 'token="[redacted]" password=\'[redacted]\' activationToken=[redacted] x-csrf=[redacted]'],
+  ['code: 123456, secret_key: k, status code: 500', 'code: [redacted], secret_key: [redacted], status code: 500'],
+  ['jane%2540example.com and jane%2Edoe%40example%2Ecom', '[email] and [email]'],
 ];
 
-test('redaction strips fragments, secret pairs, bearer tokens, JWTs and emails, identically in the browser and the API', () => {
+// One object corpus for both implementations, so the key rules, limits and
+// the 16k-character budget cannot drift.
+const VALUE_CORPUS = [
+  { path: '/api/x?token=abc', email: 'erin@example.test', count: 3, ok: false, missing: null },
+  { accessToken: 'a', apiKey: 'b', api_key: 'c', sessionId: 'd', sid: 'e', code: 'print(1)', otp: 1, cycleKey: 'kept', key: 'k' },
+  { list: Array.from({ length: 25 }, (_, index) => `item ${index} frank@example.test`) },
+  { a: { b: { c: { d: 'too deep' } } } },
+  Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`k${index}`, index])),
+  { big: 'x '.repeat(5000), bigger: 'y '.repeat(5000), after: 'gone' },
+  Object.fromEntries(Array.from({ length: 28 }, (_, k) => [`k${k}`, Array.from({ length: 20 }, () => 'eyJ-'.repeat(2000))])),
+];
+
+test('redaction strips fragments, secret pairs, credentials, JWTs and emails, identically in the browser and the API', () => {
   const { log } = createPage();
   for (const [input, expected] of REDACTION_CORPUS) {
     assert.equal(log()._redact(input), expected, input);
     assert.equal(redactLogText(input), expected, `API backstop: ${input}`);
   }
   assert.equal(log()._redact(null), '');
-  assert.equal(log()._redact('x'.repeat(9000)).length, 8000);
+  for (const value of VALUE_CORPUS) {
+    const browser = JSON.parse(JSON.stringify(log()._redactValue(value)));
+    assert.deepEqual(browser, redactLogValue(value));
+  }
+  const budgeted = redactLogValue(VALUE_CORPUS[5]);
+  assert.equal(budgeted.after, '[truncated]', 'values past the 16k budget are dropped');
+  assert.ok(JSON.stringify(redactLogValue(VALUE_CORPUS[6])).length < 17_000);
+});
+
+test('a cut never keeps half a token: the partial trailing token is dropped before redaction', () => {
+  const { log } = createPage();
+  const email = 'x '.repeat(3995) + 'jane.doe@gmail.com';
+  const jwt = 'y '.repeat(3990) + 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig';
+  for (const redact of [log()._redact, redactLogText]) {
+    assert.equal(redact(email), 'x '.repeat(3995) + '[truncated]');
+    assert.equal(redact(jwt), 'y '.repeat(3990) + '[truncated]');
+    assert.equal(redact('a '.repeat(10) + 'token=abcdef', 23), 'a '.repeat(10) + '[truncated]');
+    assert.equal(redact('x'.repeat(9000)), '[truncated]');
+    assert.equal(redact('{"token":"abcdef","x":1}', 14), '{"token":"[truncated]');
+  }
+});
+
+// Fastest of five runs, to keep scheduler noise out of the comparison.
+function fastest(redact, input) {
+  let best = Infinity;
+  for (let run = 0; run < 5; run += 1) {
+    const started = performance.now();
+    redact(input);
+    best = Math.min(best, performance.now() - started);
+  }
+  return best;
+}
+
+test('adversarial input costs about as much as benign input of the same size, in both copies (C1)', () => {
+  const { log } = createPage();
+  // A quadratic pattern turns these into tens of milliseconds (the old \beyJ
+  // JWT pattern took ~22 ms on the first one); benign text takes ~1-2 ms.
+  const inputs = ['eyJ-'.repeat(2000), 'eyJaaaaaaaa.'.repeat(700), '-a'.repeat(4000), '\\"token\\":\\"'.repeat(600), '%40'.repeat(2600), '/'.repeat(8000)];
+  for (const redact of [log()._redact, redactLogText]) {
+    const benign = fastest(redact, 'x'.repeat(8000));
+    for (const input of inputs) {
+      const adversarial = fastest(redact, input);
+      assert.ok(adversarial < 4 * benign + 2, `${input.slice(0, 12)}…: ${adversarial.toFixed(2)} ms vs ${benign.toFixed(2)} ms benign`);
+    }
+  }
+  const benignValue = Object.fromEntries(Array.from({ length: 28 }, (_, k) => [`k${k}`, Array.from({ length: 20 }, () => 'x'.repeat(8000))]));
+  for (const redact of [log()._redactValue, redactLogValue]) {
+    const benign = fastest(redact, benignValue);
+    const adversarial = fastest(redact, VALUE_CORPUS[6]);
+    assert.ok(adversarial < 4 * benign + 2, `the C1 meta: ${adversarial.toFixed(2)} ms vs ${benign.toFixed(2)} ms benign`);
+  }
 });
 
 test('outside production every level is queued; on the production origin only warn and error are', () => {
@@ -297,7 +373,7 @@ test('safe() logs and reports a thrown error and returns the result otherwise', 
   assert.deepEqual(exceptions, ['custom_event', 'safe_wrapper']);
 });
 
-test('the logger replaces a placeholder, keeps a real logger, and asks the Sentry step to patch it', () => {
+test('the logger replaces a placeholder and keeps a real logger', () => {
   const placeholder = { _lastEvent: 'boot_event' };
   const page = createPage({ logger: placeholder });
   assert.notEqual(page.log(), placeholder);
@@ -307,19 +383,10 @@ test('the logger replaces a placeholder, keeps a real logger, and asks the Sentr
 
   const real = { log() {} };
   assert.equal(createPage({ logger: real }).log(), real);
-
-  let patched = 0;
-  const hooked = createPage({ logger: real });
-  hooked.window._randori_log = undefined;
-  hooked.window.__randoriPatchLogger = () => { patched += 1; };
-  hooked.run(inlineScript('randoriClientLogger'));
-  assert.equal(patched, 1);
-  hooked.run(inlineScript('randoriClientLogger'));
-  assert.equal(patched, 1, 'an installed logger is never reinstalled');
-  hooked.window._randori_log = undefined;
-  hooked.window.__randoriPatchLogger = () => { throw new Error('patch failure'); };
-  assert.doesNotThrow(() => hooked.run(inlineScript('randoriClientLogger')));
-  assert.equal(typeof hooked.log().log, 'function');
+  const installed = createPage();
+  const logger = installed.log();
+  installed.run(inlineScript('randoriClientLogger'));
+  assert.equal(installed.log(), logger, 'an installed logger is never reinstalled');
 });
 
 test('the logger methods record the last event for Sentry tagging', () => {
@@ -348,43 +415,78 @@ function runSentryStep(page) {
   return appended[0];
 }
 
-test('the Sentry step patches the real logger exactly once, whichever script runs first', () => {
+test('the Sentry step tags events with the last logger event and never wraps or forwards the logger', () => {
   const captured = [];
+  const processors = [];
   const sentry = {
-    addEventProcessor() {},
+    addEventProcessor: processor => processors.push(processor),
     addBreadcrumb() {},
     captureMessage: (message, options) => captured.push([message, options.level]),
     captureException: () => captured.push(['exception']),
   };
-  // Logger first (the normal order): the step patches it when Sentry loads.
-  const loggerFirst = createPage({ href: `${PRODUCTION_ORIGIN}/`, environment: 'production', auth: signedIn() });
-  const loader = runSentryStep(loggerFirst);
-  loggerFirst.window.Sentry = sentry;
+  const page = createPage({ href: `${PRODUCTION_ORIGIN}/`, environment: 'production', auth: signedIn() });
+  const log = page.log().log;
+  const loader = runSentryStep(page);
+  page.window.Sentry = sentry;
   loader.onload();
-  assert.equal(loggerFirst.window._sentryReady, true);
-  assert.equal(loggerFirst.log()._sentryPatched, true);
-  loggerFirst.log().log('error', 'patched_event', 'failed with token=abc');
-  loggerFirst.log().log('warn', 'patched_event', 'slow');
-  loggerFirst.log().log('info', 'patched_event', 'fine');
-  loggerFirst.log().error('direct_event', 'direct calls are not forwarded');
-  assert.deepEqual(captured, [['failed with token=[redacted]', 'error'], ['slow', 'warning']]);
-  // Production queues warn and error only, so the info call stays local.
-  assert.deepEqual(loggerFirst.queue().map(entry => entry.event), ['patched_event', 'patched_event', 'direct_event']);
-  const patchedLog = loggerFirst.log().log;
-  loggerFirst.window.__randoriPatchLogger();
-  assert.equal(loggerFirst.log().log, patchedLog, 'a second patch is a no-op');
+  assert.equal(page.window._sentryReady, true);
+  assert.equal(page.log().log, log, 'the logger is not wrapped');
+  assert.equal(page.window.__randoriPatchLogger, undefined);
+  page.log().log('error', 'logged_event', 'failed with token=abc');
+  page.log().warn('logged_event', 'slow');
+  assert.deepEqual(captured, [], 'logger entries are breadcrumbs, not Sentry events');
+  assert.deepEqual(page.queue().map(entry => entry.message), ['failed with token=[redacted]', 'slow']);
+  const event = processors[0]({});
+  assert.equal(event.tags.randori_event, 'logged_event');
+  assert.equal(event.tags.app, 'randori-circle');
+});
 
-  // Sentry step first: the logger asks it to patch once it installs.
-  captured.length = 0;
-  const stepFirst = createPage({ href: `${PRODUCTION_ORIGIN}/`, environment: 'production' });
-  stepFirst.window._randori_log = undefined;
-  const stepLoader = runSentryStep(stepFirst);
-  stepFirst.window.Sentry = sentry;
-  stepLoader.onload();
-  assert.equal(stepFirst.window._randori_log, undefined);
-  stepFirst.run(inlineScript('randoriClientLogger'));
-  assert.equal(stepFirst.log()._sentryPatched, true);
-  stepFirst.log().log('error', 'late_event', 'late logger');
-  assert.deepEqual(captured, [['late logger', 'error']]);
-  assert.equal(stepFirst.log()._lastEvent, 'late_event');
+// The app's api() wrapper, extracted from index.html and run against stubs.
+function loadApiWrapper({ responses }) {
+  const source = html.slice(html.indexOf('  async function api(path, opts={}){'), html.indexOf('  function invalidateAuthRefreshes(){'));
+  assert.ok(source.startsWith('  async function api('), 'index.html must define api()');
+  const logged = [];
+  const reported = [];
+  const logger = Object.fromEntries(['info', 'warn', 'error'].map(level => [level, (event, message, meta) => logged.push({ level, event, message, meta })]));
+  const context = vm.createContext({
+    window: { _randori_log: logger, Sentry: {} },
+    Sentry: {
+      captureMessage: (message, options) => reported.push(['message', message, options]),
+      captureException: (error, options) => reported.push(['exception', String(error.message), options]),
+    },
+    authCapabilities: {},
+    activeCircleContext: null,
+    performance,
+    fetch: async path => {
+      const next = responses.shift();
+      // A network failure is an Error from the page's own realm.
+      if (next === 'network') throw vm.runInContext('new TypeError("Failed to fetch")', context);
+      return { ok: next.status < 400, status: next.status, text: async () => JSON.stringify(next.body) };
+    },
+  });
+  context.window.Sentry = context.Sentry;
+  return { api: vm.runInContext(`${source}; api`, context), logged, reported };
+}
+
+test('api() logs and reports each HTTP failure once, as a warning for 4xx, and never logs the query (m4)', async () => {
+  const { api, logged, reported } = loadApiWrapper({ responses: [
+    { status: 409, body: { error: 'schedule changed' } },
+    { status: 503, body: { error: 'unavailable' } },
+    'network',
+  ] });
+  await assert.rejects(api('/api/members?q=jane%40example.com'), problem => problem.http_status === 409);
+  await assert.rejects(api('/api/schedule?room=week_1_pair_2'), problem => problem.http_status === 503);
+  await assert.rejects(api('/api/profile?token=abc'), /Failed to fetch/);
+  assert.deepEqual(logged.map(({ level, event, message }) => [level, event, message]), [
+    ['warn', 'api_fail', '/api/members -> 409'],
+    ['error', 'api_fail', '/api/schedule -> 503'],
+    ['error', 'api_fail', 'api /api/profile failed: Failed to fetch'],
+  ]);
+  assert.deepEqual(logged.map(entry => entry.meta.path), ['/api/members', '/api/schedule', '/api/profile']);
+  assert.deepEqual(reported.map(([kind, message, options]) => [kind, message, options.tags.path, options.level]), [
+    ['message', 'api_fail /api/members', '/api/members', 'warning'],
+    ['message', 'api_fail /api/schedule', '/api/schedule', 'error'],
+    ['exception', 'Failed to fetch', '/api/profile', undefined],
+  ]);
+  assert.equal(JSON.stringify([logged, reported]).includes('jane'), false);
 });
