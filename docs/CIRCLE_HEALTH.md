@@ -162,6 +162,14 @@ pair's agreed, completed or repeat state is determined in 2.7% to 12.5% of
 cases, every one of them a shown 0 or "every pair". A count in between never
 determines a named pair. Members are told this (below).
 
+**`/api/stats` outside these rules.** Since ID-86 (#333) `/api/stats` refuses
+signed-out visitors with 401. Any signed-in member still gets the circle's
+all-time `total_sessions`, unsuppressed and with no settle delay, so a member
+who polls it can see when some pair's completion lands, and in a cycle with
+only one other pair, which pair it was.
+Weigh this when the threshold is reviewed with the owner. Coarsening or
+caching that total for members would be a separate change.
+
 **Late changes.** Completion receipts can be written for any past week, so
 completion counts only receipts confirmed less than 48 hours after the cycle
 ended, and a cycle appears only after that grace plus a 1-hour margin for

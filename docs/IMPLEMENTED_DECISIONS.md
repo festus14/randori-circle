@@ -4381,3 +4381,40 @@ Reactivating removed members before migrating (destroys an owner's decision).
 
 **Rollout.** Takes effect on merge for `db:migrate`, the production migration
 workflow and the rehearsal. No workflow file or digest pin changes.
+
+## ID-86: Serve `/api/stats` to signed-in members only
+
+Status: implemented; no flag, no migration. Fixes #333 (a live privacy
+exposure found while reviewing #331).
+
+**Context.** `GET /api/stats` (`handleStats` in `api/data.js`) returned the
+circle-wide `total_users`, `total_weeks`, `total_pairs` and `total_sessions` to
+anyone, signed in or not. Polling `total_sessions` showed a signed-out visitor
+when sessions were confirmed complete, which bypasses the small-cell rules
+planned for circle health (#292, ID-78). The public landing has not called
+`/api/stats` since UI redesign WP-L1 (`index.html` `bootHome` returns early for
+anonymous visitors), so no signed-out page reads these numbers.
+
+**Decision.**
+- Signed-out visitors do not need any of these numbers. `handleStats` checks
+  the session first and returns `401 {"error":"authentication required"}`
+  before it opens the database, so a refused request reads no table. A session
+  whose subject is not a positive integer id is refused the same way
+  (`authenticatedUserId`, as `/api/weeks` does).
+- A signed-in member's response is unchanged: the same totals, `your_*` counts
+  and `next_cycle`. The viewer's own counts are now always computed, since
+  every caller has a session.
+- The response is `Cache-Control: private, no-store` (Vercel already sends
+  `no-store` for `/api/*`).
+- No flag: the route's only caller is the signed-in dashboard, so nothing a
+  member or visitor sees changes, and a flag would leave the exposure live.
+
+**Remaining exposure.** A signed-in member can still poll the all-time,
+unsuppressed `total_sessions`. That is recorded for the circle health
+threshold review in `docs/CIRCLE_HEALTH.md` ("What is not hidden").
+
+**Alternatives.** Rounding or caching the public totals per day (still
+discloses activity, and no signed-out page shows them). Dropping only
+`total_sessions` (the other totals have no signed-out reader either).
+
+**Recovery.** Revert the commit; the totals become public again.
