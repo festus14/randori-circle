@@ -134,10 +134,11 @@ test('account deletion: a member deletes their account by keyboard, partners kee
     await expect(member.getByTestId('account-deleted-notice')).toHaveText(
       'Your account was deleted. Thank you for practising with Randori Circle.');
     await expect(member.locator('#authBtn')).toBeVisible();
-    const leftovers=await member.evaluate(()=>[...Object.keys(localStorage),...Object.keys(sessionStorage)]
-      .filter(key=>key.startsWith('randori-')&&!['randori-theme','randori-landing-dismissed','randori-onboarded',
-        'randori-banner-dismissed','randori-profile-done'].includes(key)));
-    expect(leftovers).toEqual([]);
+    const stored=await member.evaluate(()=>[localStorage,sessionStorage].flatMap(store=>
+      Object.keys(store).map(key=>`${key}=${store.getItem(key)}`)));
+    expect(stored.filter(entry=>entry.startsWith('randori-me=')||entry.startsWith('randori-crdt-pending-v1=')
+      ||entry.startsWith('randori-account-deleted-v1=')||entry.includes(pair.member.email)
+      ||entry.includes('Leaving Member'))).toEqual([]);
     expect((await json(member,'/api/auth/me')).status).toBe(401);
     const relogin=await json(member,'/api/auth/login','POST',{email:pair.member.email,password:MEMBER_PASSWORD});
     expect(relogin).toEqual({status:401,body:{error:'invalid credentials'}});

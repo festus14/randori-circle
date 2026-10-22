@@ -165,8 +165,9 @@ test('mounting needs the section; it stays hidden and silent while not allowed',
   assert.equal(mountAccountDeletion({doc:fakeDocument({withSection:false}),host:{}}),null);
   const ui=harness({enabled:false});
   ui.controller.sync();
+  await ui.controller.refresh();
   assert.equal(ui.doc.section.hidden,true);
-  assert.deepEqual(ui.calls,[]);
+  assert.deepEqual(ui.calls,[],'no request without a signed-in member, even when Edit profile asks for a refresh');
   assert.equal(ui.controller.open(),false);
   assert.equal(ui.doc.section.textContent.includes(COPY.deleted[0]),true,'the explanation is built once, from text nodes');
 });

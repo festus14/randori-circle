@@ -223,6 +223,7 @@ export function mountAccountDeletion({ doc, host }) {
 
   function loadEligibility() {
     const userId = state.userId;
+    if (userId === null) return Promise.resolve();
     state.eligibility = null;
     renderEligibility();
     const loading = host.api('/api/auth/account/delete', { method: 'GET' }).then(

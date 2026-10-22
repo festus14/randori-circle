@@ -7469,6 +7469,7 @@ async function refreshMe(){
       accountDeletionView.controller?.sync();
     }).catch(()=>{ accountDeletionView.loading=null; });
   };
+  window._randori_refresh_account_deletion=()=>accountDeletionView.controller?.refresh();
   window.addEventListener('randori:auth-refreshed',()=>window._randori_sync_account_deletion());
   Promise.resolve(authCapabilitiesPromise).then(()=>window._randori_sync_account_deletion(),()=>{});
   window._randori_sync_account_deletion();
@@ -10354,6 +10355,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     hideAllViews();
     viewProfile.style.display='block';
     setSetupStep(step);
+    // Issue #339: Edit profile re-reads whether the account can be deleted.
+    if(setupMode==='edit') window._randori_refresh_account_deletion?.();
     if(prefill){
       fillProfileForm(prefill);
       setProfileSaveState('idle','');
