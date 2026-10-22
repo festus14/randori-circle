@@ -3406,6 +3406,8 @@ test('configured administrator synchronization follows route readiness',async()=
     if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')){
       return rows([{id:1,email:'admin@example.test',is_admin:0}]);
     }
+    // The grant only counts when it changed the live account (issue #339).
+    if(sql.includes('UPDATE auth_accounts SET is_admin=1 WHERE id=')) return rows([],{rowsAffected:1});
     return rows();
   };
   executed.length=0;
