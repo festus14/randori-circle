@@ -85,7 +85,7 @@ const READINESS_COPY = Object.freeze({
   check_failed: 'The readiness check could not run.',
 });
 
-const LEDGER_STATES = new Set(['current', 'behind', 'ahead', 'missing', 'invalid']);
+const LEDGER_STATES = new Set(['current', 'pending_additive', 'behind', 'ahead', 'missing', 'invalid']);
 
 function record(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
@@ -215,6 +215,8 @@ function ledgerLine(ledger) {
   const current = wholeNumber(ledger.currentVersion);
   const expected = wholeNumber(ledger.expectedVersion);
   if (ledger.state === 'current') return `Migration ledger: v${current} of v${expected} (current).`;
+  // ID-87: one additive migration behind; the app stays ready until it runs.
+  if (ledger.state === 'pending_additive') return `Migration ledger: v${current} of v${expected}; pending additive migration v${wholeNumber(ledger.pendingVersion)}. The app stays ready until the cutover applies it.`;
   if (ledger.state === 'behind') return `Migration ledger: v${current} of v${expected}; ${plural(expected - current, 'migration')} pending.`;
   if (ledger.state === 'ahead') return `The database schema (v${current}) is newer than this app (v${expected}).`;
   if (ledger.state === 'missing') return 'The migration ledger is missing.';
