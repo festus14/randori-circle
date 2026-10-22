@@ -140,7 +140,7 @@ test('the current Monday slot is required immediately after its eight-hour grace
     assert.equal(beforeGrace.expectedAt,'2026-09-21T03:17:00.000Z',at);
   }
 
-  for(const at of ['2026-09-28T11:17:00.000Z','2026-09-28T11:47:00.000Z']){
+  for(const at of ['2026-09-28T11:17:00.000Z','2026-09-28T11:17:00.001Z','2026-09-28T11:47:00.000Z']){
     const missed=assessScheduledRuns([previous],runOptions({clock:()=>Date.parse(at)}));
     assert.equal(missed.category,'run_missing',at);
     assert.equal(missed.expectedAt,'2026-09-28T03:17:00.000Z',at);
@@ -190,11 +190,11 @@ test('a stale prior-success alert retains the reviewed activation epoch',()=>{
 test('a grace-edge run cannot reset the absolute current-slot deadline',()=>{
   const graceEdge=run({id:124,run_attempt:1,status:'in_progress',conclusion:null,
     created_at:'2026-09-21T11:17:00Z',updated_at:'2026-09-21T11:17:00Z'});
-  const observing=assessScheduledRuns([graceEdge],runOptions({
-    clock:()=>Date.parse('2026-09-21T11:47:00.000Z'),
-  }));
-  assert.equal(observing.status,'observing');
-  assert.equal(observing.alert,false);
+  for(const at of ['2026-09-21T11:47:00.000Z','2026-09-21T12:46:59.999Z']){
+    const observing=assessScheduledRuns([graceEdge],runOptions({clock:()=>Date.parse(at)}));
+    assert.equal(observing.status,'observing',at);
+    assert.equal(observing.alert,false,at);
+  }
 
   const stuck=assessScheduledRuns([graceEdge],runOptions({
     clock:()=>Date.parse('2026-09-21T12:47:00.000Z'),
@@ -263,13 +263,30 @@ test('a drill GitHub starts up to about eight hours late, then completes, never 
   for(const [delayMinutes,minutes] of [
     [340,80], // the observed 5h40m delay, still running at the next tick
     [480,85], // exactly eight hours late, running across the 11:47 tick
-    [509,25], // 8h29m: the latest start the first post-grace tick still sees
+    [509,25], // 8h29m: the latest start an on-time 11:47 tick still sees
   ]){
     const late=drill(124,iso(SLOT+delayMinutes*60*1000),minutes);
     for(const at of hourlyTicks('2026-09-28T03:47:00.000Z','2026-09-29T03:47:00.000Z')){
       const result=await watchdogTick(at,[PRIOR,late]);
-      assert.equal(result.alert,false,`${delayMinutes}m late at ${iso(at)}: ${result.category}`);
-      assert.ok(['healthy','observing'].includes(result.status),`${iso(at)}: ${result.status}`);
+      const label=`${delayMinutes}m late at ${iso(at)}: ${result.category||result.status}`;
+      assert.equal(result.alert,false,label);
+      const inGrace=at<SLOT+GRACE;
+      if(at>=late.finished){
+        // The late drill's own verified evidence is current.
+        assert.equal(result.status,'healthy',label);
+        assert.equal(result.runId,124,label);
+        assert.equal(result.expectedAt,inGrace?'2026-09-21T03:17:00.000Z':'2026-09-28T03:17:00.000Z',label);
+      }else if(inGrace){
+        // Absent or still running: last week's verified success keeps it healthy.
+        assert.equal(result.status,'healthy',label);
+        assert.equal(result.runId,123,label);
+        assert.equal(result.expectedAt,'2026-09-21T03:17:00.000Z',label);
+      }else{
+        // After grace the prior week no longer counts; the running drill is observed.
+        assert.equal(result.status,'observing',label);
+        assert.equal(result.runId,124,label);
+        assert.equal(result.runStatus,'in_progress',label);
+      }
     }
     const settled=await watchdogTick('2026-09-29T03:47:00.000Z',[PRIOR,late]);
     assert.equal(settled.status,'healthy');
@@ -286,10 +303,20 @@ test('a drill still absent after the eight-hour grace raises run_missing the sam
   const missing=await watchdogTick('2026-09-28T11:47:00.000Z',[PRIOR]);
   assert.equal(missing.category,'run_missing');
   assert.equal(missing.expectedAt,'2026-09-28T03:17:00.000Z');
-  assert.ok(Date.parse(missing.checkedAt)-SLOT<24*HOUR);
+  assert.equal('runId' in missing,false); // last week's run is no longer reported
   for(const at of hourlyTicks('2026-09-28T12:47:00.000Z','2026-09-29T02:47:00.000Z')){
     assert.equal((await watchdogTick(at,[PRIOR])).category,'run_missing',iso(at));
   }
+});
+
+test('a drill starting after 11:17 gets less than the stuck allowance before 12:47',async()=>{
+  // Documented caveat: it can report run_stuck at 12:47 and then recover once it succeeds.
+  const late=drill(124,'2026-09-28T11:30:00.000Z',80);
+  assert.equal((await watchdogTick('2026-09-28T11:47:00.000Z',[PRIOR,late])).status,'observing');
+  assert.equal((await watchdogTick('2026-09-28T12:47:00.000Z',[PRIOR,late])).category,'run_stuck');
+  const recovered=await watchdogTick('2026-09-28T13:47:00.000Z',[PRIOR,late]);
+  assert.equal(recovered.status,'healthy');
+  assert.equal(recovered.runId,124);
 });
 
 test('a late drill that fails raises run_failed, even while the prior week is in grace',async()=>{

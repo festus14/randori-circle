@@ -18,9 +18,10 @@ const EXPECTED_MINUTE_UTC=17;
 // Ceiling for any configured slot grace or absolute slot deadline. GitHub starts
 // scheduled workflows on a best-effort basis and has started the Monday drill
 // about 5h40m late (#324), so the reviewed policy in the watchdog workflow now
-// tolerates hours of delay. Whatever it is set to, a missing, failed, or
-// unfinished drill must still alert within one day of its slot.
-const MAX_SLOT_ALERT_DELAY_MS=24*60*60*1000;
+// tolerates hours of delay. With both values at most 12 hours, a missing,
+// failed, or unfinished drill alerts on the first hourly tick after slot + 12h
+// at the latest, which leaves room inside one day for a delayed watchdog tick.
+const MAX_SLOT_ALERT_DELAY_MS=12*60*60*1000;
 const RPO_TARGET_MS=30*60*1000;
 const RTO_TARGET_MS=15*60*1000;
 const MAX_FILE_BYTES=128*1024;

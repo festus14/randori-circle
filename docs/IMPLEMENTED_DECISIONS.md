@@ -583,7 +583,7 @@ a drill that never started; it also detects a run that remained stuck, failed,
 or aged out without relying on the rehearsal workflow to report its own absence.
 An absolute 06:47 UTC deadline is derived from the expected slot, not run creation,
 so a delayed unfinished run still alerts on the last hourly tick before four hours.
-(ID-72 later widened the grace to eight hours and the deadline to 12:47 UTC.)
+(ID-75 later widened the grace to eight hours and the deadline to 12:47 UTC.)
 Its retained projection contains only timings,
 code/evidence checksums, aggregate counts, fixed run identifiers, and cleanup
 booleans. Missing, stale, malformed, failed, or unclean evidence produces a
@@ -3034,7 +3034,115 @@ owner sets `REMINDERS_ENABLED=true` (and optionally
 recover, unset the flag and redeploy; queued reminders drain as suppressed.
 Contract: [`REMINDERS.md`](REMINDERS.md).
 
-## ID-72: Give the backup watchdog an eight-hour grace for late GitHub schedules
+## ID-72: Turn on production client error logging (warn/error, signed-in) with app_logs retention
+
+Status: implemented; no migration, no flag. Owner-approved follow-up to the
+finding in PR #323.
+
+**Context.** The client logger in `index.html` (`window._randori_log`) never
+installed in production. The Sentry config created a placeholder
+`window._randori_log={_lastEvent:''}` on the production origin, and the logger
+returns early when that global exists. Production therefore had no
+`/api/logs` batching and no logger error handlers, while previews and local
+runs did. `app_logs` also had no retention: client entries, server ops logs,
+runner lease/quota rows and an `outbox_invocation` row every five minutes only
+accumulated.
+
+**Decision.**
+- *Install everywhere.* The placeholder is gone. The logger installs unless a
+  real logger (one with a `log` function) already exists; it replaces a bare
+  placeholder and keeps its last event. The Sentry augment step patches
+  `_randori_log.log` through `patchLogger`, which it runs when Sentry is ready
+  and also exposes as `window.__randoriPatchLogger` for the logger to call
+  after it installs, so the real logger is patched exactly once whichever runs
+  first. The early-error buffer is unchanged.
+- *Production send rule.* On the canonical production origin
+  (`__randoriSentry.environment==='production'`, automated browsers included)
+  only `warn` and `error` entries are queued for `/api/logs`. `info`,
+  `success` and `debug` stay as console lines and Sentry breadcrumbs. Previews
+  and local runs queue every level, as before. The server enforces the same
+  rule when `VERCEL_ENV==='production'` (not `NODE_ENV`, which Vercel also
+  sets on previews) and silently skips other client levels.
+- *Signed-in only.* The queue belongs to one identity: `u:<id>` from
+  `window._randori_auth.me`, `anon` once `/api/auth/me` has settled signed out,
+  unknown before that. Signed-out entries are not queued. Entries from before
+  identity settles are adopted by the first identity it settles as (boot
+  errors of a signed-in load); any later change (sign-out, another user)
+  clears the queue. A flush sends only while the owning identity is signed in,
+  so an entry is never sent as a different user and anonymous visitors cause
+  no `/api/logs` requests (the endpoint requires auth and would only 401).
+- *Dedupe and cap.* The same `level|event|message` is queued at most once a
+  minute, and at most 50 entries per page load (this also bounds the queue
+  while identity is unknown). Errors flush after 200 ms, other bursts of three
+  after 400 ms (at most every 3 s), otherwise every 5 s; batches hold at most
+  20 entries.
+- *Redaction.* Every entry is redacted before it is mirrored to the console,
+  added as a breadcrumb, queued or sent. `route` is `location.pathname +
+  location.search` only, and the old `meta.href` (which carried the fragment)
+  and `meta.ua` (the `ua` column already has it) are gone. Text redaction
+  drops the fragment of any token with a `/` before its `#` (keeping a trailing
+  stack-frame `:line:col`), replaces the value of secret-looking `name=value`
+  pairs and quoted JSON keys (`token`, `invite`, `code`, `secret`, `password`,
+  `key`, `signature`, `session`, `auth`, `authorization`, `cookie`, `otp`,
+  `credential`, with an optional `prefix_`/`prefix-`) with `[redacted]`,
+  `Bearer`/`Basic` credentials with `[redacted]`, JWTs with `[jwt]` and email
+  addresses with `[email]`. Meta objects are copied to depth 4 (30 keys, 20
+  array items), and keys matching the secret names lose their value. Every
+  pattern is linear in the input, which is capped at 8000 characters.
+  `api/_client-log-policy.js` holds the same rules as a server-side backstop
+  for `POST /api/logs` (message, meta, `meta_json`, event and route); a unit
+  test runs the browser and server copies over one corpus.
+- *Sentry volume is unchanged.* The logger itself creates no Sentry events:
+  its `forwardToSentry` and the explicit captures in its global handlers are
+  removed, because the SDK's global handlers (and the early buffer) already
+  report uncaught errors and call sites capture their own. The patched
+  `_randori_log.log('error'|'warn')` path still forwards (redacted), as before.
+- *Admin view.* Client rows reach the existing admin logs panel
+  (`GET /api/data?endpoint=logs`, `#logsArea`), which stays admin-only
+  (401 signed out, 403 for members). The panel gained a source filter
+  (all/client/server) next to the level filter, since `outbox_invocation`
+  rows otherwise crowd out client errors in the last 30 rows.
+- *Retention.* `api/_app-log-retention.js` deletes at most 1000 `app_logs`
+  rows with `created_at` older than 30 days per run, oldest first, through a
+  bounded `id IN (SELECT … ORDER BY created_at LIMIT ?)` subquery. Each run
+  first claims the hour by the database clock with one atomic
+  `INSERT … WHERE NOT EXISTS` of an `app_logs_retention` row, so a run within
+  the hour, or a concurrent one, does nothing. It runs from `/api/cron/outbox`
+  *after* the delivery round, so it can never delay mail, and only when its
+  whole 2-second budget fits before the finalization reserve; a slow or failed
+  run is reported (`app_logs_retention` in the cron response and the
+  `outbox_invocation` row) and retried by a later invocation. Deleting is
+  idempotent. Runner lease (30 s) and quota (1 min) checks never read rows
+  near 30 days old.
+
+**Write volume.** A healthy page sends nothing. Each sent entry is one row;
+a page load writes at most 50 rows in at most three requests, and the
+existing server limits stay (20 entries per request, 60 requests per minute
+per IP, `runner` source and `execute_*` event names rewritten). The outbox
+cron adds 288 `outbox_invocation` rows and 24 retention rows a day. Retention
+removes up to 24,000 rows a day, well above that inflow, so the table settles
+at roughly 30 days of inflow (about 9,400 rows plus client errors) and an
+existing backlog drains at 1000 rows an hour.
+
+**Schema.** No migration and no DDL. `idx_logs_created` (schema plan 1)
+serves the purge and `idx_logs_event_created` the hourly claim; a unit test
+checks both with `EXPLAIN QUERY PLAN` on the migrated schema. No further index
+is needed. Rows written with an ISO `T` timestamp would compare one day late
+against `datetime('now')` text; every writer uses `datetime('now')`.
+
+**Alternatives.** Keep production logging off (no visibility into client
+failures). Send every level in production (mostly noise, several writes per
+page). Allow anonymous ingestion (needs a separate abuse model; the endpoint
+requires auth). Run retention in the weekly cron (one Sunday window at most
+1000 rows would fall behind 2,000+ rows a week) or inside the cron's
+preparation step (would delay delivery). A new `created_at` index or a
+retention table (needs a migration).
+
+**Rollout and recovery.** Merging turns it on; the next production deploy
+installs the logger. To stop client ingestion quickly, revert this change;
+retention is independent and can stay.
+
+## ID-75: Give the backup watchdog an eight-hour grace for late GitHub schedules
 
 Status: implemented as an operations change. No feature flag, migration,
 secret, permission, or provider change. Issue #324, follow-up from #51.
@@ -3050,13 +3158,21 @@ scheduled workflows routinely (compare ID-67), so this would recur.
 grace plus the 90-minute stuck-run allowance, now nine and a half hours
 (`'34200000'`, the 12:47 UTC tick). Both values are named constants with this
 rationale in `scripts/check-backup-controls.mjs`, which pins them and the new
-workflow digest. The assessor's ceiling for either setting rises from four
-hours to one day (`MAX_SLOT_ALERT_DELAY_MS`).
+workflow digest. The assessor already accepted a grace of up to 24 hours, but
+it capped the deadline at four hours, and because the deadline must exceed the
+grace that effectively capped the grace too. Both ceilings are now 12 hours
+(`MAX_SLOT_ALERT_DELAY_MS`), so even the loosest accepted setting alerts by the
+first hourly tick after 15:17 UTC, well inside one day.
 
-- A drill that starts up to eight hours late (8h29m on the hourly cadence) and
-  then succeeds never alerts. Before 11:17 UTC the prior week's success still
-  counts; at the end of grace it is at most seven days and eight hours old, so
-  the eight-day freshness bound is unchanged.
+- A drill that starts up to eight hours late and finishes by 12:47 UTC never
+  alerts. Starts up to 8h29m late are tolerated only when the 11:47 watchdog
+  tick runs on time (no delayed earlier tick or manual dispatch between 11:17
+  UTC and the start). A run that starts after 11:17 UTC has less than the
+  90-minute stuck allowance and may report `run_stuck` even if it later
+  succeeds, so on-call should check the run before dismissing the alert.
+- Before 11:17 UTC the prior week's success still counts; at the end of grace
+  it is at most seven days and eight hours old, so the eight-day freshness
+  bound is unchanged.
 - A missing drill alerts `run_missing` at 11:47 UTC, a failed one `run_failed`
   at the next tick (even inside grace), and an unfinished one `run_stuck` by
   12:47 UTC. All of these happen the same Monday, inside one day of the slot.
