@@ -2,7 +2,10 @@ name: production-smoke
 
 # Read-only synthetic check of the live production origin. The Vercel GitHub
 # integration emits deployment_status events for environment "Production"
-# (and "Preview"); only successful Production deployments run the check.
+# (and "Preview"); only successful Production deployments created by Vercel run
+# the check. GitHub also records a "production" deployment for every job that
+# uses that environment, and expression comparison ignores case, so the creator
+# check keeps those deployments from triggering it.
 # This workflow is informational and must never be a required status check.
 on:
   deployment_status:
@@ -28,7 +31,8 @@ jobs:
     if: >-
       github.event_name != 'deployment_status' || (
       github.event.deployment_status.state == 'success' &&
-      github.event.deployment.environment == 'Production')
+      github.event.deployment.environment == 'Production' &&
+      github.event.deployment.creator.login == 'vercel[bot]')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
