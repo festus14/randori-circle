@@ -33,9 +33,11 @@ the control. Every alert, candidate, observing, and healthy watchdog artifact
 then carries both `activationAt` and an `expectedAt` that is not earlier than
 activation. Download verification independently rejects discovery artifacts
 whose activation, expected slot, or run creation order could weaken that rule.
-The normal two-hour weekly scheduling grace applies after the first activated
-week: before a later Monday's grace expires, the prior post-activation success
-can remain current; afterward the new Monday slot is mandatory.
+The normal eight-hour weekly scheduling grace applies after the first activated
+week: before a later Monday's grace expires at 11:17 UTC, the prior
+post-activation success can remain current; afterward the new Monday slot is
+mandatory. The grace absorbs GitHub's best-effort scheduling delay (#324); the
+rehearsal runbook records the rationale and the 12:47 UTC absolute deadline.
 
 ## Operator activation checklist
 

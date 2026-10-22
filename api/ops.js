@@ -48,7 +48,7 @@ import {
   INVITATION_EMAIL_EVENT_TYPE,
 } from './_invitation-email.js';
 import {identityEmailKeyRotationStatus} from './_identity-linking.js';
-import { localRuntimeRequest } from './_local-runtime.js';
+import { localRuntimeRequest, strictLocalPairingRuntime } from './_local-runtime.js';
 import {
   enqueueDueReminders,
   REMINDER_EMAIL_EVENT_TYPE,
@@ -244,38 +244,6 @@ function verifyCronAuth(req,{allowOutboxSecret=false}={}){
   const cronMatch=secretMatches(secret,presented);
   const outboxMatch=allowOutboxSecret&&secretMatches(outboxDispatchSecret(secret),presented);
   return cronMatch||outboxMatch;
-}
-
-function isLoopbackHost(value){
-  try{
-    const hostname=new URL(`http://${String(value||'')}`).hostname.toLowerCase();
-    return hostname==='localhost'||hostname==='127.0.0.1'||hostname==='[::1]';
-  }catch{ return false; }
-}
-
-function isLoopbackAddress(value){
-  const address=String(value||'').trim().toLowerCase();
-  return address==='127.0.0.1'||address==='::1'||address==='::ffff:127.0.0.1';
-}
-
-function strictLocalPairingRuntime(req){
-  if(process.env.NODE_ENV!=='development'
-    ||process.env.RANDORI_LOCAL_RUNTIME!=='true'
-    ||process.env.CIRCLE_MEMBERSHIP_ENABLED==='true'
-    ||process.env.VERCEL||process.env.VERCEL_ENV||process.env.VERCEL_URL
-    ||String(process.env.TURSO_AUTH_TOKEN||'').trim()) return false;
-  let databaseUrl,appUrl,requestUrl;
-  try{
-    databaseUrl=new URL(String(process.env.TURSO_DATABASE_URL||''));
-    appUrl=new URL(String(process.env.APP_URL||''));
-    requestUrl=new URL(`http://${String(req?.headers?.host||'')}`);
-  }catch{ return false; }
-  if(databaseUrl.protocol!=='file:'||databaseUrl.host||databaseUrl.username||databaseUrl.password
-    ||databaseUrl.search||databaseUrl.hash) return false;
-  if(appUrl.protocol!=='http:'||appUrl.username||appUrl.password||appUrl.search||appUrl.hash
-    ||(appUrl.pathname!=='/'&&appUrl.pathname!=='')||!isLoopbackHost(appUrl.host)
-    ||appUrl.host.toLowerCase()!==requestUrl.host.toLowerCase()) return false;
-  return isLoopbackHost(req?.headers?.host)&&isLoopbackAddress(req?.socket?.remoteAddress);
 }
 
 async function requirePairingPublisher(req,res){
@@ -505,6 +473,20 @@ function projectOutboxDelivery({descriptor,result,status,configured,local,captur
     suppressed:result.suppressed,...(local&&configured?{captured}:{}),};
 }
 
+export async function runReminderDueCheck(db,req,deadlineAtMs){
+  let dueCheck;
+  try{
+    dueCheck=await settleBeforeDeadline(()=>enqueueDueReminders(db,{localScope:strictLocalPairingRuntime(req)}),
+      deadlineAtMs);
+  }catch{
+    return {enqueued:null,errors:{due_check:'DUE_CHECK_FAILED'}};
+  }
+  if(!dueCheck.completed) return {enqueued:null,errors:{due_check:'DUE_CHECK_TIMEOUT'}};
+  const {availability_cutoff:availabilityCutoff,agree_time:agreeTime,session_soon:sessionSoon,errors}=dueCheck.value;
+  return {enqueued:{availability_cutoff:availabilityCutoff,agree_time:agreeTime,session_soon:sessionSoon},
+    errors:{...errors}};
+}
+
 export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
   maxClaims=OUTBOX_CRON_MAX_CLAIMS,
   finalizationReserveMs=OUTBOX_CRON_FINALIZATION_RESERVE_MS,
@@ -515,17 +497,21 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
   const preparationDeadline=deadlineAtMs-finalizationReserveMs-minimumDispatchWindowMs;
   // Issue #287: the reminder due-check runs inside the timeboxed preparation so
   // a newly due reminder can be claimed in this invocation. It makes no
-  // database access while REMINDERS_ENABLED is off, and a failure or timeout
-  // is reported without blocking delivery of other mail.
-  let reminders=null;
+  // database access while REMINDERS_ENABLED is off. Each kind reports its own
+  // bounded error code; a failure or timeout is logged at warn level and never
+  // blocks delivery of other mail.
+  // Nothing is queued when no reminder handler can deliver (no provider and no
+  // local capture), so intents never pile up undeliverable.
+  let reminders={enqueued:null,errors:{}};
   const preparation=await settleBeforeDeadline(async()=>{
     await migrateLegacyPairingEmails(db,{limit:maxClaims});
+    const deliveryPlan=await outboxDeliveryPlan(db,baseUrl,req);
     if(remindersEnabled()){
-      const dueCheck=await settleBeforeDeadline(()=>enqueueDueReminders(db),
-        Math.min(preparationDeadline,performance.now()+reminderDueCheckBudgetMs)).catch(()=>null);
-      reminders=dueCheck?.completed?dueCheck.value:{enabled:true,failed:true};
+      reminders=deliveryPlan.handlers.has(REMINDER_EMAIL_EVENT_TYPE)
+        ?await runReminderDueCheck(db,req,Math.min(preparationDeadline,performance.now()+reminderDueCheckBudgetMs))
+        :{enqueued:null,errors:{due_check:'NO_DELIVERY_HANDLER'}};
     }
-    return outboxDeliveryPlan(db,baseUrl,req);
+    return deliveryPlan;
   },preparationDeadline);
   const plan=preparation.completed?preparation.value:{
     local:false,captured:new Map(OUTBOX_DELIVERY_TYPES.map(({type})=>[type,[]])),handlers:new Map(),
@@ -574,13 +560,11 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
     legacy_reconciliation_complete:preparation.completed,logging_complete:false,
     claimed:invocation.claimed,types,key_rotation:metricRead.completed?metricRead.value.keyRotation:null,
     app_logs_retention:appLogRetention,
-    ...(remindersEnabled()?{reminders_enqueued:reminders&&!reminders.failed?{
-      availability_cutoff:reminders.availability_cutoff,agree_time:reminders.agree_time,
-      session_soon:reminders.session_soon,
-    }:null}:{})};
+    ...(remindersEnabled()?{reminders_enqueued:reminders.enqueued,reminder_errors:reminders.errors}:{})};
+  const reminderFailed=Object.keys(reminders.errors).length>0;
   if(!metrics.deadline_reached&&performance.now()<deadlineAtMs){
     const logged=await settleBeforeDeadline(()=>logServerOps(
-      invocation.retried||invocation.deadLettered||invocation.leaseLost?'warn':'success',
+      invocation.retried||invocation.deadLettered||invocation.leaseLost||reminderFailed?'warn':'success',
       'outbox_invocation','outbox invocation completed',metrics,null,
     ),deadlineAtMs);
     metrics.logging_complete=logged.completed;
