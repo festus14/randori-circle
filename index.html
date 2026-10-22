@@ -2385,6 +2385,19 @@ a.btn{text-decoration:none}
           </details>
         </div>
       </div>
+      <!-- Issue #292 owner-only circle health (provisional design; assets/circle-health.js fills it). -->
+      <section id="circleHealthPanel" data-testid="circle-health" class="card circle-card circle-health" hidden aria-labelledby="circleHealthTitle" style="display:none">
+        <div class="card-h"><h3 id="circleHealthTitle" class="circle-card-title">Circle health</h3><span class="circle-card-meta">Last 8 finished cycles · owners only</span></div>
+        <div class="card-b circle-card-body">
+          <p class="small muted circle-help">How the weekly loop went in recent finished cycles, as totals for the whole circle. Pair counts are hidden when they could point to a single pair.</p>
+          <div id="circleHealthStatus" class="small muted" role="status" aria-live="polite"></div>
+          <div id="circleHealthTableWrap" class="circle-health-scroll" role="region" aria-label="Circle health by cycle" tabindex="0" aria-busy="false" hidden><table id="circleHealthTable" data-testid="circle-health-table" class="rc-table circle-health-table"></table></div>
+          <div id="circleHealthEmpty" class="rc-empty" data-testid="circle-health-empty" hidden><p class="rc-empty-title">No finished cycles yet</p><p class="small">Health appears two days after the first published cycle ends.</p></div>
+          <p id="circleHealthFootnote" class="small muted circle-help" hidden></p>
+          <details class="circle-invite-history circle-health-help"><summary>What these numbers mean</summary><dl id="circleHealthDefinitions" class="circle-health-definitions"></dl></details>
+          <div><button id="circleHealthRefresh" data-testid="circle-health-refresh" class="btn secondary sm" type="button">Refresh</button></div>
+        </div>
+      </section>
       <!-- Issue #310: global-admin Diagnostics (assets/admin-diagnostics.js). Hidden unless the server advertises adminDiagnostics. Visual design is provisional. -->
       <details id="adminDiagnostics" data-testid="admin-diagnostics" class="card circle-card circle-diagnostics admin-diagnostics" aria-busy="false" hidden>
         <summary class="circle-diagnostics-summary">Diagnostics</summary>
@@ -2918,7 +2931,7 @@ a.btn{text-decoration:none}
   let authRefreshSequence=0;
   let authIdentityHydrated=false;
   let authIdentityHydrationUnavailable=false;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,multiCircleAvailability:false,secondaryCircleCoordination:false,secondaryCircleScheduling:false,inviteRequests:false,registrationMode:'private_beta'});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,multiCircleAvailability:false,secondaryCircleCoordination:false,secondaryCircleScheduling:false,inviteRequests:false,circleHealth:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -4222,6 +4235,7 @@ async function refreshMe(){
       ||(capabilities.secondaryCircleCoordination!==undefined&&typeof capabilities.secondaryCircleCoordination!=='boolean')
       ||(capabilities.secondaryCircleScheduling!==undefined&&typeof capabilities.secondaryCircleScheduling!=='boolean')
       ||(capabilities.inviteRequests!==undefined&&typeof capabilities.inviteRequests!=='boolean')
+      ||(capabilities.circleHealth!==undefined&&typeof capabilities.circleHealth!=='boolean')
       ||(capabilities.adminDiagnostics!==undefined&&typeof capabilities.adminDiagnostics!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
@@ -4238,6 +4252,7 @@ async function refreshMe(){
       secondaryCircleCoordination:capabilities.secondaryCircleCoordination===true,
       secondaryCircleScheduling:capabilities.secondaryCircleScheduling===true,
       inviteRequests:capabilities.inviteRequests===true,
+      circleHealth:capabilities.circleHealth===true,
       adminDiagnostics:capabilities.adminDiagnostics===true,
       registrationMode:mode,
     });
@@ -5847,6 +5862,8 @@ async function refreshMe(){
   const circleInviteEmails=new Map();
   // Bulk invite controller (assets/bulk-invite.js); mounted further below.
   let bulkInviteController=null;
+  // Circle health controller (assets/circle-health.js, issue #292); imported on demand further below.
+  let circleHealthController=null;
   let inviteRequestsState={requests:[],nextCursor:null,pendingCount:0,loading:false,request:0,pendingDecision:null};
   let circleRenderEpoch=0;
   let circleControlEpoch=0;
@@ -6256,6 +6273,7 @@ async function refreshMe(){
     if(circleInvitesMeta) circleInvitesMeta.textContent='';
     if(circleInviteStatus) circleInviteStatus.textContent='';
     resetInviteRequests();
+    circleHealthController?.reset();
     if(circleInviteLink) circleInviteLink.hidden=true;
     if(circleLifecyclePanel){ circleLifecyclePanel.hidden=true; circleLifecyclePanel.style.display='none'; }
     if(circleManageMembers){
@@ -7299,6 +7317,7 @@ async function refreshMe(){
         if(circleInviteLink) circleInviteLink.hidden=!latestInviteUrl;
         await loadOwnerInvitations(epoch);
         void loadInviteRequests(epoch);
+        void showCircleHealth(epoch);
       }
       await showCircleLifecycle(gatedRole,epoch,{loadRoster:!skipManagedRoster});
     }catch{
@@ -7389,6 +7408,41 @@ async function refreshMe(){
   }
   mountBulkInvite();
   window.addEventListener('randori:bulk-invite-ready',mountBulkInvite);
+  // Circle health (assets/circle-health.js, issue #292). The module is
+  // imported only when /api/auth/capabilities advertises circleHealth and the
+  // viewer owns the circle; the server enforces ownership and hides what must
+  // not be shown on every read.
+  let circleHealthLoad=null;
+  function loadCircleHealth(){
+    if(circleHealthController) return Promise.resolve(circleHealthController);
+    if(circleHealthLoad) return circleHealthLoad;
+    circleHealthLoad=import('/assets/circle-health.js').then(module=>{
+      circleHealthController??=module.default.mountCircleHealth({doc:document,host:{
+        canView:()=>authCapabilities.circleHealth===true&&activeCircleRole==='owner'&&!!me,
+        cacheKey:()=>[Number(me?.id||me?.uid),activeCircleContext?.active_circle?.public_id||'primary',
+          activeCircleContext?.context_version??0].join(':'),
+        capture:()=>captureCircleControlOperation(),
+        matches:(operation,result)=>circleControlOperationMatches(operation,result),
+        fetch:()=>api('/api/circle/health',{method:'GET'}),
+        weekLabel:item=>circleUi.pairingWeekLabel(item),
+      }});
+      return circleHealthController;
+    },()=>{ circleHealthLoad=null; return null; });
+    return circleHealthLoad;
+  }
+  async function showCircleHealth(epoch=circleRenderEpoch){
+    if(!authCapabilitiesLoaded){
+      try{ await authCapabilitiesPromise; }catch{}
+      if(epoch!==circleRenderEpoch) return;
+    }
+    if(authCapabilities.circleHealth!==true||activeCircleRole!=='owner'||!me) return;
+    // renderPeople() also runs in the background (sign-in, publication), so
+    // load and read only while the Circle view is actually on screen.
+    if(!document.getElementById('view-circle')?.getClientRects().length) return;
+    const controller=await loadCircleHealth();
+    if(epoch!==circleRenderEpoch) return;
+    await controller?.show();
+  }
   // Admin diagnostics (assets/admin-diagnostics.js, issue #310): loaded and
   // shown only for global admins while the server advertises the capability,
   // so nobody else downloads it. The API authorizes every request again;
@@ -7512,6 +7566,7 @@ async function refreshMe(){
       if(!publishedState||publishedState.cycle_key!==expectedCycleKey
         ||publishedState.state!=='published') throw new Error('invalid pairing publication response');
       pairingPublicationSignal(publishedState,circleOperation);
+      circleHealthController?.invalidate();
       const participantCount=Number(data.participant_count??data.count);
       toast(data.created
         ?`Current cycle ready — ${Number.isFinite(participantCount)?participantCount:0} participant${participantCount===1?'':'s'}`
