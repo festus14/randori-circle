@@ -2292,6 +2292,46 @@ test('canonical solo room execution authorizes membership before work and persis
   assert.equal(insert.args.slice(-12)[2],20);
 });
 
+test('runner lease, quota and outcome log rows carry a coarse user agent and a daily address hash only (ID-82)', async () => {
+  process.env.JWT_SECRET=TEST_JWT_SECRET;
+  const { logAddressHash } = await import('../../api/_log-privacy.js');
+  const question=listPublicExercises()[0];
+  const entrypoint=question.languages.javascript.entrypoint;
+  const userAgent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+  executeHandler=sql=>{
+    if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{pair_group_id:20,week_id:42,user_a_id:2,user_b_id:2,user_c_id:null}]);
+    if(sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')) return rows([{id:221}]);
+    if(sql.includes("event='execute_attempt'")) return rows([{c:1}]);
+    if(sql.includes('INSERT INTO session_runs') && sql.includes('RETURNING id')) return rows([{id:121}]);
+    return rows();
+  };
+  globalThis.fetch=async()=>new Response(JSON.stringify({run:{code:0,stdout:'',stderr:''}}),{status:200});
+
+  const result=await invoke(dataHandler,{
+    method:'POST',url:'/api/execute',query:{endpoint:'execute'},
+    headers:{'x-test-auth':'user','user-agent':userAgent,'x-forwarded-for':'2001:db8:42:7::5, 10.0.0.1'},
+    body:{
+      room_id:'week_42_pair_20',language:'javascript',code:`function ${entrypoint}(){ return null; }`,
+      question_slug:question.slug,question_version:question.version,
+    },
+  });
+  assert.equal(result.status,200);
+  const logInserts=executed.filter(call=>call.sql.includes('INSERT INTO app_logs'));
+  const events=logInserts.map(call=>call.sql.match(/'(execute_[a-z_]+)'/)?.[1]||call.args[2]);
+  for(const event of ['execute_lease_start','execute_attempt','execute_success','execute_lease_end']){
+    assert.ok(events.includes(event),`${event} row written`);
+  }
+  const expectedIp=logAddressHash('2001:db8:42:7::5');
+  assert.match(expectedIp,/^h1:[0-9a-f]{16}$/);
+  for(const call of logInserts){
+    const text=JSON.stringify(call.args);
+    assert.ok(!text.includes('2001:db8:42:7'),text);
+    assert.ok(!text.includes(userAgent)&&!text.includes('Mozilla'),text);
+    assert.ok(call.args.includes('Chrome 131 on macOS'),text);
+    assert.ok(call.args.includes(expectedIp),text);
+  }
+});
+
 test('canonical room execution rejects ambiguous, malformed, missing, and unauthorized rooms before work', async () => {
   const question=listPublicExercises()[0];
   const entrypoint=question.languages.javascript.entrypoint;

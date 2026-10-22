@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { captureSentryException, captureSentryMessage, getClient, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
+import { appLogClientFields } from './_log-privacy.js';
 import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
@@ -46,18 +47,14 @@ async function logServer(level, event, message, meta, reqCtx){
         else if(reqCtx.userId) user_id=reqCtx.userId;
       }
     }catch{}
-    let route=null, ua=null, ip=null;
+    let route=null;
     try{
       if(reqCtx && reqCtx.route) route=String(reqCtx.route).slice(0,300);
       else if(reqCtx && reqCtx.req && reqCtx.req.url) route=String(reqCtx.req.url).slice(0,300);
       else if(reqCtx && reqCtx.headers && reqCtx.url) route=String(reqCtx.url).slice(0,300);
-      if(reqCtx && reqCtx.ua) ua=String(reqCtx.ua).slice(0,300);
-      else if(reqCtx && reqCtx.headers) ua=(reqCtx.headers['user-agent']||'').toString().slice(0,300);
-      else if(reqCtx && reqCtx.req && reqCtx.req.headers) ua=(reqCtx.req.headers['user-agent']||'').toString().slice(0,300);
-      if(reqCtx && reqCtx.ip) ip=String(reqCtx.ip).slice(0,80);
-      else if(reqCtx && reqCtx.headers) ip=(reqCtx.headers['x-forwarded-for']||'').toString().split(',')[0].trim().slice(0,80);
-      else if(reqCtx && reqCtx.req && reqCtx.req.headers) ip=(reqCtx.req.headers['x-forwarded-for']||'').toString().split(',')[0].trim().slice(0,80);
     }catch{}
+    // ID-82: a coarse user-agent family and a daily keyed address hash, never the raw values.
+    const {ua,ip}=appLogClientFields(reqCtx);
     await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, user_id, route, ua, ip]});
     try{
       if((lvl==='error' || lvl==='warn') && isSentryConfigured() && !reqCtx?.skipSentry){

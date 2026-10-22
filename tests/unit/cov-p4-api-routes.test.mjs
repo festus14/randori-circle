@@ -325,7 +325,9 @@ test('client log ingestion normalises entries, protects reserved namespaces and 
   assert.equal((await invoke(dataHandler,{...logs,auth:'member',body:{message:'x'}})).status,503);
   clientOverride=null;
 
-  const batch=await invoke(dataHandler,{...logs,auth:'member',headers:{'user-agent':'unit-agent'},body:[
+  // ID-82: the user agent is stored as a coarse family only (an entry's own
+  // `ua` is reduced the same way).
+  const batch=await invoke(dataHandler,{...logs,auth:'member',headers:{'user-agent':'Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0'},body:[
     {level:'ERROR',message:'boom',event:'execute_attempt',source:'runner',meta:{a:1}},
     {level:'shout',message:'loud',event:'execute_lease_acquired',meta:'raw-meta',route:'/custom'},
     {level:'warn',message:'careful',meta_json:'{"b":2}',ua:'custom-agent'},
@@ -334,9 +336,9 @@ test('client log ingestion normalises entries, protects reserved namespaces and 
   assert.deepEqual(batch.body,{ok:true,inserted:3});
   const rows=(await realDb.execute(`SELECT level,source,event,meta_json,route,ua FROM app_logs WHERE user_id=2 AND message IN ('boom','loud','careful') ORDER BY id`)).rows;
   assert.deepEqual(rows.map(row=>[row.level,row.source,row.event,row.meta_json,row.route,row.ua]),[
-    ['error','client','client_execute_attempt','{"a":1}','/api/data/logs','unit-agent'],
-    ['info','client','client_execute_lease_acquired','raw-meta','/custom','unit-agent'],
-    ['warn','client',null,'{"b":2}','/api/data/logs','custom-agent'],
+    ['error','client','client_execute_attempt','{"a":1}','/api/data/logs','Firefox 132 on Linux'],
+    ['info','client','client_execute_lease_acquired','raw-meta','/custom','Firefox 132 on Linux'],
+    ['warn','client',null,'{"b":2}','/api/data/logs','other'],
   ]);
 
   const wrapped=await invoke(dataHandler,{...logs,auth:'member',body:{logs:[{message:'one'},{message:'two'}]}});
