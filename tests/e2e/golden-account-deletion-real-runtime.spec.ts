@@ -34,6 +34,8 @@ async function openEditProfile(page:Page){
 }
 
 async function expectAccessible(page:Page,selector:string,label:string){
+  // Theme switches animate colours; check the settled state, not a transition frame.
+  await page.emulateMedia({reducedMotion:'reduce'});
   for(const width of [1280,390]){
     await page.setViewportSize({width,height:900});
     for(const light of [false,true]){
@@ -46,6 +48,7 @@ async function expectAccessible(page:Page,selector:string,label:string){
     }
   }
   await page.setViewportSize({width:1280,height:900});
+  await page.emulateMedia({reducedMotion:null});
 }
 
 test('account deletion: a member deletes their account by keyboard, partners keep an anonymised history, and the email can join again',async({browser})=>{

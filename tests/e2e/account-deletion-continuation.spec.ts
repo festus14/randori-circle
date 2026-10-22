@@ -48,7 +48,7 @@ for(const [label,marker] of [
 test('a fresh marker for the signed-in member resumes the deletion at Type DELETE',async({page})=>{
   await openGoogleReturn(page,{actor_id:1,ageMs:1000});
   await expect(page.getByRole('dialog',{name:'Type DELETE to confirm'})).toBeVisible();
-  await expect(page.getByLabel('Type DELETE')).toBeFocused();
+  await expect(page.getByRole('textbox',{name:'Type DELETE',exact:true})).toBeFocused();
   await expect(page.getByRole('dialog',{name:'Account security'})).toBeHidden();
   expect(await page.evaluate(key=>sessionStorage.getItem(key),MARKER)).toBeNull();
 });
