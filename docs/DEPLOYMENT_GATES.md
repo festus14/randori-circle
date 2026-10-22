@@ -52,9 +52,15 @@ its job records is created by `vercel[bot]` too. Both workflows therefore also
 require that `deployment_status.target_url` does not start with
 `https://github.com/`: Vercel's statuses link to `*.vercel.app`, and GitHub's
 environment deployments link to the Actions run. The gate requires this check
-in both job conditions and rejects any other use of deployment event data
-(`github.event.deployment…` or `target_url`) in either workflow, so the URL is
-never interpolated into a step.
+in both job conditions. Outside the job conditions it rejects any read of the
+event payload in either workflow: `github.event` or any property or index of it
+(`github.event.x`, `github.event['x']`), an index into the `github` context,
+`toJSON(github…)`, `GITHUB_EVENT_PATH`, or `target_url` by name. Expression
+names are matched case-insensitively. The one allowed read is
+`execution-smoke`'s reviewed checkout of
+`github.event.repository.default_branch`. So neither the URL nor any other
+event data can be interpolated into a step. `github.event_name` is not payload
+data and stays allowed.
 
 This is a post-deploy signal, not a merge gate. It is never a required check.
 

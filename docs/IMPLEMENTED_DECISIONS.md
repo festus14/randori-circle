@@ -3486,10 +3486,15 @@ check. Run 39731099057's environment deployment started a real
   deployments, including the one created by `vercel[bot]`, link to
   `https://github.com/…/actions/runs/…`.
 - The URL is event data, so it appears only in the job `if:` condition.
-  `check:deployability` requires the clause in both conditions and rejects any
-  other `github.event.deployment…` or `target_url` reference in either file, so
-  it can never be interpolated into a step. The execution-smoke workflow digest
-  pin is updated.
+  `check:deployability` requires the clause in both conditions.
+- Outside the conditions, the gate rejects any read of the event payload in
+  either file: `github.event` or any property or index of it, an index into
+  `github`, `toJSON(github…)`, `GITHUB_EVENT_PATH`, or `target_url`.
+  - The one exception is `execution-smoke`'s reviewed default-branch checkout
+    ref.
+  - `production-smoke` is not digest-pinned (other changes edit it), so this
+    broad rule, not a pin, is what keeps event data out of its steps.
+- The execution-smoke workflow digest pin is updated.
 
 ## ID-75: Give the backup watchdog an eight-hour grace for late GitHub schedules
 

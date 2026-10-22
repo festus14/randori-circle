@@ -243,14 +243,23 @@ function validateOutboxWatchdogWorkflow(workflow){
 // created by vercel[bot] too and passes the creator check. Its statuses link
 // to the Actions run, while Vercel's link to *.vercel.app, so both smoke
 // workflows also drop statuses whose target URL starts with
-// https://github.com/. The URL (like all deployment event data) is read only
-// in the job's `if:` condition and never reaches a step, where it could be
+// https://github.com/. The URL (like all event payload data) is read only in
+// the job's `if:` condition and never reaches a step, where it could be
 // interpolated into a shell.
 const JOB_CONDITION=/^ {4}if: >-\n(?: {6}.+\n)+/m;
-function deploymentDataOnlyInJobCondition(workflow){
+// Any read of the event payload: `github.event` itself or any property or
+// index of it (`github.event.x`, `github.event['x']`), any index into the
+// github context, `toJSON(github…)`, the payload file, or the target URL by
+// name. `github.event_name` is not payload data. Expression names are
+// case-insensitive.
+const EVENT_DATA_READ=/\bgithub\s*\.\s*event(?!\w)|\bgithub\s*\[|\btoJSON\s*\(\s*github\b|\bGITHUB_EVENT_PATH\b|target_url/iu;
+// execution-smoke checks out the default branch. This exact line is the only
+// payload read it has outside its condition (the file is digest-pinned too).
+const REVIEWED_DEFAULT_BRANCH_REF=/^ {10}ref: \$\{\{ github\.event\.repository\.default_branch \}\}\n/mu;
+function eventDataOnlyInJobCondition(workflow,allowed=[]){
   const condition=JOB_CONDITION.exec(workflow)?.[0]??'';
-  return condition.includes('github.event.deployment_status.target_url')
-    &&!/github\.event\.deployment|target_url/u.test(workflow.replace(condition,''));
+  const rest=allowed.reduce((text,pattern)=>text.replace(pattern,''),workflow.replace(condition,''));
+  return condition.includes('github.event.deployment_status.target_url')&&!EVENT_DATA_READ.test(rest);
 }
 
 function validateProductionSmokeWorkflow(workflow){
@@ -278,8 +287,8 @@ function validateProductionSmokeWorkflow(workflow){
     [/npm run smoke:production/,'production smoke must run the reviewed read-only smoke script'],
   ];
   for(const [pattern,message] of checks){ if(!pattern.test(workflow)) errors.push(message); }
-  if(!deploymentDataOnlyInJobCondition(workflow)){
-    errors.push('production smoke may read deployment event data only in its job condition');
+  if(!eventDataOnlyInJobCondition(workflow)){
+    errors.push('production smoke may read GitHub event data only in its job condition');
   }
   if(/pull_request(?:_target)?:|:\s*write\b|write-all|^\s*environment:|secrets\.|vars\.|CRON_SECRET|VERCEL_TOKEN|TURSO_|RESEND_|continue-on-error:/mu
     .test(workflow)){
@@ -322,8 +331,8 @@ function validateExecutionSmokeWorkflow(workflow){
       'execution smoke step must retain its exact fail-closed shape'],
   ];
   for(const [pattern,message] of checks){ if(!pattern.test(workflow)) errors.push(message); }
-  if(!deploymentDataOnlyInJobCondition(workflow)){
-    errors.push('execution smoke may read deployment event data only in its job condition');
+  if(!eventDataOnlyInJobCondition(workflow,[REVIEWED_DEFAULT_BRANCH_REF])){
+    errors.push('execution smoke may read GitHub event data only in its job condition');
   }
   // The only production material it may see is APP_URL and CRON_SECRET.
   const reviewedProductionAccess=workflow

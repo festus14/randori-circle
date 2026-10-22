@@ -389,8 +389,8 @@ test('deployability rejects a production smoke workflow that gains secrets, writ
 // check. Its statuses link to the Actions run instead of *.vercel.app.
 const TARGET_URL_CONDITION="!startsWith(github.event.deployment_status.target_url, 'https://github.com/')";
 const GITHUB_STATUS_DEPLOYMENT='production smoke must ignore environment deployments whose status links to GitHub';
-const PRODUCTION_SMOKE_EVENT_DATA='production smoke may read deployment event data only in its job condition';
-const EXECUTION_SMOKE_EVENT_DATA='execution smoke may read deployment event data only in its job condition';
+const PRODUCTION_SMOKE_EVENT_DATA='production smoke may read GitHub event data only in its job condition';
+const EXECUTION_SMOKE_EVENT_DATA='execution smoke may read GitHub event data only in its job condition';
 
 test('both smoke workflows ignore deployments whose status links to a GitHub Actions run',()=>{
   const contract=currentContract();
@@ -403,6 +403,50 @@ test('both smoke workflows ignore deployments whose status links to a GitHub Act
     assert.ok(condition.includes(TARGET_URL_CONDITION));
     assert.doesNotMatch(workflow.replace(condition,''),/github\.event\.deployment|target_url/);
   }
+  // Outside its condition, the execution smoke reads only the reviewed
+  // default-branch ref; the production smoke reads no event data at all.
+  assert.deepEqual(contract.executionSmokeWorkflow.replace(/^ {4}if: >-\n(?: {6}.+\n)+/m,'').match(/github\.event\b[.[\w]*/g),
+    ['github.event.repository.default_branch']);
+  assert.doesNotMatch(contract.productionSmokeWorkflow.replace(/^ {4}if: >-\n(?: {6}.+\n)+/m,''),/github\.event\b(?!_)/);
+});
+
+// Every way a step could read the event payload, outside the job condition.
+const EVENT_DATA_READS=[
+  "${{ github.event['deployment_status']['environment_url'] }}",
+  '${{ toJSON(github.event) }}',
+  '${{ github.event.deployment_status.environment_url }}',
+  '${{ github.EVENT.pull_request.title }}',
+  '${{ github.event }}',
+  "${{ github['event'].deployment.ref }}",
+  '${{ tojson(github) }}',
+  '$GITHUB_EVENT_PATH',
+];
+
+test('deployability rejects every event-data read outside either smoke job condition',()=>{
+  for(const read of EVENT_DATA_READS){
+    const production=cloneContract();
+    production.productionSmokeWorkflow=production.productionSmokeWorkflow.replace(
+      '          SMOKE_BASE_URL: ${{ inputs.base_url }}\n',`          SMOKE_BASE_URL: \${{ inputs.base_url }}\n          EVENT_DATA: ${read}\n`);
+    assert.notEqual(production.productionSmokeWorkflow,cloneContract().productionSmokeWorkflow);
+    assert.deepEqual(validateDeploymentContract(production),[PRODUCTION_SMOKE_EVENT_DATA],read);
+
+    const execution=cloneContract();
+    execution.executionSmokeWorkflow=execution.executionSmokeWorkflow.replace(
+      '        run: node scripts/github-execution-smoke.mjs',`        run: echo "${read}" && node scripts/github-execution-smoke.mjs`);
+    assert.notEqual(execution.executionSmokeWorkflow,cloneContract().executionSmokeWorkflow);
+    const errors=validateDeploymentContract(execution);
+    assert.ok(errors.includes(EXECUTION_SMOKE_EVENT_DATA),`${read}\n${errors.join('\n')}`);
+  }
+  // github.event_name is not payload data, and the reviewed ref is allowed only once.
+  const named=cloneContract();
+  named.productionSmokeWorkflow=named.productionSmokeWorkflow.replace(
+    '          SMOKE_BASE_URL: ${{ inputs.base_url }}\n','          SMOKE_BASE_URL: ${{ inputs.base_url }}\n          EVENT: ${{ github.event_name }}\n');
+  assert.deepEqual(validateDeploymentContract(named),[]);
+  const secondRef=cloneContract();
+  secondRef.executionSmokeWorkflow=secondRef.executionSmokeWorkflow.replace(
+    '          persist-credentials: false\n','          persist-credentials: false\n          ref: ${{ github.event.repository.default_branch }}\n');
+  assert.notEqual(secondRef.executionSmokeWorkflow,cloneContract().executionSmokeWorkflow);
+  assert.ok(validateDeploymentContract(secondRef).includes(EXECUTION_SMOKE_EVENT_DATA));
 });
 
 test('deployability rejects a production smoke that drops or weakens the target URL check',()=>{
