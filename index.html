@@ -163,12 +163,13 @@ try{
      calls window.sentryOnLoad before it initialises, so this config decides the
      environment and whether anything is sent. Only the canonical production
      origin reports; previews, localhost, the local runtime and automated
-     browsers are tagged but disabled. Keep the origin in sync with APP_URL.
+     browsers are tagged but disabled. Keep the origin in sync with APP_URL
+     (ID-80: the old *.vercel.app production alias is now tagged preview).
      The loader (and the SDK bundle it pulls in) is fetched after the page has
      loaded and the browser is idle, so it never delays first paint. -->
 <script id="randoriSentryConfig">
 (function(){
-  var PRODUCTION_ORIGIN='https://randori-circle-self.vercel.app';
+  var PRODUCTION_ORIGIN='https://randoricircle.com';
   var loc=window.location||{};
   var origin=String(loc.origin||'');
   var host=String(loc.hostname||'').toLowerCase();
@@ -10815,7 +10816,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(typeof currentRoom!=='undefined'){ try{ currentRoom=room; }catch{} }
       try{ window.currentRoom=room; }catch{}
       try{ if(window._randori_code) window._randori_code.currentRoom=room; }catch{}
-      const base = location.origin || 'https://randori-circle-self.vercel.app';
+      const base = location.origin || 'https://randoricircle.com';
       const invite = base + '/join/' + encodeURIComponent(room);
       if(copyOnly){
         try{ navigator.clipboard.writeText(invite); if(typeof toast==='function') toast('Session link copied: '+invite.slice(0,40)+'…'); }catch{ prompt('Copy session link', invite); }

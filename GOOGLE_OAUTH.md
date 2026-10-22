@@ -35,15 +35,28 @@ Redeploy after adding.
 
 3. **Create credentials**:
 - APIs & Services → Credentials → Create Credentials → OAuth client ID → Application type **Web application** → Name `Randori Web`.
-- Authorized JavaScript origins: 
-  - `https://randori-circle-self.vercel.app`
+- Authorized JavaScript origins:
+  - `https://randoricircle.com` (canonical, ID-80)
+  - `https://randori-circle-self.vercel.app` (old alias; keep during the transition, see below)
   - `http://localhost:3000` (optional for local dev)
 - Authorized redirect URIs (exact, no trailing slash):
-  - `https://randori-circle-self.vercel.app/api/auth/google/callback`
+  - `https://randoricircle.com/api/auth/google/callback`
+  - `https://randori-circle-self.vercel.app/api/auth/google/callback` (old alias; keep during the transition)
   - `http://localhost:3000/api/auth/google/callback` (optional)
+- Google Auth Platform → Branding → **Authorized domains**: add `randoricircle.com`.
 - Create → copy **Client ID** → `GOOGLE_CLIENT_ID`, **Client Secret** → `GOOGLE_CLIENT_SECRET`.
 
 4. Paste both into Vercel, Redeploy. Done.
+
+   **Canonical domain transition (ID-80).** The server builds exactly one
+   redirect URI, `${APP_URL}/api/auth/google/callback`, and accepts OAuth only on
+   the APP_URL host. Listing both origins and both redirect URIs lets either
+   value of `APP_URL` work, so the client can be updated before `APP_URL` is
+   switched and a rollback of `APP_URL` needs no Google change. After the
+   switch, page paths on the old alias redirect to `https://randoricircle.com`,
+   so sign-in only ever starts there. Remove the old-alias entries once the
+   switch has been stable for a while and no rollback is expected. The switch
+   order is in [the production guide](docs/PRODUCTION_BOOTSTRAP_GUIDE.md#12-canonical-domain-id-80).
 
 5. Apply the versioned database migrations and verify the deployment readiness probe before opening traffic, then confirm `/api/auth/capabilities` advertises `googleOAuth: true` on the canonical deployment. Missing/partial credentials, an unmigrated identity schema, a non-canonical or insecure origin, a mismatched request host/protocol, and the isolated local runtime all fail closed.
 
