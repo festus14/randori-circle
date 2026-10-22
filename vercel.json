@@ -101,6 +101,10 @@
       "destination": "/api/data?endpoint=circle"
     },
     {
+      "source": "/api/circle/health",
+      "destination": "/api/ops?endpoint=circle-health"
+    },
+    {
       "source": "/api/invitations/prepare",
       "destination": "/api/invitations?endpoint=prepare"
     },

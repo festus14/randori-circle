@@ -321,3 +321,22 @@
   .progress-week, .progress-bar, .progress-role, .progress-swatch { forced-color-adjust: auto; }
   .progress-tile, .progress-coverage-row { border-color: CanvasText; }
 }
+
+/* Issue 292 circle health (provisional design, needs-design). One row per
+   cycle; the table scrolls sideways on narrow screens inside a focusable
+   region so keyboard users can reach every column. */
+.circle-health-scroll { overflow-x: auto; max-width: 100%; border-radius: var(--radius-md); }
+.circle-health-scroll:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.circle-health-table { min-width: 640px; }
+.circle-health-table th[scope="row"] { white-space: nowrap; font-weight: var(--weight-emphasis); color: var(--color-text); }
+.circle-health-table td { white-space: nowrap; }
+.circle-health-table td[data-state="suppressed"],
+.circle-health-table td[data-state="none"],
+.circle-health-table td[data-state="not-tracked"] { color: var(--color-text-secondary); }
+.circle-health-definitions { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-3); margin: 0; font-size: var(--text-sm); }
+.circle-health-definitions dt { font-weight: var(--weight-emphasis); color: var(--color-text); }
+.circle-health-definitions dd { margin: 0; color: var(--color-text-secondary); }
+@media (max-width: 520px) {
+  .circle-health-definitions { grid-template-columns: minmax(0, 1fr); }
+  .circle-health-definitions dd { margin-bottom: var(--space-2); }
+}
