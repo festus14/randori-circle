@@ -3939,3 +3939,123 @@ readiness (`requireClosedMembership`) failed.
 
 **Recovery.** Revert the commit. Readiness then fails again for every account
 that joined by activation.
+
+## ID-83: Expire recipient data in the email outbox after delivery, behind a flag
+
+Status: implemented behind `OUTBOX_PII_RETENTION_ENABLED` (default off); no
+migration. Issue #341 (split out of #338). Turning it on is destructive and is
+an owner decision.
+
+**Context.** Outbox rows kept recipient addresses and sealed credentials with
+no time limit after an email was delivered, suppressed or dead-lettered. The
+inventory of personal data in the outbox tables:
+
+| Where | Personal data | What still needs it |
+| --- | --- | --- |
+| `pairing.email.requested` v1 payload | `recipient_email` (plain) | the handler and replay while actionable; unavailable evidence reads only `week_id`, `user_id`, `kind`; the legacy bridge reads only the key |
+| `invitation.email.requested` payload | `credential_envelope` (AES-GCM sealed `{email, token}` under `INVITATION_EMAIL_ENCRYPTION_KEY`, envelope v1 or key-versioned v2 bound to the idempotency key), `email_hash`, `token_hash` | the handler and replay; owner resend reopens the latest envelope while the invitation is live (7-day TTL); send count and the rejected-email hint read only `invitation_id`; rotation metrics read envelopes of actionable rows and of a live invitation's latest event |
+| `auth.emailverification.requested`, `auth.passwordreset.requested` payloads | `recipient_email` (plain), `token_envelope` (sealed token; 30-minute links) | the handler and replay; rotation metrics read actionable envelopes |
+| schedule, secondary schedule, reminder, invite-request, secondary pairing payloads | internal ids, schedule instants or opaque fingerprints only | supersession, dedupe and suppression checks; no contact data |
+| `idempotency_key` | internal ids, UUIDs and opaque hashes only; never an address | producer `ON CONFLICT` dedupe, reminder and legacy-bridge `NOT EXISTS`, provider idempotency |
+| `provider_message_id` | a key into the provider's own logs, which hold the address | nothing in the app |
+| other `outbox_events` columns | none (type, version, status, timestamps, counts, error codes) | health, the watchdog, diagnostics, metrics |
+| `outbox_audit_events` | none: worker ids, `user:<id>` of the replaying admin, bounded reason codes (provider reasons are `status:name:reason`, PII-free by pattern) | health `recentRejectReasons`, diagnostics provider reason, replay audit |
+| legacy `pairing_email_outbox` (pre-v6) | `recipient_email` (plain, `NOT NULL`), `provider_message_id`, free-text `last_error` | the bridge, only for actionable rows not yet copied into `outbox_events` |
+| `outbox_invocation` app_logs rows | none (counts and codes) | diagnostics dispatcher evidence (30-day app_logs retention, ID-72) |
+
+**Decision.**
+- `api/_outbox-retention.js` runs from `/api/cron/outbox` after the delivery
+  round and after `app_logs` retention, only when the flag is exactly `true`,
+  with its own 2-second budget that must fit before the finalization reserve.
+  It stops issuing statements when the budget ends, so it can never delay or
+  fail mail; a slow or failed run is reported and retried by a later hour.
+- Each run first claims the hour with one atomic `INSERT … WHERE NOT EXISTS`
+  of a server `outbox_pii_retention` app_logs row with `user_id IS NULL`, so a
+  run inside the hour, a concurrent run, or any member-written row changes
+  nothing.
+- Windows, each exclusive at the cutoff: delivered 7 days after
+  `delivered_at`, suppressed 7 days after the suppression (`updated_at`), dead
+  letters 30 days after `dead_lettered_at` so admin replay works for a month.
+  Only the four types above are candidates, and only while a contact or
+  credential field is present. Pending, retry and processing (leased) rows are
+  never selected.
+- Redaction removes `recipient_email`, `credential_envelope`,
+  `token_envelope`, `email_hash` and `token_hash` with `json_remove`, adds
+  `"retention_redacted":1`, and clears `provider_message_id`. Type, version,
+  status, idempotency key, counts, error codes, timestamps and the audit trail
+  are unchanged. The kept ids (`week_id`, `user_id`, `kind`, `invitation_id`,
+  `activation_id`, `reset_id`) are internal references that unavailable
+  evidence, send counts and the rejected-email hint use.
+- An invitation event is skipped while its invitation is still live (unused,
+  unrevoked, unexpired), because resend reopens the latest envelope. A legacy
+  row gets the non-routable `redacted@redacted.invalid` (the column is
+  `NOT NULL`), a cleared provider id and error text once it is older than 30
+  days and was sent or already bridged; an unbridged actionable row is kept.
+- Each class is one `UPDATE … WHERE id IN (SELECT … ORDER BY … LIMIT ?)` of at
+  most 100 rows, oldest first. The candidate subquery runs inside the same
+  write, so a concurrent claim, replay or second run cannot interleave, and a
+  rerun only finds rows that still hold personal data. The response and the
+  `outbox_invocation` row report `{ran, redacted:{delivered, suppressed,
+  dead_letter, legacy_pairing}, more}`. Counts live in a caller-owned progress
+  object, so a run that committed some classes and then timed out, failed or
+  hit its budget is reported as `{ran:true, partial:true, …}` with what it
+  committed (`failed_class` names a failed statement), never as "nothing
+  happened". A failed, timed-out or partial run, of this job or of the ID-72
+  `app_logs` retention, logs the invocation row at `warn`, not `success`.
+- Replay of a redacted dead letter is refused whether or not the flag is on:
+  `replayDeadLetter` only updates unredacted rows and then throws
+  `OutboxEventRedactedError`, and `POST /api/admin/outbox/replay` answers
+  `409 {code:"outbox_event_redacted"}`. The Admin Diagnostics dead-letter list
+  keeps the row, adds `redacted:true`, says "recipient details removed by
+  retention; cannot be replayed" and disables its Replay button; a replay
+  started from an older snapshot gets "can't be replayed: its recipient
+  details were removed after 30 days under the retention policy. Nothing
+  changed."
+- Credential rotation metrics (`readCredentialRotationMetrics` and the
+  invitation metrics) skip redacted rows: they hold no envelope and are no
+  longer actionable or resendable, so they cannot block key retirement.
+- Dedupe is unchanged because keys are kept: re-enqueueing a redacted event is
+  absorbed by `ON CONFLICT(idempotency_key)`, reminder and bridge `NOT EXISTS`
+  checks still match, and terminal rows are never claimed again.
+- Every delivery type is declared either in `OUTBOX_PII_EVENT_TYPES` or in
+  `OUTBOX_PII_FREE_EVENT_TYPES`; a unit test fails when a new type is in
+  neither list.
+- Flag off: no statement from this job and no `outbox_pii_retention` key in
+  the cron response or invocation row. The replay guard and the rotation-metric
+  filter are always present but match nothing until a row has been redacted.
+
+**Schema and scan cost.** No migration and no DDL. A terminal row's
+`next_attempt_at` is its finalization instant and never later than its anchor
+timestamp (finalization writes both from one instant, the lease sweep keeps
+the earlier due time, the legacy bridge writes `now` to both; a unit test
+drives every terminal path), so each class scan is a range on
+`idx_outbox_events_dispatch`
+(`status=? AND next_attempt_at<?`, no temporary sort) followed by a rowid
+update, and the invitation guard is a primary-key lookup; a unit test checks
+the plans with `EXPLAIN QUERY PLAN`. The scan still steps over rows redacted
+earlier, so an hourly run reads every terminal row older than its window. That
+is far less than the full-table metric and rotation reads every five-minute
+invocation already does. The legacy table no longer grows and is scanned
+whole. A partial index on unredacted rows would make the scan proportional to
+the backlog; it needs a migration and is deferred until volume needs it.
+
+**Alternatives.** Deleting rows (re-enqueueing the same key would send again,
+reminder and bridge dedupe would re-queue, and audit rows reference events).
+Hashing idempotency keys (they hold no personal data, and producers dedupe on
+the exact key). Destroying only the envelopes (three types keep a plaintext
+address). A weekly sweep (a backlog of a week at most 100 rows per class). A
+`redacted_at` column with a partial index (cleaner, but needs a protected
+migration cutover).
+
+**Rollout and recovery.** Merge with the flag unset; nothing changes. **Do not
+enable the flag until the matching Privacy Policy text is live** (the
+"Email records" line in `privacy.html`, #336; the exact text is in PR #346).
+That text says the record is kept as an operational record without the
+address, that database backups keep unredacted copies for the provider's
+point-in-time restore window (1 day on Turso's Free plan, per
+`docs/PRODUCTION_BOOTSTRAP_GUIDE.md` §3.4; 10 or 30 days on paid plans), and
+that an existing backlog clears over the following hours or days. Then the
+owner sets `OUTBOX_PII_RETENTION_ENABLED=true` in Vercel Production and
+redeploys; the backlog drains at up to 100 rows per class an hour. Redaction
+cannot be undone, and redacted dead letters stay non-replayable after the flag
+is unset.

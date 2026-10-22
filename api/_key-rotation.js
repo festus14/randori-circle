@@ -1,5 +1,7 @@
 import {createCipheriv,createDecipheriv,createHmac,timingSafeEqual,randomBytes} from 'node:crypto';
 
+import {outboxNotRedactedSql} from './_outbox-retention.js';
+
 export const MAX_PREVIOUS_KEYS=3;
 export const CREDENTIAL_ENVELOPE_WRITE_VERSION=2;
 
@@ -354,10 +356,13 @@ export async function readCredentialRotationMetrics(db,{
     ||!Array.isArray(retainedEnvelopes)){
     throw new TypeError('valid credential rotation metric query required');
   }
+  // A dead letter redacted by retention (ID-83) holds no envelope and can no
+  // longer be replayed, so it is not actionable.
   const result=await db.execute({
     sql:`SELECT json_extract(payload_json,?) AS envelope
       FROM outbox_events WHERE event_type=?
-        AND status IN ('pending','processing','retry','dead_letter') ORDER BY id LIMIT 10001`,
+        AND status IN ('pending','processing','retry','dead_letter')
+        AND ${outboxNotRedactedSql()} ORDER BY id LIMIT 10001`,
     args:[`$.${envelopeField}`,eventType],
   });
   return credentialRotationMetricsFromEnvelopes({ring,
