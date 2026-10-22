@@ -318,7 +318,8 @@ test('windows count from delivered_at, the suppression and dead_lettered_at, eac
   // dead-letter time, never from the older next_attempt_at.
   const swept = await insertEvent('reset', { status: 'dead_letter', anchor: ago(29 * DAY), nextAttemptAt: ago(45 * DAY) });
 
-  assert.deepEqual(plain(await run()), { ran: true, redacted: counts({ delivered: 1, suppressed: 1, dead_letter: 1 }), more: false });
+  assert.deepEqual(plain(await run({ now: new Date(NOW) })),
+    { ran: true, redacted: counts({ delivered: 1, suppressed: 1, dead_letter: 1 }), more: false });
   for (const { status, anchor, expected, row } of rows) {
     const payload = await payloadOf(row.id);
     assert.equal(payload.retention_redacted === 1, expected, `${status} at ${at(anchor)}`);

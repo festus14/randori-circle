@@ -98,7 +98,7 @@ function emptyCounts(){
 }
 
 function canonicalInstant(value){
-  const milliseconds=value instanceof Date?value.getTime():Date.parse(String(value??''));
+  const milliseconds=value instanceof Date?value.getTime():Date.parse(String(value));
   if(!Number.isFinite(milliseconds)) throw new TypeError('valid outbox retention time is required');
   return new Date(milliseconds).toISOString();
 }
