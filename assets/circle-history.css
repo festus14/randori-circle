@@ -222,6 +222,36 @@
 .circle-bulk-row .circle-row-actions,
 .circle-side .circle-bulk-row .circle-row-actions { grid-column: 1 / -1; justify-content: flex-start; }
 
+/* Admin Diagnostics (issue 310). Tokens and rc- components only; the visual
+   design is provisional (needs-design). */
+.admin-diag-toolbar { justify-content: space-between; }
+#adminDiagnosticsAge { margin: 0; }
+#adminDiagnosticsAge:empty { display: none; }
+.admin-diag-grid {
+  display: grid; gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+}
+.admin-diag-grid:empty { display: none; }
+.admin-diag-card { display: grid; gap: var(--space-2); align-content: start; padding: var(--space-4); min-width: 0; }
+.admin-diag-card p { margin: 0; overflow-wrap: anywhere; }
+.admin-diag-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.admin-diag-card-head h4 {
+  margin: 0; margin-right: auto; font-size: var(--text-sm); line-height: var(--leading-sm);
+  font-weight: var(--weight-heading); color: var(--color-text);
+}
+.admin-diag-table-wrap { overflow-x: auto; max-width: 100%; border-radius: var(--radius-sm); }
+.admin-diag-table-wrap:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.admin-diag-table-wrap th[scope="row"] { font-weight: var(--weight-emphasis); color: var(--color-text); background: none; white-space: nowrap; }
+.admin-diag-section { display: grid; gap: var(--space-2); }
+.admin-diag-section > h4:focus { outline: none; }
+.admin-diag-section > h4:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.admin-dead-letter { grid-template-columns: minmax(0, 1fr) auto; }
+.admin-dead-letter p { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 599px) {
+  .admin-dead-letter { grid-template-columns: minmax(0, 1fr); }
+  .admin-dead-letter .circle-row-actions { grid-column: 1 / -1; justify-content: flex-start; }
+}
+
 /* Personal progress in History (issue 293, ID-76; provisional design, needs-design).
    Tokens only. Charts are aria-hidden SVG; the summaries and the table carry the meaning. */
 .history-progress[hidden] { display: none; }

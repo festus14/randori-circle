@@ -207,6 +207,11 @@ with 4 items plus a "More" sheet on mobile):
 The account menu holds Profile, Notifications, Account security, Theme, Sign
 out and Sign out everywhere. Admin-only diagnostics (Logs, demo seeding) move to
 an owner-only "Diagnostics" item under Circle and are hidden by default.
+Issue #310 (ID-73) adds that Diagnostics disclosure for global admins, behind
+`ADMIN_DIAGNOSTICS_ENABLED` and with a provisional design: status cards
+(`rc-card`, `rc-badge` tones, a "Stale" badge) and a dead-letter list with a
+confirmed replay. Logs and demo tools stay in place for now and are linked
+from it.
 
 Constraints:
 

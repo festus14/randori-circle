@@ -327,6 +327,9 @@ async function handleCapabilities(req,res){
       recentAuthMaxAgeSeconds:10*60,
       identityManagement,
       ...(inviteRequests?{inviteRequests:true}:{}),
+      // Issue #310: advertised only while the flag is on. The diagnostics API
+      // still authorizes every request as a global administrator.
+      ...(process.env.ADMIN_DIAGNOSTICS_ENABLED==='true'?{adminDiagnostics:true}:{}),
       ...(circleMembershipEnabled()&&process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED==='true'
         ?{multiCircleControlPlane:true}:{}),
       ...(multiCircleAvailabilityEnabled()?{multiCircleAvailability:true}:{}),
@@ -824,7 +827,7 @@ async function handleMe(req,res){
     }
     const id = payload.id || payload.uid;
     if (!id) return res.status(401).json({ error:'invalid token payload' });
-    const rs = await db.execute({ sql:`SELECT id,email,display_name,color,created_at,last_login,is_available,availability_updated_at,is_admin FROM auth_accounts WHERE id=?`, args:[id] });
+    const rs = await db.execute({ sql:`SELECT id,email,display_name,color,created_at,last_login,is_available,availability_updated_at,is_admin,is_demo FROM auth_accounts WHERE id=?`, args:[id] });
     if (!rs.rows.length) return res.status(401).json({ error:'user not found' });
     const u = rs.rows[0];
     if(circleMembershipEnabled()){
@@ -844,7 +847,7 @@ async function handleMe(req,res){
     if (is_admin_env && !is_admin_db){
       try{ await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=?`, args:[u.id]});}catch{}
     }
-    return res.json({ ok:true, user:{ id:u.id, email:u.email, name:u.display_name, color:u.color, created_at:u.created_at, last_login:u.last_login, is_available: !!is_available, isAvailable: !!is_available, availability_updated_at:u.availability_updated_at, is_admin, isAdmin:is_admin, is_admin_db, is_admin_env }});
+    return res.json({ ok:true, user:{ id:u.id, email:u.email, name:u.display_name, color:u.color, created_at:u.created_at, last_login:u.last_login, is_available: !!is_available, isAvailable: !!is_available, availability_updated_at:u.availability_updated_at, is_admin, isAdmin:is_admin, is_admin_db, is_admin_env, is_demo:Number(u.is_demo||0)===1 }});
   }catch(e){
     return res.status(401).json({ error:'invalid session' });
   }
