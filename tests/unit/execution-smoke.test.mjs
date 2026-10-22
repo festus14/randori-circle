@@ -261,15 +261,20 @@ test('separate database connections produce exactly one claim per round',async()
 });
 
 test('throttled responses report the result saved for the latest claim, never forged or unlinked rows',async()=>{
-  await insertRun({trigger:'schedule',age:'-10 minutes',
+  const claimId=await insertRun({trigger:'schedule',age:'-10 minutes',
     meta:JSON.stringify({javascript:{status:'timeout',durationMs:45000},python:{status:'ok',durationMs:900}})});
-  // Browser telemetry cannot write source=runner, member rows carry a user id,
-  // and a result only counts when it names the latest claim.
+  // Browser telemetry cannot write source=runner and member rows carry a user
+  // id. These forged results name the real latest claim and are newer than its
+  // real result, so only the source and user_id conditions keep them out.
   const forged=OK_META;
-  await insertLog({source:'client',event:'execution_smoke_result',message:'1',age:'-1 minutes',meta:forged});
-  await insertLog({event:'execution_smoke_result',message:'1',age:'-1 minutes',userId:3,meta:forged});
+  const linked=String(claimId);
+  await insertLog({source:'client',event:'execution_smoke_result',message:linked,age:'-1 minutes',meta:forged});
+  await insertLog({source:'runner',event:'execution_smoke_result',message:linked,age:'-1 minutes',userId:3,
+    meta:forged});
   await insertLog({event:'execution_smoke_result',message:'seeded',age:'-1 minutes',meta:forged});
+  // Forged newer claims: a browser row and a member row never become the latest claim.
   await insertLog({source:'client',message:'schedule',age:'-1 minutes'});
+  await insertLog({source:'runner',message:'schedule',age:'-1 minutes',userId:4});
 
   const {calls,run}=smoke();
   const throttled=await run();
