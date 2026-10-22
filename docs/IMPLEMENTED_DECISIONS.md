@@ -3554,6 +3554,128 @@ owner sets `PROGRESS_DASHBOARD_ENABLED=true` in Vercel Production and redeploys;
 unsetting it restores the previous behaviour. Contract:
 [`PROGRESS_DASHBOARD.md`](PROGRESS_DASHBOARD.md).
 
+## ID-77: Suggest next exercises from verified history, without a migration
+
+Status: implemented behind `EXERCISE_SUGGESTIONS_ENABLED` (default off); no
+migration. Issue #296 (post-MVP roadmap #312). The visual design is
+provisional (`needs-design`).
+
+**Context.** Pairs chose exercises by scrolling a list. Nothing showed what
+either partner had already done, which topics they had never covered, or what
+a sensible next difficulty was. Run history (#20) and session completion
+(#218) already record what each member attempted.
+
+**Decision.**
+- `GET /api/exercise-suggestions[?room_id=week_<w>_pair_<p>][&hidden=a,b]`
+  (data handler, `api/_exercise-suggestions.js`). It needs a session and is
+  read-only (`SELECT` only, no request-path DDL). With the flag off it returns
+  `404 {code:'feature_disabled'}`, and `GET /api/questions` is byte-for-byte
+  unchanged; with the flag on, `/api/questions` adds
+  `features:{exercise_suggestions:true}` and only then does the client fetch
+  `/assets/exercise-suggestions.js` (on demand, never a static script tag).
+- Response: `{ok, mode:'solo'|'pair', room_id, partner_count,
+  attempted:[{slug, by_me, by_partner}], suggestions:[{slug, version, title,
+  difficulty, topic, reason:{code, difficulty_step, text}}], hidden_count,
+  empty_reason}` where `hidden_count` counts only hidden exercises that could
+  otherwise be suggested and `empty_reason` is `null`, `all_attempted`,
+  `all_hidden` or `no_exercises`. Errors: 400 (unknown, repeated or malformed
+  query parameter; a slug repeated in `hidden`; more than 50 hidden slugs),
+  401, 404 `pair not found`, 405, 503.
+- "Attempted" means a verified run (a `session_runs` row whose server
+  attestation still verifies; the newest three runs per exercise are checked)
+  or a completed
+  session (every signed-in participant confirmed; the room's workspace
+  exercise and any edited shared code document count). Only active catalogue
+  exercises are considered. The run check is the run feed's "verified" rule
+  without reading the stored code: the HMAC still binds the code hash with the
+  member, exercise, room and results, and an attempt does not depend on the
+  code.
+- Reads are bounded: one `db.batch(…,'read')` (one read transaction) with
+  two statements per member, plus, for a pair, the pair authorization repeated
+  first and the partners' newest 100 runs in the current room. A partner
+  removed after the preflight check is dropped from that response, and a
+  viewer who lost access gets the 404.
+  Runs come from a per-exercise `ORDER BY id DESC LIMIT 3` lookup on the
+  `(user_id,question_slug)` index (covering, flat as history grows; about
+  0.4 ms at 8,000 runs locally), never `code`. Completed sessions are capped at
+  200 and joined to snapshots and code documents by key with `CROSS JOIN`, so
+  the plan does not depend on `ANALYZE` statistics.
+- Solo requests read only the requesting member's rows. A `room_id` is
+  authorized with `api/_pair-access.js` (including the active primary-circle
+  membership join while `CIRCLE_MEMBERSHIP_ENABLED` is on), and only while the
+  pair is in the newest non-demo pairing week (the current pair; an admin demo
+  shuffle does not retire real pairs). Partners are the other
+  signed-in participants of that pair who are still active members of the same
+  circle. Another pair's room, an older pair, a removed member and a member of
+  another circle all get the same 404. The client then falls back to solo.
+- Privacy: outside the current room, the partner's history is reduced on the
+  server to the set of exercises they attempted before the rule runs, so
+  those attempt times cannot change any pick, `difficulty_step` or reason (a
+  test moves a partner's runs outside the room and requires a byte-identical
+  response). Partners' verified runs in the current room also count toward
+  recency: both partners already see those runs, with runner and time, in the
+  room's run feed, so nothing new is revealed and partners working together
+  step up together. History leaves the server only as `by_partner` booleans.
+  No scores, code, dates, run ids, user ids or names are returned. The pair
+  card says: "Skips exercises either of you has attempted. Your partner sees
+  only which exercises you have attempted, never scores, code or dates."
+- Selection rule (deterministic, unit-tested): candidates are active exercises
+  nobody in the request has attempted and the member has not hidden. A topic's
+  coverage is how many attempted exercises carry it (tags; the pattern when an
+  exercise has no tags), and a candidate's coverage is that of its
+  least-covered topic; partner attempts count here and for exclusion. The
+  target difficulty is one step above the hardest of the three most recent
+  attempts among the member's own history and the partners' runs in this
+  room (Easy with no history, capped at Hard). Order:
+  lowest coverage, then closest to the target, then the easier of two equally
+  distant levels, then slug. After each pick its topics count once more, so
+  the next pick prefers another topic. At most three. Each suggestion carries
+  a plain reason, for example "Neither of you has practised graphs yet. One
+  step up from your recent Easy exercises."
+- UI (room Problem panel, WP-K): a "Suggested for you in this pair" /
+  "Suggested for you" card (each partner's own history outside the room can
+  still make the two lists differ, so the heading does not promise one shared
+  list) under the exercise picker with a Hide button per suggestion and
+  "Show n hidden exercises"; an "Attempted by you" / "Attempted by your
+  partner" chip on browse cards (`data-testid="catalog-attempted"`) and the
+  same words appended to the picker option. Choosing a suggestion goes through
+  `#questionSelect`, clearing filters that hide it. Existing ids and test ids
+  are unchanged. Logic is in `assets/exercise-suggestions.js` and
+  `assets/catalogue-view.js`.
+- Hidden exercises are stored in the browser (`localStorage`
+  `randori-hidden-suggestions:<user id>`, at most 50, oldest dropped first)
+  and sent with each request so the server can skip them. Slugs that can never
+  be suggested again (attempted by the member, or no longer in the catalogue)
+  are pruned from storage after each response; partner-attempted slugs stay,
+  since they become suggestable again in solo practice.
+
+**Trade-off of the client-side hide list.** It needs no schema change and the
+server never stores it, but it is per browser: it does not follow the member
+to another device, is lost when site data is cleared, and anyone with access
+to that browser profile can read which exercises were hidden. The server
+treats it as an untrusted, bounded filter on the member's own suggestions
+only.
+
+**Deferred.**
+- A server-side hide list (a per-member preference table needs a managed
+  migration and a protected production apply before merge is safe).
+- A setting to stop sharing "attempted" status with a partner (the issue's
+  privacy note). The server must read the partner's choice when the viewer
+  asks, so it also needs stored per-member state and a migration. Until then
+  sharing is per deployment: the owner enables or disables the whole feature.
+- The suggestion card on Home before a session (the room card covers pair and
+  solo practice).
+
+**Alternatives.** A suggestions table refreshed by a cron (a migration and
+stale data for a cheap, bounded read). Ranking by tags and pattern together
+(each pattern is nearly unique, so every candidate would tie at zero
+coverage). Returning the partner's attempt dates to explain recency (leaks
+more than "attempted by your partner").
+
+**Rollout and recovery.** Merge with the flag unset; nothing changes. The
+owner sets `EXERCISE_SUGGESTIONS_ENABLED=true` in Vercel Production and
+redeploys. To recover, unset it and redeploy; nothing is stored server-side.
+
 ## ID-78: Show owners aggregate circle health from existing tables behind a flag
 
 Status: implemented behind `CIRCLE_HEALTH_ENABLED` (default off); no

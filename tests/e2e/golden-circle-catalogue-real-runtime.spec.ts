@@ -105,6 +105,11 @@ test('solo practice browses, filters and searches the catalogue, opens an exerci
     const options=page.locator('#questionSelect option');
     await expect.poll(()=>options.count()).toBeGreaterThan(5);
     const total=await options.count();
+    // EXERCISE_SUGGESTIONS_ENABLED is unset here: no suggestion card, no
+    // attempted markers, and the picker labels are unchanged (issue #296).
+    await expect(page.getByTestId('exercise-suggestions')).toBeHidden();
+    await expect(page.locator('#questionSelect option[value="focus-block-rollup"]')).toHaveText('Focus Block Roll-up · v1');
+    expect(await page.evaluate(()=>typeof (window as any)._randori_exercise_suggestions)).toBe('undefined');
 
     // Filter by difficulty and type, then search by free text.
     await page.getByTestId('catalog-difficulty').selectOption('Easy');
