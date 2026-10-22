@@ -728,7 +728,7 @@ back.
 gh pr view 344 --json mergeStateStatus -q .mergeStateStatus     # CLEAN (up to date with main)
 gh pr checks 344                                                # every check passes
 curl -s -o /dev/null -w '%{http_code}\n' https://randori-circle-self.vercel.app/api/health/ready   # 200
-gh pr list --state open --json number,autoMergeRequest \
+gh pr list --state open -L 200 --json number,autoMergeRequest \
   -q '.[] | select(.autoMergeRequest != null) | .number'        # prints nothing: no auto-merge armed
 ```
 
@@ -751,15 +751,23 @@ starts, so it would pick up the new `APP_URL` without the redirects.
    behind, a check is re-running, a conflict), set Vercel `APP_URL` back to
    `https://randori-circle-self.vercel.app` before anything else deploys, and
    start again from the preflight.
-4. **Confirm the deploy.** Wait for the Production deployment to be Ready, then
-   check that it is the merge commit:
+4. **Confirm the deploy.** The deployments API matches `environment`
+   case-insensitively and Vercel creates the record when the build starts, so
+   select Vercel's own Production record for the merge commit and require a
+   `success` status on it:
 
    ```bash
-   gh pr view 344 --json mergeCommit -q .mergeCommit.oid
-   gh api 'repos/festus14/randori-circle/deployments?environment=Production&per_page=1' -q '.[0].sha'
+   SHA=$(gh pr view 344 --json mergeCommit -q .mergeCommit.oid)
+   ID=$(gh api "repos/festus14/randori-circle/deployments?sha=$SHA&per_page=100" \
+     -q '[.[] | select(.environment=="Production" and .creator.login=="vercel[bot]")][0].id')
+   gh api "repos/festus14/randori-circle/deployments/$ID/statuses" -q '.[0].state'   # success
    ```
 
-   The two SHAs must match before you verify anything.
+   An empty `ID`, or a latest state of `pending` or `in_progress`, means the
+   build has not finished: wait and run it again. Do not verify until it says
+   `success`. Even then this only shows that Vercel built the merge commit for
+   Production. The checks in step 6 are the real confirmation that the domains
+   serve it.
 5. **cron-job.org**: change the job URL to
    `https://randoricircle.com/api/cron/outbox`
    ([OUTBOX_EXTERNAL_SCHEDULER.md](OUTBOX_EXTERNAL_SCHEDULER.md)), then use
@@ -833,17 +841,22 @@ follows the canonical redirect for page paths and checks the page it lands on.
 - **Sentry.** If the Sentry project limits Allowed Domains, add
   `randoricircle.com`. Browser events now come only from that origin.
 - **A deploy inside the switch window.** If a Production build without the
-  redirects starts after Vercel has the new `APP_URL`, the smoke check fails
-  its www and old-alias checks. Members on the old alias then have no Google
-  sign-in. Rolling back to a deployment from before the switch is different:
-  that deployment has the old `APP_URL` baked in and serves pages on the old
-  alias, so the smoke check stays green.
+  redirects starts after Vercel has the new `APP_URL`, it runs its own, older
+  smoke script, whose base URL is still the old alias. That script fails on
+  `auth capabilities`: `googleOAuth` is now false on the old alias. Members on
+  the old alias then have no Google sign-in. Rolling back to a deployment from
+  before the switch is different: that deployment has the old `APP_URL` baked
+  in and serves pages on the old alias, so the smoke check stays green.
 
 ### Rollback
 
 1. **Instant Rollback.** In Vercel → Deployments, roll back to the last
    Production deployment before #344. It has the old `APP_URL` baked in and no
-   redirects, so production is consistent again at once.
+   redirects, so production is consistent again at once. On the Hobby plan,
+   Instant Rollback may only go back to the immediately previous Production
+   deployment (verify this in the dashboard before relying on it). If other
+   merges have landed since #344, that target would not be the pre-#344
+   deployment. In that case, freeze merges and go straight to steps 2 to 4.
 2. **Environment.** Set Vercel Production `APP_URL` back to
    `https://randori-circle-self.vercel.app`, and the GitHub `production`
    variable `APP_URL` likewise.
