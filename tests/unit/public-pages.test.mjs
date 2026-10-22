@@ -171,6 +171,9 @@ test('the privacy policy states the retention gaps and providers the code really
     /GitHub hosts our code and public issue tracker and runs our scheduled maintenance jobs/u,
     /you are signed out only if it was your last active circle/u,
     /who is paired with whom each week/u,
+    // Circle health (ID-78): aggregate counts only, and the all-or-none caveat.
+    /Counts that could point to a single pair are hidden/u,
+    /a count of all pairs or none does show what every pair did/u,
     /They can’t delete accounts themselves, but can remove you from the circle and pass your request on\./u,
   ]) {
     assert.match(text, phrase);
