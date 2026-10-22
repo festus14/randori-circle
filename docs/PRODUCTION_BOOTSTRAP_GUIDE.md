@@ -537,7 +537,8 @@ deployments, which link to Actions runs, are ignored) the
 `production-smoke` workflow (also daily and on demand) runs
 `npm run smoke:production`: anonymous, read-only GETs that
 check client routes (`/invite`, `/verify`, `/reset-password`, `/join/...`, an
-unknown path) serve the app shell, `/index.html` redirects, health probes,
+unknown path) serve the app shell, `/privacy` and `/terms` serve their own
+static pages (ID-79), `/index.html` redirects, health probes,
 `/api/auth/capabilities`, a static asset, and security headers. It is not a
 required check. Run it locally with `npm run smoke:production` (behind a proxy
 add `NODE_USE_ENV_PROXY=1`). After intentionally changing an auth flag, either

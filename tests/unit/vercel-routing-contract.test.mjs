@@ -3,7 +3,8 @@ import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { navigationPath } from '../../scripts/local-server.mjs';
-import { APP_ROUTES } from '../../scripts/production-smoke.mjs';
+import { APP_ROUTES, PUBLIC_PAGE_ROUTES } from '../../scripts/production-smoke.mjs';
+import { PUBLIC_PAGES, PUBLIC_PAGE_FILES, publicPageFile } from '../../scripts/public-pages.mjs';
 import { isStaticAppRoute } from '../support/static-server.mjs';
 
 // Local dev and e2e servers special-case client routes, so they cannot see a
@@ -14,7 +15,7 @@ import { isStaticAppRoute } from '../support/static-server.mjs';
 
 const vercel = JSON.parse(readFileSync('vercel.json', 'utf8'));
 const deployedFiles = new Set([
-  'index.html',
+  ...readdirSync('.').filter(file => file.endsWith('.html')),
   ...readdirSync('assets').map(file => `assets/${file}`),
 ]);
 
@@ -153,4 +154,38 @@ test('the production smoke check covers every client route', () => {
   }
   assert.ok(APP_ROUTES.some(pathname => !navigationPath(pathname) && servesShell(pathname)),
     'production smoke must also check an unknown path that relies on the fallback');
+});
+
+test('the public privacy and terms pages are served from their own files, never the app shell (ID-79)', () => {
+  assert.deepEqual(Object.keys(PUBLIC_PAGES), ['/privacy', '/terms']);
+  for (const [pathname, file] of Object.entries(PUBLIC_PAGES)) {
+    assert.ok(deployedFiles.has(file), `${file} must be a deployed root file`);
+    assert.deepEqual(resolveVercelPath(pathname), { kind: 'file', file },
+      `${pathname} must be served from ${file} before the SPA fallback`);
+    // cleanUrls redirects the .html spelling to the clean URL instead of serving it twice.
+    assert.deepEqual(resolveVercelPath(`/${file}`), { kind: 'redirect' });
+    assert.equal(publicPageFile(pathname), file);
+    // Neither local server may treat a public page as an app route.
+    assert.equal(navigationPath(pathname), false);
+    assert.equal(isStaticAppRoute(pathname), false);
+  }
+  assert.deepEqual(PUBLIC_PAGE_FILES, ['privacy.html', 'terms.html']);
+});
+
+test('without the public page files the routing model would fall back to the app shell', () => {
+  const withoutPages = new Set([...deployedFiles].filter(file => !PUBLIC_PAGE_FILES.includes(file)));
+  for (const pathname of Object.keys(PUBLIC_PAGES)) {
+    assert.deepEqual(resolveVercelPath(pathname, vercel, withoutPages), { kind: 'file', file: 'index.html' });
+  }
+});
+
+test('the production smoke check covers every public page', () => {
+  assert.deepEqual([...PUBLIC_PAGE_ROUTES], Object.keys(PUBLIC_PAGES));
+});
+
+test('public page lookups accept only the exact clean paths', () => {
+  for (const pathname of ['/privacy.html', '/privacy/', '/Privacy', '/terms/x', '/constructor', '/__proto__',
+    '/toString', '', null, undefined, 42]) {
+    assert.equal(publicPageFile(pathname), null, String(pathname));
+  }
 });

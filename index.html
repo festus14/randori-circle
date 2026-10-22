@@ -185,10 +185,16 @@ try{
   // everywhere and applies its own production send policy.
   window.sentryOnLoad=function(){
     try{
+      // ID-79: errors only. These override the loader's dashboard defaults
+      // (tracing, session replay, logs), which the Privacy Policy says are off.
       window.Sentry.init({
         environment:environment,
         enabled:enabled,
         sendDefaultPii:false,
+        tracesSampleRate:0,
+        replaysSessionSampleRate:0,
+        replaysOnErrorSampleRate:0,
+        enableLogs:false,
         beforeSend:gate,
         beforeSendTransaction:gate
       });
@@ -535,6 +541,11 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .account-menu-item .rc-icon{order:-1; color:var(--ink-3)}
 .account-menu-item--warning,.account-menu-item--warning .rc-icon{color:var(--warn)}
 .account-menu-item:hover,.account-menu-item:focus-visible{background:var(--bg-3)}
+/* Privacy Policy and Terms links (ID-79): quieter than the account actions above them. */
+.account-menu-sep{height:1px; margin:var(--space-1) 0; background:var(--border)}
+a.account-menu-item{text-decoration:none}
+a.account-menu-item--legal,a.account-menu-item--legal:hover{color:var(--ink-2); font-weight:var(--weight-body)}
+a.account-menu-item--legal{padding-left:calc(var(--space-3) * 2 + 20px)} /* text lines up with the icon rows */
 .shell-banner{margin:var(--space-3) var(--space-5) 0; align-items:center}
 .shell-banner[hidden]{display:none}
 .shell-banner .rc-icon{color:var(--warn)}
@@ -1368,7 +1379,7 @@ a.btn{text-decoration:none}
 #requestInviteDone:focus,#requestInviteFormError:focus{outline:3px solid var(--color-focus); outline-offset:2px}
 .landing-footer{display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:var(--space-3); padding-top:var(--space-6); border-top:1px solid var(--border); color:var(--ink-3); font-size:var(--text-sm)}
 .landing-footer p{margin:0}
-.landing-footer-links{display:flex; gap:var(--space-4); align-items:center}
+.landing-footer-links{display:flex; flex-wrap:wrap; gap:var(--space-2) var(--space-4); align-items:center}
 .recovery{max-width:var(--reading-max); padding-top:var(--space-10)}
 .recovery-body{display:grid; gap:var(--space-4)}
 .recovery-lead,.recovery-status{margin:0; color:var(--ink-2); font-size:var(--text-md); line-height:var(--leading-md)}
@@ -1965,6 +1976,9 @@ a.btn{text-decoration:none}
           <button id="meSetupGuide" role="menuitem" class="account-menu-item" tabindex="-1">Setup guide<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-check"/></svg></button>
           <button id="meSignOut" role="menuitem" class="account-menu-item" tabindex="-1">Sign out<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-signout"/></svg></button>
           <button id="meSignOutAll" role="menuitem" class="account-menu-item account-menu-item--warning" tabindex="-1">Sign out everywhere<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-signout"/></svg></button>
+          <div role="separator" class="account-menu-sep"></div>
+          <a id="mePrivacy" role="menuitem" class="account-menu-item account-menu-item--legal" tabindex="-1" href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>
+          <a id="meTerms" role="menuitem" class="account-menu-item account-menu-item--legal" tabindex="-1" href="/terms" target="_blank" rel="noopener">Terms of Service</a>
         </div>
         <button id="authBtn" class="btn sm" title="Sign in / up">Sign in</button>
         <button id="signOutBtn" class="pill" style="display:none" title="Sign out">Sign out</button>
@@ -2044,8 +2058,9 @@ a.btn{text-decoration:none}
           </ul>
           <details id="landingPrivacy" class="landing-privacy">
             <summary>Privacy note</summary>
-            <p>Randori Circle is a private practice space run by its owners. Members see the names of the people in their circle. Your editor, whiteboard and chat in a pairing room are shared only with your partner for that week.</p>
+            <p>Randori Circle is a private practice space run by Festus Omole; circle owners decide who joins. Members see the names and profile details of the people in their circle and who is paired with whom each week, but not their email addresses. Your editor, whiteboard and chat in a pairing room are shared only with your partner for that week.</p>
             <p>If you request an invite, the circle owners see your name, email and note so they can decide. A request that isn’t answered expires after 30 days. Once an owner approves or declines it, your name, email and note are removed from the request. If you’re approved, you get a normal invitation email.</p>
+            <p>Read the full <a href="/privacy">Privacy Policy</a> and <a href="/terms">Terms of Service</a>.</p>
           </details>
         </section>
 
@@ -2088,7 +2103,7 @@ a.btn{text-decoration:none}
 
         <div class="landing-footer">
           <p>© Randori Circle · a private mock-interview circle</p>
-          <p class="landing-footer-links"><a href="#landingPrivacy">Privacy</a><button id="landingThemeToggle" class="link-btn" type="button">Switch theme</button></p>
+          <p class="landing-footer-links"><a id="landingPrivacyPolicyLink" href="/privacy" data-testid="landing-privacy-policy-link">Privacy Policy</a><a id="landingTermsLink" href="/terms" data-testid="landing-terms-link">Terms of Service</a><button id="landingThemeToggle" class="link-btn" type="button">Switch theme</button></p>
         </div>
       </div>
     </section>
@@ -2889,6 +2904,7 @@ a.btn{text-decoration:none}
           </div>
         </div>
       </div>
+      <p id="authLegal" class="small muted auth-legal" hidden>By signing up, you agree to the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>. Our <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a> explains how we use your information.</p>
       <div class="auth-dialog-actions">
         <button id="authSignup" class="btn lg auth-submit" type="submit" hidden>Sign up</button>
         <button id="authSignin" class="btn lg auth-submit" type="submit" hidden>Sign in</button>
@@ -4440,6 +4456,9 @@ async function refreshMe(){
     if(activationChange) activationChange.disabled=authBusy;
     if(divider) divider.hidden=pending||!authCapabilitiesLoaded||!googleEnabled||!passwordEnabled;
     if(nameField) nameField.hidden=authMode!=='signup'||!passwordEnabled;
+    // ID-79: sign-up (password or Google) links the Terms and Privacy Policy.
+    const legal=document.getElementById('authLegal');
+    if(legal) legal.hidden=authMode!=='signup'||pending;
     if(name) name.required=authMode==='signup'&&passwordEnabled;
     if(passwordField) passwordField.hidden=authMode==='reset';
     if(passwordHint) passwordHint.hidden=authMode!=='signup';
