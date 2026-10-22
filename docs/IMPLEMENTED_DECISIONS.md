@@ -3230,6 +3230,71 @@ signed-in member).
   which nothing called; it is removed. Sentry events are still tagged with
   the logger's last event.
 
+## ID-73: Admin Diagnostics in the Circle view, read-only and behind a flag
+
+Status: implemented behind `ADMIN_DIAGNOSTICS_ENABLED` (default off); no
+migration. Issue #310 (post-MVP roadmap #312). The visual design is
+provisional (`needs-design`).
+
+**Context.** Operational health was spread across GitHub Actions runs (outbox
+and backup watchdogs), Sentry, `/api/health/ready` and the admin logs widget on
+Home. The maintainer had to check several places to answer "is email going out,
+did the backup drill pass, is Run working?".
+
+**Decision.**
+- `GET /api/admin/diagnostics` (rewritten to `/api/ops?endpoint=admin-diagnostics`,
+  no new function) returns one aggregate snapshot,
+  `randori.admin-diagnostics.v1`, with `Cache-Control: no-store`. While the flag
+  is off it returns the same `404` as an unknown ops endpoint, with no session
+  or database access, and `/api/auth/capabilities` does not advertise
+  `adminDiagnostics`.
+- Access: only a global administrator — a live session on an account with
+  `is_admin=1` and `is_demo=0` and, when circle membership is enforced, an
+  active membership in a non-archived circle. Accounts listed in `ADMIN_EMAILS`
+  qualify once they are `is_admin=1`, which sign-in and `/api/auth/me` set on
+  their next call. The circle owner role alone grants nothing. `401` without a
+  session, `403` otherwise. `/api/auth/me` now also returns `is_demo`, so the
+  browser hides the view (and skips loading it) for demo admins too.
+- Every read is a `SELECT`. Cards: **Outbox delivery** (`readOutboxDeliveryHealth`
+  and `readOutboxMetrics` plus one per-type due/lease/dead-letter aggregate,
+  judged with the watchdog's 15-minute threshold); **Code execution** (the
+  configured provider and a bounded reason, 24-hour runner outcomes from
+  `app_logs`, and a deferred seam for the #249 smoke check); **Readiness and
+  migrations** (the `/api/health/ready` probe plus a ledger summary: state,
+  versions and the newest names, no checksums); **Recent errors** (24-hour
+  `error`/`warn` counts by source and event category, including
+  `source='client'` rows). Event names that do not look like code identifiers
+  become `other`, so a browser-posted log row cannot carry text into the view.
+- Each card carries `evidence` (`at`, `ageMs`, `maxAgeMs`, `stale`). It is
+  stale when its newest evidence is missing or older than its cadence: the last
+  server-written `outbox_invocation` row (15 minutes; rows with a user id are
+  ignored because browsers can post log rows), the last runner outcome
+  (26 hours), the newest log row (1 hour), or the live read itself (5 minutes,
+  the refresh cadence). The browser adds the time since it fetched the
+  snapshot, so cards go stale while the page stays open.
+- **Watchdogs are deferred.** The outbox and backup watchdogs keep their
+  results only as GitHub Actions runs and artifacts. Reading them would need a
+  GitHub token in the app, which widens secret exposure, so both cards are
+  `deferred` with their cadence and point to the live Outbox and Readiness
+  cards instead.
+- Dead letters: the newest 25 (numeric id, type, version, stable error code,
+  bounded provider reason, attempts, replays, age). Replay goes through the
+  existing audited `POST /api/admin/outbox/replay` with one of its reason codes,
+  after a confirmation dialog. No emails, tokens, payloads, idempotency keys,
+  code, URLs or log messages are returned.
+- UI: a `Diagnostics` disclosure under Circle (spec section 4), shown and lazily
+  loaded only for global admins while the capability is advertised. The admin
+  logs widget and demo controls stay where they are (their placement is pinned
+  by existing tests) and are linked from the view.
+
+**Residual risk.** Log `source` is recorded as posted, so a member could post a
+row labelled `server`; counts are categories, never content. Watchdog results
+need an app-readable evidence store before those cards can go live.
+
+**Rollout and recovery.** Merge with the flag unset; nothing changes and no
+extra script is downloaded. The owner sets `ADMIN_DIAGNOSTICS_ENABLED=true` in
+Vercel Production and redeploys. To recover, unset it and redeploy.
+
 ## ID-75: Give the backup watchdog an eight-hour grace for late GitHub schedules
 
 Status: implemented as an operations change. No feature flag, migration,
