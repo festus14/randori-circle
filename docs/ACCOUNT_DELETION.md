@@ -62,7 +62,12 @@ leaves an active owner.
   becomes `deleted-<id>@account-deleted.invalid` (reserved TLD, never routable,
   unique), the password hash a non-bcrypt marker, the name "Deleted member", and
   every profile column is cleared. `is_demo` stays 0 so demo resets never touch
-  it.
+  it. Its provenance stays exactly as it was, whichever way the member joined:
+  the `membership.backfilled` audit, or the used, unrevoked invitation with its
+  `invitation.accepted` (Google or local sign-up) or `activation.verified`
+  (password activation, ID-84) audit and used activation. Only the email
+  fingerprints and the activation's personal columns are scrubbed, so
+  `/api/health/ready` and pairing readiness stay green (tested for all three).
 - Every live session revoked (`logout_all`), recent-auth proofs and per-session
   circle selections deleted, the Google identity link and its email
   observation deleted, password-reset rows deleted.

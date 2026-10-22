@@ -32,6 +32,8 @@ import {
 } from '../../api/_account-deletion.js';
 import { initializeLocalPrimaryCircleData } from '../../api/_admin-init.js';
 import { issueSession, verifyRequestAuth } from '../../api/_db.js';
+import { inspectDatabaseReadiness } from '../../api/_health.js';
+import { pairingSchemaV6Ready } from '../../api/_pairing-readiness.js';
 import { changeCircleMemberStatus, changeCircleOwnerRole, listCircleMembersForOwner } from '../../api/_member-lifecycle.js';
 import { inspectMembershipRolloutReadiness } from '../../db/membership-readiness.js';
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
@@ -655,4 +657,69 @@ test('a tombstone update that matches nothing aborts instead of committing a par
   };
   await assert.rejects(deleteAccount(racing,{userId:X,sessionHash:xSession.sessionHash,nowSeconds:NOW}),/tombstone failed/);
   assert.equal((await one(db,`SELECT email FROM auth_accounts WHERE id=2`)).email,X_EMAIL);
+});
+
+// Membership readiness (db/membership-readiness.js) blocks /api/health/ready and
+// pairing whenever a non-demo account loses its audited provenance or an audit
+// stops lining up with its invitation, activation or account. The tombstone
+// keeps every provenance row intact for each way a member can have joined.
+test('health and pairing readiness stay green after deleting members who joined by backfill, Google invitation and password activation',async()=>{
+  const {db}=await database();
+  await db.batch([
+    `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin,is_demo) VALUES
+      (1,'owner@example.test','$2a$10$owner','Owner','#111111',1,0),
+      (6,'backfilled@example.test','$2a$10$backfilled','Backfilled','#666666',0,0)`,
+  ],'write');
+  await initializeLocalPrimaryCircleData(db,{ownerUserId:1,ownerEmails:['owner@example.test'],
+    randomUuid:()=> '11111111-1111-4111-8111-111111111111'});
+  const google='77777777-aaaa-4777-8777-777777777777';
+  const password='88888888-aaaa-4888-8888-888888888888';
+  const activation='99999999-aaaa-4999-8999-999999999999';
+  await db.batch([
+    // Google sign-up from an invitation (createGoogleAccountFromPreparedInvitation).
+    `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,google_sub)
+      VALUES (7,'google.joiner@example.test','!oauth:opaque','Google Joiner','#777777','google-joiner-sub')`,
+    `INSERT INTO auth_provider_identities (issuer,subject,user_id) VALUES ('https://accounts.google.com','google-joiner-sub',7)`,
+    {sql:`INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by)
+      VALUES (?,?,?,?,1,?,?,?,7)`,args:[google,PRIMARY,HEX('1'),HEX('2'),ISO,FUTURE,ISO]},
+    {sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by) VALUES (?,7,'member','active',1)`,args:[PRIMARY]},
+    {sql:`INSERT INTO circle_audit_events (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
+      VALUES (?,'invitation.accepted',7,7,?,?,?)`,args:[PRIMARY,google,`invite-accepted:${google}`,ISO]},
+    // Password sign-up through verified email activation (verifyEmailActivation).
+    `INSERT INTO auth_accounts (id,email,password_hash,display_name,color)
+      VALUES (8,'password.joiner@example.test','$2a$10$passwordjoiner','Password Joiner','#888888')`,
+    {sql:`INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by)
+      VALUES (?,?,?,?,1,?,?,?,8)`,args:[password,PRIMARY,HEX('3'),HEX('4'),ISO,FUTURE,ISO]},
+    {sql:`INSERT INTO auth_email_activations (id,invitation_id,circle_id,email,email_hash,password_hash,display_name,color,
+        token_hash,created_at,expires_at,last_sent_at,send_count,used_at)
+      VALUES (?,?,?,'password.joiner@example.test',?,'$2a$10$passwordjoinerhash0','Password Joiner','#888888',?,?,?,?,1,?)`,
+    args:[activation,password,PRIMARY,HEX('5'),HEX('6'),NOW-100,NOW+1000,NOW-100,NOW-50]},
+    {sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by) VALUES (?,8,'member','active',1)`,args:[PRIMARY]},
+    {sql:`INSERT INTO circle_audit_events (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
+      VALUES (?,'activation.verified',8,8,?,?,?)`,args:[PRIMARY,password,`activation-verified:${activation}`,ISO]},
+  ],'write');
+  const ready=async label=>{
+    assert.equal(await inspectDatabaseReadiness(db,{membershipRequired:true}),true,`health readiness ${label}`);
+    assert.equal(await inspectDatabaseReadiness(db),true,`rollout readiness ${label}`);
+    assert.equal(await pairingSchemaV6Ready(db,{requireClosedMembership:true}),true,`pairing readiness ${label}`);
+    const membership=await inspectMembershipRolloutReadiness(db);
+    assert.deepEqual(membership.blockers,[],label);
+  };
+  await ready('before any deletion');
+  for(const [id,email,label] of [[6,'backfilled@example.test','backfill'],[7,'google.joiner@example.test','Google invitation'],
+    [8,'password.joiner@example.test','password activation']]){
+    const proof=await session(db,id,email);
+    assert.equal((await deleteAccount(db,{userId:id,sessionHash:proof.sessionHash,nowSeconds:NOW})).status,'deleted',label);
+    await ready(`after deleting the ${label} member`);
+  }
+  // The provenance rows are untouched; only the fingerprints changed.
+  const provenance=(await db.execute(`SELECT invitation.used_by,invitation.used_at IS NOT NULL AS used,
+      invitation.revoked_at IS NULL AS live,event.event_type,event.dedupe_key
+    FROM circle_invitations invitation JOIN circle_audit_events event ON event.invitation_id=invitation.id
+    WHERE invitation.used_by IN (7,8) ORDER BY invitation.used_by`)).rows.map(row=>({...row}));
+  assert.deepEqual(provenance,[
+    {used_by:7,used:1,live:1,event_type:'invitation.accepted',dedupe_key:`invite-accepted:${google}`},
+    {used_by:8,used:1,live:1,event_type:'activation.verified',dedupe_key:`activation-verified:${activation}`},
+  ]);
+  assert.equal(await count(db,`SELECT COUNT(*) AS count FROM circle_audit_events WHERE event_type='membership.backfilled' AND subject_user_id=6`),1);
 });
