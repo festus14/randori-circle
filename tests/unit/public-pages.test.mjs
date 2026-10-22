@@ -188,6 +188,23 @@ test('the privacy policy states the retention gaps and providers the code really
   assert.doesNotMatch(text, /no third-party trackers|stores secret links only as hashes|including the recipient’s address, while the account exists/u);
 });
 
+test('the privacy policy describes error-log addresses and user agents as ID-82 stores them', () => {
+  const text = visibleText(pages['/privacy']);
+  for (const phrase of [
+    /the name and main version of your browser and operating system \(for example “Chrome 131 on Windows 10\/11”\)/u,
+    /We don’t store your IP address or your browser’s full user agent\./u,
+    /Entries linked to your account carry no form of your IP address at all\./u,
+    /keep a pseudonymous code made from the IP address with a secret key and the date/u,
+    /because we hold the key we could still work out which address it came from/u,
+    /secret links, IP addresses and browser details removed before they are stored/u,
+    /for entries not linked to an account, the daily pseudonymous address code/u,
+    /Error logs : 30 days\. Entries from before we stopped storing IP addresses and full user agents are deleted on the same 30-day schedule\./u,
+  ]) {
+    assert.match(text, phrase);
+  }
+  assert.doesNotMatch(text, /your browser’s user agent and your IP address|including IP addresses and browser details|Error logs , including IP addresses/u);
+});
+
 test('the terms cover the required topics in plain language', () => {
   const text = visibleText(pages['/terms']);
   for (const phrase of [/free community tool for practising coding interviews/u, /“as is”/u, /without any warranty/u,

@@ -4256,6 +4256,13 @@ an event, and whether it stores it depends on the loader's SDK version and the
 project's "Prevent Storing of IP Addresses" setting. That setting is outside
 this repository and is left to the owner.
 
+**Privacy Policy.** `privacy.html` (ID-79) now says the error logs keep the
+browser and OS family, no address on entries linked to an account, and a
+daily pseudonymous code (reversible by us, since we hold the key) on the few
+entries without one; admins see those reduced values; and older entries age
+out on the same 30-day schedule. `tests/unit/public-pages.test.mjs` pins the
+wording.
+
 **Rollout and recovery.** Merging changes only what new rows hold and what the
 admin API returns; no schema, flag or production setting changes. Reverting
 the commit restores the previous writers; nothing needs to be cleaned up.
