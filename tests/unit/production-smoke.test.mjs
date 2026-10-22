@@ -8,9 +8,12 @@ import {
   resolveExpectedCapabilities,
   runProductionSmoke,
 } from '../../scripts/production-smoke.mjs';
+import { PUBLIC_PAGES } from '../../scripts/public-pages.mjs';
 
 const ORIGIN = 'https://smoke.example.test';
 const shell = readFileSync('index.html', 'utf8');
+const publicPages = Object.fromEntries(Object.entries(PUBLIC_PAGES)
+  .map(([path, file]) => [path, readFileSync(file, 'utf8')]));
 const pageHeaders = Object.fromEntries(
   JSON.parse(readFileSync('vercel.json', 'utf8')).headers
     .find(route => route.source === '/(.*)').headers.map(({ key, value }) => [key.toLowerCase(), value]),
@@ -42,6 +45,7 @@ function fakeProduction(overrides = {}) {
     if (pathname === '/assets/calendar-export.js') {
       return respond(200, { 'content-type': 'application/javascript; charset=utf-8' }, 'export {};');
     }
+    if (publicPages[pathname]) return respond(200, { 'content-type': 'text/html; charset=utf-8' }, publicPages[pathname]);
     return respond(200, { 'content-type': 'text/html; charset=utf-8' }, shell);
   };
   return { fetchImpl, requests };
@@ -53,7 +57,7 @@ test('a healthy deployment passes every check using anonymous GET requests only'
   const { fetchImpl, requests } = fakeProduction();
   const summary = await runProductionSmoke({ baseUrl: ORIGIN, fetchImpl });
   assert.equal(summary.ok, true, JSON.stringify(summary.results.filter(result => !result.ok)));
-  assert.equal(summary.results.length, 11);
+  assert.equal(summary.results.length, 13);
   for (const { url, init } of requests) {
     assert.ok(url.startsWith(`${ORIGIN}/`));
     assert.equal(init.method, 'GET');
@@ -72,6 +76,32 @@ test('the cleanUrls fallback outage fails the client route checks', async () => 
   assert.equal(summary.ok, false);
   assert.deepEqual(summary.results.filter(result => !result.ok).map(result => result.path),
     ['/invite', '/verify', '/reset-password', '/join/week_1_pair_1', '/smoke-check/unknown-route']);
+});
+
+test('the privacy and terms pages must be their own documents, not the shell or a 404', async () => {
+  const { fetchImpl } = fakeProduction({
+    '/privacy': () => respond(200, { 'content-type': 'text/html; charset=utf-8' }, shell),
+    '/terms': notFound,
+  });
+  const summary = await runProductionSmoke({ baseUrl: ORIGIN, fetchImpl });
+  const failed = Object.fromEntries(summary.results.filter(result => !result.ok)
+    .map(result => [result.path, result.problems]));
+  assert.deepEqual(failed, {
+    '/privacy': ['missing public page marker data-public-page="privacy"',
+      'served the app shell instead of the public page'],
+    '/terms': ['status 404', 'not text/html', 'missing public page marker data-public-page="terms"'],
+  });
+  assert.equal(summary.results.find(result => result.path === '/privacy').name, 'public page /privacy');
+});
+
+test('a public page without the page security headers fails', async () => {
+  const { fetchImpl } = fakeProduction({
+    '/terms': () => new Response(publicPages['/terms'], { status: 200, headers: { 'content-type': 'text/html' } }),
+  });
+  const summary = await runProductionSmoke({ baseUrl: ORIGIN, fetchImpl });
+  const problems = summary.results.find(result => result.path === '/terms').problems;
+  assert.ok(problems.includes('unsafe or missing content-security-policy'));
+  assert.ok(problems.includes('unsafe or missing x-frame-options'));
 });
 
 test('missing security headers, a served /index.html, and HTML in place of assets fail', async () => {

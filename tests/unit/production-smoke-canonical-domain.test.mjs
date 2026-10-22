@@ -16,8 +16,12 @@ import {
   resolveExpectedCapabilities,
   runProductionSmoke,
 } from '../../scripts/production-smoke.mjs';
+import { PUBLIC_PAGES } from '../../scripts/public-pages.mjs';
 
 const shell = readFileSync('index.html', 'utf8');
+// The static privacy and terms pages (ID-79) are their own documents.
+const publicPages = Object.fromEntries(Object.entries(PUBLIC_PAGES)
+  .map(([path, file]) => [path, readFileSync(file, 'utf8')]));
 const pageHeaders = Object.fromEntries(
   JSON.parse(readFileSync('vercel.json', 'utf8')).headers
     .find(route => route.source === '/(.*)').headers.map(({ key, value }) => [key.toLowerCase(), value]),
@@ -47,6 +51,7 @@ function fakeHosts({ appUrl = CANONICAL_ORIGIN, redirects = true, overrides = {}
         capabilities: { ...DEFAULT_EXPECTED_CAPABILITIES, googleOAuth: origin === appUrl } });
     }
     if (pathname === STATIC_ASSET) return respond(200, { 'content-type': 'text/javascript' }, 'export {};');
+    if (publicPages[pathname]) return respond(200, { 'content-type': 'text/html' }, publicPages[pathname]);
     return respond(200, { 'content-type': 'text/html' }, shell);
   };
   return { fetchImpl, requests };
@@ -229,12 +234,12 @@ test('the CLI prints notes and skip reasons, and fails only once the old alias r
   assert.ok(lines.includes(`  skip canonical-domain checks: APP_URL still names ${LEGACY_ORIGIN} `
     + `(Google sign-in is advertised there); they run once APP_URL is ${CANONICAL_ORIGIN}`));
   assert.ok(lines.includes(`  ok   ${GUARD} (200)`));
-  assert.equal(lines.at(-1), 'production smoke: OK 12/12 checks passed');
+  assert.equal(lines.at(-1), 'production smoke: OK 14/14 checks passed');
 
   lines.length = 0;
   assert.equal(await main({ argv: [], env: {}, fetchImpl: fakeHosts({ appUrl: LEGACY_ORIGIN }).fetchImpl, ...capture }), 1);
   assert.ok(lines.includes(`  FAIL ${GUARD} (307): ${SWITCH_MISMATCH}`));
-  assert.equal(lines.at(-1), 'production smoke: FAILED 11/12 checks passed');
+  assert.equal(lines.at(-1), 'production smoke: FAILED 13/14 checks passed');
 
   lines.length = 0;
   assert.equal(await main({ argv: ['--base-url', 'https://preview.example.test'], env: {},
@@ -245,5 +250,5 @@ test('the CLI prints notes and skip reasons, and fails only once the old alias r
   assert.equal(await main({ argv: [], env: {}, fetchImpl: fakeHosts({ redirects: false }).fetchImpl, ...capture }), 1);
   assert.ok(lines.includes(`  FAIL www redirect (200): status 200, expected a permanent redirect; `
     + `does not redirect to ${CANONICAL_ORIGIN}${DOMAIN_REDIRECT_PROBE}`));
-  assert.equal(lines.at(-1), 'production smoke: FAILED 12/14 checks passed');
+  assert.equal(lines.at(-1), 'production smoke: FAILED 14/16 checks passed');
 });
