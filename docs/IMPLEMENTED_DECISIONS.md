@@ -3315,6 +3315,134 @@ need an app-readable evidence store before those cards can go live.
 extra script is downloaded. The owner sets `ADMIN_DIAGNOSTICS_ENABLED=true` in
 Vercel Production and redeploys. To recover, unset it and redeploy.
 
+## ID-74: Check the live execution provider after each deploy and daily, within a fixed sandbox budget
+
+Status: implemented. Ops-only: no feature flag, no migration, no new secret.
+Issue #249. This produces the live evidence that #248 and #9 need.
+
+**Context.** End-to-end tests mock the code-execution provider. When the public
+Piston API retired, production Run broke while every check stayed green
+(#248). The existing `npm run smoke:execution` needs a local Vercel OIDC token,
+so it cannot run in CI.
+
+**Decision.**
+- **Endpoint.** New `POST /api/cron/execution-smoke` in `api/ops.js`.
+  - It accepts `CRON_SECRET` only, because it spends sandbox quota.
+    `OUTBOX_DISPATCH_SECRET` is rejected.
+  - It runs one fixed trivial JavaScript program and one fixed trivial Python
+    program through `executeProgram` with the production `EXECUTION_PROVIDER`
+    configuration, and checks the exact output `randori-smoke-42`.
+  - It returns only `{ok, checkedAt, languages:{javascript|python:{status,
+    durationMs}}}`. `status` is one of `ok`, `provider_error`, `timeout`,
+    `misconfigured` or `throttled`. It never returns program output, provider
+    URLs, tokens or error text.
+  - The body must be exactly `{"trigger":"schedule"}` or
+    `{"trigger":"deploy"}`. Anything else gets `400`.
+  - Nothing in the route throws.
+- **Throttle.** A real run is claimed with one
+  `INSERT … SELECT … WHERE NOT EXISTS … RETURNING id` statement into
+  `app_logs`, against the database clock. The claim row records its trigger.
+  - Real runs are at least 30 minutes apart.
+  - Each trigger has its own slot: one `schedule` claim (daily schedule or
+    manual dispatch) per 20 hours, and one `deploy` claim per 24 hours. A
+    burst of deploys cannot use up the scheduled run.
+  - The claim and result rows use the `runner` source. `api/data.js` already
+    rewrites that source to `client` for browser telemetry, so members cannot
+    forge a claim or a cached result. Rows with a `user_id` are ignored.
+  - Inside a window, the route returns `throttled`. `ageSeconds` is the age of
+    the latest claim. `lastStatus`, `durationMs` and `checkedAt` come only from
+    the result row that names that claim's id.
+  - A missing provider configuration needs no I/O. It is reported as
+    `misconfigured` at once, without a claim.
+  - If the database is unavailable, or the cached result cannot be read, the
+    route returns `503` and never executes.
+- **Lost results.** A real run can lose its result if the function is killed
+  (duration or memory limit, platform restart) or the write fails.
+  - The latest claim counts as in flight (`lastStatus: null`, passing) only
+    while it is at most 165 seconds old: the 45-second deadline plus 120
+    seconds.
+  - After that, a claim with no saved result reports
+    `lastStatus: "result_missing"`, which fails the job until the next real
+    run. The same applies to a saved entry that cannot be read.
+  - So an older passing result can never stand in for a run that did not
+    report.
+- **Workflow.** New `execution-smoke` workflow.
+  - Triggers: successful Vercel Production `deployment_status` events, a daily
+    07:29 UTC schedule, and `workflow_dispatch`. No pull-request trigger.
+  - `deployment_status` runs also require `deployment.creator.login ==
+    'vercel[bot]'`. Every job that uses the `production` environment records a
+    lowercase `production` deployment, and GitHub expression comparison
+    ignores case. Without the check, the job's own deployment would trigger it
+    again.
+  - It runs with `contents: read` in the `production` environment and reads
+    only `vars.APP_URL` and `secrets.CRON_SECRET`.
+  - It sends `deploy` for `deployment_status` runs and `schedule` otherwise.
+  - It runs the default-branch `scripts/github-execution-smoke.mjs`. That
+    script fails unless each language is `ok`, or `throttled` with a cached
+    `ok` (or a run in flight). It prints only validated categories, and adds a
+    `::notice` when it passes on a cached result.
+  - `production-smoke` gets the same `vercel[bot]` creator check, so these
+    environment deployments no longer trigger it.
+  - `check:deployability` pins the workflow and assessor digests and allowlists
+    exactly those two references, following the ID-67 precedent.
+
+**Budget.** Each real run creates two sandboxes. The hard ceiling is 70 runs a
+month: 38 scheduled and 32 post-deploy. That is 140 creations and about 4.6
+GB-hours, against the Hobby allowance of 5,000 creations and 420 GB-hours.
+Expected use is one scheduled run a day plus one post-deploy run on deploy
+days.
+
+**Trade-offs.**
+- On a day with several deploys, only the first post-deploy run is real.
+  Later runs report the cached result and its age.
+- A cached failure, or a lost result, keeps the job red until a real run
+  passes. That can take up to a day when the relevant slot is used, but a
+  throttled run can never hide the last failure.
+- GitHub can start a scheduled run hours late. If the next day's run then
+  falls inside the 20-hour slot, it is throttled that day. Post-deploy runs
+  still give a real run on deploy days.
+- A post-deploy run is triggered by `vercel[bot]`'s deployment, so GitHub
+  probably emails no one. Its failure shows as a red check on the `main`
+  commit. The scheduled run is the email path.
+- Vercel deploys by commit SHA. If the `production` environment later gets a
+  "main only" branch policy, the post-deploy trigger may be refused. The daily
+  run is then the backstop.
+
+**Function duration.** `vercel.json` sets no `maxDuration` for `api/ops.js`.
+The project was created in August 2026, after Fluid compute became the
+default, so the expected limit is the Fluid default of 300 seconds. A smoke
+request takes at most about 50 seconds: two languages in parallel under a
+45-second deadline, plus database calls. A shorter effective limit would cut
+runs off before their result is saved. The route would then report
+`result_missing`, so the problem shows as a failing check instead of a false
+pass.
+
+**Not done.** A Resend sender-domain readiness probe. Resend's domain API
+needs a full-access key, and the bootstrap guide provisions a send-only key
+restricted to one domain. Adding a broader production secret only to read
+domain status would widen privilege, and a send-only key cannot read it. A
+Google OAuth configuration probe is already covered by `production-smoke`
+(`/api/auth/capabilities`).
+
+**Alternatives.**
+- A Vercel cron: Hobby allows few crons, and a cron alone cannot follow
+  deploys.
+- Running the smoke from CI with a long-lived Vercel token: a new broad
+  secret.
+- A test-only member account driving `/api/execute`: a credential to manage,
+  and real user data in the path.
+- Only a 30-minute throttle: the worst case is about 2,900 creations a month.
+- One shared budget of two runs a day (the first version of this change):
+  with several deploys a day, deploy runs used both runs and the scheduled
+  run was usually throttled.
+
+**Rollout and recovery.** Merge. Nothing changes for users. The workflow fails
+with `config_missing`, `misconfigured` or `unavailable` until the production
+setup it depends on is complete (bootstrap guide sections 0 and 10.0). To
+pause it, disable the workflow in GitHub Actions. To remove it, revert this
+change. The `app_logs` rows are ordinary log rows and fall under the 30-day
+retention (ID-72).
+
 ## ID-75: Give the backup watchdog an eight-hour grace for late GitHub schedules
 
 Status: implemented as an operations change. No feature flag, migration,

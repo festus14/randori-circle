@@ -8,16 +8,20 @@ const OUTBOX_WATCHDOG_WORKFLOW_PATH='.github/workflows/outbox-dispatch-watchdog.
 const OUTBOX_WATCHDOG_SCRIPT_PATH='scripts/github-outbox-dispatch-watchdog.mjs';
 const PRODUCTION_SMOKE_WORKFLOW_PATH='.github/workflows/production-smoke.yml';
 const PRODUCTION_SMOKE_SCRIPT_PATH='scripts/production-smoke.mjs';
+const EXECUTION_SMOKE_WORKFLOW_PATH='.github/workflows/execution-smoke.yml';
+const EXECUTION_SMOKE_SCRIPT_PATH='scripts/github-execution-smoke.mjs';
 // With `cleanUrls`, Vercel serves index.html at `/` and 308-redirects
 // `/index.html`, so a rewrite to `/index.html` resolves to nothing and every
 // client route (/invite, /verify, /reset-password, /join/...) returns 404.
 const SPA_FALLBACK_DESTINATION='/';
 const OUTBOX_WATCHDOG_WORKFLOW_SHA256='3808af3df03c84a1370b7df74bc6c785d349a20796ccb1cf236f5166103f3651';
 const OUTBOX_WATCHDOG_SCRIPT_SHA256='0c854c7892197b6f353fd32a96b5c7b70a6431e6b9ea86a07d2ad59fe0177b34';
+const EXECUTION_SMOKE_WORKFLOW_SHA256='5164dcbbdd3d65099cde7ebef84af5464156e0753858e5ff8afaec863cd8a7e9';
+const EXECUTION_SMOKE_SCRIPT_SHA256='eacde79646d11355d0ab717b4f633c128b318537b4dc1ea16489a869e9d4d7ef';
 const REQUIRED_ROOT_FILES = [
   'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
   OUTBOX_WATCHDOG_WORKFLOW_PATH, OUTBOX_WATCHDOG_SCRIPT_PATH, PRODUCTION_SMOKE_WORKFLOW_PATH,
-  PRODUCTION_SMOKE_SCRIPT_PATH,
+  PRODUCTION_SMOKE_SCRIPT_PATH, EXECUTION_SMOKE_WORKFLOW_PATH, EXECUTION_SMOKE_SCRIPT_PATH,
 ];
 export const REQUIRED_SECURITY_HEADERS = [
   'content-security-policy',
@@ -246,6 +250,8 @@ function validateProductionSmokeWorkflow(workflow){
       'production smoke must run only for successful deployments'],
     [/github\.event\.deployment\.environment == 'Production'/,
       'production smoke must run only for the Vercel Production environment'],
+    [/github\.event\.deployment\.environment == 'Production' &&\n\s+github\.event\.deployment\.creator\.login == 'vercel\[bot\]'\)/,
+      'production smoke must ignore deployments that GitHub environment jobs create'],
     [/^\s{2}schedule:\s*$/m,'production smoke must define a scheduled trigger'],
     [/^\s{2}workflow_dispatch:\s*$/m,'production smoke must support manual runs'],
     [/^permissions:\n  contents: read\n\n/m,'production smoke permissions must be contents: read only'],
@@ -262,8 +268,57 @@ function validateProductionSmokeWorkflow(workflow){
   return errors;
 }
 
+// Issue #249. The execution smoke spends Vercel Sandbox quota through a
+// CRON_SECRET route, so its only production material is vars.APP_URL and
+// secrets.CRON_SECRET in the production environment, it never runs for pull
+// requests, and deployment_status runs are limited to Vercel's own successful
+// Production deployments (GitHub's environment deployments would otherwise
+// re-trigger it).
+function validateExecutionSmokeWorkflow(workflow){
+  if(typeof workflow!=='string'||!workflow.trim()){
+    return ['execution smoke workflow must be readable'];
+  }
+  const errors=[];
+  const checks=[
+    [/^name:\s*execution-smoke\s*$/m,'execution smoke workflow must have the stable execution-smoke name'],
+    [/^on:\n  deployment_status:\n  schedule:\n    - cron: '29 7 \* \* \*'\n  workflow_dispatch:\n\n/m,
+      'execution smoke triggers must be deployment_status, one daily schedule, and workflow_dispatch only'],
+    [/^permissions:\n  contents: read\n\njobs:/m,'execution smoke permissions must be contents: read only'],
+    [/^    if: >-\n      \(github\.event_name == 'deployment_status' &&\n      github\.event\.deployment_status\.state == 'success' &&\n      github\.event\.deployment\.environment == 'Production' &&\n      github\.event\.deployment\.creator\.login == 'vercel\[bot\]'\) \|\|\n      \(github\.event_name != 'deployment_status' &&\n      github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)\)\n/m,
+      'execution smoke must run only for successful Vercel Production deployments or from the default branch'],
+    [/^\s{4}environment:\s*production\s*$/m,
+      'execution smoke must read its credential through the production environment'],
+    [/^\s{4}timeout-minutes:\s*5\s*$/m,'execution smoke job must be time bounded'],
+    [/^    concurrency:\n      group: execution-smoke\n      cancel-in-progress: false\n/m,
+      'execution smoke runs must be serialized'],
+    [/uses:\s+actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/,
+      'execution smoke checkout must use the reviewed immutable revision'],
+    [/uses:\s+actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/,
+      'execution smoke Node setup must use the reviewed immutable revision'],
+    [/ref:\s*\$\{\{\s*github\.event\.repository\.default_branch\s*\}\}/,
+      'execution smoke must run the default-branch assessor'],
+    [/persist-credentials:\s*false/,'execution smoke checkout must not persist GitHub credentials'],
+    [/      - name: Run the live execution smoke check\n        timeout-minutes: 2\n        env:\n          APP_URL: \$\{\{ vars\.APP_URL \}\}\n          CRON_SECRET: \$\{\{ secrets\.CRON_SECRET \}\}\n          EXECUTION_SMOKE_TIMEOUT_MS: '100000'\n          EXECUTION_SMOKE_TRIGGER: \$\{\{ github\.event_name == 'deployment_status' && 'deploy' \|\| 'schedule' \}\}\n        run: node scripts\/github-execution-smoke\.mjs\n?$/,
+      'execution smoke step must retain its exact fail-closed shape'],
+  ];
+  for(const [pattern,message] of checks){ if(!pattern.test(workflow)) errors.push(message); }
+  // The only production material it may see is APP_URL and CRON_SECRET.
+  const reviewedProductionAccess=workflow
+    .replace(/^ {4}environment: production\n/mu,'')
+    .replace(/^ {10}APP_URL: \$\{\{ vars\.APP_URL \}\}\n {10}CRON_SECRET: \$\{\{ secrets\.CRON_SECRET \}\}\n/mu,'');
+  if(/pull_request(?:_target)?:|:\s*write\b|write-all|environment:|secrets\.|vars\.|APP_URL|CRON_SECRET|TURSO_|RESEND_|VERCEL_|\bcurl\b|\bgh\s+workflow\b|\/dispatches\b|continue-on-error:|^\s{8}if:/mu
+    .test(reviewedProductionAccess)){
+    errors.push('execution smoke must remain read-only, non-mutating, and limited to its reviewed cron credential');
+  }
+  if(/uses:\s+actions\/(?:checkout|setup-node)@v\d+/u.test(workflow)){
+    errors.push('execution smoke actions must be pinned to immutable commits');
+  }
+  return errors;
+}
+
 export function validateDeploymentContract({ vercel, packageJson, files, outboxWorkflow,
-  outboxWatchdogWorkflow, outboxWatchdogScript, productionSmokeWorkflow }) {
+  outboxWatchdogWorkflow, outboxWatchdogScript, productionSmokeWorkflow, executionSmokeWorkflow,
+  executionSmokeScript }) {
   const errors = [];
   const config = record(vercel);
   const manifest = record(packageJson);
@@ -295,6 +350,13 @@ export function validateDeploymentContract({ vercel, packageJson, files, outboxW
   }
   if(sha256(outboxWatchdogScript)!==OUTBOX_WATCHDOG_SCRIPT_SHA256){
     errors.push('outbox watchdog assessor must match its reviewed immutable contract');
+  }
+  errors.push(...validateExecutionSmokeWorkflow(executionSmokeWorkflow));
+  if(sha256(executionSmokeWorkflow)!==EXECUTION_SMOKE_WORKFLOW_SHA256){
+    errors.push('execution smoke workflow must match its reviewed immutable contract');
+  }
+  if(sha256(executionSmokeScript)!==EXECUTION_SMOKE_SCRIPT_SHA256){
+    errors.push('execution smoke assessor must match its reviewed immutable contract');
   }
 
   if (!Array.isArray(config.rewrites) || config.rewrites.length === 0) {
@@ -402,6 +464,8 @@ export function inspectDeploymentContract(rootDirectory = process.cwd()) {
   let outboxWatchdogWorkflow;
   let outboxWatchdogScript;
   let productionSmokeWorkflow;
+  let executionSmokeWorkflow;
+  let executionSmokeScript;
   try {
     vercel = JSON.parse(readFileSync(resolve(root, 'vercel.json'), 'utf8'));
   } catch (error) {
@@ -437,8 +501,21 @@ export function inspectDeploymentContract(rootDirectory = process.cwd()) {
     productionSmokeWorkflow = null;
   }
 
+  try {
+    executionSmokeWorkflow = readFileSync(resolve(root, EXECUTION_SMOKE_WORKFLOW_PATH), 'utf8');
+  } catch {
+    executionSmokeWorkflow = null;
+  }
+
+  try {
+    executionSmokeScript = readFileSync(resolve(root, EXECUTION_SMOKE_SCRIPT_PATH), 'utf8');
+  } catch {
+    executionSmokeScript = null;
+  }
+
   return validateDeploymentContract({ vercel, packageJson, files, outboxWorkflow,
-    outboxWatchdogWorkflow, outboxWatchdogScript, productionSmokeWorkflow });
+    outboxWatchdogWorkflow, outboxWatchdogScript, productionSmokeWorkflow, executionSmokeWorkflow,
+    executionSmokeScript });
 }
 
 function main() {
