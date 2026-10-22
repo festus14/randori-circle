@@ -101,6 +101,10 @@
       "destination": "/api/data?endpoint=circle"
     },
     {
+      "source": "/api/circle/health",
+      "destination": "/api/ops?endpoint=circle-health"
+    },
+    {
       "source": "/api/invitations/prepare",
       "destination": "/api/invitations?endpoint=prepare"
     },
@@ -147,6 +151,10 @@
     {
       "source": "/api/pair-recap",
       "destination": "/api/data?endpoint=pair-recap"
+    },
+    {
+      "source": "/api/exercise-suggestions",
+      "destination": "/api/data?endpoint=exercise-suggestions"
     },
     {
       "source": "/api/session-completion",
