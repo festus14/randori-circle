@@ -717,7 +717,8 @@ function apiRoute(pathname,query){
     ['/api/pairing/run','pairing-run'],
     ['/api/cron/weekly','weekly'],['/api/cron/outbox','outbox'],['/api/cron/outbox-health','outbox-health'],
     ['/api/cron/execution-smoke','execution-smoke'],
-    ['/api/admin/outbox/replay','outbox-replay'],['/api/admin/demo-seed','demo-seed'],
+    ['/api/admin/outbox/replay','outbox-replay'],['/api/admin/diagnostics','admin-diagnostics'],
+    ['/api/admin/demo-seed','demo-seed'],
     ['/api/admin/demo-shuffle','demo-shuffle'],['/api/admin/demo-reset','demo-reset'],
     ['/api/notifications/prefs','notifications-prefs'],
   ]);

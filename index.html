@@ -2375,6 +2375,34 @@ a.btn{text-decoration:none}
           </details>
         </div>
       </div>
+      <!-- Issue #310: global-admin Diagnostics (assets/admin-diagnostics.js). Hidden unless the server advertises adminDiagnostics. Visual design is provisional. -->
+      <details id="adminDiagnostics" data-testid="admin-diagnostics" class="card circle-card circle-diagnostics admin-diagnostics" aria-busy="false" hidden>
+        <summary class="circle-diagnostics-summary">Diagnostics</summary>
+        <div class="card-b circle-card-body">
+          <p class="small muted">Read-only service health for global administrators: counts and categories only, no member data.</p>
+          <div class="row admin-diag-toolbar">
+            <button id="adminDiagnosticsRefresh" data-testid="admin-diagnostics-refresh" class="btn secondary sm" type="button">Refresh</button>
+            <span id="adminDiagnosticsStatus" data-testid="admin-diagnostics-status" class="small muted" role="status" aria-live="polite"></span>
+          </div>
+          <p id="adminDiagnosticsAge" data-testid="admin-diagnostics-age" class="small muted"></p>
+          <div id="adminDiagnosticsCards" data-testid="admin-diagnostics-cards" class="admin-diag-grid"></div>
+          <section class="admin-diag-section" aria-labelledby="adminDeadLettersTitle">
+            <h4 id="adminDeadLettersTitle" class="circle-subtitle" tabindex="-1">Dead letters</h4>
+            <label class="small muted circle-field" for="adminReplayReason">Replay reason
+              <select id="adminReplayReason" data-testid="admin-replay-reason" class="select">
+                <option value="OPERATOR_RETRY" selected>Operator retry</option>
+                <option value="PROVIDER_RECOVERED">Provider recovered</option>
+                <option value="CONFIGURATION_FIXED">Configuration fixed</option>
+              </select>
+            </label>
+            <ul id="adminDeadLetters" data-testid="admin-dead-letters" class="people circle-member-list" aria-label="Dead-lettered outbox events"></ul>
+          </section>
+          <div class="row admin-diag-links">
+            <button id="adminOpenLogs" data-testid="admin-open-logs" class="btn ghost sm" type="button">Open logs (Home)</button>
+            <button id="adminOpenDemo" data-testid="admin-open-demo" class="btn ghost sm" type="button">Open demo tools (Pairing)</button>
+          </div>
+        </div>
+      </details>
     </section>
 
     <!-- PAIRING -->
@@ -4176,6 +4204,7 @@ async function refreshMe(){
       ||(capabilities.secondaryCircleCoordination!==undefined&&typeof capabilities.secondaryCircleCoordination!=='boolean')
       ||(capabilities.secondaryCircleScheduling!==undefined&&typeof capabilities.secondaryCircleScheduling!=='boolean')
       ||(capabilities.inviteRequests!==undefined&&typeof capabilities.inviteRequests!=='boolean')
+      ||(capabilities.adminDiagnostics!==undefined&&typeof capabilities.adminDiagnostics!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
@@ -4191,6 +4220,7 @@ async function refreshMe(){
       secondaryCircleCoordination:capabilities.secondaryCircleCoordination===true,
       secondaryCircleScheduling:capabilities.secondaryCircleScheduling===true,
       inviteRequests:capabilities.inviteRequests===true,
+      adminDiagnostics:capabilities.adminDiagnostics===true,
       registrationMode:mode,
     });
   }
@@ -7149,6 +7179,7 @@ async function refreshMe(){
     if(circleContextErrorLatched&&me) return;
     resetOwnerInvites();
     setLegacyCircleControls(false);
+    window._randori_sync_admin_diagnostics?.();
     const note=document.getElementById('circleAutoNote');
     const roleLabel=document.getElementById('circleRoleLabel');
     if(roleLabel) roleLabel.textContent='private';
@@ -7340,6 +7371,42 @@ async function refreshMe(){
   }
   mountBulkInvite();
   window.addEventListener('randori:bulk-invite-ready',mountBulkInvite);
+  // Admin diagnostics (assets/admin-diagnostics.js, issue #310): loaded and
+  // shown only for global admins while the server advertises the capability,
+  // so nobody else downloads it. The API authorizes every request again;
+  // replay reuses the audited endpoint.
+  // Mirrors the server gate (is_admin=1, not demo) so a demo admin never
+  // downloads the module only to be refused. Other admin UI is unchanged.
+  function adminDiagnosticsAllowed(){ return authCapabilities.adminDiagnostics===true&&!!me&&isAdmin()&&me.is_demo!==true; }
+  function openRelatedDiagnostics(id){
+    const details=document.getElementById(id);
+    if(!details||details.hidden){ toast('That tool is not available right now.'); return; }
+    details.open=true;
+    details.querySelector('summary')?.focus();
+  }
+  function mountAdminDiagnostics(){
+    if(window._randori_admin_diagnostics||!window.RandoriAdminDiagnostics) return;
+    window._randori_admin_diagnostics=window.RandoriAdminDiagnostics.mountAdminDiagnostics({doc:document,host:{
+      enabled:adminDiagnosticsAllowed,
+      load:()=>api('/api/admin/diagnostics',{method:'GET'}),
+      replay:(eventId,reasonCode)=>api('/api/admin/outbox/replay',{method:'POST',body:{event_id:eventId,reason_code:reasonCode}}),
+      confirm:(title,message)=>showConfirm(title,message),
+      openLogs:async()=>{ try{ await window._randori_journey?.showDashboard?.(); }catch{} openRelatedDiagnostics('dashDiagnostics'); },
+      openDemoTools:()=>{ document.querySelector('[data-tab="pair"]')?.click(); openRelatedDiagnostics('pairDiagnostics'); },
+    }});
+  }
+  window._randori_sync_admin_diagnostics=()=>{
+    if(window._randori_admin_diagnostics) return window._randori_admin_diagnostics.sync();
+    if(!adminDiagnosticsAllowed()||document.getElementById('adminDiagnosticsModule')) return;
+    const script=document.createElement('script');
+    script.id='adminDiagnosticsModule';
+    script.type='module';
+    script.src='/assets/admin-diagnostics.js';
+    document.head.appendChild(script);
+  };
+  window.addEventListener('randori:admin-diagnostics-ready',mountAdminDiagnostics);
+  window.addEventListener('randori:auth-refreshed',()=>window._randori_sync_admin_diagnostics());
+  window._randori_sync_admin_diagnostics();
   async function copyLatestInviteLink(){
     if(activeCircleRole!=='owner'||!latestInviteUrl) return;
     const operation=captureCircleControlOperation();
