@@ -14,13 +14,7 @@ import {
   ScheduleInputError,
   ScheduleTemporalError,
 } from './_schedule.js';
-import { LATEST_MIGRATION_VERSION, MIGRATION_CONTRACTS } from '../db/migration-contract.js';
-import {
-  assertMigrationLedgerContract,
-  migrationLedgerExists,
-  readMigrationLedger,
-  validateMigrationLedger,
-} from '../db/migration-ledger-readiness.js';
+import { inspectLedgerReadiness, readinessManifestForLedger } from '../db/migration-compatibility.js';
 import { inspectSchema, readOnlyDatabase } from '../db/schema-inspector.js';
 import { READINESS_SCHEMA_MANIFEST } from '../db/schema-readiness-manifest.js';
 import { secondaryScheduleNotificationEvents } from './_secondary-schedule-email.js';
@@ -149,22 +143,22 @@ function readinessCache(db){
   return databaseUrl?{cache:__readinessByDatabaseUrl,key:databaseUrl}:{cache:__readinessByClient,key:db};
 }
 
-/** Read-only request-path probe. Migration v16 is never created here. */
+/**
+ * Read-only request-path probe. Migration v16 is never created here. The
+ * ledger must be current, or one additive migration behind (ID-87); the owned
+ * tables must then match the version actually applied.
+ */
 async function probeSecondaryScheduleReadiness(db){
   if(!db||typeof db.execute!=='function') fail('SECONDARY_SCHEDULE_INPUT_INVALID','A database client is required.');
   try{
     const readOnly=readOnlyDatabase(db);
+    const ledger=await inspectLedgerReadiness(readOnly);
+    if(!ledger.ready) fail('SECONDARY_SCHEDULE_SCHEMA_UNAVAILABLE','Schedule schema is unavailable.');
     const schema=await inspectSchema(readOnly,{
-      manifest:SCHEDULE_READINESS_MANIFEST,maxSchemaObjects:MAX_READINESS_SCHEMA_OBJECTS,
+      manifest:readinessManifestForLedger(SCHEDULE_READINESS_MANIFEST,ledger),
+      maxSchemaObjects:MAX_READINESS_SCHEMA_OBJECTS,
     });
-    if(!schema.ok||schema.warnings.length!==0||!await migrationLedgerExists(readOnly)){
-      fail('SECONDARY_SCHEDULE_SCHEMA_UNAVAILABLE','Schedule schema is unavailable.');
-    }
-    await assertMigrationLedgerContract(readOnly);
-    const ledger=validateMigrationLedger(await readMigrationLedger(readOnly,{
-      limit:MIGRATION_CONTRACTS.length+1,
-    }),MIGRATION_CONTRACTS);
-    if(ledger.currentVersion!==LATEST_MIGRATION_VERSION||ledger.rows.length!==MIGRATION_CONTRACTS.length){
+    if(!schema.ok||schema.warnings.length!==0){
       fail('SECONDARY_SCHEDULE_SCHEMA_UNAVAILABLE','Schedule schema is unavailable.');
     }
     return true;
