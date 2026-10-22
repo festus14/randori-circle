@@ -1704,15 +1704,16 @@ a.btn{text-decoration:none}
   // the partial trailing token so half a secret is never kept.
   const TEXT_MAX=8000, VALUE_BUDGET=16000;
   const CUT_DELIMITER=/[\s"'<>()\\,;]/;
-  const ENCODED=/%(?:23|3d|40|2f)/gi;
-  const DECODED={'%23':'#','%3d':'=','%40':'@','%2f':'/'};
+  const ENCODED=/%(?:25)?(?:23|3d|40|2f|2e)/gi;
+  const DECODED={'23':'#','3d':'=','40':'@','2f':'/','2e':'.'};
   const TOKEN=/[^\s"'<>()\\]+/g;
   const LINE_COL=/(?::\d+){1,2}$/;
-  const SECRET_PAIR=/(^|[^a-z0-9_])((?:[a-z0-9]+[_-]|access|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential)(?:[_-]?(?:id|key|token|hash))?s?)=([^\s&#"'<>,;()\\]+)/gi;
-  const SECRET_JSON=/("(?:[a-z0-9]+[_-]|access|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential)(?:[_-]?(?:id|key|token|hash))?s?"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|[\w.+-]+)/gi;
-  const SECRET_ESCAPED_JSON=/(\\"(?:[a-z0-9]+[_-]|access|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential)(?:[_-]?(?:id|key|token|hash))?s?\\"\s*:\s*)(?:\\"[^"]*?\\"|[\w.+-]+)/gi;
-  const AUTH_HEADER=/\b((?:proxy-)?authorization)(\s*[:=]\s*)(?:(?:bearer|basic|token|digest)\s+)?[^\s,;]+/gi;
-  const SECRET_COLON=/\b(password|passwd|pwd|secret|otp|cookie|credentials?)(\s*:\s*)[^\s,;]+/gi;
+  const SECRET_PAIR=/(^|[^a-z0-9_])((?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?)=(["']?)([^\s&#"'<>,;()\\]+)/gi;
+  const SECRET_JSON=/("(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|[\w.+-]+)/gi;
+  const SECRET_ESCAPED_JSON=/(\\"(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?\\"\s*:\s*)(?:\\"[^"]*?\\"|[\w.+-]+)/gi;
+  const AUTH_HEADER=/\b((?:proxy-)?authorization)(\s*[:=]\s*["']?)(?:(?:bearer|basic|token|digest)\s+)?[^\s,;"']+/gi;
+  const SECRET_COLON=/\b((?:[a-z0-9]+[_-])?(?:password|passwd|pwd|secret|otp|cookie|credentials?|token)(?:[_-]?(?:id|key|token|hash))?)(\s*:\s*)[^\s,;]+/gi;
+  const CODE_COLON=/\b(code)(\s*:\s*["']?)\d{4,10}\b/gi;
   const AUTH_SCHEME=/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
   const JWT=/(^|[^A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g;
   const EMAIL=/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,63}/g;
@@ -1733,14 +1734,15 @@ a.btn{text-decoration:none}
   }
   function redactText(value,max){
     return cut(value==null?'':String(value),max||TEXT_MAX)
-      .replace(ENCODED,code=>DECODED[code.toLowerCase()])
+      .replace(ENCODED,code=>DECODED[code.slice(-2).toLowerCase()])
       .replace(TOKEN,stripFragment)
       .replace(AUTH_HEADER,'$1$2[redacted]')
       .replace(AUTH_SCHEME,'$1 [redacted]')
-      .replace(SECRET_PAIR,'$1$2=[redacted]')
+      .replace(SECRET_PAIR,'$1$2=$3[redacted]')
       .replace(SECRET_JSON,'$1"[redacted]"')
       .replace(SECRET_ESCAPED_JSON,'$1\\"[redacted]\\"')
       .replace(SECRET_COLON,'$1$2[redacted]')
+      .replace(CODE_COLON,'$1$2[redacted]')
       .replace(JWT,'$1[jwt]')
       .replace(EMAIL,'[email]');
   }
@@ -3501,7 +3503,7 @@ a.btn{text-decoration:none}
         // error, a 4xx the caller may handle (409, 401, ...) is a warning.
         const level=r.status>=500?'error':'warn';
         try{ window._randori_log && window._randori_log[level]('api_fail', apiPath+' -> '+r.status, {status:r.status, body: (j && (j.error||j.message||'')).toString().slice(0,400), path:apiPath}); }catch{}
-        try{ if(window.Sentry) Sentry.captureMessage('api_fail '+apiPath, {level:'warning', tags:{event:'api_fail', path:apiPath, status:r.status}}); }catch{}
+        try{ if(window.Sentry) Sentry.captureMessage('api_fail '+apiPath, {level:level==='error'?'error':'warning', tags:{event:'api_fail', path:apiPath, status:r.status}}); }catch{}
         const problem=j&&typeof j==='object'?j:{error:'request failed'};
         problem.http_status=r.status;
         throw problem;

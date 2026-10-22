@@ -285,3 +285,23 @@ test('a failed batch write stores nothing and reports the log store unavailable'
   }
   assert.equal(Number((await db.execute(`SELECT COUNT(*) AS c FROM app_logs WHERE message='lost'`)).rows[0].c), 0);
 });
+
+test('concurrent requests cannot store more than the hourly cap between them (M2 race)', async () => {
+  const batch = index => ({ logs: Array.from({ length: 20 }, (_, entry) => ({ level: 'warn', event: 'burst', message: `burst ${index}.${entry}` })) });
+  const results = await Promise.all(Array.from({ length: 50 }, (_, index) => postLogs(6, batch(index))));
+  const stored = Number((await db.execute(`SELECT COUNT(*) AS c FROM app_logs WHERE user_id=6`)).rows[0].c);
+  assert.equal(stored, 200);
+  const inserted = results.filter(result => result.status === 200).reduce((sum, result) => sum + result.body.inserted, 0);
+  assert.equal(inserted, 200, 'inserted counts only the rows actually written');
+  assert.ok(results.every(result => result.status === 200 || result.status === 429));
+});
+
+test('oversized meta is stored as a valid JSON preview instead of being cut mid-structure', async () => {
+  const meta = { first: 'a '.repeat(3500), second: 'b '.repeat(3500), third: 'tail' };
+  assert.deepEqual(await postLogs(7, { level: 'warn', event: 'probe', message: 'big meta', meta }), { status: 200, body: { ok: true, inserted: 1 } });
+  const stored = (await db.execute(`SELECT meta_json FROM app_logs WHERE message='big meta'`)).rows[0].meta_json;
+  const parsed = JSON.parse(String(stored));
+  assert.equal(parsed.truncated, true);
+  assert.equal(parsed.preview.length, 7000);
+  assert.ok(parsed.preview.startsWith('{"first":"a a '));
+});

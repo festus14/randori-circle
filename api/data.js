@@ -29,11 +29,13 @@ import {
 } from './_secondary-schedule.js';
 import { scheduleNotificationEvents } from './_schedule-email.js';
 import {
+  CLIENT_LOG_CAPPED_INSERT_SQL,
   CLIENT_LOG_MAX_BODY_BYTES,
   CLIENT_LOG_RECENT_COUNT_SQL,
   CLIENT_LOG_USER_HOURLY_CAP,
   clientLogBodyBytes,
   clientLogLevelAccepted,
+  clientLogMetaJson,
   redactLogRoute,
   redactLogText,
   redactLogValue,
@@ -766,8 +768,8 @@ async function handleLogs(req,res){
       if(!msg) continue;
       let metaStr=null;
       try{
-        if(entry.meta!=null) metaStr = typeof entry.meta==='string' ? redactLogText(entry.meta,8000).slice(0,8000) : JSON.stringify(redactLogValue(entry.meta)).slice(0,8000);
-        else if(entry.meta_json) metaStr = redactLogText(entry.meta_json,8000).slice(0,8000);
+        if(entry.meta!=null) metaStr = clientLogMetaJson(typeof entry.meta==='string' ? redactLogText(entry.meta,8000) : JSON.stringify(redactLogValue(entry.meta)));
+        else if(entry.meta_json) metaStr = clientLogMetaJson(redactLogText(entry.meta_json,8000));
       }catch{}
       let route = entry.route ? redactLogRoute(entry.route).slice(0,300) : null;
       if(!route){
@@ -775,24 +777,28 @@ async function handleLogs(req,res){
       }
       const ua = entry.ua ? redactLogText(entry.ua,300).slice(0,300) : (req.headers['user-agent']||'').toString().slice(0,300);
       const entryIp = ip || (req.headers['x-forwarded-for']||'').toString().split(',')[0].trim().slice(0,80);
-      rows.push({lvl,ev,msg,statement:{sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,'client',?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, ev, msg, metaStr, userId, route, ua, entryIp]}});
+      rows.push({lvl,ev,msg,statement:{sql:CLIENT_LOG_CAPPED_INSERT_SQL,
+        args:[lvl, ev, msg, metaStr, userId, route, ua, entryIp, userId, CLIENT_LOG_USER_HOURLY_CAP, CLIENT_LOG_USER_HOURLY_CAP]}});
     }
     if(!rows.length) return res.json({ok:true, inserted:0});
     // ID-72 addendum: at most CLIENT_LOG_USER_HOURLY_CAP stored rows per
-    // member per rolling hour, and one write for the whole batch.
-    let accepted;
+    // member per rolling hour. The pre-check answers 429 cheaply; the cap is
+    // enforced by each conditional insert inside one 'write' batch, so
+    // concurrent requests cannot store more than the cap between them.
+    let accepted, inserted=0;
     try{
       const recent=await db.execute({sql:CLIENT_LOG_RECENT_COUNT_SQL,args:[userId,CLIENT_LOG_USER_HOURLY_CAP]});
       const allowance=CLIENT_LOG_USER_HOURLY_CAP-(Number(recent.rows?.[0]?.count)||0);
       if(allowance<=0) return res.status(429).json({error:'rate limited — too many logs', retry_after:'3600s'});
       accepted=rows.slice(0,allowance);
-      await db.batch(accepted.map(row=>row.statement),'write');
+      const results=await db.batch(accepted.map(row=>row.statement),'write');
+      for(const result of results) inserted+=Number(result.rowsAffected)||0;
     }catch{ return res.status(503).json({error:'logging unavailable'}); }
     // fire console for visibility in Vercel logs
-    for(const {lvl,ev,msg} of accepted){
+    for(const {lvl,ev,msg} of accepted.slice(0,inserted)){
       try{ if(lvl==='error') console.error(`[client][${ev}] ${msg}`); else if(lvl==='warn') console.warn(`[client][${ev}] ${msg}`); else console.log(`[client][${lvl}][${ev}] ${msg}`);}catch{}
     }
-    return res.json({ok:true, inserted:accepted.length});
+    return res.json({ok:true, inserted});
   }
   if(req.method==='GET'){
     // admin only

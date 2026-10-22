@@ -98,6 +98,11 @@ const REDACTION_CORPUS = [
   ['issue #123 in #logsArea and ?view=code', 'issue #123 in #logsArea and ?view=code'],
   ['/'.repeat(50) + '#fragment', '/'.repeat(50)],
   ['x'.repeat(100) + '@example.test', 'x'.repeat(36) + '[email]'],
+  ['headers: {Authorization: "Bearer abc.def"}', 'headers: {Authorization: "[redacted]"}'],
+  ["{ Authorization: 'Bearer abc' } and Authorization=\"Bearer abc\"", "{ Authorization: '[redacted]' } and Authorization=\"[redacted]\""],
+  ['token="abc" password=\'x\' activationToken=y x-csrf=z', 'token="[redacted]" password=\'[redacted]\' activationToken=[redacted] x-csrf=[redacted]'],
+  ['code: 123456, secret_key: k, status code: 500', 'code: [redacted], secret_key: [redacted], status code: 500'],
+  ['jane%2540example.com and jane%2Edoe%40example%2Ecom', '[email] and [email]'],
 ];
 
 // One object corpus for both implementations, so the key rules, limits and
@@ -141,20 +146,34 @@ test('a cut never keeps half a token: the partial trailing token is dropped befo
   }
 });
 
-test('adversarial input stays cheap in both copies (C1)', () => {
+// Fastest of five runs, to keep scheduler noise out of the comparison.
+function fastest(redact, input) {
+  let best = Infinity;
+  for (let run = 0; run < 5; run += 1) {
+    const started = performance.now();
+    redact(input);
+    best = Math.min(best, performance.now() - started);
+  }
+  return best;
+}
+
+test('adversarial input costs about as much as benign input of the same size, in both copies (C1)', () => {
   const { log } = createPage();
-  const inputs = ['eyJ-'.repeat(2000), 'eyJaaaaaaaa.'.repeat(700), 'x'.repeat(8000), '-a'.repeat(4000), '\\"token\\":\\"'.repeat(600), '%40'.repeat(2600)];
+  // A quadratic pattern turns these into tens of milliseconds (the old \beyJ
+  // JWT pattern took ~22 ms on the first one); benign text takes ~1-2 ms.
+  const inputs = ['eyJ-'.repeat(2000), 'eyJaaaaaaaa.'.repeat(700), '-a'.repeat(4000), '\\"token\\":\\"'.repeat(600), '%40'.repeat(2600), '/'.repeat(8000)];
   for (const redact of [log()._redact, redactLogText]) {
+    const benign = fastest(redact, 'x'.repeat(8000));
     for (const input of inputs) {
-      const started = performance.now();
-      redact(input);
-      assert.ok(performance.now() - started < 50, `${input.slice(0, 12)}… took too long`);
+      const adversarial = fastest(redact, input);
+      assert.ok(adversarial < 4 * benign + 2, `${input.slice(0, 12)}…: ${adversarial.toFixed(2)} ms vs ${benign.toFixed(2)} ms benign`);
     }
   }
+  const benignValue = Object.fromEntries(Array.from({ length: 28 }, (_, k) => [`k${k}`, Array.from({ length: 20 }, () => 'x'.repeat(8000))]));
   for (const redact of [log()._redactValue, redactLogValue]) {
-    const started = performance.now();
-    redact(VALUE_CORPUS[6]);
-    assert.ok(performance.now() - started < 200, 'the 4.48 MB meta from the C1 report is bounded by the budget');
+    const benign = fastest(redact, benignValue);
+    const adversarial = fastest(redact, VALUE_CORPUS[6]);
+    assert.ok(adversarial < 4 * benign + 2, `the C1 meta: ${adversarial.toFixed(2)} ms vs ${benign.toFixed(2)} ms benign`);
   }
 });
 
@@ -432,8 +451,8 @@ function loadApiWrapper({ responses }) {
   const context = vm.createContext({
     window: { _randori_log: logger, Sentry: {} },
     Sentry: {
-      captureMessage: (message, options) => reported.push(['message', message, options.tags]),
-      captureException: (error, options) => reported.push(['exception', String(error.message), options.tags]),
+      captureMessage: (message, options) => reported.push(['message', message, options]),
+      captureException: (error, options) => reported.push(['exception', String(error.message), options]),
     },
     authCapabilities: {},
     activeCircleContext: null,
@@ -464,10 +483,10 @@ test('api() logs and reports each HTTP failure once, as a warning for 4xx, and n
     ['error', 'api_fail', 'api /api/profile failed: Failed to fetch'],
   ]);
   assert.deepEqual(logged.map(entry => entry.meta.path), ['/api/members', '/api/schedule', '/api/profile']);
-  assert.deepEqual(reported.map(([kind, message, tags]) => [kind, message, tags.path]), [
-    ['message', 'api_fail /api/members', '/api/members'],
-    ['message', 'api_fail /api/schedule', '/api/schedule'],
-    ['exception', 'Failed to fetch', '/api/profile'],
+  assert.deepEqual(reported.map(([kind, message, options]) => [kind, message, options.tags.path, options.level]), [
+    ['message', 'api_fail /api/members', '/api/members', 'warning'],
+    ['message', 'api_fail /api/schedule', '/api/schedule', 'error'],
+    ['exception', 'Failed to fetch', '/api/profile', undefined],
   ]);
   assert.equal(JSON.stringify([logged, reported]).includes('jane'), false);
 });

@@ -3192,17 +3192,21 @@ signed-in member).
   retention claim counts only `source='server' AND user_id IS NULL` rows, so
   no member-written row can suppress retention. No other reader trusts
   member rows: runner lease and quota checks read `source='runner'`, the
-  outbox health and watchdogs read `outbox_events`, and the admin panel shows
-  the stored source.
+  outbox health and watchdogs read `outbox_events`, Admin Diagnostics (ID-73)
+  takes dispatcher evidence and errors-card freshness only from rows with
+  `user_id IS NULL`, and the admin panel shows the stored source.
 - **M2, write volume.** Each member stores at most 200 client rows in any
   rolling hour (`CLIENT_LOG_RECENT_COUNT_SQL`, which searches
   `idx_logs_source_created` and stops counting at the cap; checked with
-  `EXPLAIN QUERY PLAN`). A batch is cut to the remaining allowance, the next
-  request gets 429, and the accepted rows are written with one `db.batch`
-  (a failed write stores nothing and returns 503). The per-IP limit stays.
-  Worst case is now 200 rows per member per hour.
-- **m1, redaction gaps.** Percent-encoded `#`, `=`, `@` and `/` are decoded
-  before matching. A fragment is also dropped when it holds a `/` or `=`
+  `EXPLAIN QUERY PLAN`). A pre-check answers 429 once the cap is reached;
+  the cap itself is enforced by each row's conditional
+  `INSERT … SELECT … WHERE (count) < cap` inside one `'write'` batch, so
+  concurrent requests cannot overshoot it (50 concurrent 20-entry requests
+  store exactly 200 rows), and `inserted` is the sum of `rowsAffected`. A
+  failed write stores nothing and returns 503. The per-IP limit stays.
+  Worst case is 200 rows per member per hour.
+- **m1, redaction gaps.** Percent-encoded `#`, `=`, `@`, `/` and `.` are
+  decoded before matching, also when double-encoded (`%2540`). A fragment is also dropped when it holds a `/` or `=`
   (`#/invite/SECRET`, a bare `#invite=…`). Secret names accept a few camelCase
   prefixes (`accessToken`, `apiKey`, `refreshToken`, `idToken`,
   `clientSecret`; `cycleKey` stays readable) and an id/key/token/hash suffix
@@ -3229,6 +3233,22 @@ signed-in member).
 - **n1.** The Sentry step's `patchLogger` wrapped only `_randori_log.log`,
   which nothing called; it is removed. Sentry events are still tagged with
   the logger's last event.
+- **Re-review follow-ups.**
+  - The authorization rule now keeps an opening quote, so
+    `{Authorization: "Bearer abc.def"}`, `{ Authorization: 'Bearer abc' }`
+    and `Authorization="Bearer abc"` lose the whole credential.
+  - Quoted values after `=` (`token="abc"`, `password='x'`), `activationToken`,
+    `csrf`/`xsrf` names, `secret_key: x` and `code:` before 4-10 digits are
+    redacted; `status code: 500` stays readable. A JWT right after `-` is not
+    matched (the anchored pattern's documented trade-off).
+  - Meta whose serialized form is over 8000 characters is stored as
+    `{"truncated":true,"preview":"…first 7000 characters…"}`, so `meta_json`
+    is always valid JSON.
+  - A non-OK 5xx response is reported to Sentry at level `error`, a 4xx at
+    `warning`.
+  - The adversarial timing test compares each input with benign input of
+    the same length (`< 4×benign + 2 ms`); restoring `\beyJ` fails it
+    (≈20 ms against ≈1.3 ms).
 
 ## ID-73: Admin Diagnostics in the Circle view, read-only and behind a flag
 

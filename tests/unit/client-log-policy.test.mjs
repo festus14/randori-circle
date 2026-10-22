@@ -9,6 +9,7 @@ import {
   CLIENT_LOG_USER_HOURLY_CAP,
   clientLogBodyBytes,
   clientLogLevelAccepted,
+  clientLogMetaJson,
   redactLogRoute,
   redactLogText,
   redactLogValue,
@@ -90,4 +91,14 @@ test('body size is measured for requests without content-length', () => {
   assert.equal(clientLogBodyBytes(undefined), 4);
   assert.equal(clientLogBodyBytes(() => {}), 0);
   assert.equal(clientLogBodyBytes({ big: 1n }), Infinity);
+});
+
+test('stored meta stays valid JSON: an oversized value becomes a preview wrapper', () => {
+  assert.equal(clientLogMetaJson('{"a":1}'), '{"a":1}');
+  assert.equal(clientLogMetaJson('x'.repeat(8000)), 'x'.repeat(8000));
+  const big = JSON.stringify({ a: 'y '.repeat(3000), b: 'z '.repeat(3000) });
+  const wrapped = JSON.parse(clientLogMetaJson(big));
+  assert.deepEqual(Object.keys(wrapped), ['truncated', 'preview']);
+  assert.equal(wrapped.truncated, true);
+  assert.equal(wrapped.preview, big.slice(0, 7000));
 });

@@ -2543,6 +2543,8 @@ test('an unmatched database lease rejects a cross-instance-style concurrent exec
 });
 
 test('client telemetry cannot forge runner leases or execution quota rows', async () => {
+  // Each capped client-log insert reports the row it wrote.
+  executeHandler=sql=>sql.includes('INSERT INTO app_logs')?rows([],{rowsAffected:1}):rows();
   const result=await invoke(dataHandler,{
     method:'POST',
     url:'/api/logs',
@@ -2553,11 +2555,12 @@ test('client telemetry cannot forge runner leases or execution quota rows', asyn
   assert.equal(result.status,200);
   assert.equal(result.body.inserted,1);
   // Every /api/logs row is stored with the literal source 'client'; args are
-  // level, event, message, meta, user, route, ua, ip.
+  // level, event, message, meta, user, route, ua, ip, then user and cap twice
+  // for the conditional hourly cap.
   const insert=executed.find(call=>call.sql.includes('INSERT INTO app_logs'));
   assert.ok(insert);
-  assert.match(insert.sql,/VALUES \(\?,'client',\?/);
-  assert.equal(insert.args.length,8);
+  assert.match(insert.sql,/SELECT \?,'client',\?/);
+  assert.deepEqual(insert.args.slice(8),[2,200,200]);
   assert.equal(insert.args[1],'client_execute_lease_end');
 
   executed.length=0;
@@ -2578,6 +2581,7 @@ test('production client log ingest keeps warn/error, redacts entries, and reads 
   const post=body=>invoke(dataHandler,{
     method:'POST',url:'/api/logs',query:{endpoint:'logs'},headers:{'x-test-auth':'user'},body,
   });
+  executeHandler=sql=>sql.includes('INSERT INTO app_logs')?rows([],{rowsAffected:1}):rows();
   process.env.VERCEL_ENV='production';
   const ingest=await post({logs:[
     {level:'info',event:'probe',message:'info stays in the browser in production'},
@@ -2598,7 +2602,7 @@ test('production client log ingest keeps warn/error, redacts entries, and reads 
   const [warn,stringMeta,jsonMeta]=inserts;
   // Args: level, event, message, meta, user, route, ua, ip; source is the
   // literal 'client' even though this entry claimed 'server'.
-  assert.ok(inserts.every(call=>/VALUES \(\?,'client',\?/.test(call.sql)));
+  assert.ok(inserts.every(call=>/SELECT \?,'client',\?/.test(call.sql)));
   assert.equal(warn.args[1],'probe for [email]');
   assert.equal(warn.args[2],'warn for [email] at /reset');
   assert.deepEqual(JSON.parse(warn.args[3]),{href:'https://x.test/',inviteToken:'[redacted]'});

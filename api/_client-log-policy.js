@@ -27,6 +27,16 @@ export const CLIENT_LOG_RECENT_COUNT_SQL=`SELECT COUNT(*) AS count FROM (
   WHERE source='client' AND created_at>datetime('now','-1 hour') AND user_id=?
   LIMIT ?
 )`;
+/**
+ * Inserts one client row only while the member is under the cap. Each row of
+ * a request is one such statement inside a single 'write' batch, so the
+ * check and the insert are atomic and concurrent requests cannot overshoot.
+ * Args: level, event, message, meta_json, user_id, route, ua, ip, then
+ * [user_id, cap, cap] for the count.
+ */
+export const CLIENT_LOG_CAPPED_INSERT_SQL=`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at)
+  SELECT ?,'client',?,?,?,?,?,?,?,datetime('now')
+  WHERE (${CLIENT_LOG_RECENT_COUNT_SQL})<?`;
 
 const TEXT_MAX=8000;
 const VALUE_BUDGET=16000;
@@ -36,10 +46,11 @@ const VALUE_MAX_ITEMS=20;
 
 // A cut never keeps half a token: text is dropped back to one of these.
 const CUT_DELIMITER=/[\s"'<>()\\,;]/;
-// Percent-encoded '#', '=', '@' and '/' are decoded first, so encoded
-// fragments, pairs and emails meet the same rules.
-const ENCODED=/%(?:23|3d|40|2f)/gi;
-const DECODED={'%23':'#','%3d':'=','%40':'@','%2f':'/'};
+// Percent-encoded '#', '=', '@', '/' and '.' (also double-encoded, %2540)
+// are decoded first, so encoded fragments, pairs and emails meet the same
+// rules.
+const ENCODED=/%(?:25)?(?:23|3d|40|2f|2e)/gi;
+const DECODED={'23':'#','3d':'=','40':'@','2f':'/','2e':'.'};
 // A URL fragment carries invite, reset and verify tokens. Within each
 // whitespace/quote/paren-delimited token, drop the fragment when a '/' comes
 // before the '#' or the fragment holds a '/' or '=', keeping a trailing
@@ -47,13 +58,17 @@ const DECODED={'%23':'#','%3d':'=','%40':'@','%2f':'/'};
 const TOKEN=/[^\s"'<>()\\]+/g;
 const LINE_COL=/(?::\d+){1,2}$/;
 // Secret-looking names: an optional `prefix_`/`prefix-`, or one of a few
-// camelCase prefixes (accessToken, apiKey; cycleKey stays readable), a secret
-// word, an optional id/key/token/hash suffix (sessionId, session_id).
-const SECRET_PAIR=/(^|[^a-z0-9_])((?:[a-z0-9]+[_-]|access|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential)(?:[_-]?(?:id|key|token|hash))?s?)=([^\s&#"'<>,;()\\]+)/gi;
-const SECRET_JSON=/("(?:[a-z0-9]+[_-]|access|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential)(?:[_-]?(?:id|key|token|hash))?s?"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|[\w.+-]+)/gi;
-const SECRET_ESCAPED_JSON=/(\\"(?:[a-z0-9]+[_-]|access|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential)(?:[_-]?(?:id|key|token|hash))?s?\\"\s*:\s*)(?:\\"[^"]*?\\"|[\w.+-]+)/gi;
-const AUTH_HEADER=/\b((?:proxy-)?authorization)(\s*[:=]\s*)(?:(?:bearer|basic|token|digest)\s+)?[^\s,;]+/gi;
-const SECRET_COLON=/\b(password|passwd|pwd|secret|otp|cookie|credentials?)(\s*:\s*)[^\s,;]+/gi;
+// camelCase prefixes (accessToken, apiKey, activationToken; cycleKey stays
+// readable), a secret word, an optional id/key/token/hash suffix (sessionId,
+// session_id). A quoted value keeps its quotes (token="[redacted]").
+// After a colon only unambiguous words count (password: x, secret_key: x),
+// and `code:` only before 4-10 digits, so "status code: 500" stays.
+const SECRET_PAIR=/(^|[^a-z0-9_])((?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?)=(["']?)([^\s&#"'<>,;()\\]+)/gi;
+const SECRET_JSON=/("(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|[\w.+-]+)/gi;
+const SECRET_ESCAPED_JSON=/(\\"(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?\\"\s*:\s*)(?:\\"[^"]*?\\"|[\w.+-]+)/gi;
+const AUTH_HEADER=/\b((?:proxy-)?authorization)(\s*[:=]\s*["']?)(?:(?:bearer|basic|token|digest)\s+)?[^\s,;"']+/gi;
+const SECRET_COLON=/\b((?:[a-z0-9]+[_-])?(?:password|passwd|pwd|secret|otp|cookie|credentials?|token)(?:[_-]?(?:id|key|token|hash))?)(\s*:\s*)[^\s,;]+/gi;
+const CODE_COLON=/\b(code)(\s*:\s*["']?)\d{4,10}\b/gi;
 const AUTH_SCHEME=/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
 // The boundary is a capture rather than a lookbehind so older Safari parses
 // the browser copy; either way a match can only start where a token starts.
@@ -85,14 +100,15 @@ function stripFragment(token){
  */
 export function redactLogText(value,max=TEXT_MAX){
   return cut(value==null?'':String(value),max)
-    .replace(ENCODED,code=>DECODED[code.toLowerCase()])
+    .replace(ENCODED,code=>DECODED[code.slice(-2).toLowerCase()])
     .replace(TOKEN,stripFragment)
     .replace(AUTH_HEADER,'$1$2[redacted]')
     .replace(AUTH_SCHEME,'$1 [redacted]')
-    .replace(SECRET_PAIR,'$1$2=[redacted]')
+    .replace(SECRET_PAIR,'$1$2=$3[redacted]')
     .replace(SECRET_JSON,'$1"[redacted]"')
     .replace(SECRET_ESCAPED_JSON,'$1\\"[redacted]\\"')
     .replace(SECRET_COLON,'$1$2[redacted]')
+    .replace(CODE_COLON,'$1$2[redacted]')
     .replace(JWT,'$1[jwt]')
     .replace(EMAIL,'[email]');
 }
@@ -125,6 +141,14 @@ function redactNode(value,depth,budget){
  */
 export function redactLogValue(value){
   return redactNode(value,0,{left:VALUE_BUDGET});
+}
+
+/** Stored meta_json longer than this becomes a valid JSON preview wrapper. */
+export const CLIENT_LOG_META_MAX=8000;
+
+/** Keeps stored meta valid JSON: an oversized value is wrapped, not cut mid-structure. */
+export function clientLogMetaJson(text){
+  return text.length<=CLIENT_LOG_META_MAX?text:JSON.stringify({truncated:true,preview:text.slice(0,7000)});
 }
 
 /** Serialized size of an already parsed body, for requests without content-length. */
