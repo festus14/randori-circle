@@ -126,8 +126,11 @@
     return selected.version == null || Number(question?.version) === Number(selected.version);
   }
 
-  function exerciseCard(question, selected = null) {
+  // `attempted` is the issue #296 marker label ("Attempted by you", …); the
+  // key is present only when there is something to show.
+  function exerciseCard(question, selected = null, { attempted = '' } = {}) {
     const difficulty = text(question?.difficulty);
+    const marker = clip(attempted, 80);
     return {
       slug: text(question?.slug),
       version: Number.isInteger(Number(question?.version)) && Number(question.version) > 0 ? Number(question.version) : null,
@@ -139,6 +142,7 @@
       summary: summarize(question?.prompt || question?.description),
       languages: questionLanguages(question).map(languageLabel),
       selected: sameExercise(question, selected),
+      ...(marker ? { attempted: marker } : {}),
     };
   }
 
@@ -310,6 +314,13 @@
     const meta = node(doc, 'span', { className: 'catalog-card-meta' });
     if (card.pattern) meta.append(node(doc, 'span', { className: 'catalog-chip catalog-chip--pattern', textValue: card.pattern }));
     for (const tag of card.tags) meta.append(node(doc, 'span', { className: 'catalog-chip', textValue: tag }));
+    if (card.attempted) {
+      meta.append(node(doc, 'span', {
+        className: 'catalog-chip catalog-chip--attempted',
+        textValue: card.attempted,
+        attrs: { 'data-testid': 'catalog-attempted' },
+      }));
+    }
     if (card.selected) meta.append(node(doc, 'span', { className: 'catalog-card-current', textValue: 'Current exercise' }));
     button.append(meta);
     item.append(button);
