@@ -40,6 +40,7 @@ import {
   redactLogText,
   redactLogValue,
 } from './_client-log-policy.js';
+import { appLogClientFields, presentAppLogClient, userAgentFamily } from './_log-privacy.js';
 import { deliverCommittedOutboxEvents, outboxEventsFromStatements } from './_outbox-immediate.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, messageInsertStatement, messageLimitStateStatement, MessageDataError, MessageInputError, messageReadStatement, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import {
@@ -633,18 +634,15 @@ async function logServer(level, event, message, meta, reqCtx){
         else if(reqCtx.userId) user_id=reqCtx.userId;
       }
     }catch{}
-    let route=null, ua=null, ip=null;
+    let route=null;
     try{
       if(reqCtx && reqCtx.route) route=String(reqCtx.route).slice(0,300);
       else if(reqCtx && reqCtx.headers && reqCtx.url) route=String(reqCtx.url).slice(0,300);
       else if(reqCtx && reqCtx.req && reqCtx.req.url) route=String(reqCtx.req.url).slice(0,300);
-      if(reqCtx && reqCtx.ua) ua=String(reqCtx.ua).slice(0,300);
-      else if(reqCtx && reqCtx.headers) ua = (reqCtx.headers['user-agent']||reqCtx.headers['User-Agent']||'').toString().slice(0,300);
-      else if(reqCtx && reqCtx.req && reqCtx.req.headers) ua = (reqCtx.req.headers['user-agent']||'').toString().slice(0,300);
-      if(reqCtx && reqCtx.ip) ip=String(reqCtx.ip).slice(0,80);
-      else if(reqCtx && reqCtx.headers) ip = (reqCtx.headers['x-forwarded-for']||reqCtx.headers['x-real-ip']||'').toString().split(',')[0].trim().slice(0,80);
-      else if(reqCtx && reqCtx.req && reqCtx.req.headers) ip = (reqCtx.req.headers['x-forwarded-for']||'').toString().split(',')[0].trim().slice(0,80);
     }catch{}
+    // ID-82: a coarse user-agent family, and a daily keyed address hash only
+    // on rows without a user (the account already identifies the rest).
+    const {ua,ip}=appLogClientFields(reqCtx,{userId:user_id});
     await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, user_id, route, ua, ip]});
     // Forward to Sentry server if error/warn
     try{
@@ -749,6 +747,10 @@ async function handleLogs(req,res){
       return res.status(429).json({error:'rate limited — too many logs', retry_after:'60s'});
     }
     const userId = payload.id||payload.uid||null;
+    // ID-82: rows keep a coarse user-agent family and, since they carry the
+    // member's id, no address; the raw address above stays in memory for the
+    // limiter only.
+    const client = appLogClientFields(req,{userId});
     const body = req.body || {};
     // support batch array
     let batch = [];
@@ -785,10 +787,9 @@ async function handleLogs(req,res){
       if(!route){
         try{ route = (req.url||'').toString().slice(0,300); }catch{}
       }
-      const ua = entry.ua ? redactLogText(entry.ua,300).slice(0,300) : (req.headers['user-agent']||'').toString().slice(0,300);
-      const entryIp = ip || (req.headers['x-forwarded-for']||'').toString().split(',')[0].trim().slice(0,80);
+      const ua = entry.ua ? userAgentFamily(String(entry.ua)) : client.ua;
       rows.push({lvl,ev,msg,statement:{sql:CLIENT_LOG_CAPPED_INSERT_SQL,
-        args:[lvl, ev, msg, metaStr, userId, route, ua, entryIp, userId, CLIENT_LOG_USER_HOURLY_CAP, CLIENT_LOG_USER_HOURLY_CAP]}});
+        args:[lvl, ev, msg, metaStr, userId, route, ua, client.ip, userId, CLIENT_LOG_USER_HOURLY_CAP, CLIENT_LOG_USER_HOURLY_CAP]}});
     }
     if(!rows.length) return res.json({ok:true, inserted:0});
     // ID-72 addendum: at most CLIENT_LOG_USER_HOURLY_CAP stored rows per
@@ -843,7 +844,10 @@ async function handleLogs(req,res){
       const logs = rs.rows.map(r=>{
         let meta=null;
         try{ meta = r.meta_json ? JSON.parse(r.meta_json) : null; }catch{ meta = r.meta_json; }
-        return { id:r.id, level:r.level, source:r.source, event:r.event, message:r.message, meta, meta_json:r.meta_json, user_id:r.user_id, route:r.route, ua:r.ua, ip:r.ip, created_at:r.created_at };
+        // ID-82: rows from before the change still hold raw values until
+        // retention removes them; reduce those the same way on the way out.
+        const {ua,ip}=presentAppLogClient(r);
+        return { id:r.id, level:r.level, source:r.source, event:r.event, message:r.message, meta, meta_json:r.meta_json, user_id:r.user_id, route:r.route, ua, ip, created_at:r.created_at };
       });
       return res.json({ok:true, logs, count:logs.length});
     }catch(e){ return res.status(500).json({error:'logs fetch failed', detail:String(e.message||e).slice(0,300)}); }
@@ -2497,10 +2501,14 @@ function positiveInteger(value){
   return Number.isInteger(parsed) && parsed>0 ? parsed : null;
 }
 
+/** The reduced [ua, ip] arguments of a runner app_logs row (ID-82); a member's row keeps no address. */
+function appLogClientArgs(req,userId){
+  const {ua,ip}=appLogClientFields(req,{userId});
+  return [ua,ip];
+}
+
 async function acquireExecutionLease(db,userId,req,metadata){
   const route=String(req.url||'').slice(0,300);
-  const userAgent=String(req.headers?.['user-agent']||'').slice(0,300);
-  const ip=String(req.headers?.['x-forwarded-for']||'').split(',')[0].trim().slice(0,80);
   const result=await db.execute({
     sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at)
       SELECT 'info','runner','execute_lease_start','execution lease acquired',?,?,?,?,?, datetime('now')
@@ -2520,7 +2528,7 @@ async function acquireExecutionLease(db,userId,req,metadata){
           )
       )
       RETURNING id`,
-    args:[JSON.stringify(metadata),userId,route,userAgent,ip,userId],
+    args:[JSON.stringify(metadata),userId,route,...appLogClientArgs(req,userId),userId],
   });
   return positiveInteger(result.rows[0]?.id);
 }
@@ -2530,7 +2538,7 @@ async function releaseExecutionLease(db,userId,leaseId,req){
   try{
     await db.execute({
       sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES ('info','runner','execute_lease_end',?,?,?,?,?,?, datetime('now'))`,
-      args:[String(leaseId),JSON.stringify({lease_id:leaseId}),userId,String(req.url||'').slice(0,300),String(req.headers?.['user-agent']||'').slice(0,300),String(req.headers?.['x-forwarded-for']||'').split(',')[0].trim().slice(0,80)],
+      args:[String(leaseId),JSON.stringify({lease_id:leaseId}),userId,String(req.url||'').slice(0,300),...appLogClientArgs(req,userId)],
     });
   }catch(e){
     captureSentryException(e,{tags:{event:'execute_lease_release_fail',source:'runner'}});
@@ -2663,7 +2671,7 @@ async function handleExecute(req,res){
     }
     const rateResults=await db.batch([{
       sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES ('info','runner','execute_attempt','execution requested',?,?,?,?,?, datetime('now'))`,
-      args:[JSON.stringify({question_slug:questionSlug,question_version:questionVersion,language:executionLanguage}),userId,String(req.url||'').slice(0,300),String(req.headers?.['user-agent']||'').slice(0,300),String(req.headers?.['x-forwarded-for']||'').split(',')[0].trim().slice(0,80)],
+      args:[JSON.stringify({question_slug:questionSlug,question_version:questionVersion,language:executionLanguage}),userId,String(req.url||'').slice(0,300),...appLogClientArgs(req,userId)],
     },{
       sql:`SELECT COUNT(*) as c FROM app_logs WHERE user_id=? AND source='runner' AND event='execute_attempt' AND datetime(created_at)>=datetime('now','-1 minute')`,
       args:[userId],

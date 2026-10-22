@@ -78,7 +78,7 @@
   <h3 id="technical">Technical information</h3>
   <ul>
     <li>A sign-in cookie (see <a href="#cookies">Cookies and browser storage</a>).</li>
-    <li><strong>Error logs.</strong> When something goes wrong while you are signed in, the app sends a short error report to our server. Our server also logs some events, such as code runs. Each log entry can include the page path, your user ID, your browser’s user agent and your IP address. Error reports sent from your browser have email addresses, passwords and secret links removed before they are stored. Our server’s own log entries can also include technical error details and, for code runs, the exercise, language, results and timing, but not your email address or password.</li>
+    <li><strong>Error logs.</strong> When something goes wrong while you are signed in, the app sends a short error report to our server. Our server also logs some events, such as code runs. Each log entry can include the page path, your user ID, and the name and main version of your browser and operating system (for example “Chrome 131 on Windows 10/11”). We don’t store your IP address or your browser’s full user agent. Entries linked to your account carry no form of your IP address at all. A few server entries that aren’t linked to any account, such as failed requests, keep a pseudonymous code made from the IP address with a secret key and the date, so we can spot a flood of requests from one place. The code changes every day, but because we hold the key we could still work out which address it came from. Error reports sent from your browser have email addresses, passwords, secret links, IP addresses and browser details removed before they are stored. Our server’s own log entries can also include technical error details and, for code runs, the exercise, language, results and timing, but not your email address or password.</li>
     <li>To stop abuse, we count sign-in and invitation attempts using a scrambled (keyed hash) form of your IP address, not the address itself.</li>
   </ul>
 
@@ -101,7 +101,7 @@
     <li><strong>Circle owners</strong> see who is in the circle (without email addresses) and the name, email and note of anyone asking to join.</li>
     <li><strong>Practice suggestions (currently switched off).</strong> If it is turned on, your current partner sees which exercises you have attempted before (from your verified code runs and completed sessions, including solo practice and earlier partners), shown only as an “attempted” mark, never your code, scores or dates. Runs in your current shared room count toward both partners’ suggestions; your partner already sees those runs in the room’s run feed. Exercises you hide from suggestions are remembered only in your browser.</li>
     <li><strong>Circle health (currently switched off).</strong> If it is turned on, circle owners see counts for each finished week of their circle: how many members were available, paired or practised solo, how many pairs agreed a time and completed a session, and what share of pairs repeated a recent pairing. Pair counts are hidden in weeks with fewer than four pairs and whenever they could point to a single pair. The counts never name anyone, but a count of all pairs or none does show what every pair did.</li>
-    <li><strong>App admins</strong> can read the error logs, including IP addresses and browser details, to fix problems.</li>
+    <li><strong>App admins</strong> can read the error logs, including browser and operating system names and, for entries not linked to an account, the daily pseudonymous address code, to fix problems.</li>
     <li><strong>The people who run Randori</strong> can access the database when needed to operate, secure and fix the service.</li>
   </ul>
   <p>We don’t sell or share your information with anyone else, except the service providers below or where the law requires it.</p>
@@ -128,7 +128,7 @@
     <li><strong>Shared editor drafts</strong>: deleted about 90 days after the last change. <strong>Whiteboards</strong>: usually deleted about 90 days after the last change; some whiteboards can be kept for several months longer.</li>
     <li><strong>Meeting links</strong>: removed when your agreed session time changes.</li>
     <li><strong>Video call set-up messages</strong>: about an hour, cleared while calls are in use.</li>
-    <li><strong>Error logs</strong>, including IP addresses: 30 days.</li>
+    <li><strong>Error logs</strong>: 30 days. Entries from before we stopped storing IP addresses and full user agents are deleted on the same 30-day schedule.</li>
     <li><strong>Sign-in sessions</strong>: 12 hours; our record of each session is deleted about 30 days after it expires or you sign out. Cookies used during Google sign-in or when opening an invitation: 10 minutes.</li>
     <li><strong>Links in emails</strong>: email verification and password reset links expire after 30 minutes; invitation links after 7 days.</li>
     <li><strong>Requests to join</strong>: an unanswered request expires after 30 days. Once an owner approves or declines it, your name, email and note are removed straight away, and the rest of the record is deleted after 30 days (the clean-up runs weekly, so up to about 37 days).</li>

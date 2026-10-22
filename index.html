@@ -1731,21 +1731,67 @@ a.btn{text-decoration:none}
   const DECODED={'23':'#','3d':'=','40':'@','2f':'/','2e':'.'};
   const TOKEN=/[^\s"'<>()\\]+/g;
   const LINE_COL=/(?::\d+){1,2}$/;
-  const SECRET_PAIR=/(^|[^a-z0-9_])((?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?)=(["']?)([^\s&#"'<>,;()\\]+)/gi;
-  const SECRET_JSON=/("(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|[\w.+-]+)/gi;
-  const SECRET_ESCAPED_JSON=/(\\"(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf)(?:[_-]?(?:id|key|token|hash))?s?\\"\s*:\s*)(?:\\"[^"]*?\\"|[\w.+-]+)/gi;
+  const SECRET_PAIR=/(^|[^a-z0-9_])((?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf|ua|ip|xff|user[_-]?agent|forwarded[_-]for)(?:[_-]?(?:id|key|token|hash))?s?)=(["']?)([^\s&#"'<>,;()\\]+)/gi;
+  const SECRET_JSON=/("(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf|ua|ip|xff|user[_-]?agent|forwarded[_-]for)(?:[_-]?(?:id|key|token|hash))?s?"\s*:\s*)(?:"(?:[^"\\]|\\.)*"|[\w.+-]+)/gi;
+  const SECRET_ESCAPED_JSON=/(\\"(?:[a-z0-9]+[_-]|access|activation|refresh|id|invite|api|auth|client|session|csrf|xsrf|reset|verify|private)?(?:token|invite|code|secret|password|passwd|pwd|key|signature|sig|session|sid|auth|authorization|cookie|otp|credential|csrf|xsrf|ua|ip|xff|user[_-]?agent|forwarded[_-]for)(?:[_-]?(?:id|key|token|hash))?s?\\"\s*:\s*)(?:\\"[^"]*?\\"|[\w.+-]+)/gi;
   const AUTH_HEADER=/\b((?:proxy-)?authorization)(\s*[:=]\s*["']?)(?:(?:bearer|basic|token|digest)\s+)?[^\s,;"']+/gi;
   const SECRET_COLON=/\b((?:[a-z0-9]+[_-])?(?:password|passwd|pwd|secret|otp|cookie|credentials?|token)(?:[_-]?(?:id|key|token|hash))?)(\s*:\s*)[^\s,;]+/gi;
   const CODE_COLON=/\b(code)(\s*:\s*["']?)\d{4,10}\b/gi;
   const AUTH_SCHEME=/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
   const JWT=/(^|[^A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g;
   const EMAIL=/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,63}/g;
-  const SECRET_KEY=/token|secret|passw|pwd|authorization|cookie|credential|signature|invite|session|api_?key|private_?key|^(?:code|key|sig|sid|auth|otp)$/i;
+  // Client details the request already carries (ID-82): the address and user
+  // agent are stored reduced or not at all, so a copy inside the text goes too.
+  // The names ua, ip, xff, user-agent and x-forwarded-for join the secret names
+  // above. After a colon only the user-agent and forwarded names count, and
+  // they take the rest of the line, since a user agent holds spaces.
+  const CLIENT_COLON=/\b((?:[a-z0-9]+[_-])?(?:user[_-]?agent|forwarded[_-]for|xff|ua))(\s*:\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"'{}][^\r\n"'{}]*)/gi;
+  // A bare browser user agent: 'Mozilla/5.0 (…)' and the product tokens after it.
+  const USER_AGENT=/\bMozilla\/\d{1,2}\.\d{1,2} \([^()\r\n]{1,200}\)(?: (?:[\w.-]{1,40}\/[\w.+-]{1,40}|\([^()\r\n]{0,200}\)|Mobile))*/g;
+  // IPv4 and IPv6 literals become [ip] (an IPv4 :port stays); loopback stays
+  // readable. A candidate is a short run of hex digits, dots and colons that
+  // starts a token or follows '//', so product versions (Chrome/131.0.0.0,
+  // v1.2.3.4), three-part versions, stack-frame :line:col and clock times are
+  // never addresses.
+  const ADDRESS=/(^|[^0-9A-Za-z_:./-]|\/\/)([0-9A-Fa-f:.]{2,45})(?![0-9A-Za-z_:]|\.[0-9A-Za-z])/g;
+  const OCTET=/^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+  const HEXTET=/^[0-9A-Fa-f]{1,4}$/;
+  const SECRET_KEY=/token|secret|passw|pwd|authorization|cookie|credential|signature|invite|session|api_?key|private_?key|user[_-]?agent|forwarded|ip_?address|^(?:code|key|sig|sid|auth|otp|ua|ip|xff|x[_-]real[_-]ip)$/i;
   function cut(text,max){
     if(text.length<=max) return text;
     let end=max;
     while(end>0&&!CUT_DELIMITER.test(text[end-1])) end-=1;
     return text.slice(0,end)+'[truncated]';
+  }
+  function ipv4Literal(text){
+    const parts=text.split('.');
+    return parts.length===4&&parts.every(part=>OCTET.test(part));
+  }
+  function ipv6Literal(text){
+    const halves=text.split('::');
+    if(halves.length>2) return false;
+    let groups=0;
+    for(let half=0;half<halves.length;half+=1){
+      if(!halves[half]) continue;
+      const parts=halves[half].split(':');
+      for(let index=0;index<parts.length;index+=1){
+        if(HEXTET.test(parts[index])) groups+=1;
+        else if(half===halves.length-1&&index===parts.length-1&&ipv4Literal(parts[index])) groups+=2;
+        else return false;
+      }
+    }
+    return groups>0&&(halves.length===2?groups<8:groups===8);
+  }
+  function loopbackLiteral(text){
+    return /^(?:::ffff:)?127\./i.test(text)||/^(?:0{1,4}:){7}0{0,3}1$|^::1$/.test(text);
+  }
+  function redactAddress(match,lead,candidate){
+    const dots=/\.*$/.exec(candidate)[0];
+    const core=candidate.slice(0,candidate.length-dots.length);
+    const port=/^([\d.]+)(:\d{1,5})$/.exec(core);
+    const address=port&&ipv4Literal(port[1])?port[1]:core;
+    if(!(ipv4Literal(address)||ipv6Literal(address))||loopbackLiteral(address)) return match;
+    return lead+'[ip]'+(address===core?'':port[2])+dots;
   }
   function stripFragment(token){
     const hash=token.indexOf('#');
@@ -1766,8 +1812,11 @@ a.btn{text-decoration:none}
       .replace(SECRET_ESCAPED_JSON,'$1\\"[redacted]\\"')
       .replace(SECRET_COLON,'$1$2[redacted]')
       .replace(CODE_COLON,'$1$2[redacted]')
+      .replace(CLIENT_COLON,'$1$2[redacted]')
+      .replace(USER_AGENT,'[user agent]')
       .replace(JWT,'$1[jwt]')
-      .replace(EMAIL,'[email]');
+      .replace(EMAIL,'[email]')
+      .replace(ADDRESS,redactAddress);
   }
   function redactNode(value,depth,budget){
     if(budget.left<=0) return '[truncated]';

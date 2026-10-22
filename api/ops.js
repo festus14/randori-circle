@@ -20,6 +20,7 @@ import {
 } from './_circle-pairing.js';
 import { purgeExpiredCodeDocuments } from './_code-document.js';
 import { runAppLogRetention } from './_app-log-retention.js';
+import { appLogClientFields } from './_log-privacy.js';
 import {
   OutboxEventRedactedError,
   outboxPiiRetentionEnabled,
@@ -117,8 +118,9 @@ async function logServerOps(level, event, message, meta, req){
     const ev=String(event).slice(0,80);
     const msg=String(message).slice(0,2000);
     const route = req && req.url ? String(req.url).slice(0,300) : null;
-    const ua = req && req.headers ? (req.headers["user-agent"]||"").toString().slice(0,300) : null;
-    const ip = req && req.headers ? (req.headers["x-forwarded-for"]||"").toString().split(",")[0].slice(0,80) : null;
+    // ID-82: a coarse user-agent family and a daily keyed address hash (these
+    // rows never carry a user_id), never the raw values.
+    const {ua,ip} = appLogClientFields(req);
     await db.execute({sql:"INSERT INTO app_logs (level, source, event, message, meta_json, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?, ?, datetime('now'))", args:[lvl, "server", ev, msg, metaStr, route, ua, ip]});
   }catch(e){ try{ console.warn("[logServerOps fail]", e && e.message); }catch{} }
 }
