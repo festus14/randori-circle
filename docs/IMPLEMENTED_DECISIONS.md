@@ -3280,8 +3280,8 @@ did the backup drill pass, is Run working?".
   and `readOutboxMetrics` plus one per-type due/lease/dead-letter aggregate,
   judged with the watchdog's 15-minute threshold); **Code execution** (the
   configured provider and a bounded reason, 24-hour runner outcomes from
-  `app_logs`, and the latest #249 smoke result, see the #343 addendum); **Readiness and
-  migrations** (the `/api/health/ready` probe plus a ledger summary: state,
+  `app_logs`, and the latest #249 smoke result per the #343 addendum below);
+  **Readiness and migrations** (the `/api/health/ready` probe plus a ledger summary: state,
   versions and the newest names, no checksums); **Recent errors** (24-hour
   `error`/`warn` counts by source and event category, including
   `source='client'` rows). Event names that do not look like code identifiers
@@ -3316,8 +3316,9 @@ need an app-readable evidence store before those cards can go live.
 extra script is downloaded. The owner sets `ADMIN_DIAGNOSTICS_ENABLED=true` in
 Vercel Production and redeploys. To recover, unset it and redeploy.
 
-**Addendum (#343): the execution card shows the latest smoke result.** The
-deferred #249 seam is replaced by `execution.smoke`, still behind
+### ID-73 addendum: show the latest execution smoke result (#343)
+
+The deferred #249 seam is replaced by `execution.smoke`, still behind
 `ADMIN_DIAGNOSTICS_ENABLED` and with no migration.
 - It reads through `readLatestExecutionSmoke` and the new
   `latestExecutionSmokeLanguages` in `api/_execution-smoke.js`, so the rules
@@ -3470,7 +3471,8 @@ pause it, disable the workflow in GitHub Actions. To remove it, revert this
 change. The `app_logs` rows are ordinary log rows and fall under the 30-day
 retention (ID-72).
 
-**Addendum (#342): also drop environment deployments that link to GitHub.**
+### ID-74 addendum: drop environment deployments whose status links to GitHub (#342)
+
 When Vercel's deployment starts a workflow, the run is attributed to
 `vercel[bot]`. The lowercase `production` environment deployment its job
 records is therefore created by `vercel[bot]` too, and it passed the creator
