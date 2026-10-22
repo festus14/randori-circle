@@ -222,7 +222,7 @@
 .circle-bulk-row .circle-row-actions,
 .circle-side .circle-bulk-row .circle-row-actions { grid-column: 1 / -1; justify-content: flex-start; }
 
-/* Personal progress in History (issue 293, ID-73; provisional design, needs-design).
+/* Personal progress in History (issue 293, ID-76; provisional design, needs-design).
    Tokens only. Charts are aria-hidden SVG; the summaries and the table carry the meaning. */
 .history-progress[hidden] { display: none; }
 .progress-body { display: grid; gap: var(--space-4); }

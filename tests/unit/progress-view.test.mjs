@@ -88,7 +88,7 @@ function body(overrides = {}) {
   return {
     ok: true, user: { id: ME }, generated_at: '2026-11-04T12:00:00.000Z', time_zone: ZONE,
     current_cycle: { cycle_id: '2026-W45', starts_at: STARTS[11], ends_at: STARTS[12] },
-    sessions: { completed: 4, solo_completed: 1, pairings: 6, window_limited: false },
+    sessions: { completed: 4, solo_completed: 1, pairings: 6, demo_pairings: 0, window_limited: false },
     streak: { rules_version: 1, current_weeks: 2, longest_weeks: 2, this_week: 'in_progress' },
     weeks,
     runs: { window_weeks: 12, verified: 4, passed: 2, scan_limited: false },
@@ -115,7 +115,7 @@ const view = (overrides) => normalizeProgress(body(overrides), { userId: ME });
 test('a valid progress body becomes a view model', () => {
   const result = view();
   assert.equal(result.timeZone, ZONE);
-  assert.deepEqual(result.sessions, { completed: 4, pairings: 6, soloCompleted: 1, windowLimited: false });
+  assert.deepEqual(result.sessions, { completed: 4, pairings: 6, soloCompleted: 1, demoPairings: 0, windowLimited: false });
   assert.deepEqual(result.streak, { current: 2, longest: 2, thisWeek: 'in_progress' });
   assert.equal(result.weeks.length, 12);
   assert.deepEqual(result.weeks[6], {
@@ -130,10 +130,12 @@ test('anything malformed, inconsistent or for another member is rejected', () =>
   const week = patch => body().weeks.map((item, index) => (index === 3 ? { ...item, ...patch } : item));
   const cases = [
     null, 'text', { ...body(), ok: false }, { ...body(), user: { id: 3 } },
-    body({ sessions: { completed: 7, solo_completed: 0, pairings: 6, window_limited: false } }),
-    body({ sessions: { completed: 1, solo_completed: 2, pairings: 6, window_limited: false } }),
-    body({ sessions: { completed: 1, solo_completed: 0, pairings: 6, window_limited: 'no' } }),
-    body({ sessions: { completed: -1, solo_completed: 0, pairings: 6, window_limited: false } }),
+    body({ sessions: { completed: 7, solo_completed: 0, pairings: 6, demo_pairings: 0, window_limited: false } }),
+    body({ sessions: { completed: 1, solo_completed: 2, pairings: 6, demo_pairings: 0, window_limited: false } }),
+    body({ sessions: { completed: 1, solo_completed: 0, pairings: 6, demo_pairings: 0, window_limited: 'no' } }),
+    body({ sessions: { completed: -1, solo_completed: 0, pairings: 6, demo_pairings: 0, window_limited: false } }),
+    body({ sessions: { completed: 1, solo_completed: 0, pairings: 6, window_limited: false } }),
+    body({ sessions: { completed: 1, solo_completed: 0, pairings: 6, demo_pairings: -1, window_limited: false } }),
     body({ streak: { current_weeks: 3, longest_weeks: 2, this_week: 'in_progress' } }),
     body({ streak: { current_weeks: 0, longest_weeks: null, this_week: 'in_progress' } }),
     body({ streak: { current_weeks: 0, longest_weeks: 0, this_week: 'unknown' } }),
@@ -199,7 +201,7 @@ test('patterns and statuses read as plain language', () => {
 test('the streak sentence explains the rule without blame', () => {
   const going = streakSentence(view());
   assert.match(going, /^You have practised with a partner 2 weeks in a row\. This week still counts once you both confirm it\./);
-  assert.match(going, /pause your streak; they never end it\.$/);
+  assert.match(going, /only pause your streak\. It ends only when a paired week finishes without everyone confirming\.$/);
   assert.match(streakSentence(view({ streak: { current_weeks: 1, longest_weeks: 1, this_week: 'in_progress' } })), /1 week in a row/);
   const restart = streakSentence(view({ streak: { current_weeks: 0, longest_weeks: 4, this_week: 'in_progress' } }));
   assert.match(restart, /^Your next completed session starts a new streak\./);
@@ -210,8 +212,12 @@ test('the streak sentence explains the rule without blame', () => {
 
 test('chart summaries carry the numbers as text', () => {
   const result = view();
-  assert.equal(weeksSummary(result.weeks), 'Last 12 weeks: 3 weeks with a completed session, 7 paused weeks, 1 week with no session recorded.');
+  // Weeks before the first pairing are not counted as paused.
+  assert.equal(weeksSummary(result.weeks), 'Last 12 weeks: 3 weeks with a completed session, 2 paused weeks, 1 week with no session recorded.');
   assert.equal(weeksSummary([{ status: 'completed' }]), 'Last 1 week: 1 week with a completed session.');
+  assert.equal(weeksSummary([{ status: 'no_pairing' }, { status: 'no_pairing' }]), 'Last 2 weeks: no pairings yet.');
+  assert.equal(weeksSummary([{ status: 'no_pairing' }, { status: 'completed' }, { status: 'no_pairing' }, { status: 'in_progress' }]),
+    'Last 4 weeks: 1 week with a completed session, 1 paused week.');
   assert.equal(runsSummary(result), '4 verified runs in the last 12 weeks, 2 passed every case. Most runs: 3 in the week of 25 oct.');
   const quiet = view({ weeks: body().weeks.map(week => ({ ...week, verified_runs: 0, passed_runs: 0 })),
     runs: { window_weeks: 12, verified: 0, passed: 0, scan_limited: false } });
@@ -290,7 +296,7 @@ test('new members get an empty state; limited totals are disclosed; no roles sec
   const weeks = body().weeks.map(week => ({ ...week, status: 'no_pairing', completion: null, verified_runs: 0, passed_runs: 0 }));
   renderProgress(doc, doc.section, view({
     weeks, streak: { current_weeks: 0, longest_weeks: 0, this_week: 'no_pairing' },
-    sessions: { completed: 0, solo_completed: 0, pairings: 0, window_limited: false },
+    sessions: { completed: 0, solo_completed: 0, pairings: 0, demo_pairings: 0, window_limited: false },
     runs: { window_weeks: 12, verified: 0, passed: 0, scan_limited: false },
     roles: { available: false },
   }));
@@ -299,8 +305,12 @@ test('new members get an empty state; limited totals are disclosed; no roles sec
   assert.doesNotMatch(doc.section.textContent, /most recent records/);
   // Zero runs still draw a visible baseline bar.
   assert.ok(doc.section.byTestId('progress-runs').all(child => child.tagName === 'RECT').every(bar => bar.getAttribute('height') === '2'));
+  assert.equal(doc.section.byTestId('progress-demo-note'), null);
+  const demo = fakeDocument();
+  renderProgress(demo, demo.section, view({ sessions: { completed: 4, solo_completed: 1, pairings: 6, demo_pairings: 2, window_limited: false } }));
+  assert.equal(demo.section.byTestId('progress-demo-note').textContent, 'Demo sessions aren’t counted here.');
   const limited = fakeDocument();
-  renderProgress(limited, limited.section, view({ sessions: { completed: 4, solo_completed: 1, pairings: 6, window_limited: true } }));
+  renderProgress(limited, limited.section, view({ sessions: { completed: 4, solo_completed: 1, pairings: 6, demo_pairings: 0, window_limited: true } }));
   assert.match(limited.section.textContent, /Totals cover your most recent records only\./);
   const scanned = fakeDocument();
   renderProgress(scanned, scanned.section, view({ runs: { window_weeks: 12, verified: 4, passed: 2, scan_limited: true } }));
@@ -336,6 +346,7 @@ function host({ userId = ME, visible = true, replies = [] } = {}) {
 test('without the section the controller is inert', async () => {
   const controller = mountProgress({ doc: fakeDocument({ withSection: false }), host: host() });
   assert.equal(await controller.load(), false);
+  controller.release(ME);
   assert.equal(await controller.resume(), false);
   controller.stop();
   controller.reset();
@@ -359,7 +370,7 @@ test('load shows a loading state, then the dashboard', async () => {
   fake.fetchProgress = () => refresh.promise;
   const again = controller.load();
   assert.ok(doc.section.byTestId('progress-completed'));
-  refresh.resolve(response(200, body({ sessions: { completed: 5, solo_completed: 1, pairings: 6, window_limited: false } })));
+  refresh.resolve(response(200, body({ sessions: { completed: 5, solo_completed: 1, pairings: 6, demo_pairings: 0, window_limited: false } })));
   assert.equal(await again, true);
   assert.equal(doc.section.byTestId('progress-completed').textContent, 'Completed sessions5');
 });
@@ -408,7 +419,7 @@ test('when two loads overlap only the newer one renders', async () => {
   const first = controller.load();
   const second = controller.load();
   assert.equal(fake.state.calls[0].aborted, true);
-  older.resolve(response(200, body({ sessions: { completed: 1, solo_completed: 0, pairings: 6, window_limited: false } })));
+  older.resolve(response(200, body({ sessions: { completed: 1, solo_completed: 0, pairings: 6, demo_pairings: 0, window_limited: false } })));
   assert.equal(await first, false);
   assert.equal(doc.section.getAttribute('aria-busy'), 'true');
   newer.resolve(response(200, body()));
@@ -447,6 +458,49 @@ test('failures offer one Retry that loads again', async () => {
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(doc.section.byTestId('progress-completed'));
   assert.equal(fake.state.calls.length, 4);
+});
+
+test('re-rendering History keeps the same member’s dashboard until the reload replaces it', async () => {
+  const doc = fakeDocument();
+  const fake = host({ replies: [response(200, body())] });
+  const controller = mountProgress({ doc, host: fake });
+  // Nothing shown yet: release clears.
+  controller.release(ME);
+  assert.equal(doc.section.hidden, true);
+  assert.equal(await controller.load(), true);
+  controller.release(ME);
+  assert.equal(doc.section.hidden, false);
+  assert.ok(doc.section.byTestId('progress-completed'), 'kept for the same member');
+  const refresh = deferred();
+  fake.fetchProgress = () => refresh.promise;
+  const reloading = controller.load();
+  assert.ok(doc.section.byTestId('progress-completed'), 'no skeleton while reloading');
+  assert.equal(doc.section.byTestId('progress-status').textContent, 'Progress loaded');
+  refresh.resolve(response(200, body({ sessions: { completed: 5, solo_completed: 1, pairings: 6, demo_pairings: 0, window_limited: false } })));
+  assert.equal(await reloading, true);
+  assert.equal(doc.section.byTestId('progress-completed').textContent, 'Completed sessions5');
+  // Another member, or none, clears it immediately.
+  controller.release(9);
+  assert.equal(doc.section.hidden, true);
+  assert.equal(doc.section.children.length, 0);
+  assert.equal(await mountProgress({ doc, host: host({ replies: [response(200, body())] }) }).load(), true);
+});
+
+test('a dashboard rendered for another member is replaced by a skeleton first', async () => {
+  const doc = fakeDocument();
+  const fake = host({ replies: [response(200, body())] });
+  const controller = mountProgress({ doc, host: fake });
+  assert.equal(await controller.load(), true);
+  fake.state.userId = 9;
+  const pending = deferred();
+  fake.fetchProgress = () => pending.promise;
+  const loading = controller.load();
+  assert.equal(doc.section.byTestId('progress-completed'), null);
+  assert.equal(doc.section.byTestId('progress-status').textContent, 'Loading your progress…');
+  pending.resolve(response(200, { ...body(), user: { id: 9 } }));
+  assert.equal(await loading, true);
+  controller.release(null);
+  assert.equal(doc.section.hidden, true);
 });
 
 test('stop aborts an in-flight load and resume restarts it; reset clears everything', async () => {

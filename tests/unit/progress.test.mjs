@@ -23,6 +23,7 @@ import {
   progressDashboardEnabled,
   progressStatements,
   readMemberProgress,
+  splitPairingRows,
   STREAK_RULES_VERSION,
   WEEK_STATUSES,
 } from '../../api/_progress.js';
@@ -167,7 +168,7 @@ test('consecutive completed weeks across the October clock change form one strea
   const current=pairing('2026-W45');
   const progress=build({pairings:[current,...weeks].reverse(),completed:weeks});
   assert.deepEqual(progress.streak,{rules_version:STREAK_RULES_VERSION,current_weeks:3,longest_weeks:3,this_week:'in_progress'});
-  assert.deepEqual(progress.sessions,{completed:3,solo_completed:0,pairings:4,window_limited:false});
+  assert.deepEqual(progress.sessions,{completed:3,solo_completed:0,pairings:4,demo_pairings:0,window_limited:false});
   assert.equal(progress.weeks.length,PROGRESS_WEEKS_SHOWN);
   assert.equal(progress.weeks.at(-1).cycle_id,'2026-W45');
   assert.deepEqual(progress.weeks.slice(-4).map(week=>[week.cycle_id,week.status,week.completion]),[
@@ -214,7 +215,7 @@ test('odd-member solo weeks pause the streak, even when the solo session was con
   assert.equal(progress.streak.current_weeks,2);
   assert.equal(progress.streak.this_week,'completed');
   // Completed sessions match History: the solo receipt is a completed session.
-  assert.deepEqual(progress.sessions,{completed:3,solo_completed:1,pairings:4,window_limited:false});
+  assert.deepEqual(progress.sessions,{completed:3,solo_completed:1,pairings:4,demo_pairings:0,window_limited:false});
   // A current-week solo pairing pauses too.
   assert.equal(build({pairings:[pairing('2026-W45',{ai:true})]}).streak.this_week,'solo');
 });
@@ -324,6 +325,24 @@ test('the pairing window is bounded and says when it was cut',()=>{
   const progress=build({pairings:rows});
   assert.equal(progress.sessions.window_limited,true);
   assert.equal(progress.sessions.pairings,MAX_PROGRESS_PAIRINGS);
+  // Exactly the bound is complete, not cut.
+  const full=build({pairings:rows.slice(0,MAX_PROGRESS_PAIRINGS)});
+  assert.equal(full.sessions.window_limited,false);
+  assert.equal(full.sessions.pairings,MAX_PROGRESS_PAIRINGS);
+});
+
+test('demo-week pairings are reported but never counted, like /api/stats',()=>{
+  const real=pairing('2026-W43');
+  const demo={...pairing('2026-W44',{group:999}),is_demo:1};
+  const progress=build({pairings:[demo,real],completed:[real,demo]});
+  assert.deepEqual(progress.sessions,{completed:1,solo_completed:0,pairings:1,demo_pairings:1,window_limited:false});
+  // The demo week does not make its cycle completed.
+  assert.equal(statusOf(progress,'2026-W44'),'no_pairing');
+  assert.equal(progress.streak.current_weeks,1);
+  // A malformed demo row cannot break the real counts either.
+  const broken=build({pairings:[{...demo,user_b_source:null,user_a_id:77},real],completed:[real]});
+  assert.equal(broken.sessions.demo_pairings,1);
+  assert.equal(broken.sessions.completed,1);
 });
 
 test('pairings with an unknown participant source are dropped like History drops them',()=>{
@@ -451,16 +470,32 @@ test('role balance uses the final candidate of completed partnered sessions only
 
 test('statements are bounded and scoped to the session user',()=>{
   const statements=progressStatements({userId:ME,now:NOW});
-  assert.equal(statements.length,5);
+  assert.equal(statements.length,3);
   for(const statement of statements){
     assert.match(statement.sql,/LIMIT \?/);
     assert.ok(statement.args.includes(ME));
     assert.doesNotMatch(statement.sql,/\b(?:INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|PRAGMA)\b/i);
   }
   assert.deepEqual(statements[0].args,[ME,ME,ME,ME,MAX_PROGRESS_PAIRINGS+1]);
-  assert.match(statements[0].sql,/COALESCE\(pw\.is_demo,0\)=0/);
-  assert.deepEqual(statements[4].args,[ME,MAX_PROGRESS_RUN_SCAN+1]);
-  assert.equal(statements[3].args[1],'2021-11-03T12:00:00.000Z');
+  // Skip decisions: from the deepest examinable cycle up to now, never a future cycle.
+  assert.deepEqual(statements[1].args,['2021-11-03T12:00:00.000Z',NOW,ME,MAX_PROGRESS_PAIRINGS]);
+  assert.deepEqual(statements[2].args,[ME,MAX_PROGRESS_RUN_SCAN+1]);
+});
+
+test('joined pairing rows split back into pairings, controls and receipts',()=>{
+  const base={week_id:44,week_label:'2026-W44',week_start:weekStarts['2026-W44'],is_ai_pair:0,user_a_id:ME,user_b_id:PARTNER,
+    user_c_id:null,user_a_source:'auth',user_b_source:'auth',user_c_source:null};
+  const split=splitPairingRows([
+    {...base,pg_id:2,control_user_a_id:ME,control_user_b_id:PARTNER,control_candidate_user_id:PARTNER,receipt_user_id:ME,receipt_confirmed_at:'a'},
+    {...base,pg_id:2,control_user_a_id:ME,control_user_b_id:PARTNER,control_candidate_user_id:PARTNER,receipt_user_id:PARTNER,receipt_confirmed_at:'b'},
+    {...base,pg_id:1,control_candidate_user_id:null,receipt_user_id:null},
+  ]);
+  assert.deepEqual(split.pairingRows.map(row=>row.pg_id),[2,1]);
+  assert.deepEqual(split.controlRows,[{week_id:44,pair_group_id:2,pair_user_a_id:ME,pair_user_b_id:PARTNER,candidate_user_id:PARTNER}]);
+  assert.deepEqual(split.receiptRows,[
+    {week_id:44,pair_group_id:2,user_id:ME,confirmed_at:'a'},{week_id:44,pair_group_id:2,user_id:PARTNER,confirmed_at:'b'},
+  ]);
+  assert.deepEqual(splitPairingRows([]),{pairingRows:[],controlRows:[],receiptRows:[]});
 });
 
 test('readiness probes are cached per client and retried after a failure',async()=>{
@@ -478,9 +513,9 @@ test('readiness probes are cached per client and retried after a failure',async(
 
 test('reads use database time and reject malformed results',async()=>{
   const okResult={rows:[]};
-  const db=({clock='2026-11-04T12:00:00.000Z',results=[okResult,okResult,okResult,okResult,okResult]}={})=>({
+  const db=({clock='2026-11-04T12:00:00.000Z',results=[okResult,okResult,okResult]}={})=>({
     execute:async()=>({rows:[{now_utc:clock}]}),
-    batch:async(statements,mode)=>{ assert.equal(mode,'read'); assert.equal(statements.length,5); return results; },
+    batch:async(statements,mode)=>{ assert.equal(mode,'read'); assert.equal(statements.length,3); return results; },
   });
   const progress=await readMemberProgress(db(),{userId:ME,timeZone:ZONE,versionKey:KEY,exercises:EXERCISES});
   assert.equal(progress.generated_at,NOW);
@@ -491,5 +526,5 @@ test('reads use database time and reject malformed results',async()=>{
   await assert.rejects(()=>readMemberProgress({execute:async()=>({}),batch:async()=>[]},{userId:ME}),ProgressDataError);
   await assert.rejects(()=>readMemberProgress(db({results:[okResult]}),{userId:ME}),ProgressDataError);
   await assert.rejects(()=>readMemberProgress(db({results:{}}),{userId:ME}),ProgressDataError);
-  await assert.rejects(()=>readMemberProgress(db({results:[okResult,okResult,okResult,okResult,{}]}),{userId:ME}),ProgressDataError);
+  await assert.rejects(()=>readMemberProgress(db({results:[okResult,okResult,{}]}),{userId:ME}),ProgressDataError);
 });

@@ -1,13 +1,15 @@
-// Personal progress dashboard (issue #293, decision ID-73).
+// Personal progress dashboard (issue #293, decision ID-76).
 //
 // Every number is computed per request from the signed-in member's own
-// existing records: their non-demo primary pairings with the completion
-// receipts History, recap and /api/stats already project, their explicit
-// "Skip this cycle" decisions, the shared session controls of their completed
-// sessions, and their own attested runs. Nothing is stored, no table or column
-// is added, and every read is bounded by a LIMIT on an indexed path. The
-// caller never chooses whose records are read: the handler passes the session
-// user id only.
+// existing records: their primary pairings with the completion receipts
+// History, recap and /api/stats already project, their explicit "Skip this
+// cycle" decisions, the shared session controls of their completed sessions,
+// and their own attested runs. Nothing is stored and no table, column or index
+// is added. Every read has a LIMIT, but not every read is an index seek: there
+// is no index on a pairing member, so the pairing read scans pairing_groups
+// once (as History and /api/stats do). docs/PROGRESS_DASHBOARD.md lists the
+// query plans. The caller never chooses whose records are read: the handler
+// passes the session user id only.
 import { listPublicExercises } from './_catalog.js';
 import { PairRecapDataError, projectRecapRun } from './_pair-recap.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
@@ -246,8 +248,12 @@ export function buildMemberProgress({
   if(!Number.isFinite(instant.getTime())) throw new ProgressDataError('progress time is invalid');
   const current=cycleAt(instant,timeZone);
 
+  // Demo-week pairings share the read window but are never counted, matching
+  // /api/stats `your_sessions`; History lists them, so the count is reported.
   const pairingWindowLimited=pairingRows.length>MAX_PROGRESS_PAIRINGS;
-  const pairings=pairingRows.slice(0,MAX_PROGRESS_PAIRINGS).filter(participantsAreKnown);
+  const windowRows=pairingRows.slice(0,MAX_PROGRESS_PAIRINGS);
+  const demoPairings=windowRows.filter(row=>Number(row.is_demo)===1).length;
+  const pairings=windowRows.filter(row=>Number(row.is_demo)!==1&&participantsAreKnown(row));
   const receiptsByPair=new Map();
   for(const receipt of receiptRows){
     const key=`${receipt.week_id}:${receipt.pair_group_id}`;
@@ -326,6 +332,7 @@ export function buildMemberProgress({
       completed:completed.length,
       solo_completed:completed.filter(session=>session.isAi).length,
       pairings:sessions.length,
+      demo_pairings:demoPairings,
       window_limited:pairingWindowLimited,
     },
     streak:{
@@ -352,56 +359,91 @@ export function buildMemberProgress({
 }
 
 // ---------------------------------------------------------------------------
-// Bounded reads (one read transaction)
+// Bounded reads (one clock read, then one read batch)
 // ---------------------------------------------------------------------------
 
-const OWN_PAIRINGS_SQL=`SELECT pg.id AS pg_id,pg.week_id,pg.user_a_id,pg.user_b_id,pg.user_c_id,
-    pa.source AS user_a_source,pb.source AS user_b_source,pc.source AS user_c_source,
-    pg.is_ai_pair,pw.week_label,pw.week_start
-  FROM pairing_groups pg
-  JOIN pairing_weeks pw ON pw.id=pg.week_id
-  JOIN pairing_participants viewer ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
-  LEFT JOIN pairing_participants pa ON pa.week_id=pg.week_id AND pa.user_id=pg.user_a_id
-  LEFT JOIN pairing_participants pb ON pb.week_id=pg.week_id AND pb.user_id=pg.user_b_id
-  LEFT JOIN pairing_participants pc ON pc.week_id=pg.week_id AND pc.user_id=pg.user_c_id
-  WHERE (pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?) AND COALESCE(pw.is_demo,0)=0
-  ORDER BY pw.week_start DESC,pg.id DESC
-  LIMIT ?`;
+// One statement reads the pairing window once (`mine` has a LIMIT, so SQLite
+// materializes it instead of flattening it) and then looks up each pairing's
+// session controls and receipts by primary key: a LEFT JOIN keeps `mine` as
+// the outer loop.
+const PAIRINGS_WITH_RECEIPTS_SQL=`WITH mine AS (
+    SELECT pg.id AS pg_id,pg.week_id,pg.user_a_id,pg.user_b_id,pg.user_c_id,
+      pa.source AS user_a_source,pb.source AS user_b_source,pc.source AS user_c_source,
+      pg.is_ai_pair,pw.week_label,pw.week_start,COALESCE(pw.is_demo,0) AS is_demo
+    FROM pairing_groups pg
+    JOIN pairing_weeks pw ON pw.id=pg.week_id
+    JOIN pairing_participants viewer ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
+    LEFT JOIN pairing_participants pa ON pa.week_id=pg.week_id AND pa.user_id=pg.user_a_id
+    LEFT JOIN pairing_participants pb ON pb.week_id=pg.week_id AND pb.user_id=pg.user_b_id
+    LEFT JOIN pairing_participants pc ON pc.week_id=pg.week_id AND pc.user_id=pg.user_c_id
+    WHERE pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?
+    ORDER BY pw.week_start DESC,pg.id DESC
+    LIMIT ?
+  )
+  SELECT mine.*,
+    control.pair_user_a_id AS control_user_a_id,control.pair_user_b_id AS control_user_b_id,
+    control.candidate_user_id AS control_candidate_user_id,
+    receipt.user_id AS receipt_user_id,receipt.confirmed_at AS receipt_confirmed_at
+  FROM mine
+  LEFT JOIN pair_session_controls control ON control.week_id=mine.week_id AND control.pair_group_id=mine.pg_id
+  LEFT JOIN session_completion_receipts receipt ON receipt.week_id=mine.week_id AND receipt.pair_group_id=mine.pg_id
+  ORDER BY mine.week_start DESC,mine.pg_id DESC,receipt.user_id`;
 
 export function progressStatements({userId,now}){
-  const own=[userId,userId,userId,userId,MAX_PROGRESS_PAIRINGS+1];
-  const mine=`WITH mine AS (${OWN_PAIRINGS_SQL})`;
-  // Skip decisions older than the deepest cycle the response can examine are irrelevant.
+  // Skip decisions older than the deepest cycle the response can examine, or
+  // saved for a cycle that has not started, cannot affect a week shown.
   const oldest=new Date(Date.parse(now)-(MAX_PROGRESS_PAIRINGS+1)*7*24*60*60*1000).toISOString();
   return [
-    {sql:OWN_PAIRINGS_SQL,args:own},
-    {sql:`${mine}
-      SELECT receipt.week_id,receipt.pair_group_id,receipt.user_id,receipt.confirmed_at
-      FROM session_completion_receipts receipt
-      JOIN mine ON mine.week_id=receipt.week_id AND mine.pg_id=receipt.pair_group_id
-      ORDER BY receipt.week_id,receipt.pair_group_id,receipt.user_id`,args:own},
-    {sql:`${mine}
-      SELECT control.week_id,control.pair_group_id,control.pair_user_a_id,control.pair_user_b_id,
-        control.candidate_user_id
-      FROM pair_session_controls control
-      JOIN mine ON mine.week_id=control.week_id AND mine.pg_id=control.pair_group_id`,args:own},
+    {sql:PAIRINGS_WITH_RECEIPTS_SQL,args:[userId,userId,userId,userId,MAX_PROGRESS_PAIRINGS+1]},
+    // CROSS JOIN keeps the circle's cycles (one row a week) as the outer loop,
+    // so each decision is a primary-key lookup rather than a scan of every
+    // member's decisions.
     {sql:`SELECT cycle.cycle_id
       FROM pairing_cycles cycle
-      JOIN pairing_cycle_availability decision
-        ON decision.scope_key=cycle.scope_key AND decision.cycle_key=cycle.cycle_key AND decision.user_id=?
+      CROSS JOIN pairing_cycle_availability decision
       WHERE cycle.scope_key=(SELECT 'circle:'||circle.id FROM circles circle
           WHERE circle.is_primary=1 AND circle.archived_at IS NULL ORDER BY circle.id LIMIT 1)
+        AND cycle.starts_at>=? AND cycle.starts_at<=?
+        AND decision.scope_key=cycle.scope_key AND decision.cycle_key=cycle.cycle_key AND decision.user_id=?
         AND decision.decision_source='user' AND decision.is_available=0
-        AND cycle.starts_at>=?
       ORDER BY cycle.starts_at DESC
-      LIMIT ?`,args:[userId,oldest,MAX_PROGRESS_PAIRINGS]},
+      LIMIT ?`,args:[oldest,now,userId,MAX_PROGRESS_PAIRINGS]},
     // idx_runs_user (user_id, created_at DESC) serves this newest-first window.
-    {sql:`SELECT id,user_id,week_id,pair_group_id,question_slug,language,code,test_cases_snapshot,results_json,
-        passed_count,total_count,duration_ms,created_at
+    // results_json and the snapshot are part of the signed attestation; the
+    // code is needed only to check a v3 (pair room) attestation's code hash.
+    {sql:`SELECT id,user_id,week_id,pair_group_id,question_slug,language,
+        CASE WHEN json_valid(test_cases_snapshot) THEN
+          CASE WHEN json_extract(test_cases_snapshot,'$.attestation_version')=3 THEN code END
+        END AS code,
+        test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at
       FROM session_runs WHERE user_id=?
       ORDER BY created_at DESC
       LIMIT ?`,args:[userId,MAX_PROGRESS_RUN_SCAN+1]},
   ];
+}
+
+/** Splits the joined pairing rows back into pairings, controls and receipts. */
+export function splitPairingRows(rows){
+  const pairingRows=[];
+  const controlRows=[];
+  const receiptRows=[];
+  const seen=new Set();
+  for(const row of rows){
+    const key=`${row.week_id}:${row.pg_id}`;
+    if(!seen.has(key)){
+      seen.add(key);
+      pairingRows.push(row);
+      if(row.control_candidate_user_id!=null){
+        controlRows.push({week_id:row.week_id,pair_group_id:row.pg_id,pair_user_a_id:row.control_user_a_id,
+          pair_user_b_id:row.control_user_b_id,candidate_user_id:row.control_candidate_user_id});
+      }
+    }
+    if(row.receipt_user_id!=null){
+      receiptRows.push({week_id:row.week_id,pair_group_id:row.pg_id,user_id:row.receipt_user_id,
+        confirmed_at:row.receipt_confirmed_at});
+    }
+  }
+  return {pairingRows,controlRows,receiptRows};
 }
 
 export async function readMemberProgress(db,{userId,timeZone,versionKey,verifyAttestation,exercises}){
@@ -409,12 +451,12 @@ export async function readMemberProgress(db,{userId,timeZone,versionKey,verifyAt
   const now=String(clock.rows?.[0]?.now_utc||'');
   if(!Number.isFinite(Date.parse(now))) throw new ProgressDataError('database time is unavailable');
   const results=await db.batch(progressStatements({userId,now}),'read');
-  if(!Array.isArray(results)||results.length!==5||results.some(result=>!Array.isArray(result?.rows))){
+  if(!Array.isArray(results)||results.length!==3||results.some(result=>!Array.isArray(result?.rows))){
     throw new ProgressDataError('progress read is invalid');
   }
-  const [pairings,receipts,controls,skips,runs]=results.map(result=>result.rows);
+  const [pairings,skips,runs]=results.map(result=>result.rows);
   return buildMemberProgress({
-    userId,now:new Date(now),timeZone,pairingRows:pairings,receiptRows:receipts,controlRows:controls,
+    userId,now:new Date(now),timeZone,...splitPairingRows(pairings),
     skipRows:skips,runRows:runs,versionKey,verifyAttestation,
     ...(exercises?{exercises}:{}),
   });

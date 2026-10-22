@@ -11,9 +11,10 @@ import {
   openApp,
   pathIs,
   startGoldenRuntime,
+  withDatabase,
 } from './golden-runtime';
 
-// Issue #293 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 15). The real
+// Issue #293 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 16). The real
 // loopback runtime runs with PROGRESS_DASHBOARD_ENABLED. Setup (a verified
 // run, roles, both completion receipts) goes through the production APIs; the
 // Progress section in History is driven through the UI and checked against
@@ -75,7 +76,8 @@ test('progress: a member sees only their own sessions, streak, coverage and role
     await expect(dashboard.getByTestId('progress-completed')).toContainText('0');
     await expect(dashboard.getByTestId('progress-streak')).toContainText('0 weeks');
     await expect(dashboard.getByTestId('progress-streak-note')).toContainText('This week still counts once you both confirm it.');
-    await expect(dashboard.getByTestId('progress-streak-note')).toContainText('pause your streak; they never end it.');
+    await expect(dashboard.getByTestId('progress-streak-note')).toContainText('It ends only when a paired week finishes without everyone confirming.');
+    await expect(dashboard.getByTestId('progress-weeks-summary')).toHaveText('Last 12 weeks: 0 weeks with a completed session.');
     await expect(dashboard.locator('[data-testid="progress-patterns"] li[data-state="started"]')).toHaveCount(0);
 
     // The owner makes a verified run; the pair's shared controls make the
@@ -95,17 +97,36 @@ test('progress: a member sees only their own sessions, streak, coverage and role
     expect((await confirmCompletion(owner,pair.room)).state).toBe('awaiting_participants');
     expect((await confirmCompletion(member,pair.room)).state).toBe('completed');
 
+    // An admin demo week (as the demo shuffle creates) also pairs the member.
+    // History lists it; Progress, like /api/stats, does not count it.
+    const realWeekId=Number(/^week_(\d+)_pair_/.exec(pair.room)?.[1]);
+    await withDatabase(golden,async db=>{
+      const demoAccount=await db.execute(`INSERT INTO auth_accounts (email,password_hash,display_name,color,is_demo)
+        VALUES ('demo.progress@example.test','demo','Demo Partner','#888888',1) RETURNING id`);
+      const demoId=Number(demoAccount.rows[0].id);
+      const demoWeek=await db.execute({sql:`INSERT INTO pairing_weeks (week_label,week_start,focus,is_demo)
+        SELECT 'demo-progress',week_start,'both',1 FROM pairing_weeks WHERE id=? RETURNING id`,args:[realWeekId]});
+      const demoWeekId=Number(demoWeek.rows[0].id);
+      await db.execute({sql:`INSERT INTO pairing_participants (week_id,user_id,position,source) VALUES (?,?,0,'auth'),(?,?,1,'auth')`,
+        args:[demoWeekId,pair.member.user.id,demoWeekId,demoId]});
+      await db.execute({sql:`INSERT INTO pairing_groups (week_id,user_a_id,user_b_id,is_ai_pair) VALUES (?,?,?,0)`,
+        args:[demoWeekId,pair.member.user.id,demoId]});
+    });
+
     // The member's Progress section now shows one completed week.
     dashboard=await openHistory(member);
     await expect(dashboard.getByTestId('progress-completed')).toContainText('1');
     await expect(dashboard.getByTestId('progress-streak')).toContainText('1 week');
     await expect(dashboard.getByTestId('progress-weeks-summary')).toContainText('1 week with a completed session');
     await expect(dashboard.getByTestId('progress-roles-summary')).toContainText('the candidate 1 time and the interviewer 0 times');
+    await expect(dashboard.getByTestId('progress-demo-note')).toHaveText('Demo sessions aren’t counted here.');
     // The run was the owner's, not the member's.
     await expect(dashboard.getByTestId('progress-runs-summary')).toContainText('No verified runs in the last 12 weeks.');
 
     // Consistency on the real runtime: the same member's History, stats and
-    // recap agree with the dashboard and with each other.
+    // recap agree with the dashboard. Completed sessions equal History's
+    // completed rows and /api/stats; History rows are the counted pairings
+    // plus the reported demo pairings.
     const [history,stats,progress,recap]=await Promise.all([
       json(member,'/api/history'),json(member,'/api/stats'),json(member,'/api/progress'),
       json(member,`/api/pair-recap?room_id=${pair.room}`),
@@ -114,9 +135,11 @@ test('progress: a member sees only their own sessions, streak, coverage and role
     const completedRows=history.body.history.filter((row:any)=>row.completion?.state==='completed');
     expect(progress.body.sessions.completed).toBe(completedRows.length);
     expect(progress.body.sessions.completed).toBe(stats.body.your_sessions);
-    expect(progress.body.sessions.pairings).toBe(history.body.history.length);
+    expect(progress.body.sessions).toMatchObject({pairings:1,demo_pairings:1});
+    expect(history.body.history.length).toBe(progress.body.sessions.pairings+progress.body.sessions.demo_pairings);
     expect(recap.body.recap.completion.state).toBe('completed');
     expect(progress.body.weeks.at(-1)).toMatchObject({status:'completed',completion:null});
+    await expect(member.locator('[data-testid="pair-history-row"]')).toHaveCount(2);
     await expect(member.locator('[data-testid="pair-history-row"] [data-testid="session-completion-badge"]',{hasText:'Completed'}))
       .toHaveCount(progress.body.sessions.completed);
 
@@ -144,6 +167,8 @@ test('progress: a member sees only their own sessions, streak, coverage and role
     await expect(solved).toHaveAttribute('data-state','started');
     await expect(solved).toContainText('Solved');
     const ownerProgress=await json(owner,'/api/progress');
+    expect(ownerProgress.body.sessions.demo_pairings).toBe(0);
+    await expect(ownerDashboard.getByTestId('progress-demo-note')).toHaveCount(0);
     await expect(ownerDashboard.locator('[data-testid="progress-patterns"] li[data-state="untouched"]'))
       .toHaveCount(ownerProgress.body.coverage.patterns.length-1);
     await expect(ownerDashboard.getByTestId('progress-roles-summary')).toContainText('the candidate 0 times and the interviewer 1 time');

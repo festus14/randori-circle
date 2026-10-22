@@ -33,7 +33,7 @@ const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   'assets/onboarding-flow.js', 'assets/app-shell.js',
   // Shared email rules and the bulk invite UI (ID-68).
   'assets/email-validation.js', 'assets/bulk-invite.js',
-  // Personal progress in History (issue #293, ID-73).
+  // Personal progress in History (issue #293, ID-76).
   'assets/progress-view.js'];
 // Operator tools that cannot run under unit tests; see
 // docs/testing/COVERAGE_BASELINE.md ("Excluded from scope"). Their pure

@@ -12,6 +12,7 @@ import { createClient } from '@libsql/client';
 import { availabilityCycleKey } from '../../api/_availability.js';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { progressStatements } from '../../api/_progress.js';
 import { createMigratedDatabase } from '../support/migrated-db.mjs';
 
 const SECRET='progress-api-test-secret-at-least-32-characters';
@@ -66,8 +67,18 @@ const previous=Object.fromEntries(ENV_KEYS.map(key=>[key,process.env[key]]));
 const cycles=[];
 const rooms={};
 
-function sqliteNow(offsetMs=0){
-  return new Date(Date.now()+offsetMs).toISOString().replace('T',' ').slice(0,19);
+// Runs are stamped an hour into the current cycle, never relative to the
+// wall clock, so a test run just after Sunday 08:00 still buckets them there.
+function inCurrentCycle(offsetSeconds){
+  return new Date(Date.parse(cycles[0].startsAt)+3_600_000+offsetSeconds*1000).toISOString().replace('T',' ').slice(0,19);
+}
+
+async function seedCycle(cycle){
+  const key=availabilityCycleKey({kind:'circle',circleId:1},cycle);
+  await realDb.execute({sql:`INSERT INTO pairing_cycles (scope_key,circle_id,cycle_key,cycle_id,starts_at,ends_at,cutoff_at,
+      time_zone,default_source) VALUES ('circle:1',1,?,?,?,?,?,?,'cycle_default') ON CONFLICT DO NOTHING`,
+  args:[key,cycle.cycleId,cycle.startsAt,cycle.endsAt,cycle.cutoffAt,cycle.timeZone]});
+  return key;
 }
 
 function attestedSnapshot({userId,slug,passed,total,results='[]'}){
@@ -153,14 +164,14 @@ before(async()=>{
   const runInsert=`INSERT INTO session_runs (user_id,week_id,pair_group_id,question_slug,language,code,test_cases_snapshot,
       results_json,passed_count,total_count,duration_ms,created_at) VALUES (?,?,?,?,'javascript','// code',?,'[]',?,?,10,?)`;
   await realDb.batch([
-    {sql:runInsert,args:[MIA,14,140,'focus-block-rollup',attestedSnapshot({userId:MIA,slug:'focus-block-rollup',passed:8,total:8}),8,8,sqliteNow(-60_000)]},
-    {sql:runInsert,args:[MIA,null,null,'capacity-upgrade-index',attestedSnapshot({userId:MIA,slug:'capacity-upgrade-index',passed:3,total:8}),3,8,sqliteNow(-30_000)]},
+    {sql:runInsert,args:[MIA,14,140,'focus-block-rollup',attestedSnapshot({userId:MIA,slug:'focus-block-rollup',passed:8,total:8}),8,8,inCurrentCycle(1)]},
+    {sql:runInsert,args:[MIA,null,null,'capacity-upgrade-index',attestedSnapshot({userId:MIA,slug:'capacity-upgrade-index',passed:3,total:8}),3,8,inCurrentCycle(2)]},
     // Forged: the stored counts no longer match what was signed.
-    {sql:runInsert,args:[MIA,null,null,'threshold-pair-count',attestedSnapshot({userId:MIA,slug:'threshold-pair-count',passed:1,total:8}),8,8,sqliteNow(-20_000)]},
+    {sql:runInsert,args:[MIA,null,null,'threshold-pair-count',attestedSnapshot({userId:MIA,slug:'threshold-pair-count',passed:1,total:8}),8,8,inCurrentCycle(3)]},
     // Legacy, unattested.
-    {sql:runInsert,args:[MIA,null,null,'shortest-handoff-path','[]',8,8,sqliteNow(-10_000)]},
+    {sql:runInsert,args:[MIA,null,null,'shortest-handoff-path','[]',8,8,inCurrentCycle(4)]},
     // Pat's run in the same room is not Mia's record.
-    {sql:runInsert,args:[PAT,14,140,'shortest-handoff-path',attestedSnapshot({userId:PAT,slug:'shortest-handoff-path',passed:8,total:8}),8,8,sqliteNow(-5_000)]},
+    {sql:runInsert,args:[PAT,14,140,'shortest-handoff-path',attestedSnapshot({userId:PAT,slug:'shortest-handoff-path',passed:8,total:8}),8,8,inCurrentCycle(5)]},
   ],'write');
 });
 
@@ -237,9 +248,11 @@ test('progress agrees with History, stats and recap for the same member',async()
   assert.equal(stats.status,200);
   const body=progress.body;
   // History lists every pairing, including the demo week; progress and stats
-  // count only real (non-demo) pairings.
+  // count only real (non-demo) pairings and report the demo ones separately.
   const realRows=history.body.history.filter(row=>row.week_id!==15);
   assert.equal(history.body.history.length,realRows.length+1);
+  assert.equal(body.sessions.demo_pairings,1);
+  assert.equal(history.body.history.length,body.sessions.pairings+body.sessions.demo_pairings);
   const completedRows=realRows.filter(row=>row.completion.state==='completed');
   assert.equal(body.sessions.completed,completedRows.length);
   assert.equal(body.sessions.completed,stats.body.your_sessions);
@@ -282,6 +295,44 @@ test('progress agrees with History, stats and recap for the same member',async()
   assert.deepEqual(olive.body.roles,{available:true,sessions:1,candidate:0,interviewer:1});
   assert.equal(olive.body.runs.verified,0);
   assert.equal(olive.body.coverage.exercises.attempted,0);
+  assert.equal(olive.body.sessions.demo_pairings,0);
+
+  // Pat chose "Available" for the cycle Mia skipped and was paired with Olive,
+  // but neither confirmed: for Pat that week ends the streak.
+  const pat=await invoke({as:'pat'});
+  const patWeek=pat.body.weeks.find(week=>week.cycle_id===cycles[2].cycleId);
+  assert.deepEqual([patWeek.status,patWeek.completion],['not_completed','not_recorded']);
+});
+
+test('only the member’s own explicit "Skip this cycle", up to now, pauses a week',async()=>{
+  await realDb.execute(`INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo) VALUES
+    (6,'sam@example.test','hash','Sam','#666',0)`);
+  IDENTITIES.sam=6;
+  const upcoming=resolvePairingCycle({state:'upcoming'});
+  const decisions=[
+    [cycles[1],0,'user'],[cycles[2],0,'legacy_bridge'],[cycles[3],0,'cycle_default'],[cycles[4],1,'user'],[upcoming,0,'user'],
+  ];
+  for(const [cycle,available,source] of decisions){
+    const key=await seedCycle(cycle);
+    await realDb.execute({sql:`INSERT INTO pairing_cycle_availability (scope_key,cycle_key,user_id,is_available,version,decision_source)
+      VALUES ('circle:1',?,6,?,1,?)`,args:[key,available,source]});
+  }
+  try{
+    const sam=await invoke({as:'sam'});
+    assert.equal(sam.status,200);
+    const status=Object.fromEntries(sam.body.weeks.map(week=>[week.cycle_id,week.status]));
+    assert.equal(status[cycles[1].cycleId],'not_available');
+    assert.equal(status[cycles[2].cycleId],'no_pairing');
+    assert.equal(status[cycles[3].cycleId],'no_pairing');
+    assert.equal(status[cycles[4].cycleId],'no_pairing');
+    // A skip already saved for the cycle that has not started is not read.
+    const now=new Date().toISOString();
+    const read=await realDb.execute(progressStatements({userId:6,now})[1]);
+    assert.deepEqual(read.rows.map(row=>row.cycle_id),[cycles[1].cycleId]);
+    // Another member's decisions are never read for Sam, and Sam's never for Mia.
+    const mia=await realDb.execute(progressStatements({userId:MIA,now})[1]);
+    assert.deepEqual(mia.rows.map(row=>row.cycle_id),[cycles[2].cycleId]);
+  }finally{ delete IDENTITIES.sam; }
 });
 
 test('a member with no records gets zeros and every pattern untouched',async()=>{
@@ -291,7 +342,7 @@ test('a member with no records gets zeros and every pattern untouched',async()=>
   try{
     const fresh=await invoke({as:'nia'});
     assert.equal(fresh.status,200);
-    assert.deepEqual(fresh.body.sessions,{completed:0,solo_completed:0,pairings:0,window_limited:false});
+    assert.deepEqual(fresh.body.sessions,{completed:0,solo_completed:0,pairings:0,demo_pairings:0,window_limited:false});
     assert.deepEqual([fresh.body.streak.current_weeks,fresh.body.streak.longest_weeks],[0,0]);
     assert.equal(fresh.body.weeks.length,12);
     assert.ok(fresh.body.weeks.every(week=>week.status==='no_pairing'));

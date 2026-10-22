@@ -1,4 +1,4 @@
-// Personal progress in History (issue #293, ID-73), behind
+// Personal progress in History (issue #293, ID-76), behind
 // PROGRESS_DASHBOARD_ENABLED. The visual design is provisional (needs-design).
 //
 // index.html imports this module on demand, only after /api/history says the
@@ -82,6 +82,7 @@ export function normalizeProgress(raw, { userId } = {}) {
   const completed = count(sessions?.completed);
   const pairings = count(sessions?.pairings);
   const soloCompleted = count(sessions?.solo_completed, completed ?? -1);
+  const demoPairings = count(sessions?.demo_pairings);
   const streak = raw.streak;
   const longest = count(streak?.longest_weeks);
   const current = count(streak?.current_weeks, longest ?? -1);
@@ -99,7 +100,7 @@ export function normalizeProgress(raw, { userId } = {}) {
   const roles = raw.roles;
   const candidate = count(roles?.candidate);
   const interviewer = count(roles?.interviewer);
-  if (completed === null || pairings === null || completed > pairings || soloCompleted === null
+  if (completed === null || pairings === null || completed > pairings || soloCompleted === null || demoPairings === null
     || typeof sessions.window_limited !== 'boolean' || current === null || longest === null
     || !STATUSES.includes(streak.this_week) || !weeks || weeks.some(week => !week)
     || weeks.some((week, index) => index > 0 && week.start <= weeks[index - 1].start)
@@ -113,7 +114,7 @@ export function normalizeProgress(raw, { userId } = {}) {
       || roles.sessions !== candidate + interviewer))) return null;
   return {
     timeZone: raw.time_zone,
-    sessions: { completed, pairings, soloCompleted, windowLimited: sessions.window_limited },
+    sessions: { completed, pairings, soloCompleted, demoPairings, windowLimited: sessions.window_limited },
     streak: { current, longest, thisWeek: streak.this_week },
     weeks,
     runs: { verified, passed, scanLimited: runs.scan_limited },
@@ -144,7 +145,7 @@ export function statusLabel(week) {
 }
 
 export function streakSentence(view) {
-  const rule = 'A week counts when everyone in your pair confirms the session. Skipped, solo and unpaired weeks pause your streak; they never end it.';
+  const rule = 'A week counts when everyone in your pair confirms the session. Skipped, solo and unpaired weeks only pause your streak. It ends only when a paired week finishes without everyone confirming.';
   let lead;
   if (view.streak.current > 0) lead = `You have practised with a partner ${plural(view.streak.current, 'week')} in a row.`;
   else if (view.streak.longest > 0) lead = 'Your next completed session starts a new streak.';
@@ -154,13 +155,18 @@ export function streakSentence(view) {
 }
 
 export function weeksSummary(weeks) {
-  const completed = weeks.filter(week => week.status === 'completed').length;
-  const paused = weeks.filter(week => PAUSED.has(week.status)).length;
-  const missed = weeks.filter(week => week.status === 'not_completed').length;
+  const span = `Last ${plural(weeks.length, 'week')}`;
+  // Weeks before the member's first pairing or skip are not "paused" for them.
+  const first = weeks.findIndex(week => week.status !== 'no_pairing');
+  if (first === -1) return `${span}: no pairings yet.`;
+  const active = weeks.slice(first);
+  const completed = active.filter(week => week.status === 'completed').length;
+  const paused = active.filter(week => PAUSED.has(week.status)).length;
+  const missed = active.filter(week => week.status === 'not_completed').length;
   const parts = [`${plural(completed, 'week')} with a completed session`];
   if (paused) parts.push(`${plural(paused, 'paused week')}`);
   if (missed) parts.push(`${plural(missed, 'week')} with no session recorded`);
-  return `Last ${plural(weeks.length, 'week')}: ${parts.join(', ')}.`;
+  return `${span}: ${parts.join(', ')}.`;
 }
 
 export function runsSummary(view) {
@@ -353,6 +359,9 @@ export function renderProgress(doc, section, view) {
     empty.textContent = 'Your progress starts with your first pairing. After each session, both of you confirm it in the room’s Session panel.';
     body.appendChild(empty);
   }
+  if (view.sessions.demoPairings) {
+    body.appendChild(node(doc, 'p', { className: 'small muted', text: 'Demo sessions aren’t counted here.', testid: 'progress-demo-note' }));
+  }
   if (view.sessions.windowLimited || view.runs.scanLimited) {
     body.appendChild(node(doc, 'p', { className: 'small muted', text: 'Totals cover your most recent records only.' }));
   }
@@ -417,11 +426,12 @@ function renderError(doc, section, retry) {
  */
 export function mountProgress({ doc, host }) {
   const section = doc.getElementById('historyProgress');
-  if (!section) return Object.freeze({ load: async () => false, reset() {}, resume: async () => false, stop() {} });
+  if (!section) return Object.freeze({ load: async () => false, release() {}, reset() {}, resume: async () => false, stop() {} });
   let epoch = 0;
   let abort = null;
   let resumeWanted = false;
   let shown = false;
+  let shownFor = null;
 
   function stop() {
     epoch += 1;
@@ -434,6 +444,7 @@ export function mountProgress({ doc, host }) {
     stop();
     resumeWanted = false;
     shown = false;
+    shownFor = null;
     section.replaceChildren();
     section.hidden = true;
     section.setAttribute('aria-busy', 'false');
@@ -450,7 +461,8 @@ export function mountProgress({ doc, host }) {
     const stale = () => current !== epoch || host.userId() !== userId || !host.visible();
     section.hidden = false;
     section.setAttribute('aria-busy', 'true');
-    if (!shown) renderLoading(doc, section);
+    // Reloading for the same member keeps the last dashboard instead of a skeleton.
+    if (!shown || shownFor !== userId) renderLoading(doc, section);
     try {
       const response = await host.fetchProgress(controller.signal);
       const body = await response.json().catch(() => null);
@@ -464,6 +476,7 @@ export function mountProgress({ doc, host }) {
       if (!view) throw new Error('progress unavailable');
       renderProgress(doc, section, view);
       shown = true;
+      shownFor = userId;
     } catch {
       if (!stale()) {
         shown = false;
@@ -481,5 +494,11 @@ export function mountProgress({ doc, host }) {
     return load();
   }
 
-  return Object.freeze({ load, reset, resume, stop });
+  /** History is re-rendering: keep the dashboard only if it is this member's. */
+  function release(userId) {
+    if (shown && userId && shownFor === userId) stop();
+    else reset();
+  }
+
+  return Object.freeze({ load, release, reset, resume, stop });
 }

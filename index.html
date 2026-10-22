@@ -8044,7 +8044,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     pairRecapState.epoch+=1;
     const historyAbort=pairRecapState.historyAbort; pairRecapState.historyAbort=null; historyAbort?.abort();
     const recapAbort=pairRecapState.abort; pairRecapState.abort=null; recapAbort?.abort();
-    if(clear) showProgress(false); else progressView.controller?.stop();
+    // A re-render for the same member keeps the last Progress dashboard until
+    // the reload replaces it; any other member (or none) clears it.
+    if(clear){ progressView.wanted=false; progressView.controller?.release(currentHistoryUserId()); }
+    else progressView.controller?.stop();
     if(clear){
       pairRecapState.historyUserId=null; pairRecapState.room=null; pairRecapState.userId=null; pairRecapState.recap=null; pairRecapState.status='idle';
       pairRecapState.visibilityResumeHistory=false; pairRecapState.visibilityResumeRoom=null;
