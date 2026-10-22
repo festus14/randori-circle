@@ -583,6 +583,7 @@ a drill that never started; it also detects a run that remained stuck, failed,
 or aged out without relying on the rehearsal workflow to report its own absence.
 An absolute 06:47 UTC deadline is derived from the expected slot, not run creation,
 so a delayed unfinished run still alerts on the last hourly tick before four hours.
+(ID-75 later widened the grace to eight hours and the deadline to 12:47 UTC.)
 Its retained projection contains only timings,
 code/evidence checksums, aggregate counts, fixed run identifiers, and cleanup
 booleans. Missing, stale, malformed, failed, or unclean evidence produces a
@@ -3268,3 +3269,55 @@ setup it depends on is complete (bootstrap guide sections 0 and 10.0). To
 pause it, disable the workflow in GitHub Actions. To remove it, revert this
 change. The `app_logs` rows are ordinary log rows and fall under the 30-day
 retention (ID-72).
+
+## ID-75: Give the backup watchdog an eight-hour grace for late GitHub schedules
+
+Status: implemented as an operations change. No feature flag, migration,
+secret, permission, or provider change. Issue #324, follow-up from #51.
+
+**Context.** GitHub started the Monday 03:17 UTC Turso backup-restore rehearsal
+about 5h40m late. The hourly watchdog (ID-16, ID-54) required a current-slot run
+after a two-hour grace and treated any run still unfinished at 06:47 UTC as
+stuck, so it raised `run_missing` before the late run arrived. GitHub delays
+scheduled workflows routinely (compare ID-67), so this would recur.
+
+**Decision.** Widen the reviewed slot grace from two to eight hours
+(`WATCHDOG_SLOT_GRACE_MS: '28800000'`). The absolute slot deadline stays the
+grace plus the 90-minute stuck-run allowance, now nine and a half hours
+(`'34200000'`, the 12:47 UTC tick). Both values are named constants with this
+rationale in `scripts/check-backup-controls.mjs`, which pins them and the new
+workflow digest. The assessor already accepted a grace of up to 24 hours, but
+it capped the deadline at four hours, and because the deadline must exceed the
+grace that effectively capped the grace too. Both ceilings are now 12 hours
+(`MAX_SLOT_ALERT_DELAY_MS`), so even the loosest accepted setting alerts by the
+first hourly tick after 15:17 UTC, well inside one day.
+
+- A drill that starts up to eight hours late and finishes by 12:47 UTC never
+  alerts. Starts up to 8h29m late are tolerated only when the 11:47 watchdog
+  tick runs on time (no delayed earlier tick or manual dispatch between 11:17
+  UTC and the start). A run that starts after 11:17 UTC has less than the
+  90-minute stuck allowance and may report `run_stuck` even if it later
+  succeeds, so on-call should check the run before dismissing the alert.
+- Before 11:17 UTC the prior week's success still counts; at the end of grace
+  it is at most seven days and eight hours old, so the eight-day freshness
+  bound is unchanged.
+- A missing drill alerts `run_missing` at 11:47 UTC, a failed one `run_failed`
+  at the next tick (even inside grace), and an unfinished one `run_stuck` by
+  12:47 UTC. All of these happen the same Monday, inside one day of the slot.
+- Every other category and rule (stale, artifact, corrupt, API, monitor
+  `cleanup_failure`) is unchanged.
+
+**Trade-off.** A drill that never starts is now reported at 11:47 UTC instead
+of 05:47 UTC. That is acceptable for a weekly drill: the alert still fires the
+same Monday, and the prior evidence it relies on until then is still fresh.
+
+**Alternatives.** Moving the trigger to an external scheduler (as ID-67 did for
+the outbox) would need a new secret and dispatch permission, which the watchdog
+deliberately lacks. Moving the cron earlier does not bound GitHub's delay.
+Measuring lateness from run creation would let a late run reset the deadline.
+A one-day grace would delay a real missed-drill alert by most of a day.
+
+**Rollout and recovery.** Merge; the next hourly watchdog uses the new policy.
+To recover, revert the commit, which restores the two-hour grace, the 06:47 UTC
+deadline, and the previous digest together. Contract:
+[`TURSO_BACKUP_RESTORE_REHEARSAL.md`](TURSO_BACKUP_RESTORE_REHEARSAL.md).
