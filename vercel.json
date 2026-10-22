@@ -5,13 +5,13 @@
   "redirects": [
     {
       "source": "/:path(.*)",
-      "has": [{ "type": "host", "value": "www.randoricircle.com" }],
+      "has": [{ "type": "host", "value": "www\\.randoricircle\\.com" }],
       "destination": "https://randoricircle.com/:path",
       "permanent": true
     },
     {
       "source": "/:path((?!api(?:/|$)).*)",
-      "has": [{ "type": "host", "value": "randori-circle-self.vercel.app" }],
+      "has": [{ "type": "host", "value": "randori-circle-self\\.vercel\\.app" }],
       "destination": "https://randoricircle.com/:path",
       "permanent": false
     }

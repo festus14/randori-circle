@@ -10,9 +10,11 @@
 // (ID-80): the old Vercel alias sends page paths to the canonical host with
 // their path and query but still serves /api/*, and www redirects to the apex.
 // Google sign-in is advertised only on the host APP_URL names, so googleOAuth
-// is expected only there, and while APP_URL still names the old alias those
-// checks are skipped with the reason printed. A run therefore never fails just
-// because the APP_URL switch and the merge happen in either order.
+// is expected only there. While APP_URL still names the old alias those checks
+// are skipped with the reason printed, but only as long as the old alias still
+// serves its pages (before the redirect deploy, or during the deploy race). If
+// its pages already redirect away, members are sent to a host where Google
+// sign-in is not offered, and the run fails.
 //
 // Usage:
 //   npm run smoke:production
@@ -230,12 +232,27 @@ export function canonicalDomainChecks() {
   return [
     { name: 'legacy host page redirect', url: `${LEGACY_ORIGIN}${DOMAIN_REDIRECT_PROBE}`,
       check: checkCanonicalRedirect(TEMPORARY_REDIRECT_STATUSES, 'temporary') },
-    // Not redirected: cron-job.org and in-flight API calls still use the old alias.
-    { name: 'legacy host API alias', url: `${LEGACY_ORIGIN}/api/health/ready`, check: checkHealth('ready') },
+    // Not redirected: cron-job.org and in-flight API calls still use the old
+    // alias. Liveness, not readiness: the base checks already cover readiness,
+    // and a database outage is not an alias-routing failure.
+    { name: 'legacy host API alias', url: `${LEGACY_ORIGIN}/api/health/live`, check: checkHealth('live') },
     { name: 'www redirect', url: `${WWW_ORIGIN}${DOMAIN_REDIRECT_PROBE}`,
       check: checkCanonicalRedirect(PERMANENT_REDIRECT_STATUSES, 'permanent') },
   ];
 }
+
+export const SWITCH_MISMATCH = 'APP_URL names the old alias but its pages redirect away; '
+  + 'Google sign-in is unreachable';
+
+// While APP_URL names the old alias, its pages must still be served there:
+// once they redirect to the canonical host, nobody can reach Google sign-in.
+function checkLegacyStillServesPages(result) {
+  if (canonicalLocation(result, DOMAIN_REDIRECT_PROBE)) return [SWITCH_MISMATCH];
+  return result.status === 200 ? [] : [`status ${result.status}`];
+}
+
+const LEGACY_PAGES_CHECK = Object.freeze({ name: 'legacy host serves pages while APP_URL names it',
+  url: `${LEGACY_ORIGIN}${DOMAIN_REDIRECT_PROBE}`, check: checkLegacyStillServesPages });
 
 // Google sign-in is advertised only on the host APP_URL names
 // (api/_auth-config.js), so this tells which of the two hosts that is, or null
@@ -273,6 +290,7 @@ export async function runProductionSmoke({ baseUrl = DEFAULT_BASE_URL, fetchImpl
   }
   const checks = smokeChecks(origin, { expectedCapabilities: expected, registrationMode });
   const skipped = [];
+  if (oauthOrigin === LEGACY_ORIGIN) checks.push(LEGACY_PAGES_CHECK);
   if (origin === CANONICAL_ORIGIN && oauthOrigin !== LEGACY_ORIGIN) checks.push(...canonicalDomainChecks());
   else skipped.push({ name: 'canonical-domain checks', reason: canonicalDomainSkipReason(origin, oauthOrigin) });
 
@@ -284,7 +302,7 @@ export async function runProductionSmoke({ baseUrl = DEFAULT_BASE_URL, fetchImpl
       let note = path === '/api/auth/capabilities' ? capabilityNote : null;
       // The legacy alias redirects page paths, never /api/*: check the page it
       // now lands on.
-      const target = legacyBase && !path.startsWith('/api/') && TEMPORARY_REDIRECT_STATUSES.has(response.status)
+      const target = legacyBase && path?.startsWith('/api/') === false && TEMPORARY_REDIRECT_STATUSES.has(response.status)
         ? canonicalLocation(response, path) : null;
       if (target) {
         response = await request(fetchImpl, target, timeoutMs);

@@ -271,24 +271,14 @@ function validateProductionSmokeWorkflow(workflow){
   return errors;
 }
 
-function redirectHosts(rule) {
-  return Array.isArray(rule?.has) ? rule.has.filter(item => record(item)?.type === 'host').map(item => item.value) : [];
-}
-
-// ID-80: www and the old Vercel alias redirect to the canonical origin. Each
-// rule must stay exactly as reviewed: host-conditional (previews never match),
-// www permanent, the old alias temporary and never for /api/*.
+// ID-80: www and the old Vercel alias redirect to the canonical origin. The
+// whole redirects array must stay exactly as reviewed: host-conditional
+// (previews never match), www permanent, the old alias temporary and never for
+// /api/*, and no other rule (host-less or otherwise) beside them.
 export function validateCanonicalDomainRedirects(redirects) {
   if (!Array.isArray(redirects)) return ['vercel.json must define the canonical-domain redirects'];
-  const errors = [];
-  for (const expected of CANONICAL_DOMAIN_REDIRECTS) {
-    const [host] = redirectHosts(expected);
-    const rules = redirects.filter(rule => redirectHosts(rule).includes(host));
-    if (rules.length !== 1 || !isDeepStrictEqual(rules[0], expected)) {
-      errors.push(`vercel.json must define exactly one reviewed ${host} redirect: ${JSON.stringify(expected)}`);
-    }
-  }
-  return errors;
+  return isDeepStrictEqual(redirects, CANONICAL_DOMAIN_REDIRECTS) ? []
+    : [`vercel.json redirects must be exactly the reviewed canonical-domain redirects: ${JSON.stringify(CANONICAL_DOMAIN_REDIRECTS)}`];
 }
 
 // Issue #249. The execution smoke spends Vercel Sandbox quota through a

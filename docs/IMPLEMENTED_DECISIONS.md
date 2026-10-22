@@ -3655,8 +3655,10 @@ GitHub outbox workflows and links in emails already sent all call the old host.
   the origins and the exact redirect rules.
 - `vercel.json` gets two host-conditional redirects. Vercel compiles
   `redirects` after the cleanUrls redirects and before headers, the filesystem
-  and all rewrites, so they run before the SPA fallback; the `has` host match
-  is anchored, so preview and deployment hosts never match:
+  and all rewrites, so they run before the SPA fallback. A string `has` value
+  is a regular expression, so the host values escape their dots
+  (`www\.randoricircle\.com`, `randori-circle-self\.vercel\.app`) and match
+  exactly one host; preview and deployment hosts never match:
   - `www.randoricircle.com`, source `/:path(.*)`, 308 to
     `https://randoricircle.com/:path`. `/:path*` was rejected because Vercel
     compiles it strictly and it does not match `/`, so the bare www host would
@@ -3670,15 +3672,19 @@ GitHub outbox workflows and links in emails already sent all call the old host.
   redirects, and browsers keep the `#fragment`, so old `/invite#invite=…`
   links still open the invitation. Headers and CSP are host-agnostic
   (`'self'`), so nothing else changes per host.
-- `check:deployability` pins both rules exactly.
+- `check:deployability` pins the whole `redirects` array, so an extra rule
+  fails too.
 - `smoke:production` defaults to the canonical origin and adds three checks
   against it: the old alias's page redirect (temporary, same path and query),
-  the old alias's `/api/health/ready` (200, no redirect), and www's permanent
+  the old alias's `/api/health/live` (200, no redirect; liveness, so a
+  database outage is not reported as a routing failure), and www's permanent
   redirect. Google sign-in is advertised only on the `APP_URL` host, so the
   script reads which host advertises it. While that is the old alias, it skips
   the three checks with the reason printed and does not expect `googleOAuth`
-  on the canonical host. Neither order of merge and `APP_URL` switch turns it
-  red. On a legacy base URL it follows the canonical redirect for page paths.
+  on the canonical host, but only while the old alias still serves its own
+  pages. If they already redirect away (merged before the switch, or `APP_URL`
+  drifted back), Google sign-in is unreachable and the run fails. On a legacy
+  base URL it follows the canonical redirect for page paths.
 - The Google client lists both origins and both redirect URIs during the
   transition, so either `APP_URL` works and a rollback needs no Google change.
 
@@ -3694,9 +3700,12 @@ rollback stick. Accepting OAuth on both hosts would need two redirect URIs in
 code and would split sessions across hosts. Edge middleware would add a
 runtime to every request for what static rules do.
 
-**Rollout and recovery.** Order: Google client origins and redirect URIs, then
-Vercel `APP_URL`, then the GitHub `production` `APP_URL`, then merge and deploy
-(no other deploy between the Vercel change and this one), then the
-cron-job.org URL, then verify. To roll back, restore both `APP_URL` values and
-revert this commit; cron-job.org works on either host. Runbook:
+**Rollout and recovery.** After the preflight (PR clean and green, readiness
+200, no auto-merge armed, no Production build building or queued), the order
+is: Google client origins and redirect URIs, then the GitHub `production`
+`APP_URL`, then Vercel `APP_URL` immediately followed by a manual merge. Next,
+confirm the Production deployment is the merge commit, move the cron-job.org
+URL, and verify. To roll back, use Instant Rollback to the pre-change
+deployment, restore both `APP_URL` values, revert the merge commit and
+re-promote. cron-job.org works on either host. Runbook:
 [`PRODUCTION_BOOTSTRAP_GUIDE.md` section 12](PRODUCTION_BOOTSTRAP_GUIDE.md#12-canonical-domain-id-80).

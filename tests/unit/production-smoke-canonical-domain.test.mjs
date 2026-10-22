@@ -11,6 +11,7 @@ import {
   DEFAULT_EXPECTED_CAPABILITIES,
   DOMAIN_REDIRECT_PROBE,
   STATIC_ASSET,
+  SWITCH_MISMATCH,
   main,
   resolveExpectedCapabilities,
   runProductionSmoke,
@@ -69,7 +70,7 @@ test('after the switch the canonical origin passes, including the old-alias and 
   assert.deepEqual(summary.skipped, []);
   assert.deepEqual(summary.results.slice(-3).map(result => [result.name, result.path, result.status]), [
     ['legacy host page redirect', `${LEGACY_ORIGIN}${DOMAIN_REDIRECT_PROBE}`, 307],
-    ['legacy host API alias', `${LEGACY_ORIGIN}/api/health/ready`, 200],
+    ['legacy host API alias', `${LEGACY_ORIGIN}/api/health/live`, 200],
     ['www redirect', `${WWW_ORIGIN}${DOMAIN_REDIRECT_PROBE}`, 308],
   ]);
   assert.equal(byName(summary, 'auth capabilities').note, undefined);
@@ -80,7 +81,7 @@ test('after the switch the canonical origin passes, including the old-alias and 
   }
   // The only extra requests are the read-only capability probe and the three domain checks.
   assert.deepEqual(requests.map(({ url }) => url).filter(url => !url.startsWith(`${CANONICAL_ORIGIN}/`)), [
-    `${LEGACY_ORIGIN}${DOMAIN_REDIRECT_PROBE}`, `${LEGACY_ORIGIN}/api/health/ready`, `${WWW_ORIGIN}${DOMAIN_REDIRECT_PROBE}`,
+    `${LEGACY_ORIGIN}${DOMAIN_REDIRECT_PROBE}`, `${LEGACY_ORIGIN}/api/health/live`, `${WWW_ORIGIN}${DOMAIN_REDIRECT_PROBE}`,
   ]);
 });
 
@@ -103,9 +104,9 @@ test('the redirects must exist, keep path and query, use the right status, and l
       { 'legacy host page redirect': [missing] }],
     [{ overrides: { [legacyPage]: redirect(307, DOMAIN_REDIRECT_PROBE) } },
       { 'legacy host page redirect': [missing] }],
-    [{ overrides: { [`${LEGACY_ORIGIN}/api/health/ready`]: redirect(307, `${CANONICAL_ORIGIN}/api/health/ready`) } },
+    [{ overrides: { [`${LEGACY_ORIGIN}/api/health/live`]: redirect(307, `${CANONICAL_ORIGIN}/api/health/live`) } },
       { 'legacy host API alias': ['status 307', 'not application/json', 'cache-control is not no-store',
-        'missing nosniff', 'body is not {"ok":true,"status":"ready"}'] }],
+        'missing nosniff', 'body is not {"ok":true,"status":"live"}'] }],
     [{ overrides: { [wwwPage]: redirect(307, expected) } },
       { 'www redirect': ['status 307, expected a permanent redirect'] }],
     [{ overrides: { [wwwPage]: redirect(301, `${CANONICAL_ORIGIN}/`) } }, { 'www redirect': [missing] }],
@@ -122,25 +123,48 @@ test('the redirects must exist, keep path and query, use the right status, and l
   assert.equal(byName(offline, 'www redirect').status, null);
 });
 
-test('while APP_URL still names the old alias the domain checks are skipped with the reason, before or after the merge', async () => {
-  for (const redirects of [false, true]) {
-    const summary = await runProductionSmoke({ baseUrl: CANONICAL_ORIGIN,
-      fetchImpl: fakeHosts({ appUrl: LEGACY_ORIGIN, redirects }).fetchImpl });
-    assert.equal(summary.ok, true, JSON.stringify(failures(summary)));
-    assert.equal(summary.results.some(result => DOMAIN_CHECKS.includes(result.name)), false);
-    assert.deepEqual(summary.skipped, [{ name: 'canonical-domain checks',
-      reason: `APP_URL still names ${LEGACY_ORIGIN} (Google sign-in is advertised there); `
-        + `they run once APP_URL is ${CANONICAL_ORIGIN}` }]);
-    // Google sign-in is checked where APP_URL points, not on the canonical host.
-    assert.equal(byName(summary, 'auth capabilities').note,
-      `googleOAuth is advertised on ${LEGACY_ORIGIN}, the APP_URL host, so it is not expected here`);
-  }
+const GUARD = 'legacy host serves pages while APP_URL names it';
+
+test('while APP_URL still names the old alias and its pages are still served, the domain checks are skipped with the reason', async () => {
+  const summary = await runProductionSmoke({ baseUrl: CANONICAL_ORIGIN,
+    fetchImpl: fakeHosts({ appUrl: LEGACY_ORIGIN, redirects: false }).fetchImpl });
+  assert.equal(summary.ok, true, JSON.stringify(failures(summary)));
+  assert.equal(summary.results.some(result => DOMAIN_CHECKS.includes(result.name)), false);
+  assert.deepEqual([byName(summary, GUARD).path, byName(summary, GUARD).status],
+    [`${LEGACY_ORIGIN}${DOMAIN_REDIRECT_PROBE}`, 200]);
+  assert.deepEqual(summary.skipped, [{ name: 'canonical-domain checks',
+    reason: `APP_URL still names ${LEGACY_ORIGIN} (Google sign-in is advertised there); `
+      + `they run once APP_URL is ${CANONICAL_ORIGIN}` }]);
+  // Google sign-in is checked where APP_URL points, not on the canonical host.
+  assert.equal(byName(summary, 'auth capabilities').note,
+    `googleOAuth is advertised on ${LEGACY_ORIGIN}, the APP_URL host, so it is not expected here`);
   // An explicit googleOAuth expectation other than true is left as configured.
   const overridden = await runProductionSmoke({ baseUrl: CANONICAL_ORIGIN,
-    fetchImpl: fakeHosts({ appUrl: LEGACY_ORIGIN }).fetchImpl,
+    fetchImpl: fakeHosts({ appUrl: LEGACY_ORIGIN, redirects: false }).fetchImpl,
     expectedCapabilities: resolveExpectedCapabilities('{"googleOAuth":false}') });
   assert.equal(overridden.ok, true);
   assert.equal(byName(overridden, 'auth capabilities').note, undefined);
+});
+
+test('redirects live while APP_URL still names the old alias fails: Google sign-in is unreachable', async () => {
+  // Merged before the switch, or APP_URL drifted back during a rollback.
+  for (const baseUrl of [CANONICAL_ORIGIN, LEGACY_ORIGIN]) {
+    const summary = await runProductionSmoke({ baseUrl, fetchImpl: fakeHosts({ appUrl: LEGACY_ORIGIN }).fetchImpl });
+    assert.deepEqual(failures(summary), { [GUARD]: [SWITCH_MISMATCH] }, baseUrl);
+    assert.equal(byName(summary, GUARD).status, 307);
+  }
+  assert.equal(SWITCH_MISMATCH, 'APP_URL names the old alias but its pages redirect away; Google sign-in is unreachable');
+  // Anything else from the old host's page is not "still serving pages" either.
+  const probe = `${LEGACY_ORIGIN}${DOMAIN_REDIRECT_PROBE}`;
+  for (const [response, problems] of [
+    [() => respond(404, { 'content-type': 'text/plain' }, 'not found'), ['status 404']],
+    [redirect(307, `${CANONICAL_ORIGIN}/`), ['status 307']],
+    [() => { throw new TypeError('offline'); }, ['network_error']],
+  ]) {
+    const summary = await runProductionSmoke({ baseUrl: CANONICAL_ORIGIN,
+      fetchImpl: fakeHosts({ appUrl: LEGACY_ORIGIN, redirects: false, overrides: { [probe]: response } }).fetchImpl });
+    assert.deepEqual(failures(summary), { [GUARD]: problems });
+  }
 });
 
 test('when neither host advertises Google sign-in the domain checks run and the gap is reported', async () => {
@@ -193,17 +217,24 @@ test('on a legacy base an API redirect or a permanent page redirect is never fol
   assert.ok(failed['health live'].includes('status 307'));
 });
 
-test('the CLI prints notes and skip reasons and stays green while APP_URL is not switched', async () => {
+test('the CLI prints notes and skip reasons, and fails only once the old alias redirects while APP_URL names it', async () => {
   const lines = [];
   const capture = { log: line => lines.push(line), error: line => lines.push(line) };
-  const code = await main({ argv: [], env: {}, fetchImpl: fakeHosts({ appUrl: LEGACY_ORIGIN }).fetchImpl, ...capture });
+  const code = await main({ argv: [], env: {},
+    fetchImpl: fakeHosts({ appUrl: LEGACY_ORIGIN, redirects: false }).fetchImpl, ...capture });
   assert.equal(code, 0);
   assert.equal(lines[0], `production smoke: ${CANONICAL_ORIGIN}`);
   assert.ok(lines.includes(`  ok   auth capabilities (200) [googleOAuth is advertised on ${LEGACY_ORIGIN}, `
     + 'the APP_URL host, so it is not expected here]'));
   assert.ok(lines.includes(`  skip canonical-domain checks: APP_URL still names ${LEGACY_ORIGIN} `
     + `(Google sign-in is advertised there); they run once APP_URL is ${CANONICAL_ORIGIN}`));
-  assert.equal(lines.at(-1), 'production smoke: OK 11/11 checks passed');
+  assert.ok(lines.includes(`  ok   ${GUARD} (200)`));
+  assert.equal(lines.at(-1), 'production smoke: OK 12/12 checks passed');
+
+  lines.length = 0;
+  assert.equal(await main({ argv: [], env: {}, fetchImpl: fakeHosts({ appUrl: LEGACY_ORIGIN }).fetchImpl, ...capture }), 1);
+  assert.ok(lines.includes(`  FAIL ${GUARD} (307): ${SWITCH_MISMATCH}`));
+  assert.equal(lines.at(-1), 'production smoke: FAILED 11/12 checks passed');
 
   lines.length = 0;
   assert.equal(await main({ argv: ['--base-url', 'https://preview.example.test'], env: {},

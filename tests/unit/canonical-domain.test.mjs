@@ -11,6 +11,7 @@ import {
   CANONICAL_ORIGIN,
   LEGACY_ORIGIN,
   WWW_ORIGIN,
+  hostPattern,
 } from '../../scripts/canonical-domain.mjs';
 import {
   inspectDeploymentContract,
@@ -91,11 +92,15 @@ test('vercel.json defines exactly the reviewed canonical-domain redirects', () =
   assert.deepEqual(validateCanonicalDomainRedirects(vercel.redirects), []);
   for (const rule of vercel.redirects) {
     assert.equal(compileRedirectSource(rule.source).src, VERCEL_COMPILED_SOURCES[rule.source]);
-    // Literal hostnames only: no wildcard or alternation that could reach a preview host.
+    // One exact hostname per rule: a string `has` value is a regex, so the
+    // dots are escaped and nothing else could reach a preview host.
     assert.equal(rule.has.length, 1);
-    assert.match(rule.has[0].value, /^[a-z0-9.-]+$/u);
+    assert.match(rule.has[0].value, /^(?:[a-z0-9-]+\\\.)+[a-z]+$/u);
     assert.ok(rule.destination.startsWith(`${CANONICAL_ORIGIN}/`));
   }
+  assert.deepEqual(vercel.redirects.map(rule => rule.has[0].value),
+    ['www\\.randoricircle\\.com', 'randori-circle-self\\.vercel\\.app']);
+  assert.equal(hostPattern(WWW_ORIGIN), 'www\\.randoricircle\\.com');
   assert.equal(CANONICAL_ORIGIN, 'https://randoricircle.com');
 });
 
@@ -148,7 +153,9 @@ test('the canonical host, previews, deployment URLs and look-alikes are never re
   for (const host of [CANONICAL_HOST, 'randori-circle-git-feature-festus14s-projects.vercel.app',
     'randori-circle-abc123def-festus14s-projects.vercel.app', 'randori-circle.vercel.app',
     'self.vercel.app', 'www.randoricircle.com.evil.test', 'evil-randori-circle-self.vercel.app',
-    'randori-circle-self.vercel.app.evil.test', 'app.randoricircle.com', 'localhost']) {
+    'randori-circle-self.vercel.app.evil.test', 'app.randoricircle.com', 'localhost',
+    // Unescaped dots would have matched these.
+    'wwwXrandoricircle.com', 'randori-circle-selfXvercel.app']) {
     for (const path of ['/', '/invite?x=1', '/api/health/ready']) {
       assert.equal(redirectFor(host, path), null, `${host}${path}`);
     }
@@ -184,27 +191,32 @@ test('the deployability contract rejects missing or weakened canonical-domain re
   assert.deepEqual(errorsFor(withoutRedirects).filter(error => !baseline.includes(error)),
     ['vercel.json must define the canonical-domain redirects']);
 
-  const wwwError = `vercel.json must define exactly one reviewed ${WWW_HOST} redirect: `
-    + JSON.stringify(CANONICAL_DOMAIN_REDIRECTS[0]);
-  const legacyError = `vercel.json must define exactly one reviewed ${LEGACY_HOST} redirect: `
-    + JSON.stringify(CANONICAL_DOMAIN_REDIRECTS[1]);
+  const error = 'vercel.json redirects must be exactly the reviewed canonical-domain redirects: '
+    + JSON.stringify(CANONICAL_DOMAIN_REDIRECTS);
   const mutations = [
     // The old alias must stay temporary and must never redirect /api.
-    [rules => { rules[1].permanent = true; }, [legacyError]],
-    [rules => { rules[1].source = '/:path(.*)'; }, [legacyError]],
-    [rules => { rules[1].destination = `${CANONICAL_ORIGIN}/`; }, [legacyError]],
-    // A pattern host would also catch preview deployments.
-    [rules => { rules[1].has[0].value = '.*\\.vercel\\.app'; }, [legacyError]],
-    [rules => { rules.push(structuredClone(rules[1])); }, [legacyError]],
-    [rules => { rules[0].permanent = false; }, [wwwError]],
-    [rules => { rules[0].source = '/:path*'; }, [wwwError]],
-    [rules => { delete rules[0].has; }, [wwwError]],
-    [rules => { rules.splice(0, 2, null, 'x'); }, [wwwError, legacyError]],
+    rules => { rules[1].permanent = true; },
+    rules => { rules[1].source = '/:path(.*)'; },
+    rules => { rules[1].destination = `${CANONICAL_ORIGIN}/`; },
+    // A pattern host would also catch preview deployments; an unescaped one
+    // matches more than the one host.
+    rules => { rules[1].has[0].value = '.*\\.vercel\\.app'; },
+    rules => { rules[1].has[0].value = LEGACY_HOST; },
+    rules => { rules.push(structuredClone(rules[1])); },
+    rules => { rules[0].permanent = false; },
+    rules => { rules[0].source = '/:path*'; },
+    rules => { delete rules[0].has; },
+    rules => { rules.reverse(); },
+    rules => { rules.splice(0, 2, null, 'x'); },
+    // Extra rules beside the reviewed two: host-less, or for another host.
+    rules => { rules.unshift({ source: '/api/:path*', destination: `${CANONICAL_ORIGIN}/api/:path*`, permanent: false }); },
+    rules => { rules.push({ source: '/(.*)', has: [{ type: 'host', value: 'randori-circle\\.vercel\\.app' }],
+      destination: `${CANONICAL_ORIGIN}/$1`, permanent: true }); },
   ];
-  for (const [mutate, expected] of mutations) {
+  for (const mutate of mutations) {
     const rules = structuredClone(vercel.redirects);
     mutate(rules);
-    assert.deepEqual(validateCanonicalDomainRedirects(rules), expected, JSON.stringify(rules));
+    assert.deepEqual(validateCanonicalDomainRedirects(rules), [error], JSON.stringify(rules));
   }
   assert.deepEqual(validateCanonicalDomainRedirects({}), ['vercel.json must define the canonical-domain redirects']);
 });

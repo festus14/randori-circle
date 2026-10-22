@@ -13,22 +13,28 @@ export const CANONICAL_ORIGIN = 'https://randoricircle.com';
 export const WWW_ORIGIN = 'https://www.randoricircle.com';
 export const LEGACY_ORIGIN = 'https://randori-circle-self.vercel.app';
 
-// The exact vercel.json `redirects` entries. Vercel compiles them after the
+// A string `has` value is a regular expression (Vercel's schema), matched
+// against the whole hostname. Escaping the dots makes it match exactly one host.
+export function hostPattern(origin) {
+  return new URL(origin).hostname.replaceAll('.', '\\.');
+}
+
+// The exact vercel.json `redirects` array. Vercel compiles it after the
 // cleanUrls redirects and before headers, the filesystem and every rewrite,
-// including the SPA fallback. `has` host values are matched anchored, so
-// preview and deployment hosts (*-festus14s-projects.vercel.app) never match.
+// including the SPA fallback. Preview and deployment hosts
+// (*-festus14s-projects.vercel.app) never match the host patterns.
 // `/:path(.*)` rather than `/:path*`: Vercel compiles `/:path*` strictly, so it
 // would not match `/` and the bare www host would not redirect.
 export const CANONICAL_DOMAIN_REDIRECTS = Object.freeze([
   Object.freeze({
     source: '/:path(.*)',
-    has: Object.freeze([Object.freeze({ type: 'host', value: 'www.randoricircle.com' })]),
+    has: Object.freeze([Object.freeze({ type: 'host', value: hostPattern(WWW_ORIGIN) })]),
     destination: `${CANONICAL_ORIGIN}/:path`,
     permanent: true,
   }),
   Object.freeze({
     source: '/:path((?!api(?:/|$)).*)',
-    has: Object.freeze([Object.freeze({ type: 'host', value: 'randori-circle-self.vercel.app' })]),
+    has: Object.freeze([Object.freeze({ type: 'host', value: hostPattern(LEGACY_ORIGIN) })]),
     destination: `${CANONICAL_ORIGIN}/:path`,
     permanent: false,
   }),
