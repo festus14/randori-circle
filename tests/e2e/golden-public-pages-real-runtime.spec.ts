@@ -26,7 +26,7 @@ async function expectPublicPage(page:Page,golden:GoldenRuntime,item:typeof PAGES
   await expect(page.getByRole('main')).toBeVisible();
   await expect(page.getByRole('banner')).toBeVisible();
   await expect(page.getByRole('contentinfo')).toBeVisible();
-  await expect(page.getByText('Last updated: 21 October 2026')).toBeVisible();
+  await expect(page.getByText('Last updated: 22 October 2026')).toBeVisible();
   const back=page.getByTestId('public-page-back');
   await expect(back).toBeVisible();
   await expect(back).toHaveAttribute('href','/');

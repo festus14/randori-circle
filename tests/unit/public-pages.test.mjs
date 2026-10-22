@@ -83,7 +83,7 @@ for (const [path, html] of Object.entries(pages)) {
     assert.match(html, /<nav aria-label="Legal">/u);
     assert.equal(html.match(/<h1\b/gu)?.length, 1);
     assert.match(html, new RegExp(`<h1>${title}</h1>`, 'u'));
-    assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-10-21">21 October 2026<\/time><\/p>/u);
+    assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-10-22">22 October 2026<\/time><\/p>/u);
   });
 
   test(`${path} headings never skip a level and every section id is unique`, () => {
@@ -172,8 +172,15 @@ test('the privacy policy states the retention gaps and providers the code really
     /you are signed out only if it was your last active circle/u,
     /who is paired with whom each week/u,
     // Circle health (ID-78): aggregate counts only, and the all-or-none caveat.
-    /Counts that could point to a single pair are hidden/u,
     /a count of all pairs or none does show what every pair did/u,
+    /Pair counts are hidden in weeks with fewer than four pairs and whenever they could point to a single pair/u,
+    // Practice suggestions (ID-77): attempted marks only, and the room-privacy line admits it.
+    /your current partner sees which exercises you have attempted before .* shown only as an “attempted” mark, never your code, scores or dates/u,
+    /Your sessions stay private to the two of you, except that practice suggestions/u,
+    /Exercises you hide from suggestions are remembered only in your browser/u,
+    // Sentry breadcrumbs.
+    /a short trail of what happened just before it \(such as pages opened, buttons pressed and the addresses of requests the app made\)/u,
+    /your browser’s session storage briefly keeps a reference to it/u,
     /They can’t delete accounts themselves, but can remove you from the circle and pass your request on\./u,
   ]) {
     assert.match(text, phrase);
@@ -220,6 +227,7 @@ test('the signed-out landing links the full privacy policy and terms; members ge
   const note = indexHtml.match(/<details id="landingPrivacy" class="landing-privacy">([\s\S]*?)<\/details>/u)?.[1];
   assert.ok(note, 'the in-page privacy note stays');
   assert.match(note, /<a href="\/privacy">Privacy Policy<\/a>/u);
+  assert.match(note, /Randori Circle is a private practice space run by Festus Omole; circle owners decide who joins\./u);
   const menu = indexHtml.match(/<div id="meMenu" role="menu"[^>]*>([\s\S]*?)\n {8}<\/div>/u)?.[1];
   assert.ok(menu, 'account menu');
   // New tab, so following them never drops a live call or room.

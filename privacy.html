@@ -32,7 +32,7 @@
 </header>
 <main id="main" class="legal-main" tabindex="-1">
   <h1>Privacy Policy</h1>
-  <p class="legal-updated">Last updated: <time datetime="2026-10-21">21 October 2026</time></p>
+  <p class="legal-updated">Last updated: <time datetime="2026-10-22">22 October 2026</time></p>
 
   <div class="legal-summary">
     <p><strong>In short:</strong></p>
@@ -97,9 +97,10 @@
   <h2 id="who-can-see">Who can see your information</h2>
   <ul>
     <li><strong>Members of your circle</strong> see your display name, colour, profile details, whether you are available this week, and who is paired with whom each week. They don’t see your email address.</li>
-    <li><strong>Your partner for the week</strong> sees what happens in your pairing room: the shared editor, whiteboard, chat, code runs and results, the session times you propose and agree, the meeting link and whether the session is done. Your sessions stay private to the two of you.</li>
+    <li><strong>Your partner for the week</strong> sees what happens in your pairing room: the shared editor, whiteboard, chat, code runs and results, the session times you propose and agree, the meeting link and whether the session is done. Your sessions stay private to the two of you, except that practice suggestions, if they are turned on, show your partner which exercises you have attempted (see below).</li>
     <li><strong>Circle owners</strong> see who is in the circle (without email addresses) and the name, email and note of anyone asking to join.</li>
-    <li><strong>Circle health (currently switched off).</strong> If it is turned on, circle owners see weekly counts for their circle: how many members took part and were paired, and how many pairs agreed a time and completed a session, including when that was all pairs or none. Counts that could point to a single pair are hidden, and the counts never name anyone, but a count of all pairs or none does show what every pair did.</li>
+    <li><strong>Practice suggestions (currently switched off).</strong> If it is turned on, your current partner sees which exercises you have attempted before (from your verified code runs and completed sessions, including solo practice and earlier partners), shown only as an “attempted” mark, never your code, scores or dates. Runs in your current shared room count toward both partners’ suggestions; your partner already sees those runs in the room’s run feed. Exercises you hide from suggestions are remembered only in your browser.</li>
+    <li><strong>Circle health (currently switched off).</strong> If it is turned on, circle owners see counts for each finished week of their circle: how many members were available, paired or practised solo, how many pairs agreed a time and completed a session, and what share of pairs repeated a recent pairing. Pair counts are hidden in weeks with fewer than four pairs and whenever they could point to a single pair. The counts never name anyone, but a count of all pairs or none does show what every pair did.</li>
     <li><strong>App admins</strong> can read the error logs, including IP addresses and browser details, to fix problems.</li>
     <li><strong>The people who run Randori</strong> can access the database when needed to operate, secure and fix the service.</li>
   </ul>
@@ -111,7 +112,7 @@
     <li><strong>Vercel</strong> hosts the website: it serves the pages from its global network and runs our server code in its Dublin, Ireland region. It handles every request, including your IP address, and keeps short-lived request logs.</li>
     <li><strong>Turso</strong> hosts our database.</li>
     <li><strong>Resend</strong> sends our emails: invitations, email verification, password resets, pairing and session-time notifications, reminders, and notices to circle owners about requests to join. It receives your email address and the email content, such as your partner’s name, a session time or a room link.</li>
-    <li><strong>Sentry</strong> helps us find errors. When you open the app, your browser downloads Sentry’s error-reporting script from Sentry’s servers, so Sentry sees your IP address and browser details. Error reports from your browser can include the page address, browser details and a description of the error; we don’t attach your name or email, and Sentry is set not to collect personal data by default. Reports from our server have email addresses, user IDs, cookies and code removed. We don’t use Sentry’s session recording or performance tracing in your browser.</li>
+    <li><strong>Sentry</strong> helps us find errors. When you open the app, your browser downloads Sentry’s error-reporting script from Sentry’s servers, so Sentry sees your IP address and browser details. Error reports from your browser can include the page address, browser details, a description of the error and a short trail of what happened just before it (such as pages opened, buttons pressed and the addresses of requests the app made); we don’t attach your name or email, and Sentry is set not to collect personal data by default. Reports from our server have email addresses, user IDs, cookies and code removed. We don’t use Sentry’s session recording or performance tracing in your browser.</li>
     <li><strong>The code runner</strong> is either Vercel Sandbox (a throwaway, isolated machine with no network access, deleted after each run) or a code runner we host ourselves. It receives only the code being run and the test inputs, never your name or email.</li>
     <li><strong>Google</strong> handles Google sign-in. Google’s public STUN servers also help two browsers find each other for a video call, so they see your IP address when you join a call.</li>
     <li><strong>cdnjs (Cloudflare), jsDelivr and unpkg</strong> deliver the code editor and the code formatter to your browser when you open the editor or format code. They see your IP address and browser details.</li>
@@ -141,7 +142,7 @@
   <ul>
     <li><strong>randori_session</strong> keeps you signed in. It can’t be read by scripts, is sent only over HTTPS on the live site, and lasts 12 hours.</li>
     <li>Two short-lived cookies are used while you sign in with Google and when you open an invitation. They last 10 minutes.</li>
-    <li>Your browser’s local storage keeps your theme, which tips you have dismissed and where you were in the app. It also keeps a copy of your basic profile, including your email address (removed when you sign out); code drafts (removed when you sign out); unsent shared-editor edits (kept for up to 90 days); whiteboard drafts (no expiry, and they stay after you sign out); and two random identifiers that help the shared editor and video calls tell browsers apart (<code>randori-crdt-client-v1</code> and <code>randori-peer-id</code>). You can clear all of this at any time in your browser settings.</li>
+    <li>Your browser’s local storage keeps your theme, which tips you have dismissed and where you were in the app. It also keeps a copy of your basic profile, including your email address (removed when you sign out); code drafts (removed when you sign out); unsent shared-editor edits (kept for up to 90 days); whiteboard drafts (no expiry, and they stay after you sign out); and two random identifiers that help the shared editor and video calls tell browsers apart (<code>randori-crdt-client-v1</code> and <code>randori-peer-id</code>), and a few settings, such as your reminder choice. While you accept an invitation or confirm an account change, your browser’s session storage briefly keeps a reference to it. You can clear all of this at any time in your browser settings.</li>
   </ul>
   <p>There are no advertising or analytics cookies. The only third-party script that loads on every visit to the app is Sentry’s error-reporting script (see <a href="#providers">Service providers</a>).</p>
 

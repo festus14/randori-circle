@@ -3824,9 +3824,11 @@ short in-page "Privacy note" on the landing page.
   retention (90 days) is not described as active because its purge is still
   disabled. GitHub is listed as a provider (code, issues, scheduled jobs and
   the weekly restore rehearsal, which keeps only counts and checksums).
-  Circle health (ID-78, flagged off) is disclosed as owner-visible weekly
-  counts with single-pair cells hidden, noting that an all-or-none count
-  shows every pair's state.
+  Circle health (ID-78, flagged off) is disclosed as owner-visible counts
+  per finished week with small or single-pair cells hidden, noting that an
+  all-or-none count shows every pair's state. Practice suggestions (ID-77,
+  flagged off) are disclosed as "attempted" marks a current partner sees.
+  Browser Sentry reports are described with their breadcrumb trail.
 - *Deletion and contact.* There is no self-service deletion (leaving or
   removal only makes a membership inactive), so the policy explains how to
   ask: by email, or through the circle owner. Circle owners can't delete
