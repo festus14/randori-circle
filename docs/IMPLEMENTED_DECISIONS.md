@@ -3922,6 +3922,11 @@ deploy and the `production-smoke` workflow then checks them. The owner reads
 the text and enters the URLs on Google Cloud's Branding page. To withdraw,
 revert this change.
 
+*Update, 22 October 2026:* the policy now describes practice suggestions
+(ID-77), circle health (ID-78), self-service deletion (ID-81), reminders
+(ID-71) and email-record retention (ID-83) as on, ahead of the owner turning
+their flags on in production; the "switched off" caveats are gone.
+
 ## ID-80: Make randoricircle.com the canonical origin; keep the old Vercel alias for the API
 
 Status: implemented as an infrastructure change. No feature flag, migration,
@@ -4228,6 +4233,10 @@ owner sets `OUTBOX_PII_RETENTION_ENABLED=true` in Vercel Production and
 redeploys; the backlog drains at up to 100 rows per class an hour. Redaction
 cannot be undone, and redacted dead letters stay non-replayable after the flag
 is unset.
+
+*Update, 22 October 2026:* the "Email records" text is now in `privacy.html`,
+with the 1-day backup window of Turso's Starter plan and the invitation guard
+(an envelope is never removed while its invitation can still be used).
 
 ## ID-82: Keep no raw IP address or user agent in app_logs
 
