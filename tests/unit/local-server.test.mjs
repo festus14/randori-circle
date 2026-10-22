@@ -1029,6 +1029,32 @@ test('the adapter preserves route query, dynamic ids, redirects, cookies, status
   ]);
 });
 
+test('every static vercel.json API rewrite reaches the same handler and endpoint locally',async()=>{
+  const directory=temporaryDirectory();
+  await useMigratedLocalDatabase(directory);
+  const {config}=localConfig(directory);
+  const handlerNames=['auth','data','invitations','members','circles','ops','ai','video','codeDocument'];
+  const handlers=Object.fromEntries(handlerNames.map(name=>[name,(req,res)=>res.json({handler:name,query:req.query})]));
+  const runtime=registerRuntime(await startLocalDevelopmentServer({config,handlers,logger:SILENT_LOGGER}));
+  const vercel=JSON.parse(readFileSync(join(REPOSITORY_ROOT,'vercel.json'),'utf8'));
+  const rewrites=vercel.rewrites.filter(rewrite=>rewrite.destination.startsWith('/api/')
+    &&!/[:(]/.test(rewrite.source));
+  assert.ok(rewrites.some(rewrite=>rewrite.source==='/api/circle/health'),'circle health must be routed in production');
+  // The members handler treats a missing endpoint as its only endpoint, so
+  // the local direct route omits it.
+  const implicitEndpoints=new Map([['/api/members','members']]);
+  for(const rewrite of rewrites){
+    const destination=new URL(rewrite.destination,'https://randori.invalid');
+    const response=await fetch(new URL(rewrite.source,runtime.url));
+    assert.equal(response.status,200,rewrite.source);
+    const routed=await response.json();
+    const query={...routed.query};
+    if(query.endpoint===undefined&&implicitEndpoints.has(rewrite.source)) query.endpoint=implicitEndpoints.get(rewrite.source);
+    assert.equal(routed.handler,destination.pathname.slice('/api/'.length),rewrite.source);
+    assert.deepEqual(query,Object.fromEntries(destination.searchParams),rewrite.source);
+  }
+});
+
 test('runtime environment disables ambient providers and restores the caller environment on close',async()=>{
   const directory=temporaryDirectory();
   await useMigratedLocalDatabase(directory);
