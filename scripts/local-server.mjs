@@ -27,6 +27,7 @@ import {
   prepareMigrationConnection,
   publicMigrationError,
 } from '../db/migration-runner.js';
+import { publicPageFile } from './public-pages.mjs';
 
 const REPOSITORY_ROOT=resolve(fileURLToPath(new URL('..',import.meta.url)));
 const DEFAULT_LOCAL_DIRECTORY='.local';
@@ -1092,6 +1093,13 @@ export async function createLocalDevelopmentServer({
     }
     if(navigationPath(parsedUrl.pathname)){
       serveLocalIndex(response,resolve(config.rootDir,'index.html'),config.rootDir);
+      return;
+    }
+    // Static public pages (privacy policy, terms) are served as their own
+    // documents, never the app shell, exactly as Vercel serves them.
+    const publicPage=publicPageFile(parsedUrl.pathname);
+    if(publicPage){
+      serveFile(response,resolve(config.rootDir,publicPage),'text/html; charset=utf-8',config.rootDir);
       return;
     }
     const file=assetPath(parsedUrl.pathname,config.rootDir);

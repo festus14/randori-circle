@@ -28,7 +28,7 @@ function contract() {
       'index.html', 'package-lock.json', 'package.json', 'vercel.json',
       '.github/workflows/outbox-dispatch.yml', '.github/workflows/outbox-dispatch-watchdog.yml',
       'scripts/github-outbox-dispatch-watchdog.mjs', '.github/workflows/production-smoke.yml',
-      'scripts/production-smoke.mjs',
+      'scripts/production-smoke.mjs', 'privacy.html', 'terms.html',
       ...readdirSync(join(ROOT, 'api')).filter(file => file.endsWith('.js')).map(file => `api/${file}`),
     ]),
   };

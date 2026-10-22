@@ -1240,6 +1240,36 @@ test('static serving supports SPA navigation without exposing repository files o
   }
 });
 
+test('public privacy and terms pages are served as their own documents, never the app shell (ID-79)',async()=>{
+  const directory=temporaryDirectory();
+  await useMigratedLocalDatabase(directory);
+  writeFileSync(join(directory,'privacy.html'),readFileSync(join(REPOSITORY_ROOT,'privacy.html')));
+  const {config}=localConfig(directory);
+  const runtime=registerRuntime(await startLocalDevelopmentServer({config,logger:SILENT_LOGGER}));
+
+  const privacy=await fetch(new URL('/privacy',runtime.url));
+  assert.equal(privacy.status,200);
+  assert.equal(privacy.headers.get('content-type'),'text/html; charset=utf-8');
+  assert.match(privacy.headers.get('content-security-policy')||'',/default-src 'self'/);
+  assert.equal(privacy.headers.get('x-frame-options'),'DENY');
+  assert.equal(privacy.headers.get('referrer-policy'),'no-referrer');
+  const body=await privacy.text();
+  assert.match(body,/<body data-public-page="privacy">/);
+  assert.doesNotMatch(body,/id="appMain"|randori-runtime/);
+
+  const head=await requestRaw(runtime.url,{path:'/privacy',method:'HEAD'});
+  assert.equal(head.status,200);
+  assert.equal(head.body,'');
+
+  // A missing page is a 404, not a silent fall back to the app shell; the
+  // `.html` spelling and other near misses are not public pages.
+  for(const route of ['/terms','/privacy.html','/privacy/','/Privacy']){
+    const response=await fetch(new URL(route,runtime.url));
+    assert.equal(response.status,404,route);
+    assert.doesNotMatch(await response.text(),/Randori Circle/,route);
+  }
+});
+
 test('unexpected handler failures are redacted and graceful close drains work then becomes idempotent',async()=>{
   const directory=temporaryDirectory();
   await useMigratedLocalDatabase(directory);

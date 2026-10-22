@@ -3140,3 +3140,81 @@ retention table (needs a migration).
 **Rollout and recovery.** Merging turns it on; the next production deploy
 installs the logger. To stop client ingestion quickly, revert this change;
 retention is independent and can stay.
+
+## ID-79: Serve the privacy policy and terms as static, script-free public pages
+
+Status: implemented; no migration, no flag (the pages must be public while
+signed out). The text is a plain-English draft for the owner to review; it is
+not legal advice.
+
+**Context.** Google sign-in is in Testing, so only listed test users can sign
+in. Publishing it needs Google Cloud's Branding page filled in, which asks for
+an app home page, a privacy policy link and a terms of service link, and
+Google expects the home page to link the privacy policy. Randori had only the
+short in-page "Privacy note" on the landing page.
+
+**Decision.**
+- *Two root documents.* `privacy.html` and `terms.html` live beside
+  `index.html`. Under `cleanUrls`, Vercel serves them at `/privacy` and
+  `/terms` from the filesystem before any rewrite, so they never reach the SPA
+  fallback and never load the app shell; `/privacy.html` redirects to the
+  clean URL. `vercel.json` is unchanged.
+- *One route table.* `scripts/public-pages.mjs` maps the two clean paths to
+  their files. The local dev server and the e2e static server serve them from
+  it (as their own documents, with the usual local headers), the routing
+  contract test checks each resolves to its file under the Vercel model, the
+  deployability check requires both files, the production smoke check fetches
+  both (200, HTML, a `data-public-page` marker, not the shell, the page
+  security headers), and the real-runtime fixture and screenshot pipeline
+  stage them.
+- *Static and tighter.* No scripts, forms, images or inline styles. Each page
+  adds a meta CSP (`default-src 'none'; style-src 'self'; font-src 'self';
+  img-src 'self'; base-uri 'none'; form-action 'none'`) on top of the
+  site-wide header policy, so it can make no API requests (no `/api/logs`, no
+  auth) and load nothing third-party. They share `assets/legal.css`, which
+  copies the Dojo Indigo tokens from `index.html` (a unit test fails on drift)
+  and follows the system colour scheme. Landmarks (banner, main, contentinfo,
+  a "Legal" nav), one `h1`, no skipped heading levels, a skip link and a
+  "Back to Randori Circle" link.
+- *Links.* The landing footer links "Privacy Policy" and "Terms of Service"
+  (replacing the footer's in-page `#landingPrivacy` link; the request form
+  keeps that one). The in-page privacy note now says members also see
+  profile details but not email addresses, and links both pages. Signed-in
+  members get both at the end of the account menu, after a separator, so the
+  existing menu order is unchanged.
+- *Content from the code.* The policy was written from an inventory of the
+  data flows: Google scopes `openid email profile` with `access_type=online`
+  (only `sub`, verified `email` and `name` are used; no picture, no stored
+  access or refresh token), bcrypt password hashes, the 12-hour
+  `randori_session` cookie, every Turso table holding personal data, Vercel
+  (Dublin), Turso, Resend, Sentry, the Vercel Sandbox or self-hosted runner,
+  Google STUN for peer-to-peer calls, cdnjs/jsDelivr/unpkg for the editor,
+  optional consent-gated Groq/OpenAI feedback (off by default), and no
+  analytics. Retention is stated only where code defines it: `app_logs` 30
+  days (ID-72), video signals about an hour, editor and whiteboard drafts 90
+  days, invite requests 30 days, links 30 minutes or 7 days, sessions 12
+  hours; everything else while the account exists. Chat retention (90 days)
+  is not described as active because its purge is still disabled.
+- *Deletion and contact.* There is no self-service deletion (leaving or
+  removal only makes a membership inactive), so the policy explains how to
+  ask: the circle owner or the public issue tracker, with a warning not to
+  post personal information there. No email address is published; an HTML
+  comment `<!-- CONTACT_EMAIL: owner to add -->` in `privacy.html` marks where
+  the owner can add one.
+- *Google disclosure.* The policy states that Randori's use and transfer of
+  information received from Google APIs adheres to the Google API Services
+  User Data Policy, including the Limited Use requirements, and that the data
+  is not sold, not used for advertising and not transferred except to run the
+  service or when the law requires it.
+
+**Alternatives.** Render the pages inside the SPA (needs JavaScript and the
+app shell, and would send signed-out visitors through auth boot and client
+logging). A Vercel rewrite per page (the filesystem already wins under
+`cleanUrls`). A feature flag (the pages exist to be public). Extracting the
+`index.html` tokens into a shared stylesheet now (a large `index.html` edit
+while other work is in flight; the drift test keeps the copy honest).
+
+**Rollout and recovery.** Merging publishes both pages on the next production
+deploy and the `production-smoke` workflow then checks them. The owner reads
+the text, optionally adds a contact email at the marked spot, and enters the
+URLs on Google Cloud's Branding page. To withdraw, revert this change.

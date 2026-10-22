@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<!-- Tighter than the site-wide header CSP: this page loads no scripts and connects nowhere. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'"/>
+<meta name="color-scheme" content="dark light"/>
+<meta name="referrer" content="no-referrer"/>
+<meta name="theme-color" content="#0B0D12" media="(prefers-color-scheme: dark)"/>
+<meta name="theme-color" content="#F7F8FB" media="(prefers-color-scheme: light)"/>
+<meta name="description" content="What Randori Circle collects, why, who can see it, how long it is kept, and how to ask for it to be deleted."/>
+<link rel="icon" href="/assets/brand/favicon.svg" type="image/svg+xml"/>
+<link rel="stylesheet" href="/assets/legal.css"/>
+<title>Privacy Policy · Randori Circle</title>
+</head>
+<body data-public-page="privacy">
+<a class="skip-link" href="#main">Skip to main content</a>
+<header class="legal-header">
+  <a class="legal-brand" href="/">
+    <svg class="mark" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true" focusable="false">
+      <g fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round">
+        <path d="M18.85 5.37A11 11 0 0 1 26.63 18.85"/>
+        <path class="mark-accent" d="M23.78 23.78A11 11 0 0 1 8.22 23.78"/>
+        <path d="M5.37 18.85A11 11 0 0 1 13.15 5.37"/>
+      </g>
+      <circle cx="16" cy="16" r="3.4" fill="currentColor"/>
+    </svg>
+    <span><span class="wordmark-strong">Randori</span> <span class="wordmark-light">Circle</span></span>
+  </a>
+  <a class="legal-back" href="/" data-testid="public-page-back">Back to Randori Circle</a>
+</header>
+<main id="main" class="legal-main" tabindex="-1">
+  <h1>Privacy Policy</h1>
+  <p class="legal-updated">Last updated: <time datetime="2026-10-21">21 October 2026</time></p>
+
+  <div class="legal-summary">
+    <p><strong>In short:</strong></p>
+    <ul>
+      <li>Randori Circle is a free, invite-only tool for practising coding interviews. We collect what we need to run it: your account, your circle, and what you do in your pairing rooms.</li>
+      <li>We don’t sell your information, show ads, or use analytics or tracking cookies.</li>
+      <li>Google sign-in gives us only your name, your email address and a Google account ID.</li>
+      <li>Your pairing room is shared with your partner for that week, not with the rest of the circle.</li>
+      <li>You can ask us to delete your account at any time.</li>
+    </ul>
+  </div>
+
+  <h2 id="who-we-are">Who we are</h2>
+  <p>Randori Circle (“Randori”, “we”, “us”) is a free, non-commercial community tool for practising coding interviews. It is run by its owner, who is responsible for your information (the “data controller” under UK data protection law). See <a href="#contact">Contact</a> for how to reach us.</p>
+
+  <h2 id="what-we-collect">What we collect and why</h2>
+  <h3 id="account">Your account</h3>
+  <ul>
+    <li><strong>Email address</strong>, to sign you in and to send you Randori’s emails.</li>
+    <li><strong>Name and avatar colour</strong>, shown to the members of your circle.</li>
+    <li><strong>Password</strong>, if you use one. We store only a bcrypt hash, never the password itself.</li>
+    <li><strong>Profile details you choose to add</strong>: a short bio, your time zone, your interview focus and a LeetCode username. These are shown to the members of your circle. We never contact LeetCode; the username is only displayed.</li>
+    <li>When you last signed in, and whether you are an app admin.</li>
+  </ul>
+
+  <h3 id="circle">Your circle</h3>
+  <ul>
+    <li>Which circles you belong to, your role (owner or member), who invited you, when you joined, and whether your membership is active.</li>
+    <li><strong>Invitations.</strong> When an owner invites someone, we store the invited email address only as a one-way fingerprint (a hash), plus an encrypted copy used to send the invitation email. Invitation links expire after 7 days.</li>
+    <li><strong>Requests to join.</strong> If you ask for an invite on our home page, the circle owners see your name, email and note so they can decide.</li>
+  </ul>
+
+  <h3 id="practice">Your practice</h3>
+  <ul>
+    <li>Your weekly availability, your pairings, the session times you propose and agree, and a meeting link if your pair adds one.</li>
+    <li>What you write in a pairing room: the shared code editor, the whiteboard and chat messages with your partner.</li>
+    <li>Code runs: the code you run, the exercise and language, the test results and how long it took.</li>
+    <li>Session details: interviewer and candidate roles, the timer, and whether you both marked the session as done.</li>
+    <li>Your email reminder setting.</li>
+  </ul>
+
+  <h3 id="technical">Technical information</h3>
+  <ul>
+    <li>A sign-in cookie (see <a href="#cookies">Cookies and browser storage</a>).</li>
+    <li><strong>Error logs.</strong> When something goes wrong while you are signed in, the app sends a short error report to our server. Our server also logs some events, such as code runs. Each log entry can include the page path, your user ID, your browser’s user agent and your IP address. Email addresses, passwords and secret links are removed from error reports before they are stored.</li>
+    <li>To stop abuse, we count sign-in and invitation attempts using a scrambled (keyed hash) form of your IP address, not the address itself.</li>
+  </ul>
+
+  <h2 id="google">Google sign-in</h2>
+  <p>If you sign in with Google, Randori asks Google only for the standard <strong>openid email profile</strong> permissions. From these we use:</p>
+  <ul>
+    <li>your Google account ID, so we recognise you next time;</li>
+    <li>your email address, and the fact that Google has verified it;</li>
+    <li>your name.</li>
+  </ul>
+  <p>Google also offers your profile photo; we don’t use or store it. We don’t ask for access to anything else in your Google account, such as Gmail, Drive, Calendar or contacts. We don’t keep Google access tokens or refresh tokens: we check the signed sign-in token Google sends us and then discard it.</p>
+  <p>We use this information only to sign you in, to show your name and email in Randori (your display name is updated from your Google name each time you sign in with Google), and to send Randori’s own emails to that address.</p>
+  <p>Randori’s use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. Information we receive from Google is not sold, not used for advertising, and not transferred to anyone except as needed to run the service (for example, it is stored with our hosting and database providers) or when the law requires it.</p>
+  <p>You can remove Randori’s access at any time from the <a href="https://myaccount.google.com/connections">third-party connections page of your Google Account</a>. That stops future Google sign-ins; it does not delete your Randori account.</p>
+
+  <h2 id="who-can-see">Who can see your information</h2>
+  <ul>
+    <li><strong>Members of your circle</strong> see your name, colour, profile details and whether you are available this week. They don’t see your email address.</li>
+    <li><strong>Your partner for the week</strong> sees what happens in your pairing room: the shared editor, whiteboard, chat, code runs and results, the session times you propose and agree, the meeting link and whether the session is done. Your sessions stay private to the two of you.</li>
+    <li><strong>Circle owners</strong> see who is in the circle (without email addresses) and the name, email and note of anyone asking to join.</li>
+    <li><strong>App admins</strong> can read the error logs, including IP addresses and browser details, to fix problems.</li>
+    <li><strong>The people who run Randori</strong> can access the database when needed to operate, secure and fix the service.</li>
+  </ul>
+  <p>We don’t sell or share your information with anyone else, except the service providers below or where the law requires it.</p>
+
+  <h2 id="providers">Service providers</h2>
+  <p>These companies process information on our behalf to run Randori:</p>
+  <ul>
+    <li><strong>Vercel</strong> hosts the website and runs our server code (in its Dublin, Ireland region). It handles every request, including your IP address.</li>
+    <li><strong>Turso</strong> hosts our database.</li>
+    <li><strong>Resend</strong> sends our emails: invitations, email verification, password resets, pairing and session-time notifications, reminders, and notices to circle owners about requests to join. It receives your email address and the email content, such as your partner’s name, a session time or a room link.</li>
+    <li><strong>Sentry</strong> receives error reports from the live site. It is set not to collect personal data by default. Reports from our server have email addresses, user IDs, cookies and code removed. Reports from your browser can include the page address and browser details, and Sentry sees your IP address when your browser sends one.</li>
+    <li><strong>The code runner</strong> is either Vercel Sandbox (a throwaway, isolated machine with no network access, deleted after each run) or a code runner we host ourselves. It receives only the code being run and the test inputs, never your name or email.</li>
+    <li><strong>Google</strong> handles Google sign-in. Google’s public STUN servers also help two browsers find each other for a video call, so they see your IP address when you join a call.</li>
+    <li><strong>cdnjs (Cloudflare), jsDelivr and unpkg</strong> deliver the code editor and the code formatter to your browser when you open the editor or format code. They see your IP address and browser details.</li>
+    <li><strong>Groq, with OpenAI as a backup,</strong> would provide optional AI feedback on a practice session. This feature is off by default. If it is ever turned on, it asks for your consent first and sends your session notes, code and interviewer questions, but not your name or email.</li>
+  </ul>
+  <p>Some of these providers are based in the United States, so your information may be processed outside the UK under their own data protection terms.</p>
+  <p><strong>Video calls</strong> go directly between your browser and your partner’s. The audio and video don’t pass through our servers, and nothing is recorded. The short messages that set up a call, which include network addresses, pass through our server and are cleared out after about an hour (the clean-up runs while calls are in use).</p>
+
+  <h2 id="retention">How long we keep it</h2>
+  <ul>
+    <li><strong>Your account and practice history</strong> (profile, circle membership, availability, pairings, session times, chat, code runs, completed sessions and settings): while your account exists. If you leave a circle or an owner removes you, your membership becomes inactive and you are signed out, but nothing is deleted unless you ask us.</li>
+    <li><strong>Shared editor and whiteboard drafts</strong>: deleted after 90 days without changes. The clean-up runs from time to time, so it can take a little longer.</li>
+    <li><strong>Meeting links</strong>: removed when your agreed session time changes.</li>
+    <li><strong>Video call set-up messages</strong>: about an hour, cleared while calls are in use.</li>
+    <li><strong>Error logs</strong>, including IP addresses: 30 days.</li>
+    <li><strong>Sign-in sessions</strong>: 12 hours. Cookies used during Google sign-in or when opening an invitation: 10 minutes.</li>
+    <li><strong>Links in emails</strong>: email verification and password reset links expire after 30 minutes; invitation links after 7 days.</li>
+    <li><strong>Requests to join</strong>: an unanswered request expires after 30 days. Once an owner approves or declines it, your name, email and note are removed straight away, and the rest of the record is deleted 30 days later.</li>
+    <li><strong>Email records</strong>: our email queue keeps a record of each email sent, including the recipient’s address, while the account exists.</li>
+    <li><strong>Backups</strong>: our database provider keeps backups for a limited time, so deleted information can remain in a backup until it expires.</li>
+  </ul>
+
+  <h2 id="cookies">Cookies and browser storage</h2>
+  <p>We use only what the app needs to work:</p>
+  <ul>
+    <li><strong>randori_session</strong> keeps you signed in. It can’t be read by scripts, is sent only over HTTPS on the live site, and lasts 12 hours.</li>
+    <li>Two short-lived cookies are used while you sign in with Google and when you open an invitation. They last 10 minutes.</li>
+    <li>Your browser’s local storage keeps your theme, which tips you have dismissed, where you were in the app, a copy of your basic profile (removed when you sign out), unsent code edits (kept for up to 90 days) and whiteboard drafts. You can clear it at any time in your browser settings.</li>
+  </ul>
+  <p>There are no advertising or analytics cookies and no third-party trackers.</p>
+
+  <h2 id="your-rights">Your choices and rights</h2>
+  <ul>
+    <li><strong>See and correct your details</strong> with <strong>Edit profile</strong> in the account menu. You can also change your availability and turn off <strong>Email reminders</strong> in your pairing settings. Emails you need for your account, such as password resets, are still sent.</li>
+    <li><strong>Leave a circle</strong> from the Circle page.</li>
+    <li><strong>Sign out everywhere</strong> from the account menu if you think someone else has used your account.</li>
+    <li><strong>Delete your account.</strong> There isn’t a delete button yet. Ask the owner of your circle, or follow the steps in <a href="#contact">Contact</a>. We will delete your account and the personal information linked to it within one month, unless the law requires us to keep something.</li>
+  </ul>
+  <p>Under UK data protection law you can also ask for a copy of your information, ask us to correct, delete or restrict it, object to how we use it, or ask for it in a portable format. We use your information because it is needed to provide the service you signed up for, and because we have a legitimate interest in keeping it secure and working. Optional AI feedback would rely on your consent.</p>
+  <p>If you are unhappy with how we handle your information, please tell us first. You can also complain to the <a href="https://ico.org.uk/make-a-complaint/">Information Commissioner’s Office</a>.</p>
+
+  <h2 id="security">Security</h2>
+  <p>Randori uses HTTPS throughout, keeps your sign-in cookie out of reach of scripts, stores passwords as bcrypt hashes, stores secret links only as hashes, and checks on the server that you are allowed to see each thing you ask for. Code runs in an isolated runner. No system is perfectly secure, so please use a strong password and tell us if you notice anything wrong.</p>
+
+  <h2 id="changes">Changes to this policy</h2>
+  <p>If we change how we handle your information, we will update this page and the “Last updated” date at the top.</p>
+
+  <h2 id="contact">Contact</h2>
+  <p>For any privacy question or request, including deleting your account:</p>
+  <ul>
+    <li><strong>Contact the owner of your circle.</strong> They can act for you or pass your request on.</li>
+    <li><strong>Or open an issue</strong> on our public issue tracker at <a href="https://github.com/festus14/randori-circle/issues">github.com/festus14/randori-circle/issues</a>. The tracker is public, so please don’t post personal information there. Say what you need, for example “please delete my account”, and we will reply with a private way to continue.</li>
+  </ul>
+  <!-- CONTACT_EMAIL: owner to add -->
+  <p>Questions about the rules for using Randori are covered in our <a href="/terms">Terms of Service</a>.</p>
+</main>
+<footer class="legal-footer">
+  <div class="legal-footer-inner">
+    <nav aria-label="Legal">
+      <ul>
+        <li><a href="/privacy" aria-current="page">Privacy Policy</a></li>
+        <li><a href="/terms">Terms of Service</a></li>
+        <li><a href="/">Back to Randori Circle</a></li>
+      </ul>
+    </nav>
+    <p>© Randori Circle</p>
+  </div>
+</footer>
+</body>
+</html>
