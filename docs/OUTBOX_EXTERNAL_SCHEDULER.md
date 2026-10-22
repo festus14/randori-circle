@@ -45,7 +45,7 @@ Create one cron job:
 
 | Field | Value |
 | --- | --- |
-| URL | `https://randori-circle-self.vercel.app/api/cron/outbox` |
+| URL | `https://randoricircle.com/api/cron/outbox` |
 | Request method | `POST` |
 | Headers | `Authorization: Bearer <OUTBOX_DISPATCH_SECRET>` |
 | Request body | none |
@@ -67,6 +67,18 @@ Check the job by running it once from cron-job.org ("Test run"). Expect HTTP
 200 and `{"ok":true,...,"outbox":{...}}`. A 401 means the secret is wrong,
 too short, or not deployed. A 503 means the app's outbox or database is not
 available.
+
+### Moving the job to the canonical domain (ID-80)
+
+Jobs created before ID-80 call
+`https://randori-circle-self.vercel.app/api/cron/outbox`. That URL keeps
+working: the old alias redirects page paths only and still serves `/api/*`
+directly, so the `POST` and its `Authorization` header arrive unchanged.
+Change the URL to `https://randoricircle.com/api/cron/outbox` right after the
+canonical-domain deploy (step 5 of
+[the switch order](PRODUCTION_BOOTSTRAP_GUIDE.md#switch-order)), keep the
+header and schedule as they are, then do a "Test run" and expect HTTP 200. On
+a rollback the job can stay on either URL.
 
 ## Delivery health
 

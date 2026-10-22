@@ -90,7 +90,7 @@ test('browser tests never load the production telemetry SDK', async ({ page }) =
   expect(await page.evaluate(() => (window as typeof window & { __randoriSentry?: unknown }).__randoriSentry)).toEqual({
     environment: 'development',
     enabled: false,
-    productionOrigin: 'https://randori-circle-self.vercel.app',
+    productionOrigin: 'https://randoricircle.com',
   });
   // The loader is requested once the page is idle (after load), not while it parses.
   await expect.poll(() => telemetryFailures).toEqual(['net::ERR_NAME_NOT_RESOLVED']);
@@ -99,7 +99,7 @@ test('browser tests never load the production telemetry SDK', async ({ page }) =
 // ID-72: the client logger installs everywhere, including production. This
 // runs the checked-out app on the production origin (requests to it are
 // served from the local test server) so the production send policy is used.
-const PRODUCTION_ORIGIN = 'https://randori-circle-self.vercel.app';
+const PRODUCTION_ORIGIN = 'https://randoricircle.com';
 type ClientLogEntry = { level: string; event: string; message: string; route: string; meta?: Record<string, unknown> };
 type LoggerWindow = typeof window & {
   _randori_log?: {

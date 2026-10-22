@@ -8,7 +8,7 @@ on:
       prod_url:
         description: Public origin to capture read-only (https)
         required: false
-        default: https://randori-circle-self.vercel.app
+        default: https://randoricircle.com
       scope:
         description: all, public, or local
         required: false

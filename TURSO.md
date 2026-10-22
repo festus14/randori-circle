@@ -50,7 +50,7 @@
    PASSWORD_RESET_ENCRYPTION_KEY=... # generate independently with the same command
    RESEND_API_KEY=re_xxx  # omit both Resend values to keep email disabled
    RESEND_FROM=Randori <noreply@your-verified-domain.com>
-   APP_URL=https://randori-circle-self.vercel.app
+   APP_URL=https://randoricircle.com
    GOOGLE_CLIENT_ID=...
    GOOGLE_CLIENT_SECRET=...
    ```
@@ -99,7 +99,7 @@ Provider-identity, membership, and all other schema changes use the protected mi
 - `PASSWORD_RESET_ENABLED` — set to `true` only after managed migration v8, canonical `APP_URL`, and email delivery are ready. Local development captures recovery delivery without a provider request.
 - `PASSWORD_RESET_ENCRYPTION_KEY` — an independent 32-byte base64url key for reset credentials in queued events. Keep it stable until all pending reset events have reached a terminal state.
 - `APP_URL` — required canonical production HTTPS origin, used for Google OAuth redirect URI and pairing email links. Credentials, paths, query strings, fragments, insecure public origins, request-host mismatches, and implicit fallback origins fail closed. The isolated local runtime accepts only its exact loopback HTTP origin.
-- `GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET` — for Google SSO (`/api/auth/google/*`). Configure in Google Cloud Console → OAuth client → Web → origins + redirect: `https://randori-circle-self.vercel.app/api/auth/google/callback` plus localhost variants.
+- `GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET` — for Google SSO (`/api/auth/google/*`). Configure in Google Cloud Console → OAuth client → Web → origins + redirect: `https://randoricircle.com/api/auth/google/callback` plus localhost variants (during the ID-80 transition also the old `https://randori-circle-self.vercel.app` entries; see [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md)).
 
 **Endpoints:**
 - `POST /api/auth/signup` — synchronous invite signup remains local-only. In production, complete configuration returns a generic accepted response and atomically stores a pending invite-bound activation plus its outbox event; no account or session is created yet.

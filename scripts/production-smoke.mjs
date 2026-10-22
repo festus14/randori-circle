@@ -6,12 +6,22 @@
 // cleanUrls + SPA fallback), the health probes, the public auth capability
 // surface, a static asset, and the security headers from check-deployability.
 //
+// Against the canonical origin it also checks the canonical-domain redirects
+// (ID-80): the old Vercel alias sends page paths to the canonical host with
+// their path and query but still serves /api/*, and www redirects to the apex.
+// Google sign-in is advertised only on the host APP_URL names, so googleOAuth
+// is expected only there. While APP_URL still names the old alias those checks
+// are skipped with the reason printed, but only as long as the old alias still
+// serves its pages (before the redirect deploy, or during the deploy race). If
+// its pages already redirect away, members are sent to a host where Google
+// sign-in is not offered, and the run fails.
+//
 // Usage:
 //   npm run smoke:production
 //   npm run smoke:production -- --base-url https://preview.example.vercel.app
 //
 // Configuration (flags win over environment):
-//   --base-url / SMOKE_BASE_URL                        default production origin
+//   --base-url / SMOKE_BASE_URL                        default canonical origin
 //   --expect-capabilities / SMOKE_EXPECTED_CAPABILITIES
 //       JSON object merged over the MVP defaults. Set a key to null to stop
 //       asserting it, e.g. '{"googleOAuth":null}' or '{"googleOAuth":false}'.
@@ -24,9 +34,10 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { REQUIRED_SECURITY_HEADERS, securityHeaderIsSafe } from './check-deployability.mjs';
+import { CANONICAL_ORIGIN, LEGACY_ORIGIN, WWW_ORIGIN } from './canonical-domain.mjs';
 import { PUBLIC_PAGE_PATHS } from './public-pages.mjs';
 
-export const DEFAULT_BASE_URL = 'https://randori-circle-self.vercel.app';
+export const DEFAULT_BASE_URL = CANONICAL_ORIGIN;
 export const DEFAULT_EXPECTED_CAPABILITIES = Object.freeze({
   passwordLogin: true,
   passwordSignup: true,
@@ -52,6 +63,10 @@ export const PUBLIC_PAGE_ROUTES = PUBLIC_PAGE_PATHS;
 export const STATIC_ASSET = '/assets/calendar-export.js';
 const SHELL_MARKERS = ['<title>Randori Circle</title>', 'id="appMain"'];
 const REDIRECT_STATUSES = new Set([301, 302, 307, 308]);
+const TEMPORARY_REDIRECT_STATUSES = new Set([302, 307]);
+const PERMANENT_REDIRECT_STATUSES = new Set([301, 308]);
+// A page path with a query: the host redirects must keep both.
+export const DOMAIN_REDIRECT_PROBE = '/invite?smoke=canonical-domain';
 
 export class SmokeConfigurationError extends Error {}
 
@@ -89,11 +104,11 @@ function securityHeaderFailures(headers) {
   return REQUIRED_SECURITY_HEADERS.filter(key => !securityHeaderIsSafe(key, headers.get(key) ?? ''));
 }
 
-async function request(fetchImpl, origin, path, timeoutMs) {
+async function request(fetchImpl, url, timeoutMs) {
   let lastError;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const response = await fetchImpl(`${origin}${path}`, {
+      const response = await fetchImpl(url, {
         method: 'GET',
         redirect: 'manual',
         credentials: 'omit',
@@ -211,22 +226,115 @@ export function smokeChecks(origin, { expectedCapabilities = DEFAULT_EXPECTED_CA
   ];
 }
 
+// ID-80: the canonical URL a response redirects to, if it keeps the exact path
+// and query; otherwise null.
+function canonicalLocation(result, pathAndQuery) {
+  let target;
+  try { target = new URL(result.headers.get('location')); } catch { return null; }
+  return target.href === `${CANONICAL_ORIGIN}${pathAndQuery}` ? target.href : null;
+}
+
+function checkCanonicalRedirect(statuses, kind) {
+  return result => {
+    const problems = [];
+    if (!statuses.has(result.status)) problems.push(`status ${result.status}, expected a ${kind} redirect`);
+    if (!canonicalLocation(result, DOMAIN_REDIRECT_PROBE)) {
+      problems.push(`does not redirect to ${CANONICAL_ORIGIN}${DOMAIN_REDIRECT_PROBE}`);
+    }
+    return problems;
+  };
+}
+
+// Checks on the other two hosts, run only when the base is the canonical origin.
+export function canonicalDomainChecks() {
+  return [
+    { name: 'legacy host page redirect', url: `${LEGACY_ORIGIN}${DOMAIN_REDIRECT_PROBE}`,
+      check: checkCanonicalRedirect(TEMPORARY_REDIRECT_STATUSES, 'temporary') },
+    // Not redirected: cron-job.org and in-flight API calls still use the old
+    // alias. Liveness, not readiness: the base checks already cover readiness,
+    // and a database outage is not an alias-routing failure.
+    { name: 'legacy host API alias', url: `${LEGACY_ORIGIN}/api/health/live`, check: checkHealth('live') },
+    { name: 'www redirect', url: `${WWW_ORIGIN}${DOMAIN_REDIRECT_PROBE}`,
+      check: checkCanonicalRedirect(PERMANENT_REDIRECT_STATUSES, 'permanent') },
+  ];
+}
+
+export const SWITCH_MISMATCH = 'APP_URL names the old alias but its pages redirect away; '
+  + 'Google sign-in is unreachable';
+
+// While APP_URL names the old alias, its pages must still be served there:
+// once they redirect to the canonical host, nobody can reach Google sign-in.
+function checkLegacyStillServesPages(result) {
+  if (canonicalLocation(result, DOMAIN_REDIRECT_PROBE)) return [SWITCH_MISMATCH];
+  return result.status === 200 ? [] : [`status ${result.status}`];
+}
+
+const LEGACY_PAGES_CHECK = Object.freeze({ name: 'legacy host serves pages while APP_URL names it',
+  url: `${LEGACY_ORIGIN}${DOMAIN_REDIRECT_PROBE}`, check: checkLegacyStillServesPages });
+
+// Google sign-in is advertised only on the host APP_URL names
+// (api/_auth-config.js), so this tells which of the two hosts that is, or null
+// when neither advertises it.
+async function googleOAuthOrigin(fetchImpl, timeoutMs) {
+  for (const origin of [CANONICAL_ORIGIN, LEGACY_ORIGIN]) {
+    try {
+      const result = await request(fetchImpl, `${origin}/api/auth/capabilities`, timeoutMs);
+      if (parseJson(result.body)?.capabilities?.googleOAuth === true) return origin;
+    } catch {
+      // Unknown. The capability check reports the base origin's own failure.
+    }
+  }
+  return null;
+}
+
+function canonicalDomainSkipReason(origin, oauthOrigin) {
+  if (origin === LEGACY_ORIGIN) return `the base URL is the legacy alias; they run against ${CANONICAL_ORIGIN}`;
+  if (origin !== CANONICAL_ORIGIN) return `the base URL is not the canonical origin ${CANONICAL_ORIGIN}`;
+  return `APP_URL still names ${oauthOrigin} (Google sign-in is advertised there); `
+    + `they run once APP_URL is ${CANONICAL_ORIGIN}`;
+}
+
 export async function runProductionSmoke({ baseUrl = DEFAULT_BASE_URL, fetchImpl = globalThis.fetch,
   expectedCapabilities = DEFAULT_EXPECTED_CAPABILITIES, registrationMode = DEFAULT_REGISTRATION_MODE,
   timeoutMs = 15_000 } = {}) {
   const origin = parseBaseUrl(baseUrl);
+  const legacyBase = origin === LEGACY_ORIGIN;
+  const oauthOrigin = origin === CANONICAL_ORIGIN || legacyBase ? await googleOAuthOrigin(fetchImpl, timeoutMs) : null;
+  let expected = expectedCapabilities;
+  let capabilityNote = null;
+  if (oauthOrigin && oauthOrigin !== origin && expected.googleOAuth === true) {
+    expected = Object.fromEntries(Object.entries(expected).filter(([key]) => key !== 'googleOAuth'));
+    capabilityNote = `googleOAuth is advertised on ${oauthOrigin}, the APP_URL host, so it is not expected here`;
+  }
+  const checks = smokeChecks(origin, { expectedCapabilities: expected, registrationMode });
+  const skipped = [];
+  if (oauthOrigin === LEGACY_ORIGIN) checks.push(LEGACY_PAGES_CHECK);
+  if (origin === CANONICAL_ORIGIN && oauthOrigin !== LEGACY_ORIGIN) checks.push(...canonicalDomainChecks());
+  else skipped.push({ name: 'canonical-domain checks', reason: canonicalDomainSkipReason(origin, oauthOrigin) });
+
   const results = [];
-  for (const { name, path, check } of smokeChecks(origin, { expectedCapabilities, registrationMode })) {
+  for (const { name, path, url = `${origin}${path}`, check } of checks) {
+    const label = path ?? url;
     try {
-      const response = await request(fetchImpl, origin, path, timeoutMs);
+      let response = await request(fetchImpl, url, timeoutMs);
+      let note = path === '/api/auth/capabilities' ? capabilityNote : null;
+      // The legacy alias redirects page paths, never /api/*: check the page it
+      // now lands on.
+      const target = legacyBase && path?.startsWith('/api/') === false && TEMPORARY_REDIRECT_STATUSES.has(response.status)
+        ? canonicalLocation(response, path) : null;
+      if (target) {
+        response = await request(fetchImpl, target, timeoutMs);
+        note = `followed the canonical redirect to ${target}`;
+      }
       const problems = check(response);
-      results.push({ name, path, status: response.status, ok: problems.length === 0, problems });
+      results.push({ name, path: label, status: response.status, ok: problems.length === 0, problems,
+        ...(note ? { note } : {}) });
     } catch (error) {
       const category = error?.name === 'TimeoutError' ? 'timeout' : 'network_error';
-      results.push({ name, path, status: null, ok: false, problems: [category] });
+      results.push({ name, path: label, status: null, ok: false, problems: [category] });
     }
   }
-  return { ok: results.every(result => result.ok), origin, results };
+  return { ok: results.every(result => result.ok), origin, results, skipped };
 }
 
 function argValue(argv, flag) {
@@ -264,8 +372,9 @@ export async function main({ argv = process.argv.slice(2), env = process.env, fe
   log(`production smoke: ${summary.origin}`);
   for (const result of summary.results) {
     log(`  ${result.ok ? 'ok  ' : 'FAIL'} ${result.name} (${result.status ?? 'no response'})`
-      + (result.ok ? '' : `: ${result.problems.join('; ')}`));
+      + (result.ok ? '' : `: ${result.problems.join('; ')}`) + (result.note ? ` [${result.note}]` : ''));
   }
+  for (const { name, reason } of summary.skipped) log(`  skip ${name}: ${reason}`);
   const failed = summary.results.filter(result => !result.ok).length;
   log(`production smoke: ${failed === 0 ? 'OK' : 'FAILED'} ${summary.results.length - failed}/${summary.results.length} checks passed`);
   return failed === 0 ? 0 : 1;

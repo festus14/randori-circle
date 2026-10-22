@@ -20,7 +20,7 @@
 //   node scripts/ui-screenshots.mjs
 // Environment:
 //   UI_SCREENSHOTS_OUT         output directory (default: ui-screenshots)
-//   UI_SCREENSHOTS_PROD_URL    public origin (default: https://randori-circle-self.vercel.app)
+//   UI_SCREENSHOTS_PROD_URL    public origin (default: https://randoricircle.com)
 //   UI_SCREENSHOTS_SCOPE       all | public | local (default: all)
 //   UI_SCREENSHOTS_VIEWPORTS   comma list of mobile,desktop (default: both)
 

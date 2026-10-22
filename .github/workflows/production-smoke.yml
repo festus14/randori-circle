@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       base_url:
-        description: Origin to check (defaults to the production alias)
+        description: Origin to check (defaults to the canonical origin https://randoricircle.com)
         required: false
         default: ''
 

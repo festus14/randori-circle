@@ -2,6 +2,9 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+
+import { CANONICAL_DOMAIN_REDIRECTS } from './canonical-domain.mjs';
 
 import { PUBLIC_PAGE_FILES } from './public-pages.mjs';
 
@@ -273,6 +276,16 @@ function validateProductionSmokeWorkflow(workflow){
   return errors;
 }
 
+// ID-80: www and the old Vercel alias redirect to the canonical origin. The
+// whole redirects array must stay exactly as reviewed: host-conditional
+// (previews never match), www permanent, the old alias temporary and never for
+// /api/*, and no other rule (host-less or otherwise) beside them.
+export function validateCanonicalDomainRedirects(redirects) {
+  if (!Array.isArray(redirects)) return ['vercel.json must define the canonical-domain redirects'];
+  return isDeepStrictEqual(redirects, CANONICAL_DOMAIN_REDIRECTS) ? []
+    : [`vercel.json redirects must be exactly the reviewed canonical-domain redirects: ${JSON.stringify(CANONICAL_DOMAIN_REDIRECTS)}`];
+}
+
 // Issue #249. The execution smoke spends Vercel Sandbox quota through a
 // CRON_SECRET route, so its only production material is vars.APP_URL and
 // secrets.CRON_SECRET in the production environment, it never runs for pull
@@ -339,6 +352,7 @@ export function validateDeploymentContract({ vercel, packageJson, files, outboxW
   }
 
   if (config.cleanUrls !== true) errors.push('vercel.json must enable cleanUrls');
+  errors.push(...validateCanonicalDomainRedirects(config.redirects));
 
   if (manifest?.engines?.node !== SUPPORTED_NODE_RANGE) {
     errors.push(`package.json engines.node must be ${SUPPORTED_NODE_RANGE}`);

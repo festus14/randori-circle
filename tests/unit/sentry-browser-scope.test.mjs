@@ -3,10 +3,13 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import vm from 'node:vm';
 
+import { CANONICAL_ORIGIN, LEGACY_ORIGIN, WWW_ORIGIN } from '../../scripts/canonical-domain.mjs';
+
 const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
 const LOADER_URL = 'https://js-de.sentry-cdn.com/b4aa012a94edbcd36c8c92ef1aaeddfa.min.js';
 const LOADER_TAG = `<script id="randoriSentryLoader" type="text/plain" data-src="${LOADER_URL}"></script>`;
-const PRODUCTION_ORIGIN = 'https://randori-circle-self.vercel.app';
+// ID-80: the canonical domain, not the old Vercel alias.
+const PRODUCTION_ORIGIN = 'https://randoricircle.com';
 
 function configScript() {
   const match = html.match(/<script id="randoriSentryConfig">([\s\S]*?)<\/script>/);
@@ -57,7 +60,13 @@ for (const [name, href, environment, flags] of [
   ['look-alike vercel host', 'https://randori-circle.vercel.app/', 'preview', {}],
   ['playwright static server', 'http://127.0.0.1:4173/', 'development', {}],
   ['localhost', 'http://localhost:3000/', 'development', {}],
-  ['http production host', 'http://randori-circle-self.vercel.app/', 'preview', {}],
+  ['legacy Vercel alias (ID-80)', `${LEGACY_ORIGIN}/invite?x=1`, 'preview', {}],
+  ['legacy Vercel alias over http', 'http://randori-circle-self.vercel.app/', 'preview', {}],
+  ['www alias of the canonical host', `${WWW_ORIGIN}/`, 'development', {}],
+  ['http canonical host', 'http://randoricircle.com/', 'development', {}],
+  ['canonical host on another port', 'https://randoricircle.com:8443/', 'development', {}],
+  ['look-alike canonical suffix', 'https://randoricircle.com.evil.test/', 'development', {}],
+  ['canonical subdomain', 'https://app.randoricircle.com/', 'development', {}],
   ['other origin', 'https://example.test/', 'development', {}],
   ['local runtime marker', `${PRODUCTION_ORIGIN}/`, 'production', { localRuntime: true }],
   ['automated browser on production', `${PRODUCTION_ORIGIN}/`, 'production', { webdriver: true }],
@@ -97,6 +106,14 @@ test('the browser production origin matches the documented production APP_URL', 
   const guide = readFileSync(new URL('../../docs/PRODUCTION_BOOTSTRAP_GUIDE.md', import.meta.url), 'utf8');
   assert.match(guide, new RegExp(`\\| \`APP_URL\` \\| \`${PRODUCTION_ORIGIN.replace(/[.]/g, '\\.')}\` \\|`));
   assert.ok(configScript().includes(`var PRODUCTION_ORIGIN='${PRODUCTION_ORIGIN}';`));
+});
+
+test('the browser production origin is the canonical domain and index.html never names the old alias (ID-80)', () => {
+  assert.equal(PRODUCTION_ORIGIN, CANONICAL_ORIGIN);
+  // The gate and the session-link fallback both use the canonical origin; the
+  // old alias appears nowhere, so it can only ever be tagged preview.
+  assert.equal(html.includes(new URL(LEGACY_ORIGIN).hostname), false);
+  assert.match(html, /const base = location\.origin \|\| 'https:\/\/randoricircle\.com';/);
 });
 
 function loadScript() {

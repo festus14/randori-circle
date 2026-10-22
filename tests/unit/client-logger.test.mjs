@@ -10,7 +10,7 @@ import vm from 'node:vm';
 import { redactLogText, redactLogValue } from '../../api/_client-log-policy.js';
 
 const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-const PRODUCTION_ORIGIN = 'https://randori-circle-self.vercel.app';
+const PRODUCTION_ORIGIN = 'https://randoricircle.com';
 const START = Date.parse('2026-10-20T12:00:00.000Z');
 
 function inlineScript(id) {
@@ -21,7 +21,9 @@ function inlineScript(id) {
 
 // A minimal page: a global window with location, timers, fetch and console
 // recorders, an optional _randori_auth stub, and a controllable clock.
-function createPage({ href = 'http://127.0.0.1:4173/', environment = 'development', auth, logger, sentry } = {}) {
+// With `gate`, the real randoriSentryConfig script decides the environment
+// from the origin instead of the `environment` stub.
+function createPage({ href = 'http://127.0.0.1:4173/', environment = 'development', auth, logger, sentry, gate = false } = {}) {
   const url = new URL(href);
   const listeners = new Map();
   const fetches = [];
@@ -29,9 +31,9 @@ function createPage({ href = 'http://127.0.0.1:4173/', environment = 'developmen
   const timers = [];
   const clock = { now: START };
   const window = {
-    location: { href: url.href, origin: url.origin, pathname: url.pathname, search: url.search, hash: url.hash },
-    navigator: { userAgent: 'unit-test-agent' },
-    __randoriSentry: { environment },
+    location: { href: url.href, origin: url.origin, hostname: url.hostname, pathname: url.pathname, search: url.search, hash: url.hash },
+    navigator: { userAgent: 'unit-test-agent', webdriver: false },
+    ...(gate ? {} : { __randoriSentry: { environment } }),
     addEventListener(type, listener) { listeners.set(type, [...(listeners.get(type) || []), listener]); },
     removeEventListener(type, listener) { listeners.set(type, (listeners.get(type) || []).filter(item => item !== listener)); },
     fetch(path, options) {
@@ -52,6 +54,7 @@ function createPage({ href = 'http://127.0.0.1:4173/', environment = 'developmen
   };
   const context = vm.createContext(window);
   const run = source => vm.runInContext(source, context);
+  if (gate) run(inlineScript('randoriSentryConfig'));
   run(inlineScript('randoriClientLogger'));
   return {
     window,
@@ -73,9 +76,9 @@ const signedOut = () => ({ me: null, identitySettled: true });
 
 // One corpus for both implementations; `expected` pins the intended output.
 const REDACTION_CORPUS = [
-  ['https://randori-circle-self.vercel.app/invite#invite=' + 'A'.repeat(43), 'https://randori-circle-self.vercel.app/invite'],
-  ['    at boot (https://randori-circle-self.vercel.app/reset#token=abc:12:34)', '    at boot (https://randori-circle-self.vercel.app/reset:12:34)'],
-  ['at https://randori-circle-self.vercel.app/#token=abc.def:1697:23', 'at https://randori-circle-self.vercel.app/:1697:23'],
+  ['https://randoricircle.com/invite#invite=' + 'A'.repeat(43), 'https://randoricircle.com/invite'],
+  ['    at boot (https://randoricircle.com/reset#token=abc:12:34)', '    at boot (https://randoricircle.com/reset:12:34)'],
+  ['at https://randoricircle.com/#token=abc.def:1697:23', 'at https://randoricircle.com/:1697:23'],
   ['redirect to /verify#token=abc then /invite#invite=xyz', 'redirect to /verify then /invite'],
   ['hash was #invite=xyz and #/invite/SECRET', 'hash was  and '],
   ['/api/data?endpoint=x&token=abc123&view=code -> 401', '/api/data?endpoint=x&token=[redacted]&view=code -> 401'],
@@ -193,6 +196,19 @@ test('outside production every level is queued; on the production origin only wa
   assert.deepEqual(production.sent().map(entry => entry.message), ['warn entry', 'error entry']);
   assert.equal(production.fetches[0].path, '/api/logs');
   assert.equal(production.fetches[0].options.credentials, 'same-origin');
+});
+
+test('the production send policy follows the origin gate: only the canonical domain is production (ID-80)', () => {
+  const levels = ['info', 'warn', 'error', 'success', 'debug'];
+  const queued = href => {
+    const page = createPage({ href, gate: true, auth: signedIn() });
+    levels.forEach(level => page.log()[level]('probe', `${level} entry`));
+    return { environment: page.window.__randoriSentry.environment, levels: page.queue().map(entry => entry.level) };
+  };
+  assert.deepEqual(queued(`${PRODUCTION_ORIGIN}/invite`), { environment: 'production', levels: ['warn', 'error'] });
+  // The old Vercel alias only redirects now; a page that still loads there is a preview.
+  assert.deepEqual(queued('https://randori-circle-self.vercel.app/'), { environment: 'preview', levels });
+  assert.deepEqual(queued('https://www.randoricircle.com/'), { environment: 'development', levels });
 });
 
 test('a signed-out visitor queues and sends nothing', () => {
