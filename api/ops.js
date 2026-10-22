@@ -60,6 +60,12 @@ import {
 } from './_reminders.js';
 import { configuredOutboxBaseUrl, OUTBOX_DELIVERY_TYPES, outboxDeliveryPlan } from './_outbox-delivery.js';
 import {
+  CIRCLE_HEALTH_CACHE_CONTROL,
+  circleHealthEnabled,
+  circleHealthQueryValid,
+  readCircleHealth,
+} from './_circle-health.js';
+import {
   ensureDemoResetReadiness,
   ensureDemoSeedReadiness,
   ensureDemoShuffleReadiness,
@@ -152,6 +158,56 @@ async function handleNotificationPrefs(req,res){
 }
 
 
+// Issue #292: owner-only circle health (docs/CIRCLE_HEALTH.md). Read-only and
+// aggregate; the route does not exist (404) unless CIRCLE_HEALTH_ENABLED is on.
+async function handleCircleHealth(req,res){
+  res.setHeader('Cache-Control',CIRCLE_HEALTH_CACHE_CONTROL);
+  res.setHeader('Pragma','no-cache');
+  if(!circleHealthEnabled()) return res.status(404).json({error:'not found'});
+  if(req.method!=='GET'){
+    res.setHeader('Allow','GET');
+    return res.status(405).json({error:'GET only'});
+  }
+  if(!circleHealthQueryValid(req)) return res.status(400).json({error:'invalid request'});
+  let db;
+  let payload;
+  try{
+    db=getClient();
+    await ensureCircleMembershipReadiness(db);
+    payload=await verifyRequestAuth(req,db);
+  }catch{ return res.status(503).json({error:'circle health unavailable'}); }
+  const actor=Number(payload?.id??payload?.uid);
+  if(!payload||!Number.isSafeInteger(actor)||actor<1) return res.status(401).json({error:'authentication required'});
+  const multiCircle=multiCircleControlPlaneEnabled();
+  try{
+    let circleId=null;
+    let contextVersion=null;
+    if(multiCircle){
+      const active=await resolveActiveCircleContext(db,payload);
+      if(!active.ok){
+        if(active.reason==='selection_required'){
+          return res.status(409).json({error:'select an active circle',code:'active_circle_required'});
+        }
+        return res.status(403).json({error:'circle owner required'});
+      }
+      if(!active.implicit&&!requestMatchesCircleContext(req,active)){
+        return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
+      }
+      if(active.membership.role!=='owner') return res.status(403).json({error:'circle owner required'});
+      circleId=active.membership.id;
+      contextVersion=Number(active.context_version)||0;
+    }
+    // The owner check is repeated inside every statement of the read batch,
+    // so a demotion or archive between these steps still returns 403.
+    const result=await readCircleHealth(db,{actorUserId:actor,circleId});
+    if(!result.ok) return res.status(403).json({error:'circle owner required'});
+    return res.json({ok:true,health:result.health,...(multiCircle?{circle_context_version:contextVersion}:{})});
+  }catch(error){
+    await logServerOps('error','circle_health_fail','circle health could not be read',
+      {code:String(error?.code||error?.name||'Error').slice(0,64)},null);
+    return res.status(503).json({error:'circle health unavailable'});
+  }
+}
 
 function getEndpoint(req){
   const q = req.query?.endpoint;
@@ -1129,6 +1185,7 @@ async function handleOps(req,res,{isWeeklyDue=pairingCronIsDue}={}){
       }
     }catch{ return res.status(503).json({error:'circle context unavailable'}); }
   }
+  if (ep==='circle-health') return handleCircleHealth(req,res);
   // Issue #310: admin-only diagnostics, a 404 unless ADMIN_DIAGNOSTICS_ENABLED=true.
   if (ep==='admin-diagnostics' || pathLower.includes('/admin/diagnostics')){
     return handleAdminDiagnosticsRequest(req,res,{verifyRequestAuth,getClient,notFound:()=>unknownOpsEndpoint(res,ep)});
