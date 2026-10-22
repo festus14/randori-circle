@@ -68,6 +68,7 @@ import {
   readAccountDeletionEligibility,
 } from './_account-deletion.js';
 import { inviteRequestIntakeAvailable, inviteRequestsEnabled } from './_invite-request-config.js';
+import { circleHealthEnabled } from './_circle-health.js';
 import { deliverCommittedOutboxEvents } from './_outbox-immediate.js';
 import {
   GOOGLE_ISSUER,
@@ -345,6 +346,9 @@ async function handleCapabilities(req,res){
       ...(multiCircleAvailabilityEnabled()?{multiCircleAvailability:true}:{}),
       ...(secondaryCircleCoordinationEnabled()?{secondaryCircleCoordination:true}:{}),
       ...(secondaryCircleSchedulingEnabled()?{secondaryCircleScheduling:true}:{}),
+      // Issue #292: advertised only while CIRCLE_HEALTH_ENABLED (and circle
+      // membership) is on. The server still checks ownership on every read.
+      ...(circleHealthEnabled()?{circleHealth:true}:{}),
     },
     registrationMode:localIdentity?'local_invite':(verifiedEmailActivation?'verified_invite':(passwordSignup?'local_open':'private_beta')),
   });

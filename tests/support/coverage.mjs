@@ -37,6 +37,8 @@ const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   'assets/admin-diagnostics.js',
   // Personal progress in History (issue #293, ID-76).
   'assets/progress-view.js',
+  // Owner circle health panel (issue #292).
+  'assets/circle-health.js',
   // Self-service account deletion in Edit profile (issue #339, ID-81).
   'assets/account-deletion.js'];
 // Operator tools that cannot run under unit tests; see

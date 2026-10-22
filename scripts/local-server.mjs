@@ -721,7 +721,7 @@ function apiRoute(pathname,query){
     ['/api/admin/outbox/replay','outbox-replay'],['/api/admin/diagnostics','admin-diagnostics'],
     ['/api/admin/demo-seed','demo-seed'],
     ['/api/admin/demo-shuffle','demo-shuffle'],['/api/admin/demo-reset','demo-reset'],
-    ['/api/notifications/prefs','notifications-prefs'],
+    ['/api/notifications/prefs','notifications-prefs'],['/api/circle/health','circle-health'],
   ]);
   if(opsEndpoints.has(pathname)){
     query.endpoint=opsEndpoints.get(pathname);
