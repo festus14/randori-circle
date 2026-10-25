@@ -4421,3 +4421,66 @@ discloses activity, and no signed-out page shows them). Dropping only
 `total_sessions` (the other totals have no signed-out reader either).
 
 **Recovery.** Revert the commit; the totals become public again.
+
+## ID-88: Force zod to `^4.6.6` via npm overrides to fix GHSA-mrhx-c7xc-m3w5
+
+Status: implemented; no flag, no migration. Security fix unblocking CI
+(`audit:prod` is an early step in `e2e` and `ubuntu-26-canary`).
+
+**Context.** `npm run audit:prod` failed with 5 high-severity findings, all
+the one advisory: `zod <4.6.6` can exhaust memory while validating oversized
+constrained collections
+([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)).
+The vulnerable copy was transitive and nested:
+`@vercel/sandbox@3.8.0` -> `@vercel/oidc@4.0.0` -> `@vercel/cli-config@0.3.1`
+-> `zod 4.1.11` (an exact pin in `cli-config`). The hoisted top-level `zod`
+was already 4.6.7, resolved from `@vercel/sandbox`'s own `zod ^4.1.1`, so
+only the `cli-config` copy was vulnerable.
+
+**Decision.**
+- `package.json` gains `"overrides": { "zod": "^4.6.6" }`. The lockfile
+  drops the nested `node_modules/@vercel/cli-config/node_modules/zod`
+  entry; a clean `npm ci` installs exactly one `zod` copy, 4.6.7, shared by
+  the sandbox chain and the rest of the tree. `npm run audit:prod` reports
+  `found 0 vulnerabilities`.
+- The audit itself is not weakened: no audit-level change, no `--force`
+  bypass, no ignored advisory.
+- The range (rather than the exact `4.6.7`) lets a future `4.6.x` patch be
+  picked up without another override edit; the lockfile pins 4.6.7 today.
+  Every zod consumer in the tree is 4.x (`^4.1.1`, the `4.1.11` pin), so the
+  override moves all of them within the same major line.
+
+**Alternatives considered and rejected.**
+- Bumping `@vercel/sandbox` 3.8.0 -> 3.9.0 (latest): 3.9.0 still depends on
+  `zod ^4.1.1` and `@vercel/oidc 4.0.0`, and `@vercel/oidc@4.0.3` ->
+  `@vercel/cli-config@0.3.3` still pins `zod 4.1.11` exactly (checked with
+  `npm view`), so the nested vulnerable copy would remain. An unrelated
+  minor bump that does not fix the advisory.
+- Bumping `@vercel/cli-config` / `@vercel/oidc` alone: same exact pin at
+  their latest versions (0.3.3 / 4.0.3), so no fix.
+- `npm audit fix --force`: would downgrade `@vercel/functions` to 3.6.1, a
+  breaking change, to work around the advisory.
+
+**Verification.**
+- Clean `npm ci` reproduces one `zod` copy at 4.6.7; `audit:prod` passes.
+  The full `npm audit` still reports 2 pre-existing dev-only findings
+  (`dompurify` via `monaco-editor`); they are out of scope here and do not
+  affect `audit:prod`.
+- `test:unit`: 2696 pass, 0 fail. `test:coverage`: lines 98.27%,
+  branches 94%, functions 99.48% (thresholds 97/92/99). All `check:*`
+  scripts and `validate:catalog` pass.
+- Runtime: `@vercel/sandbox` and `@vercel/cli-config` load on zod 4.6.7;
+  `cli-config`'s `parseGlobalConfig` / `parseAuthConfig` accept valid
+  configs and reject an invalid one, and a constrained-collection schema
+  still rejects oversized input. The live execution smoke was not run: it
+  needs a `VERCEL_OIDC_TOKEN` and creates real sandboxes that count against
+  the plan allowance (it never runs in CI); the execution unit tests
+  (28 tests) pass.
+
+**Removal.** Drop the override once an upstream `@vercel/cli-config`
+release requires `zod >=4.6.6`, then re-run `npm install` and confirm the
+nested copy does not return. Until then, removing the override
+reintroduces the vulnerable 4.1.11 copy and fails `audit:prod`.
+
+**Recovery.** Revert the commit; the nested vulnerable copy returns and
+`audit:prod` fails again. No code, flag, migration or production change.
