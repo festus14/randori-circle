@@ -28,9 +28,12 @@ function sealCursor(payload,secret=SECRET){
 }
 
 // Flips every bit of the last ciphertext byte, so the result always differs
-// from the sealed cursor. Rewriting the trailing base64url characters does
-// not: the random nonce sometimes makes them equal already, and the last
-// character can carry only padding bits.
+// from the sealed cursor. For this test's payload, the sealed cursor is
+// 67 bytes, so 67 mod 3 = 1: the last two base64url chars encode only the
+// final ciphertext byte, and `AA` means that byte is 0x00 — probability
+// 1/256. The last char carries only 2 data bits plus 4 fixed padding bits,
+// so char-level tampering is length-dependent and fragile; flip the byte
+// itself instead.
 function tamperCursor(cursor){
   const raw=Buffer.from(cursor.slice('r1.'.length),'base64url');
   raw[raw.length-1]^=0xff;
