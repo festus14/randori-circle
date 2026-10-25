@@ -4381,3 +4381,183 @@ Reactivating removed members before migrating (destroys an owner's decision).
 
 **Rollout.** Takes effect on merge for `db:migrate`, the production migration
 workflow and the rehearsal. No workflow file or digest pin changes.
+
+## ID-86: Serve `/api/stats` to signed-in members only
+
+Status: implemented; no flag, no migration. Fixes #333 (a live privacy
+exposure found while reviewing #331).
+
+**Context.** `GET /api/stats` (`handleStats` in `api/data.js`) returned the
+circle-wide `total_users`, `total_weeks`, `total_pairs` and `total_sessions` to
+anyone, signed in or not. Polling `total_sessions` showed a signed-out visitor
+when sessions were confirmed complete, which bypasses the small-cell rules
+planned for circle health (#292, ID-78). The public landing has not called
+`/api/stats` since UI redesign WP-L1 (`index.html` `bootHome` returns early for
+anonymous visitors), so no signed-out page reads these numbers.
+
+**Decision.**
+- Signed-out visitors do not need any of these numbers. `handleStats` checks
+  the session first and returns `401 {"error":"authentication required"}`.
+  A request with no validly signed session is refused before the database is
+  opened. A signed but revoked or expired session is refused after the session
+  lookup in `verifyRequestAuth`. Neither reads any stats table. A session
+  whose subject is not a positive integer id is refused the same way
+  (`authenticatedUserId`, as `/api/weeks` does).
+- A signed-in member's response is unchanged: the same totals, `your_*` counts
+  and `next_cycle`. The viewer's own counts are now always computed, since
+  every caller has a session.
+- The response is `Cache-Control: private, no-store` (Vercel already sends
+  `no-store` for `/api/*`).
+- No flag: the route's only caller is the signed-in dashboard, so nothing a
+  member or visitor sees changes, and a flag would leave the exposure live.
+
+**Remaining exposure.** A signed-in member can still poll the all-time,
+unsuppressed `total_sessions`. That is recorded for the circle health
+threshold review in `docs/CIRCLE_HEALTH.md` ("`/api/stats` outside these
+rules").
+
+**Alternatives.** Rounding or caching the public totals per day (still
+discloses activity, and no signed-out page shows them). Dropping only
+`total_sessions` (the other totals have no signed-out reader either).
+
+**Recovery.** Revert the commit; the totals become public again.
+
+## ID-87: Release additive migrations with no downtime (expand, migrate, use)
+
+Status: implemented; no flag, no migration. Issue #371, the prerequisite for
+#353, #372, #374 and every later schema change.
+
+**Context.** Health, `/api/init`, circle-pairing and schedule readiness
+required the ledger to equal the code's latest version exactly. The protected
+cutover has to run from a `main` commit that already contains the migration,
+so every migration merge deployed code at N against a database at N-1:
+readiness failed and pairing endpoints returned 503 for the 20-40 minutes of
+rehearsal, status and apply.
+
+**Decision.**
+- Each contract in `db/migration-contract.js` declares
+  `compatibility: 'additive' | 'breaking'`. An additive contract also lists
+  the tables, indexes and triggers it `introduces`. Migrations 1-21 stay
+  `breaking`: the code that shipped with them assumes their schema, so this
+  change widens readiness for no shipped version and changes nothing on merge.
+  Contract fields are not part of any checksum; every existing checksum is
+  unchanged.
+- Readiness (`db/migration-compatibility.js`): code at N is ready when the
+  ledger is at N, or at N-1 when migration N is additive. In the second case
+  the schema must match N-1 exactly: the code's manifest minus what N
+  introduces, so a half-created new table is drift. Two versions behind, a
+  breaking migration still to apply, and a ledger newer than the code stay
+  not ready. Every other rule is unchanged (each applied row's checksum and
+  metadata, key control, membership). Health readiness, `/api/init`,
+  circle-pairing and schedule readiness use it; readiness now reads the
+  ledger before inspecting the schema, since the version picks the manifest.
+  Pairing publication readiness checks only the v6 core contract, already
+  accepted any later ledger prefix, and cannot be changed by an additive
+  migration.
+- Admin diagnostics reports `pending_additive`: the readiness card is
+  *Degraded* with "pending additive migration vN" while the app stays ready.
+- The migration check (`db/migration-compatibility-check.js`) proves an
+  additive migration is additive: only new tables; new indexes on new tables,
+  or non-unique ones on existing tables; triggers and seed rows on new tables
+  only; `introduces` exactly matching. It refuses DROP, ALTER, RENAME, UPDATE,
+  DELETE, REPLACE and PRAGMA statements, table redefinition, a unique index or
+  trigger on an existing table, triggers writing existing tables, and unknown
+  operations, after stripping comments and literals. `ALTER TABLE ... ADD
+  COLUMN` has no runner operation yet and is refused. The executable
+  migrations assert it when they load, so no migration tool can apply a
+  mislabelled migration, and `npm run check:deployability` reports it.
+- Feature gating (`api/_schema-capability.js`): code that uses an additive
+  migration's tables checks the exact ledger row for N, cached per database
+  (30 s while pending, 5 min once present, errors uncached).
+  `schemaFeatureAvailable` adds the feature flag for request paths; account
+  deletion and retention use the schema check alone so stored rows are still
+  deleted with the flag off.
+- Release order and rollback are in the production migration runbook: merge
+  (ready on N-1), rehearsal, status and apply N (ready on N), then flag on.
+  Roll back by turning the flag off, then PITR only if needed; never roll code
+  back below the database. Breaking migrations keep the strict behaviour.
+
+**Alternatives.** Merging migrations without the code that uses them and
+shipping that code in a later PR (two reviews and two deploys per change, and
+nothing stops the code from merging first). Tolerating any lag (code could run
+against a schema several changes old). Marking v21 additive, since its SQL is
+(the code that shipped with it does not check for its table). Inferring
+compatibility from SQL alone (the declaration is the author's promise that the
+code gates the new tables; the check only proves the SQL half).
+
+**Tests.** On real migrated SQLite: code at N with N additive stays ready on
+every surface while the database moves from N-1 to N; a breaking N is not
+ready at N-1; code at N-1 is not ready at N; two versions behind is not ready;
+drift and tampered ledger rows still block at N-1. Mutation tests load copies
+of the readiness module with the tolerance widened (to N-2, to breaking
+migrations, to an older additive migration, or with the schema checks
+dropped) and require every copy to fail the policy. The check rejects
+destructive SQL in many forms, and a mislabelled real migration (v20) stops
+the migration tooling from loading.
+
+**Rollout.** Takes effect on merge and changes nothing until the first
+additive migration (#353's v22) lands. No workflow file, digest pin or
+production setting changes.
+
+## ID-88: Force zod to `^4.6.6` via npm overrides to fix GHSA-mrhx-c7xc-m3w5
+
+Status: implemented; no flag, no migration. Security fix unblocking CI
+(`audit:prod` is an early step in `e2e` and `ubuntu-26-canary`).
+
+**Context.** `npm run audit:prod` failed with 5 high-severity findings, all
+the one advisory: `zod <4.6.6` can exhaust memory while validating oversized
+constrained collections
+([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)).
+The vulnerable copy was transitive and nested:
+`@vercel/sandbox@3.8.0` -> `@vercel/oidc@4.0.0` -> `@vercel/cli-config@0.3.1`
+-> `zod 4.1.11` (an exact pin in `cli-config`). The hoisted top-level `zod`
+was already 4.6.7, resolved from `@vercel/sandbox`'s own `zod ^4.1.1`, so
+only the `cli-config` copy was vulnerable.
+
+**Decision.**
+- `package.json` gains `"overrides": { "zod": "^4.6.6" }`. The lockfile
+  drops the nested `node_modules/@vercel/cli-config/node_modules/zod`
+  entry; a clean `npm ci` installs exactly one `zod` copy, 4.6.7, shared by
+  the sandbox chain and the rest of the tree. `npm run audit:prod` reports
+  `found 0 vulnerabilities`.
+- The audit itself is not weakened: no audit-level change, no `--force`
+  bypass, no ignored advisory.
+- The range (rather than the exact `4.6.7`) lets a future `4.x` release be
+  picked up without another override edit; the lockfile pins 4.6.7 today.
+  Every zod consumer in the tree is 4.x (`^4.1.1`, the `4.1.11` pin), so the
+  override moves all of them within the same major line.
+
+**Alternatives considered and rejected.**
+- Bumping `@vercel/sandbox` 3.8.0 -> 3.9.0 (latest): 3.9.0 still depends on
+  `zod ^4.1.1` and `@vercel/oidc 4.0.0`, and `@vercel/oidc@4.0.3` ->
+  `@vercel/cli-config@0.3.3` still pins `zod 4.1.11` exactly (checked with
+  `npm view`), so the nested vulnerable copy would remain. An unrelated
+  minor bump that does not fix the advisory.
+- Bumping `@vercel/cli-config` / `@vercel/oidc` alone: same exact pin at
+  their latest versions (0.3.3 / 4.0.3), so no fix.
+- `npm audit fix --force`: would downgrade `@vercel/functions` to 3.6.1, a
+  breaking change, to work around the advisory.
+
+**Verification.**
+- Clean `npm ci` reproduces one `zod` copy at 4.6.7; `audit:prod` passes.
+  The full `npm audit` still reports 2 pre-existing dev-only findings
+  (`dompurify` via `monaco-editor`); they are out of scope here and do not
+  affect `audit:prod`.
+- `test:unit`: 2696 pass, 0 fail. `test:coverage`: lines 98.27%,
+  branches 94%, functions 99.48% (thresholds 97/92/99). All `check:*`
+  scripts and `validate:catalog` pass.
+- Runtime: `@vercel/sandbox` and `@vercel/cli-config` load on zod 4.6.7;
+  `cli-config`'s `parseGlobalConfig` / `parseAuthConfig` accept valid
+  configs and reject an invalid one, and a constrained-collection schema
+  still rejects oversized input. The live execution smoke was not run: it
+  needs a `VERCEL_OIDC_TOKEN` and creates real sandboxes that count against
+  the plan allowance (it never runs in CI); the execution unit tests
+  (28 tests) pass.
+
+**Removal.** Drop the override once an upstream `@vercel/cli-config`
+release requires `zod >=4.6.6`, then re-run `npm install` and confirm the
+nested copy does not return. Until then, removing the override
+reintroduces the vulnerable 4.1.11 copy and fails `audit:prod`.
+
+**Recovery.** Revert the commit; the nested vulnerable copy returns and
+`audit:prod` fails again. No code, flag, migration or production change.

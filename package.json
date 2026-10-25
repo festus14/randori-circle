@@ -9,6 +9,9 @@
     "resend": "^4.0.0",
     "yjs": "13.6.27"
   },
+  "overrides": {
+    "zod": "^4.6.6"
+  },
   "name": "randori-circle",
   "private": true,
   "type": "module",

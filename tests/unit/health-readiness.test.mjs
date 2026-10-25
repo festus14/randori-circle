@@ -74,9 +74,11 @@ async function schemaSnapshot(db){
 
 test('runtime migration contracts remain identical to executable migrations',()=>{
   assert.deepEqual(
-    MIGRATION_CONTRACTS,
+    MIGRATION_CONTRACTS.map(({version,name,checksum})=>({version,name,checksum})),
     EXECUTABLE_MIGRATIONS.map(({version,name,checksum})=>({version,name,checksum})),
   );
+  // ID-87: every contract declares how it may be released.
+  assert.ok(MIGRATION_CONTRACTS.every(contract=>['additive','breaking'].includes(contract.compatibility)));
   assert.deepEqual(READINESS_SCHEMA_MANIFEST,compileSchemaReadinessManifest(SCHEMA_MANIFEST));
   assert.deepEqual(MIGRATION_LEDGER_READINESS_MANIFEST,compileSchemaReadinessManifest({
     version:1,
@@ -104,8 +106,10 @@ test('ready inspection is exact, read-only, and creates no schema objects or fil
   assert.equal(await inspectDatabaseReadiness(spy,{membershipRequired:true}),false);
   assert.ok(statements.length>50);
   assert.ok(statements.every(({sql})=>/^(?:SELECT|PRAGMA)\b/i.test(sql)));
+  // The full schema inspection is bounded (the ledger contract check, which
+  // now runs first, reads its own objects separately).
   assert.deepEqual(
-    statements.find(({sql})=>sql.includes('FROM sqlite_schema')&&sql.includes('type IN'))?.args,
+    statements.find(({sql})=>sql.includes('FROM sqlite_schema')&&sql.includes('LIMIT ?'))?.args,
     [257],
   );
   assert.deepEqual(

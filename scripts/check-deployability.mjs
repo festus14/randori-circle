@@ -569,8 +569,29 @@ export function inspectDeploymentContract(rootDirectory = process.cwd()) {
     executionSmokeScript });
 }
 
-function main() {
-  const errors = inspectDeploymentContract();
+// Migrations declared additive must really be additive (ID-87, #371): merged
+// code is then allowed to run one migration ahead of the database. The
+// executable migrations also assert this when they load, so a load failure is
+// reported here as a release-contract error rather than a crash.
+export async function inspectMigrationReleaseContract({
+  load = () => Promise.all([
+    import('../db/executable-migrations.js'),
+    import('../db/migration-compatibility-check.js'),
+    import('../db/migration-contract.js'),
+  ]),
+} = {}) {
+  try {
+    const [{ EXECUTABLE_MIGRATIONS }, { formatCompatibilityViolation, inspectMigrationCompatibility },
+      { MIGRATION_CONTRACTS }] = await load();
+    return inspectMigrationCompatibility({ migrations: EXECUTABLE_MIGRATIONS, contracts: MIGRATION_CONTRACTS })
+      .map(item => `migration release contract: ${formatCompatibilityViolation(item)}`);
+  } catch (error) {
+    return [`migration release contract: ${error?.message || 'migrations could not be loaded'}`];
+  }
+}
+
+async function main() {
+  const errors = [...inspectDeploymentContract(), ...await inspectMigrationReleaseContract()];
   if (errors.length > 0) {
     console.error(JSON.stringify({ ok: false, errors }, null, 2));
     process.exitCode = 1;
@@ -584,4 +605,4 @@ function main() {
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : null;
-if (invokedPath === import.meta.url) main();
+if (invokedPath === import.meta.url) await main();

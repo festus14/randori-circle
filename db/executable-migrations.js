@@ -2,6 +2,7 @@ import { MIGRATION_PLANS, validateMigrationPlans } from './migration-plan.js';
 import { LATEST_MIGRATION_VERSION, MIGRATION_CONTRACTS } from './migration-contract.js';
 import { checksum } from './schema-manifest.js';
 import { CREDENTIAL_KEY_CONTROL_SEED_OPERATIONS } from './credential-key-control.js';
+import { assertMigrationCompatibility } from './migration-compatibility-check.js';
 
 export const ROLLOUT_SINGLETON_OPERATION=Object.freeze({
   operation:'ensure-row',
@@ -96,6 +97,9 @@ export function validateExecutableMigrations(migrations=EXECUTABLE_MIGRATIONS,pl
       throw new Error(`executable migration ${expectedVersion} checksum does not match`);
     }
   });
+  // A migration declared additive must really be additive (ID-87): readiness
+  // tolerates the database being one additive migration behind the code.
+  assertMigrationCompatibility({migrations,contracts:MIGRATION_CONTRACTS});
   return true;
 }
 

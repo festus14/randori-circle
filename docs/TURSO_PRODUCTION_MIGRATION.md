@@ -90,6 +90,107 @@ The redacted status and mutation artifact uses
 `randori.turso-production-migration.v2`; version 1 artifacts do not carry an
 explicit target and are not authorization inputs for this workflow.
 
+## Zero-downtime additive releases (expand, migrate, use)
+
+Readiness normally needs the database at exactly the version the code knows,
+so merging a migration takes `/api/health/ready` and the pairing endpoints down
+until the sequence above finishes. A migration declared
+`compatibility: 'additive'` in `db/migration-contract.js` avoids that (ID-87,
+#371): code that knows migrations 1..N is also ready when the database is at
+N-1, provided migration N is additive. Nothing else is tolerated. Two versions
+behind, a breaking migration still to apply, or a database newer than the code
+all stay not ready, and every other readiness rule is unchanged: each applied
+ledger row's checksum and metadata, the exact schema of the version actually
+applied, key control and membership. The tolerance applies to health
+readiness, `/api/init`, circle-pairing and schedule readiness, and admin
+diagnostics. Pairing publication readiness checks only the v6 core contract;
+it already accepted any later ledger prefix, and an additive migration cannot
+change that contract.
+
+### Writing an additive migration
+
+1. Append the plan, the executable migration and the contract as usual. In the
+   contract, set `compatibility: 'additive'` and list exactly what it creates:
+   `introduces: {tables: [...], indexes: [...], triggers: [...]}`.
+2. Keep it additive. It may create tables with new names, indexes with new
+   names (on new tables, or non-unique on existing tables), and triggers and
+   seed rows on its new tables only. It may not drop, rename, alter, update or
+   delete anything that exists, redefine a table, or add a unique index or a
+   trigger to an existing table, because both change how the running code's
+   writes behave. `ALTER TABLE ... ADD COLUMN` has no executable operation yet,
+   so put new fields in a new table, or add the operation to the runner, the
+   inspector and the check together first.
+   `db/migration-compatibility-check.js` enforces this. `npm run
+   check:deployability` reports a mislabelled migration, and every migration
+   tool (`db:migrate`, this workflow, the restore rehearsal) refuses to load
+   one.
+3. Every code path that touches the new tables checks the schema first, with
+   `api/_schema-capability.js`. Paths that serve the feature (endpoints,
+   capability discovery, outbox events) use
+   `schemaFeatureAvailable(db, {enabled: <feature flag>, version: N})`; while
+   it returns `false` they behave exactly as if the feature were off: 404, no
+   capability advertised, nothing read or written. Data-lifecycle paths
+   (account deletion, retention) use
+   `schemaCapabilityAvailable(db, {version: N})` without the flag, so rows
+   already stored keep being deleted after the flag is turned off. No other
+   code may depend on the new schema.
+4. The feature flag defaults off.
+
+Migrations 1-21 shipped under the strict order and stay `breaking`: the code
+that shipped with them assumes their schema is present.
+
+### Release order
+
+1. **Merge** with the database still at N-1. Production stays ready on N-1:
+   `/api/health/ready` returns 200, and the admin diagnostics readiness card
+   shows *Degraded* with "pending additive migration vN".
+2. **Run the cutover for N** with the stepwise sequence above: a fresh
+   rehearsal from the merged `main` commit, then `status` (its `nextVersion` is
+   N), then `apply` N. The app stays ready throughout, and the readiness card
+   returns to current.
+3. **Turn the feature flag on.** This is an owner-approved production
+   environment change. The schema capability notices the applied migration
+   within 30 seconds: a pending answer is cached for 30 seconds and a present
+   one for 5 minutes per database.
+
+Operator tools that require the latest version, such as the chat-retention
+CLI, run only after step 2.
+
+### Rollback
+
+1. **Turn the feature flag off first.** The feature's endpoints return 404
+   again and nothing touches the new tables. No schema change is needed, and
+   this is enough for almost every incident.
+2. **Restore with PITR only if needed**, using the recovery procedure below,
+   to a point before migration N. The deployed code (at N) stays ready on the
+   restored N-1 database, because N is additive.
+
+Do not roll the code back to N-1 while the database is at N. Code is never
+ready on a database newer than itself, so readiness would fail. Leave the code
+at N with the flag off instead.
+
+### Breaking migrations
+
+A migration declared `breaking` keeps the strict behaviour. Merging it takes
+readiness down until the cutover applies it, so apply it straight after the
+merge and away from the Sunday 08:00 UTC pairing run. A destructive or
+long-running migration still needs the separate maintenance protocol described
+under "Failure and recovery".
+
+### Worked example: feedback tables (#353)
+
+The feedback platform adds `feedback_items`, `feedback_votes` and
+`feedback_events` with their indexes as migration 22. The contract declares
+`compatibility: 'additive'` and lists those tables and indexes under
+`introduces`. The feedback endpoints, capability discovery and the
+`feedback.submitted` outbox event check `schemaFeatureAvailable(db, {enabled:
+FEEDBACK_ENABLED === 'true', version: 22})` first; the 12-month retention job
+and the account-deletion handling of feedback rows check
+`schemaCapabilityAvailable(db, {version: 22})`. Release: merge with production at v21 (ready, card
+degraded), run rehearsal, status and apply 22 as soon as it is ready (owner
+decision, 2026-10-22), then turn `FEEDBACK_ENABLED` on. To roll back, turn
+`FEEDBACK_ENABLED` off; use PITR only if the tables themselves are the problem.
+
 ## Failure and recovery
 
 Any nonzero result means stop. Do not rerun a mutation with the same fingerprint,
