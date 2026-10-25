@@ -2,10 +2,11 @@
 // migrated SQLite files through its injected database-client factory.
 // Output is counts only: no account id may appear in stdout.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { afterEach, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { createClient } from '@libsql/client';
 
@@ -19,6 +20,7 @@ import { main, publicCliError } from '../../scripts/deletion-ledger.mjs';
 
 const JWT_SECRET='deletion-ledger-cli-test-secret-at-least-32-bytes';
 const RESTORE_POINT='2026-10-20T09:00:00.000Z';
+const REPOSITORY_ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
 const DELETED_AT='2026-10-20T10:00:00.000Z';
 const resources=[];
 const originalSecret=process.env.JWT_SECRET;
@@ -135,7 +137,7 @@ test('CLI usage, config and ledger-file errors are typed and public errors stay 
   await assert.rejects(run({argv:['frobnicate'],url}),/Usage:/);
   await assert.rejects(run({argv:['export'],url}),/Usage:/);
   await assert.rejects(run({argv:['export','--out'],url}),/Usage:/);
-  await assert.rejects(run({argv:['export','--out','x','--restore-point',RESTORE_POINT],url}),/Usage:/);
+  await assert.rejects(run({argv:['export','--out','x','--ledger','y'],url}),/Usage:/);
   await assert.rejects(run({argv:['reapply','--ledger','x'],url}),/Usage:/);
   await assert.rejects(run({argv:['verify','--ledger','x','--restore-point',RESTORE_POINT,'--out','y'],url}),/Usage:/);
   const {chunks,stdout}=stdoutCapture();
@@ -159,4 +161,79 @@ test('CLI usage, config and ledger-file errors are typed and public errors stay 
   // The module's own builder is the export path: a database with no
   // tombstones exports an empty ledger.
   assert.deepEqual(await buildDeletionLedger((await database()).db),[]);
+});
+
+test('CLI export refuses to overwrite an existing file or follow a symlink',async()=>{
+  const {url}=await database();
+  const directory=mkdtempSync(join(tmpdir(),'randori-deletion-ledger-'));
+  resources.push(async()=>{ rmSync(directory,{recursive:true,force:true}); });
+  const existing=join(directory,'ledger.json');
+  writeFileSync(existing,'ORIGINAL\n','utf8');
+  await assert.rejects(run({argv:['export','--out',existing],url}),/already exists/);
+  assert.equal(readFileSync(existing,'utf8'),'ORIGINAL\n');
+  const victim=join(directory,'victim.json');
+  writeFileSync(victim,'VICTIM\n','utf8');
+  const link=join(directory,'link.json');
+  symlinkSync(victim,link);
+  await assert.rejects(run({argv:['export','--out',link],url}),/already exists/);
+  assert.equal(readFileSync(victim,'utf8'),'VICTIM\n');
+  assert.equal(lstatSync(link).isSymbolicLink(),true);
+});
+
+test('CLI export rejects --out inside the repository and ledger files are gitignored',async()=>{
+  const {url}=await database();
+  const inside=join(REPOSITORY_ROOT,'deletion-ledger-do-not-commit.json');
+  await assert.rejects(run({argv:['export','--out',inside],url}),/outside the repository/);
+  assert.equal(existsSync(inside),false);
+  const underGit=join(REPOSITORY_ROOT,'.git','deletion-ledger.json');
+  await assert.rejects(run({argv:['export','--out',underGit],url}),/outside the repository/);
+  const gitignore=readFileSync(join(REPOSITORY_ROOT,'.gitignore'),'utf8').split('\n');
+  assert.equal(gitignore.includes('deletion-ledger*.json'),true);
+  assert.equal(gitignore.includes('*deletion-ledger*.json'),true);
+});
+
+test('CLI export --restore-point writes only entries after the restore point, keeping null deleted_at',async()=>{
+  const {db,url}=await database();
+  await db.batch([
+    `INSERT INTO circles (id,public_id,slug,name,is_primary,created_by) VALUES (1,'circle-one','one','Circle One',1,1)`,
+    `INSERT INTO auth_accounts (id,email,password_hash,display_name,color) VALUES
+      (2,'deleted-2@account-deleted.invalid','!account-deleted','Deleted member','#9aa0a6'),
+      (3,'deleted-3@account-deleted.invalid','!account-deleted','Deleted member','#9aa0a6'),
+      (4,'deleted-4@account-deleted.invalid','!account-deleted','Deleted member','#9aa0a6')`,
+    `INSERT INTO circle_audit_events (circle_id,event_type,actor_user_id,subject_user_id,dedupe_key,created_at) VALUES
+      (1,'account.deleted',2,2,'account.deleted:2:1:2026-10-20T08:00:00.000Z','2026-10-20T08:00:00.000Z'),
+      (1,'account.deleted',3,3,'account.deleted:3:1:${DELETED_AT}','${DELETED_AT}')`,
+  ],'write');
+  const directory=mkdtempSync(join(tmpdir(),'randori-deletion-ledger-'));
+  resources.push(async()=>{ rmSync(directory,{recursive:true,force:true}); });
+  const out=join(directory,'ledger.json');
+  const {exitCode,output}=await run({argv:['export','--out',out,'--restore-point',RESTORE_POINT],url});
+  assert.equal(exitCode,0);
+  assert.equal(output,'{"command":"export","entries":2}\n');
+  const document=JSON.parse(readFileSync(out,'utf8'));
+  // Account 2 was deleted before the restore point: minimised out.
+  // Account 4 has no audit row (deleted_at null): always kept.
+  assert.deepEqual(document.entries.map(entry=>entry.account_id),[3,4]);
+  assert.equal(document.entries[0].deleted_at,DELETED_AT);
+  assert.equal(document.entries[1].deleted_at,null);
+  // A malformed restore point is a usage error, not a generic failure,
+  // and writes no file.
+  const badOut=join(directory,'bad.json');
+  await assert.rejects(run({argv:['export','--out',badOut,'--restore-point','not-a-date'],url}),/valid --restore-point/);
+  assert.equal(existsSync(badOut),false);
+});
+
+test('CLI validates JWT_SECRET up front with a typed config error',async()=>{
+  const {url}=await database();
+  let connected=false;
+  const createDatabaseClient=()=>{ connected=true; return createClient({url}); };
+  const {stdout}=stdoutCapture();
+  await assert.rejects(main({argv:['reapply','--ledger','x','--restore-point',RESTORE_POINT],stdout,
+    env:{TURSO_DATABASE_URL:url},createDatabaseClient}),/JWT_SECRET is required/);
+  await assert.rejects(main({argv:['export','--out','x'],stdout,
+    env:{TURSO_DATABASE_URL:url},createDatabaseClient}),/JWT_SECRET is required/);
+  assert.equal(connected,false);
+  assert.deepEqual(publicCliError(Object.assign(new Error('JWT_SECRET is required'),{code:'DELETION_LEDGER_CONFIG'})),{
+    ok:false,error:'DELETION_LEDGER_CONFIG',message:'JWT_SECRET is required',
+  });
 });

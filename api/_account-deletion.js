@@ -656,13 +656,14 @@ export async function reapplyAccountDeletion(db,{
 export async function verifyDeletionLedger(db,{ledger,restorePoint}={}){
   const due=deletionLedgerEntriesAfter(ledger,restorePoint);
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
-  const point=ledgerTimestamp(restorePoint,'restore point');
   const result=await db.execute({
     sql:`SELECT id FROM auth_accounts WHERE password_hash=?`,
     args:[DELETED_ACCOUNT_PASSWORD_HASH],
   });
   const tombstoned=new Set((result.rows??[]).map(row=>Number(row.id)));
-  const missing=due.filter(entry=>!tombstoned.has(entry.account_id)&&entry.created_at<=point)
+  // restorePoint was already validated as canonical ISO by
+  // deletionLedgerEntriesAfter above, so it compares lexicographically here.
+  const missing=due.filter(entry=>!tombstoned.has(entry.account_id)&&entry.created_at<=restorePoint)
     .map(entry=>entry.account_id);
   return Object.freeze({
     ok:missing.length===0,

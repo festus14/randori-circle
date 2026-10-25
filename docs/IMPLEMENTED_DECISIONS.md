@@ -4238,6 +4238,10 @@ is unset.
 with the 1-day backup window of Turso's Starter plan and the invitation guard
 (an envelope is never removed while its invitation can still be used).
 
+*Correction, 25 October 2026:* "Starter" is not a current Turso plan name —
+the 1-day window is the Free tier's. See ID-89 for the verified plan list
+(Free 1 day, Developer 10 days, Scaler 30 days, Pro and Enterprise 90 days).
+
 ## ID-82: Keep no raw IP address or user agent in app_logs
 
 Status: implemented; no migration, no flag (privacy hygiene with no
@@ -4676,3 +4680,18 @@ database state depends on the new code.
 at deletion time, so a restore from a destroyed source database can still
 re-apply deletions. #384: owner confirmation of the organisation's Turso
 plan tier in the dashboard.
+
+*Review fixes, 25 October 2026:* the PR was merged with `origin/main`
+(#378's byte-level `tamperCursor` kept), the ledger file is now created
+exclusively with `openSync(out, 'wx', 0o600)` plus a defensive `fchmod`
+(refusing to overwrite or follow a symlink), `--out` inside the
+repository is rejected and `deletion-ledger*.json` is gitignored,
+`export` accepts `--restore-point` as minimisation only (reapply-time
+filtering remains the gate), `privacy.html` qualifies the backup bullet
+to re-application only where the source database survives, the CLI
+validates `JWT_SECRET` presence up front with a typed config error
+(`export`/`reapply`; `verify` needs none) and the runbook states it must
+be the secret in effect at deletion time, ID-83 carries a dated
+correction that "Starter" is not a current Turso plan name, and the dead
+`point` variable in `verifyDeletionLedger` is removed. #383 is not
+landed by this PR.

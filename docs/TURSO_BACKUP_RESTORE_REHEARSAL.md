@@ -198,16 +198,30 @@ One entry per tombstoned account, and nothing else:
    restored database, which has no post-restore-point deletions to list):
    ```bash
    TURSO_DATABASE_URL=<source url> TURSO_AUTH_TOKEN=<source token> JWT_SECRET=<server secret> \
-     node scripts/deletion-ledger.mjs export --out /operator/path/deletion-ledger-<restore-point>.json
+     node scripts/deletion-ledger.mjs export --out /operator/path/deletion-ledger-<restore-point>.json \
+       [--restore-point <requested-PITR-instant-ISO>]
    ```
-   The file is written mode `0600`. The CLI prints counts only, never
-   account ids. `JWT_SECRET` is the same server secret: re-application
-   re-hashes invitation emails exactly as the deletion does.
+   The file is written mode `0600`, created exclusively: the CLI refuses
+   to overwrite an existing file or follow a symlink. `--out` must point
+   outside the repository (the CLI rejects in-repository paths, and
+   `deletion-ledger*.json` is gitignored as a second line of defence).
+   The CLI prints counts only, never account ids.
+   `--restore-point` on export is minimisation only: it shrinks what is
+   written to the file, keeping null-`deleted_at` entries. It is not a
+   substitute for reapply-time filtering — `reapply` and `verify` still
+   filter by their own `--restore-point`, which is the gate that decides
+   what is re-applied.
 2. **Re-apply, against the restored database** (never the source), with
    the **requested** PITR timestamp as the restore point — not the
    provider's `branched_at`, which can fall slightly later. Using the
    requested instant can only cause a redundant no-op re-application for a
    deletion that landed between the two instants; it can never skip one.
+   `JWT_SECRET` must be the secret in effect when the deletions were made,
+   not a rotated replacement: re-application re-hashes invitation emails
+   exactly as the deletion did, so a different secret produces different
+   hashes and the scrub will not match the original deletion's hashes.
+   The CLI validates `JWT_SECRET` presence up front (typed config error)
+   for `export` and `reapply`; `verify` needs no secret.
    ```bash
    TURSO_DATABASE_URL=<restored url> TURSO_AUTH_TOKEN=<restored token> JWT_SECRET=<server secret> \
      node scripts/deletion-ledger.mjs reapply --ledger /operator/path/deletion-ledger-<restore-point>.json \
