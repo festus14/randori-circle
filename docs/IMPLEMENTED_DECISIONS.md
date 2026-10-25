@@ -4445,7 +4445,7 @@ only the `cli-config` copy was vulnerable.
   `found 0 vulnerabilities`.
 - The audit itself is not weakened: no audit-level change, no `--force`
   bypass, no ignored advisory.
-- The range (rather than the exact `4.6.7`) lets a future `4.6.x` patch be
+- The range (rather than the exact `4.6.7`) lets a future `4.x` release be
   picked up without another override edit; the lockfile pins 4.6.7 today.
   Every zod consumer in the tree is 4.x (`^4.1.1`, the `4.1.11` pin), so the
   override moves all of them within the same major line.
