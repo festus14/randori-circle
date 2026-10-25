@@ -12,8 +12,10 @@ import {newGoldenPage,openSignin,signInOwner,startGoldenRuntime,type GoldenRunti
 // files through cleanUrls (pinned by tests/unit/vercel-routing-contract.test.mjs).
 
 const PAGES=[
-  {path:'/privacy',heading:'Privacy Policy',landingLink:'landing-privacy-policy-link',menuItem:'Privacy Policy'},
-  {path:'/terms',heading:'Terms of Service',landingLink:'landing-terms-link',menuItem:'Terms of Service'},
+  {path:'/privacy',heading:'Privacy Policy',landingLink:'landing-privacy-policy-link',menuItem:'Privacy Policy',
+    lastUpdated:'Last updated: 25 October 2026'},
+  {path:'/terms',heading:'Terms of Service',landingLink:'landing-terms-link',menuItem:'Terms of Service',
+    lastUpdated:'Last updated: 22 October 2026'},
 ] as const;
 // Everything a public page may load: itself, its stylesheet, the self-hosted
 // font and the favicon. All same-origin; anything else is a regression.
@@ -26,7 +28,7 @@ async function expectPublicPage(page:Page,golden:GoldenRuntime,item:typeof PAGES
   await expect(page.getByRole('main')).toBeVisible();
   await expect(page.getByRole('banner')).toBeVisible();
   await expect(page.getByRole('contentinfo')).toBeVisible();
-  await expect(page.getByText('Last updated: 22 October 2026')).toBeVisible();
+  await expect(page.getByText(item.lastUpdated)).toBeVisible();
   const back=page.getByTestId('public-page-back');
   await expect(back).toBeVisible();
   await expect(back).toHaveAttribute('href','/');
