@@ -2,7 +2,7 @@
 // migrated SQLite files through its injected database-client factory.
 // Output is counts only: no account id may appear in stdout.
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -16,7 +16,7 @@ import {
 } from '../../api/_account-deletion.js';
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { createMigratedDatabase } from '../support/migrated-db.mjs';
-import { main, publicCliError } from '../../scripts/deletion-ledger.mjs';
+import { main, publicCliError, writeLedgerFileExclusive } from '../../scripts/deletion-ledger.mjs';
 
 const JWT_SECRET='deletion-ledger-cli-test-secret-at-least-32-bytes';
 const RESTORE_POINT='2026-10-20T09:00:00.000Z';
@@ -190,6 +190,62 @@ test('CLI export rejects --out inside the repository and ledger files are gitign
   const gitignore=readFileSync(join(REPOSITORY_ROOT,'.gitignore'),'utf8').split('\n');
   assert.equal(gitignore.includes('deletion-ledger*.json'),true);
   assert.equal(gitignore.includes('*deletion-ledger*.json'),true);
+});
+
+test('CLI export rejects --out under a symlinked parent pointing into the repository',async()=>{
+  const {url}=await database();
+  const directory=mkdtempSync(join(tmpdir(),'randori-deletion-ledger-'));
+  // Symlink target is a scratch directory inside the repository, so a
+  // buggy implementation that wrote through the link could only pollute
+  // this directory, which the cleanup below removes.
+  const inside=mkdtempSync(join(REPOSITORY_ROOT,'deletion-ledger-symlink-'));
+  const link=join(directory,'repo-link');
+  symlinkSync(inside,link);
+  resources.push(async()=>{
+    try{ unlinkSync(link); }catch{}
+    rmSync(directory,{recursive:true,force:true});
+    rmSync(inside,{recursive:true,force:true});
+  });
+  await assert.rejects(run({argv:['export','--out',join(link,'ledger.json')],url}),/outside the repository/);
+  assert.equal(existsSync(join(inside,'ledger.json')),false);
+  // The same rejection for a not-yet-existing parent under the link:
+  // the realpath walk must resolve the symlinked ancestor, not the
+  // missing leaf.
+  await assert.rejects(run({argv:['export','--out',join(link,'missing','ledger.json')],url}),/outside the repository/);
+  assert.equal(existsSync(join(inside,'missing','ledger.json')),false);
+});
+
+test('CLI export failed write leaves no partial file and a retry is unblocked',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-deletion-ledger-'));
+  resources.push(async()=>{ rmSync(directory,{recursive:true,force:true}); });
+  const out=join(directory,'ledger.json');
+  const failingWrite=()=>{ throw Object.assign(new Error('no space left on device'),{code:'ENOSPC'}); };
+  assert.throws(()=>writeLedgerFileExclusive(out,'partial\n',{writeFileSync:failingWrite}),
+    error=>{ assert.equal(error.code,'DELETION_LEDGER_FILE'); return /could not be written/.test(error.message); });
+  assert.equal(existsSync(out),false);
+  writeLedgerFileExclusive(out,'retry\n');
+  assert.equal(readFileSync(out,'utf8'),'retry\n');
+});
+
+test('CLI reapply and verify map a malformed --restore-point to DELETION_LEDGER_USAGE',async()=>{
+  const {url}=await database();
+  const directory=mkdtempSync(join(tmpdir(),'randori-deletion-ledger-'));
+  resources.push(async()=>{ rmSync(directory,{recursive:true,force:true}); });
+  const ledgerFile=join(directory,'ledger.json');
+  writeFileSync(ledgerFile,JSON.stringify({version:DELETION_LEDGER_VERSION,exported_at:DELETED_AT,entries:[
+    {account_id:2,created_at:'2026-01-01T00:00:00.000Z',deleted_at:DELETED_AT},
+  ]}),'utf8');
+  for(const command of ['reapply','verify']){
+    let caught;
+    try{
+      await run({argv:[command,'--ledger',ledgerFile,'--restore-point','not-a-date'],url});
+    }catch(error){ caught=error; }
+    assert.equal(caught?.code,'DELETION_LEDGER_USAGE');
+    assert.match(caught.message,/valid --restore-point/);
+    assert.deepEqual(publicCliError(caught),{
+      ok:false,error:'DELETION_LEDGER_USAGE',message:'valid --restore-point is required',
+    });
+  }
 });
 
 test('CLI export --restore-point writes only entries after the restore point, keeping null deleted_at',async()=>{

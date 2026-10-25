@@ -28,8 +28,8 @@
 // secret in effect when the deletions were made, not a rotated
 // replacement: re-application re-hashes invitation emails with it, so a
 // different secret produces different hashes. `verify` needs no secret.
-import { closeSync, fchmodSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, resolve, sep } from 'node:path';
+import { closeSync, fchmodSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createClient } from '@libsql/client';
@@ -89,35 +89,67 @@ function requireJwtSecret(env,command){
 
 const REPOSITORY_ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 
+// Resolves `path` through symlinks, walking up to the nearest existing
+// ancestor when `path` itself does not exist yet and re-appending the
+// not-yet-existing suffix, so a symlinked parent is resolved too.
+function realpathThroughNearestExistingAncestor(path){
+  let current=path;
+  const suffix=[];
+  for(;;){
+    try{
+      return join(realpathSync(current),...suffix);
+    }catch(error){
+      if(error?.code!=='ENOENT') throw error;
+      const parent=dirname(current);
+      if(parent===current) fail('deletion ledger --out parent could not be resolved','DELETION_LEDGER_FILE');
+      suffix.unshift(basename(current));
+      current=parent;
+    }
+  }
+}
+
 function assertOutOutsideRepository(out){
   const resolved=resolve(out);
-  if(resolved===REPOSITORY_ROOT||resolved.startsWith(REPOSITORY_ROOT+sep)){
+  // Compare real paths, not lexical ones: a symlinked parent pointing
+  // into the repository must be rejected even though the lexical path
+  // looks outside it.
+  const realOut=join(
+    realpathThroughNearestExistingAncestor(dirname(resolved)),
+    basename(resolved),
+  );
+  const realRoot=realpathSync(REPOSITORY_ROOT);
+  if(realOut===realRoot||realOut.startsWith(realRoot+sep)){
     fail('deletion ledger --out must be outside the repository (never commit a ledger, and never write under .git)','DELETION_LEDGER_FILE');
   }
 }
 
-// Creates the ledger file atomically with mode 0600: 'wx' refuses to
+// Creates the ledger file exclusively with mode 0600: 'wx' refuses to
 // overwrite an existing file and refuses to follow a symlink, and the
 // defensive fchmod covers a umask that would otherwise widen the mode.
 // A failed write removes the file this call created, so a retry is not
 // blocked by a partial ledger.
-function writeLedgerFileExclusive(out,contents){
+export function writeLedgerFileExclusive(out,contents,fileSystem={}){
+  const open=fileSystem.openSync??openSync;
+  const chmod=fileSystem.fchmodSync??fchmodSync;
+  const write=fileSystem.writeFileSync??writeFileSync;
+  const unlink=fileSystem.unlinkSync??unlinkSync;
+  const close=fileSystem.closeSync??closeSync;
   let fd;
   try{
-    fd=openSync(out,'wx',0o600);
+    fd=open(out,'wx',0o600);
   }catch(error){
     if(error?.code==='EEXIST') fail('deletion ledger file already exists; refusing to overwrite','DELETION_LEDGER_FILE');
     fail('deletion ledger file could not be created','DELETION_LEDGER_FILE');
   }
   try{
-    fchmodSync(fd,0o600);
-    writeFileSync(fd,contents,'utf8');
+    chmod(fd,0o600);
+    write(fd,contents,'utf8');
   }catch(error){
-    try{ unlinkSync(out); }catch{}
+    try{ unlink(out); }catch{}
     if(error?.code?.startsWith('DELETION_LEDGER_')) throw error;
     fail('deletion ledger file could not be written','DELETION_LEDGER_FILE');
   }finally{
-    closeSync(fd);
+    close(fd);
   }
 }
 
@@ -132,6 +164,28 @@ function readLedger(path){
     fail('deletion ledger file has the wrong shape','DELETION_LEDGER_FILE');
   }
   return parseDeletionLedger(parsed.entries);
+}
+
+// A malformed --restore-point is a usage error, not a generic failure:
+// deletionLedgerEntriesAfter / verifyDeletionLedger throw a bare
+// TypeError for it, so map that (and only that) to DELETION_LEDGER_USAGE.
+function deletionLedgerEntriesAfterOrUsage(ledger,restorePoint){
+  try{
+    return deletionLedgerEntriesAfter(ledger,restorePoint);
+  }catch{
+    fail('valid --restore-point is required','DELETION_LEDGER_USAGE');
+  }
+}
+
+async function verifyDeletionLedgerOrUsage(client,{ledger,restorePoint}){
+  try{
+    return await verifyDeletionLedger(client,{ledger,restorePoint});
+  }catch(error){
+    if(error instanceof TypeError&&/valid restore point/.test(error.message)){
+      fail('valid --restore-point is required','DELETION_LEDGER_USAGE');
+    }
+    throw error;
+  }
 }
 
 export function publicCliError(error){
@@ -161,11 +215,7 @@ export async function main({
       // --restore-point, which is the gate that decides what is re-applied.
       let entries=allEntries;
       if(restorePoint){
-        try{
-          entries=deletionLedgerEntriesAfter(allEntries,restorePoint);
-        }catch{
-          fail('valid --restore-point is required','DELETION_LEDGER_USAGE');
-        }
+        entries=deletionLedgerEntriesAfterOrUsage(allEntries,restorePoint);
       }
       const document=Object.freeze({
         version:DELETION_LEDGER_VERSION,
@@ -179,12 +229,12 @@ export async function main({
     }
     const ledger=readLedger(ledgerPath);
     if(command==='verify'){
-      const verification=await verifyDeletionLedger(client,{ledger,restorePoint});
+      const verification=await verifyDeletionLedgerOrUsage(client,{ledger,restorePoint});
       const result={command,checked:verification.checked,missing:verification.missing.length};
       stdout.write(`${JSON.stringify(result)}\n`);
       return {result,exitCode:verification.ok?0:1};
     }
-    const due=deletionLedgerEntriesAfter(ledger,restorePoint);
+    const due=deletionLedgerEntriesAfterOrUsage(ledger,restorePoint);
     const outcomes={};
     for(const entry of due){
       const applied=await reapplyAccountDeletion(client,{

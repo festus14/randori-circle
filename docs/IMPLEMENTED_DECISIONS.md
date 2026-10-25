@@ -4597,7 +4597,9 @@ checksums and digests, never personal data, so they do not extend
 personal-data retention. Disposable restore databases have zero
 retention. `privacy.html` now says exactly this: backups hold deleted
 information for up to 1 day, and a restore re-applies deletions made
-after the backup point before the restored data goes live.
+after the backup point before the restored data goes live, where the
+source database survives. If the source database itself is destroyed,
+that re-application is not yet possible.
 
 **Decision.**
 - *Retention, stated exactly:* deleted personal data can remain in the
