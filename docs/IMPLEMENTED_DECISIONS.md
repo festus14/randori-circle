@@ -4561,3 +4561,90 @@ reintroduces the vulnerable 4.1.11 copy and fails `audit:prod`.
 
 **Recovery.** Revert the commit; the nested vulnerable copy returns and
 `audit:prod` fails again. No code, flag, migration or production change.
+
+## ID-89: Let a signed-in member download their own data as one JSON archive, behind a flag
+
+Status: implemented; behind `DATA_EXPORT_ENABLED` (off by default), no migration. Issue #365.
+
+**Context.** Account deletion shipped (#347, ID-81) with an inventory of
+every table holding a member's personal data
+(`ACCOUNT_DATA_INVENTORY` in `api/_account-deletion.js`), but members had
+no way to get a copy of their own data. The issue requires a
+machine-readable (JSON) export of the member's own data, recent
+re-authentication, rate limits, a size bound, partner privacy, its own
+feature flag, and a Privacy Policy description. Product feedback (#353)
+is being implemented in parallel and has not landed, so the export must
+not block on it.
+
+**Decision.**
+- `GET /api/auth/account/export` in the existing `api/auth.js` function
+  (via a `vercel.json` rewrite), so no new serverless function is added.
+  It returns one JSON archive (`randori-circle-data-export.json`,
+  `version: 1`) of the requesting member's own data: profile, memberships,
+  availability, pairings, schedules, session completions and controls, the
+  member's own messages and code runs, notification preferences, authored
+  custom questions, sent/accepted invitations, the member's own invite
+  requests, AI sessions/feedback/consent/usage, and the member's own
+  product feedback. `excluded_tables` lists every inventory table that is
+  not exported, with the reason, and `counts` gives per-section row counts.
+- Partner privacy: partners appear by display name only (the history-view
+  rule) — no partner ids, emails, phones, hashes or tokens anywhere in the
+  archive. Only the member's own messages are exported, never a partner's.
+  Shared pair workspaces (`pair_code_documents`, `pair_room_snapshots`)
+  are not exported, because they hold the partner's contributions too.
+  Secrets (password/token hashes, Google subjects, sealed outbox envelopes,
+  session hashes), ephemeral records, audit trails and operational logs are
+  not exported.
+- Every account-deletion inventory table is accounted for in
+  `DATA_EXPORT_TABLE_COVERAGE` (`api/_data-export.js`). A future inventory
+  table with no explicit entry is excluded at runtime ("not yet reviewed")
+  and fails `tests/unit/data-export.test.mjs` until the entry is written,
+  so a new inventory table can never leak through the export.
+- Recent authentication (a sign-in from the last 10 minutes) is required
+  and is checked before the rate limit, so a stale proof does not burn
+  export quota. Rate limit: 5 exports per account and 20 per IP per
+  15 minutes (429 over the limit). In the UI the member confirms through
+  Account security (or signs out and signs in again) and retries; this
+  module does not duplicate the identity-confirm dialog.
+- Size bound: per-section caps (2,000 own messages, 1,000 code runs,
+  500–1,000 rows elsewhere) and a 5 MiB whole-archive bound
+  (`DATA_EXPORT_MAX_BYTES`). Over the bound the endpoint answers 413
+  `export_too_large` instead of a partial or oversized response; it does
+  not chunk.
+- Feedback (#353): at request time the export probes for `feedback_items`
+  / `feedback_votes` (and their author/voter columns, via `PRAGMA
+  table_info`) and includes the member's own rows when they exist;
+  otherwise it reports `feedback.included: false` and skips them cleanly.
+  Feedback events (audit) are never exported. A follow-up issue (#385) tracks
+  confirming the #353 column names and inventory entry once #353 lands.
+- `privacy.html` describes the download: what it contains, what it leaves
+  out, the recent-sign-in requirement, the 5-per-15-minutes limit and the
+  5 MB bound. See `docs/DATA_EXPORT.md`.
+
+**Alternatives considered and rejected.**
+- A new serverless function for the export: the Hobby function limit is
+  the reason #353 routes through an existing function, and `api/auth.js`
+  already owns the session, recent-auth and rate-limit helpers the export
+  needs.
+- Exporting the partner's messages / the joint pair workspace so the
+  archive matches the room transcript: those contain the partner's data,
+  and the issue scopes the export to the member's own messages.
+- Truncating an oversized archive silently, or chunking it: a silent
+  truncation would hand the member an incomplete copy without saying so,
+  and chunking adds pagination state for a 5 MiB bound no real archive
+  approaches. 413 with a contact path is explicit and fail-closed.
+
+**Verification.**
+- `tests/unit/data-export.test.mjs` (builder on a migrated database:
+  inventory coverage, partner privacy, feedback absent/present, size
+  bound, section caps), `tests/unit/data-export-api.test.mjs` (route:
+  flag off 404, 401, 403 without recent auth, rate-limit 429, 413, the
+  `vercel.json` rewrite, the capability),
+  `tests/unit/data-export-ui.test.mjs` (Edit-profile section), and the
+  golden-path e2e `tests/e2e/golden-data-export-real-runtime.spec.ts`
+  (golden-paths row 25).
+
+**Removal.** Unset `DATA_EXPORT_ENABLED` (or set `false`) and redeploy:
+the endpoint answers 404, the capability disappears, and Edit profile
+never downloads the script. Nothing is stored by the export, so removal
+is fully reversible.

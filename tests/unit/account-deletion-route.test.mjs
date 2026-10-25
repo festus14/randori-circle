@@ -25,6 +25,8 @@ S=freshState();
 
 mock.module('../../api/_auth-readiness.js',{exports:{ensureAuthReadiness:async()=>{}}});
 mock.module('../../api/_account-deletion.js',{exports:{
+  // api/_data-export.js (imported by api/auth.js) reads this at import time.
+  ACCOUNT_DATA_INVENTORY:[],
   DELETED_ACCOUNT_PASSWORD_HASH:'!account-deleted',
   LIVE_ACCOUNT_SQL:"password_hash<>'!account-deleted'",
   accountDeletionEnabled:()=>process.env.ACCOUNT_DELETION_ENABLED==='true',

@@ -121,6 +121,7 @@ decision log.
 | Doc | What it covers |
 | --- | --- |
 | [ACCOUNT_DELETION.md](ACCOUNT_DELETION.md) | Self-service account deletion by tombstoning, and the inventory of what is deleted or kept (ID-81) |
+| [DATA_EXPORT.md](DATA_EXPORT.md) | Member data export: a JSON archive of the member's own data, partners by display name only, behind `DATA_EXPORT_ENABLED` (ID-89) |
 | [CHAT_RETENTION.md](CHAT_RETENTION.md) | The 90-day chat retention policy and the gated, evidence-bound purge runbook (ID-20). Destructive production use is off |
 
 The public [privacy policy](../privacy.html) and [terms](../terms.html) are

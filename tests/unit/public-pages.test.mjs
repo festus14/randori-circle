@@ -83,7 +83,13 @@ for (const [path, html] of Object.entries(pages)) {
     assert.match(html, /<nav aria-label="Legal">/u);
     assert.equal(html.match(/<h1\b/gu)?.length, 1);
     assert.match(html, new RegExp(`<h1>${title}</h1>`, 'u'));
-    assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-10-22">22 October 2026<\/time><\/p>/u);
+    // The privacy policy was updated for the data export (issue #365, ID-89);
+    // the terms keep their earlier date.
+    if(path === '/privacy'){
+      assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-10-25">25 October 2026<\/time><\/p>/u);
+    }else{
+      assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-10-22">22 October 2026<\/time><\/p>/u);
+    }
   });
 
   test(`${path} headings never skip a level and every section id is unique`, () => {

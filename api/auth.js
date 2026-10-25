@@ -69,6 +69,12 @@ import {
   parseAccountDeletionRequest,
   readAccountDeletionEligibility,
 } from './_account-deletion.js';
+import {
+  DataExportTooLargeError,
+  buildDataExport,
+  dataExportEnabled,
+  ensureDataExportReadiness,
+} from './_data-export.js';
 import { inviteRequestIntakeAvailable, inviteRequestsEnabled } from './_invite-request-config.js';
 import { circleHealthEnabled } from './_circle-health.js';
 import { deliverCommittedOutboxEvents } from './_outbox-immediate.js';
@@ -248,7 +254,11 @@ async function enforceAuthRateLimit(db, req, action, email){
         ?[[`ip:${ip}`,10],[`account:${email}`,10]]
       :(action==='identity-mutation'
         ?[[`ip:${ip}`,10],[`account:${email}`,10]]
-        :[[`ip:${ip}`,20],[`email:${email}`,10]]))));
+      :(action==='data-export'
+        // A data export is a large, sensitive read: 5 per account per 15
+        // minutes keeps a stolen session from bulk-harvesting it.
+        ?[[`ip:${ip}`,20],[`account:${email}`,5]]
+        :[[`ip:${ip}`,20],[`email:${email}`,10]])))));
   for(const [dimension,limit] of limits){
     const key=createHash('sha256').update(`${action}|${dimension}|${bucket}|${getJwtSecret()}`).digest('hex');
     const result=await db.execute({
@@ -343,6 +353,8 @@ async function handleCapabilities(req,res){
       ...(process.env.ADMIN_DIAGNOSTICS_ENABLED==='true'?{adminDiagnostics:true}:{}),
       // Issue #339: advertised only while the flag (and circle membership) is on.
       ...(accountDeletionEnabled()?{accountDeletion:true}:{}),
+      // Issue #365: advertised only while the flag is on.
+      ...(dataExportEnabled()?{dataExport:true}:{}),
       ...(circleMembershipEnabled()&&process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED==='true'
         ?{multiCircleControlPlane:true}:{}),
       ...(multiCircleAvailabilityEnabled()?{multiCircleAvailability:true}:{}),
@@ -1402,6 +1414,56 @@ function accountDeletionRoute(ep,urlPath){
   return ep==='account-delete'||urlPath.startsWith('/api/auth/account/delete');
 }
 
+function dataExportRoute(ep,urlPath){
+  return ep==='account-export'||urlPath.startsWith('/api/auth/account/export');
+}
+
+// --- data export (issue #365, DATA_EXPORT_ENABLED) ---
+// GET downloads the signed-in member's own data as one JSON archive. The
+// session alone chooses the account, and the export requires recent
+// authentication (checked before the rate limit, so a stale proof does not
+// burn export quota). With the flag off the endpoint answers like an
+// unknown one.
+async function handleDataExport(req,res,ep){
+  if(!dataExportEnabled()) return unknownAuthEndpoint(res,ep);
+  if(req.method!=='GET'){
+    res.setHeader('Allow','GET');
+    return res.status(405).json({error:'GET only'});
+  }
+  const unavailable=()=>res.status(503).json({error:'data export temporarily unavailable'});
+  let db,payload;
+  try{
+    db=getClient();
+    await ensureAuthReadiness(db);
+    await ensureDataExportReadiness(db);
+    payload=await verifyRequestAuth(req,db);
+  }catch{ return unavailable(); }
+  if(!payload) return res.status(401).json({error:'authentication required'});
+  try{
+    await requireRecentAuth(db,{id:payload.id,sessionHash:payload.sessionHash});
+  }catch(error){
+    if(error?.code==='RECENT_AUTH_REQUIRED'){
+      return res.status(403).json({error:'recent authentication required',code:'recent_auth_required'});
+    }
+    return unavailable();
+  }
+  try{ await enforceAuthRateLimit(db,req,'data-export',String(payload.id)); }
+  catch(error){
+    if(error?.statusCode===429) return res.status(429).json({error:'too many attempts; try again later'});
+    return unavailable();
+  }
+  let archive;
+  try{ archive=await buildDataExport(db,{userId:payload.id}); }
+  catch(error){
+    if(error instanceof DataExportTooLargeError){
+      return res.status(413).json({error:'data export is too large',code:'export_too_large'});
+    }
+    return unavailable();
+  }
+  res.setHeader('Content-Disposition','attachment; filename="randori-circle-data-export.json"');
+  return res.json(archive);
+}
+
 export default async function handler(req,res){
   setAuthResponseHeaders(res);
   const ep = getEndpoint(req);
@@ -1426,6 +1488,7 @@ export default async function handler(req,res){
     return res.status(403).json({error:'same-origin request required'});
   }
   if (accountDeletionRoute(ep,urlPath)) return handleAccountDeletion(req,res,ep);
+  if (dataExportRoute(ep,urlPath)) return handleDataExport(req,res,ep);
   // also detect google via path that contains google
   if (ep.includes('google')) {
     if(ep.includes('unlink')||urlPath.includes('/identities/google')) return handleGoogleUnlink(req,res);
