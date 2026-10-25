@@ -148,6 +148,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'3bc0d64068acd2b641c3d707dc02a3c672463f65ae1b0f551195ceabe92a91b2',
     checksum:'ad76a224af837bfb895b61f115132aeb29a36aaba36858dfb41699b31795aae2',
   }),
+  Object.freeze({
+    version:22,
+    name:'feedback-platform',
+    description:'Product feedback from members to the people running Randori: feedback_items, feedback_votes and feedback_events with author, circle, idempotency and closed-retention indexes.',
+    operationsChecksum:'81f2ee53153fc3d46458a6b0dd9be5c186b558687259145896d53d808bcd3d12',
+    checksum:'a0f196d455adee47c7d8228fb2e8578fdc3e2fc399735f1373c92898d2dd68d8',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

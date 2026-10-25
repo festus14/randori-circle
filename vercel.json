@@ -199,6 +199,14 @@
       "destination": "/api/data?endpoint=messages"
     },
     {
+      "source": "/api/feedback/mine",
+      "destination": "/api/data?endpoint=feedback-mine"
+    },
+    {
+      "source": "/api/feedback",
+      "destination": "/api/data?endpoint=feedback"
+    },
+    {
       "source": "/api/questions",
       "destination": "/api/data?endpoint=questions"
     },

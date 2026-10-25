@@ -1,6 +1,6 @@
 // The migration check (ID-87, #371): a migration declared 'additive' must
 // really be additive, or the readiness tolerance would let code run against a
-// schema it changes. Synthetic migration 22 cases are appended to the real
+// schema it changes. Synthetic migration 23 cases are appended to the real
 // executable migrations, so "existing" means the real current schema.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -23,27 +23,27 @@ const index=(name,tableName,sql)=>({operation:'ensure-index',name,table:tableNam
 const trigger=(name,tableName,sql)=>({operation:'ensure-trigger',name,table:tableName,sql});
 const row=(name,tableName,sql)=>({operation:'ensure-row',name,table:tableName,sql});
 
-const FEEDBACK=table('feedback_items',`CREATE TABLE IF NOT EXISTS feedback_items (id TEXT PRIMARY KEY, author_user_id INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('bug','feature_request','feedback')), body TEXT NOT NULL CHECK(body <> 'DROP TABLE auth_accounts; DELETE FROM users'), created_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY(author_user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE ON UPDATE NO ACTION)`);
-const EVENTS=table('feedback_events',`CREATE TABLE IF NOT EXISTS feedback_events (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, action TEXT NOT NULL)`);
-const FEEDBACK_INDEX=index('idx_feedback_items_author','feedback_items',`CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_items_author ON feedback_items(author_user_id,id)`);
+const FEEDBACK=table('feedback_suggestions',`CREATE TABLE IF NOT EXISTS feedback_suggestions (id TEXT PRIMARY KEY, author_user_id INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('bug','feature_request','feedback')), body TEXT NOT NULL CHECK(body <> 'DROP TABLE auth_accounts; DELETE FROM users'), created_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY(author_user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE ON UPDATE NO ACTION)`);
+const EVENTS=table('feedback_suggestion_events',`CREATE TABLE IF NOT EXISTS feedback_suggestion_events (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, action TEXT NOT NULL)`);
+const FEEDBACK_INDEX=index('idx_feedback_suggestions_author','feedback_suggestions',`CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_suggestions_author ON feedback_suggestions(author_user_id,id)`);
 const EXISTING_TABLE_INDEX=index('idx_auth_accounts_created','auth_accounts',`CREATE INDEX IF NOT EXISTS idx_auth_accounts_created ON auth_accounts(created_at)`);
-const NEW_TABLE_TRIGGER=trigger('trg_feedback_items_audit','feedback_items',`CREATE TRIGGER IF NOT EXISTS trg_feedback_items_audit AFTER UPDATE OF kind ON feedback_items FOR EACH ROW WHEN NEW.kind <> OLD.kind BEGIN
+const NEW_TABLE_TRIGGER=trigger('trg_feedback_suggestions_audit','feedback_suggestions',`CREATE TRIGGER IF NOT EXISTS trg_feedback_suggestions_audit AFTER UPDATE OF kind ON feedback_suggestions FOR EACH ROW WHEN NEW.kind <> OLD.kind BEGIN
   SELECT RAISE(ABORT,'no; DROP TABLE users') WHERE NEW.kind IS NULL;
-  INSERT INTO feedback_events (item_id,action) VALUES (NEW.id,'kind');
-  DELETE FROM "feedback_events" WHERE item_id IS NULL;
+  INSERT INTO feedback_suggestion_events (item_id,action) VALUES (NEW.id,'kind');
+  DELETE FROM "feedback_suggestion_events" WHERE item_id IS NULL;
 END`);
-const SEED=row('feedback_events:seed','feedback_events',`INSERT INTO feedback_events (item_id,action) VALUES ('seed','created') ON CONFLICT DO NOTHING`);
+const SEED=row('feedback_suggestion_events:seed','feedback_suggestion_events',`INSERT INTO feedback_suggestion_events (item_id,action) VALUES ('seed','created') ON CONFLICT DO NOTHING`);
 
 const VALID_OPERATIONS=Object.freeze([FEEDBACK,EVENTS,FEEDBACK_INDEX,EXISTING_TABLE_INDEX,NEW_TABLE_TRIGGER,SEED]);
 const VALID_INTRODUCES=Object.freeze({
-  tables:['feedback_items','feedback_events'],
-  indexes:['idx_feedback_items_author','idx_auth_accounts_created'],
-  triggers:['trg_feedback_items_audit'],
+  tables:['feedback_suggestions','feedback_suggestion_events'],
+  indexes:['idx_feedback_suggestions_author','idx_auth_accounts_created'],
+  triggers:['trg_feedback_suggestions_audit'],
 });
 
 function candidate(operations,{introduces,compatibility='additive'}={}){
-  const migration={version:22,name:'synthetic-22',checksum:HEX,operations};
-  const contract={version:22,name:'synthetic-22',checksum:HEX,compatibility};
+  const migration={version:23,name:'synthetic-23',checksum:HEX,operations};
+  const contract={version:23,name:'synthetic-23',checksum:HEX,compatibility};
   if(compatibility==='additive'){
     const derived={tables:[],indexes:[],triggers:[]};
     for(const operation of operations){
@@ -68,7 +68,7 @@ function codes(operations,options={}){
     .map(item=>`${item.code}${item.detail?`:${item.detail}`:''}`);
 }
 
-test('the checked-in migrations pass the check, and every one is declared breaking',()=>{
+test('the checked-in migrations pass the check, with v22 the one declared additive',()=>{
   assert.deepEqual(inspectMigrationCompatibility({migrations:EXECUTABLE_MIGRATIONS}),[]);
   assert.equal(assertMigrationCompatibility({migrations:EXECUTABLE_MIGRATIONS}),true);
   assert.equal(validateExecutableMigrations(),true);
@@ -105,9 +105,9 @@ test('a real additive migration passes: new tables, their indexes, triggers and 
 
 test('the check rejects an additive migration that contains destructive SQL',()=>{
   const cases=[
-    [[table('feedback_items','DROP TABLE auth_accounts')],['destructive_sql:DROP']],
-    [[table('feedback_items','ALTER TABLE auth_accounts RENAME TO accounts')],['destructive_sql:ALTER']],
-    [[table('feedback_items','ALTER TABLE auth_accounts DROP COLUMN phone')],['destructive_sql:ALTER']],
+    [[table('feedback_suggestions','DROP TABLE auth_accounts')],['destructive_sql:DROP']],
+    [[table('feedback_suggestions','ALTER TABLE auth_accounts RENAME TO accounts')],['destructive_sql:ALTER']],
+    [[table('feedback_suggestions','ALTER TABLE auth_accounts DROP COLUMN phone')],['destructive_sql:ALTER']],
     [[table('feedback_items',"UPDATE auth_accounts SET phone=NULL")],['destructive_sql:UPDATE']],
     [[table('feedback_items',"DELETE FROM auth_sessions")],['destructive_sql:DELETE']],
     [[table('feedback_items',"REPLACE INTO auth_accounts (id) VALUES (1)")],['destructive_sql:REPLACE']],
@@ -115,11 +115,11 @@ test('the check rejects an additive migration that contains destructive SQL',()=
     [[table('feedback_items',`${FEEDBACK.sql}; DROP TABLE users`)],['destructive_sql:DROP']],
     [[index('idx_x','auth_accounts','/* create */ DROP INDEX idx_cq_slug')],['destructive_sql:DROP']],
     [[row('seed','auth_accounts',"UPDATE auth_accounts SET is_admin=1")],['destructive_sql:UPDATE']],
-    [[EVENTS,trigger('trg_x','feedback_events',`CREATE TRIGGER trg_x AFTER INSERT ON feedback_events BEGIN SELECT 1; END; DROP TABLE users`)],
+    [[EVENTS,trigger('trg_x','feedback_suggestion_events',`CREATE TRIGGER trg_x AFTER INSERT ON feedback_suggestion_events BEGIN SELECT 1; END; DROP TABLE users`)],
       ['destructive_sql:DROP']],
-    [[EVENTS,trigger('trg_x','feedback_events',`CREATE TRIGGER trg_x AFTER INSERT ON feedback_events BEGIN DELETE FROM auth_accounts; UPDATE OR IGNORE circles SET name=''; END`)],
+    [[EVENTS,trigger('trg_x','feedback_suggestion_events',`CREATE TRIGGER trg_x AFTER INSERT ON feedback_suggestion_events BEGIN DELETE FROM auth_accounts; UPDATE OR IGNORE circles SET name=''; END`)],
       ['trigger_writes_existing_table:AUTH_ACCOUNTS','trigger_writes_existing_table:CIRCLES']],
-    [[EVENTS,trigger('trg_x','feedback_events',`CREATE TRIGGER trg_x AFTER INSERT ON feedback_events BEGIN REPLACE INTO users (id) VALUES (1); END`)],
+    [[EVENTS,trigger('trg_x','feedback_suggestion_events',`CREATE TRIGGER trg_x AFTER INSERT ON feedback_suggestion_events BEGIN REPLACE INTO users (id) VALUES (1); END`)],
       ['trigger_writes_existing_table:USERS']],
   ];
   for(const [operations,expected] of cases){
@@ -156,21 +156,21 @@ test('the check rejects changes to existing artifacts that alter how running cod
 
 test('the check refuses SQL it cannot prove is a plain create statement',()=>{
   const cases=[
-    [[table('feedback_items','CREATE TEMP TABLE feedback_items (id)')],['non_canonical_create_table']],
-    [[table('feedback_items','CREATE TABLE other_name (id)')],['non_canonical_create_table']],
-    [[table('feedback_items','CREATE TABLE feedback_items AS SELECT * FROM auth_accounts')],['non_canonical_create_table']],
-    [[table('feedback_items','')],['non_canonical_create_table']],
+    [[table('feedback_suggestions','CREATE TEMP TABLE feedback_items (id)')],['non_canonical_create_table']],
+    [[table('feedback_suggestions','CREATE TABLE other_name (id)')],['non_canonical_create_table']],
+    [[table('feedback_suggestions','CREATE TABLE feedback_items AS SELECT * FROM auth_accounts')],['non_canonical_create_table']],
+    [[table('feedback_suggestions','')],['non_canonical_create_table']],
     [[FEEDBACK,index('idx_y','feedback_items','CREATE INDEX idx_other ON feedback_items(id)')],['non_canonical_create_index']],
     [[FEEDBACK,index('idx_y','auth_accounts','CREATE INDEX idx_y ON feedback_items(id)')],['non_canonical_create_index']],
     [[index('idx_y','ghost_table','CREATE INDEX idx_y ON ghost_table(id)')],['index_on_unknown_table:GHOST_TABLE']],
     [[index('idx_y','schema_migrations','CREATE INDEX idx_y ON schema_migrations(applied_at)')],
       ['index_on_unknown_table:SCHEMA_MIGRATIONS']],
-    [[EVENTS,trigger('trg_y','feedback_events','CREATE TRIGGER trg_other AFTER INSERT ON feedback_events BEGIN SELECT 1; END')],
+    [[EVENTS,trigger('trg_y','feedback_suggestion_events','CREATE TRIGGER trg_other AFTER INSERT ON feedback_suggestion_events BEGIN SELECT 1; END')],
       ['non_canonical_create_trigger']],
-    [[EVENTS,trigger('trg_y','feedback_events','CREATE TRIGGER trg_y AFTER INSERT ON feedback_events BEGIN VACUUM; END')],
+    [[EVENTS,trigger('trg_y','feedback_suggestion_events','CREATE TRIGGER trg_y AFTER INSERT ON feedback_suggestion_events BEGIN VACUUM; END')],
       ['unsupported_trigger_statement:VACUUM']],
-    [[EVENTS,row('seed','feedback_events',"INSERT OR REPLACE INTO feedback_events (id) VALUES (1)")],['non_canonical_seed_row']],
-    [[EVENTS,row('seed','users',"INSERT INTO feedback_events (id) VALUES (1)")],['non_canonical_seed_row']],
+    [[EVENTS,row('seed','feedback_suggestion_events',"INSERT OR REPLACE INTO feedback_suggestion_events (id) VALUES (1)")],['non_canonical_seed_row']],
+    [[EVENTS,row('seed','users',"INSERT INTO feedback_suggestion_events (id) VALUES (1)")],['non_canonical_seed_row']],
   ];
   for(const [operations,expected] of cases){
     assert.deepEqual(codes(operations),expected,JSON.stringify(operations.map(item=>item.sql)));
@@ -192,7 +192,7 @@ test('malformed or truncated input fails closed instead of slipping through',()=
     [[FEEDBACK,index('idx_y',undefined,'CREATE INDEX idx_y ON feedback_items(id)')],['non_canonical_create_index']],
     [[EVENTS,row('seed','feedback_events',"INSERT INTO feedback_events (id) VALUES (1); INSERT INTO feedback_events (id) VALUES (2)")],
       ['non_canonical_seed_row']],
-    [[EVENTS,row('seed',undefined,"INSERT INTO feedback_events (id) VALUES (1)")],['non_canonical_seed_row']],
+    [[EVENTS,row('seed',undefined,"INSERT INTO feedback_suggestion_events (id) VALUES (1)")],['non_canonical_seed_row']],
     [[{operation:'ensure-row',sql:'DELETE FROM users'}],['destructive_sql:DELETE']],
   ];
   for(const [operations,expected] of cases){
@@ -204,7 +204,7 @@ test('malformed or truncated input fails closed instead of slipping through',()=
   assert.deepEqual(additiveViolations(null).map(item=>[item.version,item.code]),[[null,'no_operations']]);
   assert.deepEqual(additiveViolations({version:5,operations:[FEEDBACK]},{previous:[{version:1}]}),[]);
   const {migrations,contracts}=candidate([FEEDBACK]);
-  migrations[21]={...migrations[21],operations:undefined};
+  migrations[22]={...migrations[22],operations:undefined};
   assert.deepEqual(inspectMigrationCompatibility({migrations,contracts}).map(item=>item.code),
     ['no_operations','introduces_mismatch']);
 });
@@ -213,15 +213,15 @@ test('the contract must list exactly what an additive migration introduces',()=>
   // A seed-only additive migration introduces nothing, which no contract can list.
   assert.deepEqual(inspectMigrationCompatibility(candidate([row('seed','users','INSERT INTO users (id) VALUES (1)')]))
     .map(item=>item.code),['seed_row_in_existing_table','introduces_mismatch']);
-  assert.deepEqual(codes([FEEDBACK],{introduces:{tables:['feedback_items','extra_table'],indexes:[],triggers:[]}}),
+  assert.deepEqual(codes([FEEDBACK],{introduces:{tables:['feedback_suggestions','extra_table'],indexes:[],triggers:[]}}),
     ['introduces_mismatch:tables']);
-  assert.deepEqual(codes([FEEDBACK,FEEDBACK_INDEX],{introduces:{tables:['feedback_items'],indexes:[],triggers:['trg_z']}}),
+  assert.deepEqual(codes([FEEDBACK,FEEDBACK_INDEX],{introduces:{tables:['feedback_suggestions'],indexes:[],triggers:['trg_z']}}),
     ['introduces_mismatch:indexes','introduces_mismatch:triggers']);
   // A breaking declaration is not inspected at all.
   assert.deepEqual(codes([table('feedback_items','DROP TABLE users')],{compatibility:'breaking'}),[]);
   // The migrations must be the contracts, in order.
   const {migrations,contracts}=candidate([FEEDBACK]);
-  migrations[21]={...migrations[21],name:'renamed'};
+  migrations[22]={...migrations[22],name:'renamed'};
   assert.deepEqual(inspectMigrationCompatibility({migrations,contracts}).map(item=>item.code),['contract_mismatch']);
   assert.throws(()=>inspectMigrationCompatibility({migrations:[],contracts}),/non-empty prefix/);
   assert.throws(()=>inspectMigrationCompatibility({migrations:[...migrations,migrations[0]],contracts}),/non-empty prefix/);
@@ -229,11 +229,11 @@ test('the contract must list exactly what an additive migration introduces',()=>
 });
 
 test('violations are reported with the migration, the reason and the offending statement',()=>{
-  const options=candidate([table('feedback_items','DROP TABLE auth_accounts')]);
+  const options=candidate([table('feedback_suggestions','DROP TABLE auth_accounts')]);
   assert.throws(()=>assertMigrationCompatibility(options),error=>{
     assert.equal(error.code,'MIGRATION_COMPATIBILITY_INVALID');
     assert.equal(error.violations.length,1);
-    assert.equal(error.message,'migration 22 is marked additive but destructive_sql (ensure-table feedback_items: DROP)');
+    assert.equal(error.message,'migration 23 is marked additive but destructive_sql (ensure-table feedback_suggestions: DROP)');
     return true;
   });
   assert.equal(formatCompatibilityViolation({version:3,code:'no_operations',operation:null,name:null,detail:null}),
@@ -267,14 +267,14 @@ test('contracts must declare a compatibility, and additive ones what they introd
 
 test('the deployability gate reports a mislabelled migration and a migration set that cannot load',async()=>{
   assert.deepEqual(await inspectMigrationReleaseContract(),[]);
-  const {migrations,contracts}=candidate([table('feedback_items','DROP TABLE auth_accounts')]);
+  const {migrations,contracts}=candidate([table('feedback_suggestions','DROP TABLE auth_accounts')]);
   const loadWith=(executable,contractList)=>async()=>[
     {EXECUTABLE_MIGRATIONS:executable},
     await import('../../db/migration-compatibility-check.js'),
     {MIGRATION_CONTRACTS:contractList},
   ];
   assert.deepEqual(await inspectMigrationReleaseContract({load:loadWith(migrations,contracts)}),[
-    'migration release contract: migration 22 is marked additive but destructive_sql (ensure-table feedback_items: DROP)',
+    'migration release contract: migration 23 is marked additive but destructive_sql (ensure-table feedback_suggestions: DROP)',
   ]);
   assert.deepEqual(await inspectMigrationReleaseContract({load:async()=>{ throw new Error('migration 20 is marked additive but trigger_on_existing_table'); }}),
     ['migration release contract: migration 20 is marked additive but trigger_on_existing_table']);

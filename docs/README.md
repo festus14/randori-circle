@@ -55,6 +55,7 @@ rings are under [Operations runbooks](#operations-runbooks).
 | [ADMIN_DATA_INITIALIZATION.md](ADMIN_DATA_INITIALIZATION.md) | The one-time, data-only `POST /api/init` primary-circle cutover before `CIRCLE_MEMBERSHIP_ENABLED` (ID-39) |
 | [MEMBER_LIFECYCLE.md](MEMBER_LIFECYCLE.md) | Leaving, deactivation, reactivation, ownership transfer, co-owners and app admins (ID-12, ID-69) |
 | [INVITE_REQUESTS.md](INVITE_REQUESTS.md) | Public "Request an invite" intake and owner review, without enumeration (migration v21, ID-66) |
+| [FEEDBACK.md](FEEDBACK.md) | Product feedback from members to the people running Randori: bug reports, feature requests and general feedback (migration v22, ID-89) |
 | [ACTIVE_CIRCLE_CONTEXT.md](ACTIVE_CIRCLE_CONTEXT.md) | The selected-circle control plane and its rollout and rollback order (ID-21). Behind flags that are off in production |
 | [CIRCLE_CREATION.md](CIRCLE_CREATION.md) | Creating and selecting a secondary circle as one idempotent operation (ID-29). Off in production |
 | [CIRCLE_ARCHIVE.md](CIRCLE_ARCHIVE.md) | Soft-archiving a secondary circle with recent auth and safe fallback (ID-38). Off in production |
@@ -131,7 +132,7 @@ no-raw-IP rule for `app_logs` is ID-82.
 
 | Doc | What it covers |
 | --- | --- |
-| [DATABASE_SCHEMA_OPERATIONS.md](DATABASE_SCHEMA_OPERATIONS.md) | The schema manifest, read-only drift inspection (`db:status`, `db:plan`) and the local migration runner. **Note:** its "55 application tables and 63 named indexes" count is out of date (the manifest has 57 and 70), and its last paragraph says production mutation is still blocked, although protected migrations have since been applied |
+| [DATABASE_SCHEMA_OPERATIONS.md](DATABASE_SCHEMA_OPERATIONS.md) | The schema manifest, read-only drift inspection (`db:status`, `db:plan`) and the local migration runner. **Note:** its last paragraph says production mutation is still blocked, although protected migrations have since been applied |
 | [CHAT_INDEX_MIGRATION.md](CHAT_INDEX_MIGRATION.md) | Migration v10: the two chat indexes and the query plans they serve (ID-18) |
 | [DATA_RUNTIME_DDL_RETIREMENT.md](DATA_RUNTIME_DDL_RETIREMENT.md) | Historical record: data routes stopped creating schema at request time (ID-37) |
 | [NOTIFICATION_PREFERENCES_RUNTIME_DDL_RETIREMENT.md](NOTIFICATION_PREFERENCES_RUNTIME_DDL_RETIREMENT.md) | Historical record: notification preferences became read-only readiness (ID-40) |

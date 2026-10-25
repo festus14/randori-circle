@@ -50,6 +50,7 @@ import {
   readExerciseSuggestions,
 } from './_exercise-suggestions.js';
 import { ensureProgressReadiness, parseProgressQuery, progressDashboardEnabled, readMemberProgress } from './_progress.js';
+import { handleFeedbackRoute } from './_feedback-api.js';
 import { DELETED_ACCOUNT_PASSWORD_HASH, LIVE_ACCOUNT_SQL } from './_account-deletion.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import {
@@ -183,6 +184,11 @@ function resolveDataRoute(req,endpoint){
   if(endpoint==='health'||endpoint==='healthz'||path.includes('/health')) return 'health';
   if(endpoint==='logs'||endpoint==='applogs'||endpoint==='app_logs'||path.includes('/logs')) return 'logs';
   if(endpoint==='questions'||endpoint==='question'||path.includes('/questions')) return 'questions';
+  // Product feedback (#353): POST /api/feedback and GET /api/feedback/mine
+  // rewrite to endpoint=feedback / feedback-mine. The handler itself
+  // answers 404 while FEEDBACK_ENABLED is off or v22 is still pending.
+  if(endpoint==='feedback'||endpoint==='feedback-mine'||endpoint==='feedback/mine'
+    ||path.includes('/feedback')) return 'feedback';
   return null;
 }
 
@@ -2887,6 +2893,7 @@ export default async function handler(req,res){
   if(route==='health') return await handleHealth(req,res);
   if(route==='logs') return await handleLogs(req,res);
   if(route==='questions') return await handleQuestions(req,res);
+  if(route==='feedback') return await handleFeedbackRoute(req,res);
   return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','pair-recap',...(exerciseSuggestionsEnabled()?['exercise-suggestions']:[]),'session-completion','session-controls','meeting-link','schedule','messages','questions'] });
   }catch(e){
     const failedEndpoint=getEndpoint(req);

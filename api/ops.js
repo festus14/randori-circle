@@ -27,6 +27,8 @@ import {
   runOutboxPiiRetention,
 } from './_outbox-retention.js';
 import { inviteRequestSchemaNotInstalled, runInviteRequestRetention } from './_invite-request-config.js';
+import { feedbackSchemaNotInstalled } from './_feedback-config.js';
+import { runFeedbackRetention } from './_feedback-retention.js';
 import { INVITE_REQUEST_EVENT_TYPE } from './_invite-request-notification.js';
 import {
   migrateLegacyPairingEmails,
@@ -1074,6 +1076,21 @@ async function handleWeekly(req,res,{isDue=pairingCronIsDue}={}){
   }catch(error){
     if(!inviteRequestSchemaNotInstalled(error)){
       try{ await logServerOps('error','invite_request_retention_failed','invite request retention failed',{},req); }catch{}
+    }
+  }
+  // Feedback retention (#353): closed items older than 12 months are
+  // purged (events, votes, then items), in bounded batches. It runs
+  // regardless of FEEDBACK_ENABLED so stored rows keep ageing out after
+  // the flag is turned off, and never blocks pairing publication: a
+  // failure is logged as an ops error and retried next week.
+  try{
+    const retention=await runFeedbackRetention(db,{nowSeconds:Math.floor(now.getTime()/1000)});
+    if(retention.deleted){
+      try{ await logServerOps('info','feedback_retention','feedback retention completed',retention,null); }catch{}
+    }
+  }catch(error){
+    if(!feedbackSchemaNotInstalled(error)){
+      try{ await logServerOps('error','feedback_retention_failed','feedback retention failed',{},req); }catch{}
     }
   }
   const localRuntime=strictLocalPairingRuntime(req);

@@ -165,6 +165,19 @@ async function fixture({xavierOwnsAloneIn30=false}={}){
     `INSERT INTO pairing_email_outbox (week_id,user_id,kind,recipient_email,status) VALUES
       (10,2,'paired','${X_EMAIL}','pending'),(10,3,'paired','partner@example.test','pending')`,
     `INSERT INTO custom_questions (slug,title,description,test_cases,author_id) VALUES ('mine','Mine','Text','[]',2)`,
+    `INSERT INTO feedback_items (id,circle_id,author_user_id,kind,title,body,status,visibility,diagnostics_json,
+        idempotency_key,created_at,updated_at,closed_at) VALUES
+      ('f1111111-1111-4111-8111-111111111111',1,2,'feedback','Xavier feedback title','Xavier saw a bug in pairing',
+        'open','private',NULL,'feedback-xavier-12345678',${NOW - 10},${NOW - 10},NULL),
+      ('f2222222-2222-4222-8222-222222222222',1,3,'feature_request','Partner feedback','Partner wants a feature',
+        'open','private',NULL,'feedback-partner-12345678',${NOW - 10},${NOW - 10},NULL)`,
+    `INSERT INTO feedback_votes (feedback_id,user_id,value,created_at) VALUES
+      ('f1111111-1111-4111-8111-111111111111',3,1,${NOW - 10}),
+      ('f2222222-2222-4222-8222-222222222222',2,1,${NOW - 10})`,
+    `INSERT INTO feedback_events (feedback_id,event_type,actor_user_id,detail_json,created_at) VALUES
+      ('f1111111-1111-4111-8111-111111111111','feedback.created',2,NULL,${NOW - 10}),
+      ('f2222222-2222-4222-8222-222222222222','feedback.created',3,NULL,${NOW - 10}),
+      ('f2222222-2222-4222-8222-222222222222','feedback.status_changed',2,'{"from_status":"open","to_status":"in_progress"}',${NOW - 5})`,
     `INSERT INTO app_logs (level,source,event,message,user_id,ua,ip) VALUES
       ('error','client','boom','Xavier saw an error',2,'Firefox','203.0.113.9'),
       ('warn','client','slow','slow',2,'Firefox','203.0.113.9'),
@@ -280,6 +293,10 @@ async function seedOutbox(db){
       token_hash:HEX('8'),email_hash:hashInvitationEmail(X_EMAIL),credential_envelope:'sealed-rejoin'}),
     outboxRow(13,'auth.passwordreset.requested',{reset_id:'r2',recipient_email:X_EMAIL,token_envelope:'sealed-inflight'},
       {status:'processing',lease:true}),
+    outboxRow(14,'feedback.submitted',{feedback_id:'f1111111-1111-4111-8111-111111111111',circle_id:1,
+      author_user_id:2,recipient_user_id:1,kind:'feedback',title:'Xavier feedback title',template_version:1}),
+    outboxRow(15,'feedback.submitted',{feedback_id:'f2222222-2222-4222-8222-222222222222',circle_id:1,
+      author_user_id:3,recipient_user_id:2,kind:'feature_request',title:'Partner feedback',template_version:1}),
   ],'write');
 }
 
@@ -366,7 +383,8 @@ test('deletion erases or anonymises every inventoried column and keeps partners\
   assert.equal(result.ok,true);
   assert.equal(result.status,'deleted');
   assert.deepEqual(result.summary,{
-    outbox_suppressed:4,outbox_scrubbed:9,legacy_outbox:1,invitations_revoked:1,invitations_scrubbed:2,
+    outbox_suppressed:6,outbox_scrubbed:11,outbox_feedback_scrubbed:1,legacy_outbox:1,invitations_revoked:1,invitations_scrubbed:2,
+    feedback_events_deleted:1,feedback_events_anonymised:1,feedback_votes_deleted:2,feedback_items_deleted:1,
     activations_scrubbed:1,invite_requests_expired:1,sessions_revoked:2,google_links_removed:1,
     memberships_deactivated:4,messages_redacted:2,solo_runs_deleted:1,pair_run_code_cleared:2,logs_deleted:2,
     circles_audited:4,
@@ -471,14 +489,28 @@ test('deletion erases or anonymises every inventoried column and keeps partners\
   assert.deepEqual((await db.execute(`SELECT user_id FROM app_logs ORDER BY id`)).rows.map(row=>row.user_id),[3,null]);
   assert.equal(await count(db,`SELECT COUNT(*) AS count FROM video_signals`),1);
 
+  // Feedback (#353): Xavier's item, its votes and its events are gone; the
+  // partner's item stays, with Xavier's vote and actor link removed, and
+  // the queued notification about Xavier's item lost its title.
+  assert.deepEqual((await db.execute(`SELECT id,title,author_user_id FROM feedback_items`)).rows
+    .map(row=>({...row})),[{id:'f2222222-2222-4222-8222-222222222222',title:'Partner feedback',author_user_id:3}]);
+  assert.equal(await count(db,`SELECT COUNT(*) AS count FROM feedback_votes`),0);
+  assert.deepEqual((await db.execute(`SELECT feedback_id,event_type,actor_user_id FROM feedback_events ORDER BY id`)).rows
+    .map(row=>({...row})),[
+    {feedback_id:'f2222222-2222-4222-8222-222222222222',event_type:'feedback.created',actor_user_id:3},
+    {feedback_id:'f2222222-2222-4222-8222-222222222222',event_type:'feedback.status_changed',actor_user_id:null},
+  ]);
+
   // Outbox: emails to Xavier are suppressed (audited) and scrubbed; an
   // in-flight row keeps its lease; partner mail is untouched.
   const outbox=Object.fromEntries((await db.execute(`SELECT id,status,payload_json,last_error_code,lease_token FROM outbox_events`)).rows
     .map(row=>[row.id,{status:row.status,payload:JSON.parse(String(row.payload_json)),error:row.last_error_code,lease:row.lease_token}]));
-  for(const id of [1,3,6,8]){
+  for(const id of [1,3,6,8,14,15]){
     assert.equal(outbox[id].status,'suppressed',`event ${id}`);
     assert.equal(outbox[id].error,ACCOUNT_DELETED_REASON);
   }
+  assert.equal('title' in outbox[14].payload,false);
+  assert.equal(outbox[15].payload.title,'Partner feedback');
   assert.equal(outbox[2].status,'pending');
   assert.equal(outbox[10].status,'pending');
   assert.equal(outbox[4].status,'delivered');
@@ -509,6 +541,8 @@ test('deletion erases or anonymises every inventoried column and keeps partners\
     {outbox_event_id:3,from_status:'dead_letter',to_status:'suppressed',reason_code:ACCOUNT_DELETED_REASON,actor_type:'system',actor_ref:'account-deletion'},
     {outbox_event_id:6,from_status:'pending',to_status:'suppressed',reason_code:ACCOUNT_DELETED_REASON,actor_type:'system',actor_ref:'account-deletion'},
     {outbox_event_id:8,from_status:'pending',to_status:'suppressed',reason_code:ACCOUNT_DELETED_REASON,actor_type:'system',actor_ref:'account-deletion'},
+    {outbox_event_id:14,from_status:'pending',to_status:'suppressed',reason_code:ACCOUNT_DELETED_REASON,actor_type:'system',actor_ref:'account-deletion'},
+    {outbox_event_id:15,from_status:'pending',to_status:'suppressed',reason_code:ACCOUNT_DELETED_REASON,actor_type:'system',actor_ref:'account-deletion'},
   ]);
   assert.deepEqual((await db.execute(`SELECT user_id,status,recipient_email FROM pairing_email_outbox ORDER BY user_id`)).rows
     .map(row=>[row.user_id,row.status,row.recipient_email]),

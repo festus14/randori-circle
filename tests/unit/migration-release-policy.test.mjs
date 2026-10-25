@@ -1,5 +1,6 @@
 // Readiness tolerance for zero-downtime additive releases (ID-87, #371), with
-// the checked-in contracts, where migration 21 is 'breaking'.
+// the checked-in contracts, where migration 22 is the first 'additive' one
+// (#353) and migrations 1-21 stay 'breaking'.
 //
 // - A breaking latest migration keeps every readiness surface strict one
 //   version behind (unchanged behaviour).
@@ -94,39 +95,44 @@ async function databaseAt(version){
 const ready=async()=>({ready:true,reason:null});
 const N=MIGRATION_CONTRACTS.length;
 
-test('migrations 1-21 stay breaking, so this change widens readiness for no shipped version',()=>{
+test('migrations 1-21 stay breaking, and v22 is the first additive migration',()=>{
   assert.ok(MIGRATION_CONTRACTS.slice(0,21).every(contract=>contract.compatibility==='breaking'));
-  // This file models a breaking latest migration with the checked-in
-  // contracts. When the first additive migration lands, the positive cases
-  // in migration-additive-release.test.mjs can use it directly and the cases
-  // here should pin migration 21 instead.
-  assert.equal(MIGRATION_CONTRACTS.at(-1).compatibility,'breaking');
-  assert.equal(compatibility.pendingAdditiveContract(),null);
+  assert.equal(MIGRATION_CONTRACTS.at(-1).compatibility,'additive');
+  assert.equal(MIGRATION_CONTRACTS.at(-1).version,22);
+  assert.equal(compatibility.pendingAdditiveContract()?.version,22);
   assert.equal(compatibility.ADDITIVE_READINESS_LAG,1);
 });
 
-test('code at N with a breaking N is not ready on a real N-1 database; declaring N additive is the only difference',async()=>{
-  const db=await databaseAt(N-1);
-  assert.equal(await inspectDatabaseReadiness(db),false);
-  await assert.rejects(ensureCirclePairingReadiness(db),{code:'CIRCLE_PAIRING_SCHEMA_UNAVAILABLE'});
-  await assert.rejects(ensureSecondaryScheduleReadiness(db),{code:'SECONDARY_SCHEDULE_SCHEMA_UNAVAILABLE'});
+test('code at M with a breaking M is not ready on a real M-1 database; declaring M additive is the only difference',async()=>{
+  // M=21 pins the last breaking migration: code at 22 is already ready on
+  // a 21 database (v22 is additive), so the breaking case is modelled one
+  // version down. The database at 20 is two behind the checked-in code,
+  // so the diagnostics card still reports it as behind.
+  const M=21;
+  const breakingContracts=MIGRATION_CONTRACTS.slice(0,M);
+  const db=await databaseAt(M-1);
+  assert.equal(await inspectDatabaseReadiness(db,{contracts:breakingContracts,manifest:manifestAt(M)}),false);
+  await assert.rejects(ensureCirclePairingReadiness(db,{contracts:breakingContracts}),{code:'CIRCLE_PAIRING_SCHEMA_UNAVAILABLE'});
+  await assert.rejects(ensureSecondaryScheduleReadiness(db,{contracts:breakingContracts}),{code:'SECONDARY_SCHEDULE_SCHEMA_UNAVAILABLE'});
   const card=(await readAdminDiagnostics(db,{env:{},checkReadiness:ready})).cards.readiness;
   assert.deepEqual([card.status,card.category,card.ledger.state,card.ledger.pendingVersion],
     ['failed','ledger_behind','behind',null]);
-  assert.equal(await schemaCapabilityAvailable(db,{version:N,env:{}}),false);
+  assert.equal(await schemaCapabilityAvailable(db,{version:M,env:{}}),false);
   // Pairing publication checks only the v6 core contract and has always
   // accepted any later ledger prefix; no migration since v6 changes its
   // fingerprint, and an additive one cannot (no unique index or trigger on an
   // existing table).
   assert.equal(await pairingSchemaV6Ready(db),true);
 
-  // The same database and code, with N declared additive, is ready.
-  const additive=declaredAdditive(N);
-  assert.equal(await inspectDatabaseReadiness(db,{contracts:additive}),true);
+  // The same database and code, with M declared additive, is ready.
+  // The manifest must match the modelled code (1..M): the checked-in
+  // readiness manifest is at v22, which this database does not have.
+  const additive=declaredAdditive(M).slice(0,M);
+  assert.equal(await inspectDatabaseReadiness(db,{contracts:additive,manifest:manifestAt(M)}),true);
   assert.equal(await ensureCirclePairingReadiness(db,{contracts:additive}),true);
   const summary=await readMigrationLedgerSummary(db,{contracts:additive});
   assert.deepEqual([summary.state,summary.currentVersion,summary.expectedVersion,summary.pendingVersion],
-    ['pending_additive',N-1,N,N]);
+    ['pending_additive',M-1,M,M]);
 });
 
 test('code at N is ready on a database at N either way',async()=>{
@@ -160,7 +166,14 @@ test('the tolerance never reaches two versions behind, even when both pending mi
   await assert.rejects(ensureCirclePairingReadiness(db,{contracts:both}),{code:'CIRCLE_PAIRING_SCHEMA_UNAVAILABLE'});
   assert.equal((await readMigrationLedgerSummary(db,{contracts:both})).state,'behind');
   // An additive N-1 under a breaking N tolerates nothing either.
-  const olderOnly=declaredAdditive(N-1);
+  const olderOnly=Object.freeze(MIGRATION_CONTRACTS.map(contract=>{
+    if(contract.version===N) return Object.freeze({version:contract.version,name:contract.name,
+      checksum:contract.checksum,compatibility:'breaking'});
+    if(contract.version===N-1) return Object.freeze({...contract,compatibility:'additive',
+      introduces:introducedBy(N-1)});
+    return contract;
+  }));
+  validateMigrationContracts(olderOnly);
   assert.equal(await inspectDatabaseReadiness(db,{contracts:olderOnly}),false);
   assert.equal(await inspectDatabaseReadiness(await databaseAt(N-1),{contracts:olderOnly}),false);
 });

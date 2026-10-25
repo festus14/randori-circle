@@ -158,13 +158,15 @@ test('schema readiness fails closed, clears its cache on failure, and shares a U
     code('SECONDARY_SCHEDULE_SCHEMA_UNAVAILABLE')(error)&&error.cause instanceof Error);
 
   const db=await migrated({seeded:false});
-  // A ledger missing the latest migration is not ready even though the schema matches.
+  // A ledger missing its latest two migrations is not ready even though
+  // the schema matches. Missing only the latest (additive) row is the
+  // ready pending-additive state (ID-87).
   const latest=await db.execute(`SELECT MAX(version) AS v FROM schema_migrations`);
   const lagging={execute:async statement=>{
     const sql=sqlOf(statement);
     if(/FROM schema_migrations/i.test(sql)&&!/sqlite_master|pragma/i.test(sql)){
       const result=await db.execute(statement);
-      return {...result,rows:result.rows.filter(row=>Number(row.version)!==Number(latest.rows[0].v))};
+      return {...result,rows:result.rows.filter(row=>Number(row.version)<=Number(latest.rows[0].v)-2)};
     }
     return db.execute(statement);
   }};

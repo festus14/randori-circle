@@ -29,6 +29,11 @@ import {
   inviteRequestNotificationConfiguration,
 } from './_invite-request-notification.js';
 import {
+  createFeedbackSubmittedHandler,
+  FEEDBACK_SUBMITTED_EVENT_TYPE,
+  feedbackNotificationConfiguration,
+} from './_feedback-notification.js';
+import {
   createReminderEmailHandler,
   REMINDER_EMAIL_EVENT_TYPE,
 } from './_reminders.js';
@@ -44,6 +49,10 @@ export const OUTBOX_DELIVERY_TYPES=Object.freeze([
   Object.freeze({type:EMAIL_ACTIVATION_EVENT_TYPE,key:'activation_delivery',label:'activation email'}),
   Object.freeze({type:PASSWORD_RESET_EVENT_TYPE,key:'password_reset_delivery',label:'password reset email'}),
   Object.freeze({type:INVITE_REQUEST_EVENT_TYPE,key:'invite_request_delivery',label:'invite request notification'}),
+  // Issue #353. Always registered so queued feedback notifications drain
+  // (to `suppressed` while FEEDBACK_ENABLED is off) instead of aging into
+  // a backlog alert.
+  Object.freeze({type:FEEDBACK_SUBMITTED_EVENT_TYPE,key:'feedback_delivery',label:'feedback notification'}),
   // Issue #287. Always registered so queued reminders drain (to `suppressed`
   // while REMINDERS_ENABLED is off) instead of aging into a backlog alert.
   Object.freeze({type:REMINDER_EMAIL_EVENT_TYPE,key:'reminder_delivery',label:'reminder email'}),
@@ -71,6 +80,7 @@ function localCaptureSender(captured,type){
         :type===INVITATION_EMAIL_EVENT_TYPE?'invitation'
           :type===PASSWORD_RESET_EVENT_TYPE?'password-reset'
             :type===INVITE_REQUEST_EVENT_TYPE?'invite-request'
+              :type===FEEDBACK_SUBMITTED_EVENT_TYPE?'feedback'
               :type===REMINDER_EMAIL_EVENT_TYPE?`reminder-${String(message.kind).replaceAll('_','-')}`
                 :'activation';
     captured.get(type).push({recipient_email:String(message.to),kind,subject:String(message.subject),
@@ -105,6 +115,7 @@ export async function outboxDeliveryPlan(db,baseUrl,req,{types=null}={}){
   const activationSend=sender(EMAIL_ACTIVATION_EVENT_TYPE);
   const passwordResetSend=sender(PASSWORD_RESET_EVENT_TYPE);
   const inviteRequestSend=sender(INVITE_REQUEST_EVENT_TYPE);
+  const feedbackSend=sender(FEEDBACK_SUBMITTED_EVENT_TYPE);
   const reminderSend=sender(REMINDER_EMAIL_EVENT_TYPE);
   if(include(PAIRING_EMAIL_EVENT_TYPE)&&pairingSend) handlers.set(PAIRING_EMAIL_EVENT_TYPE,
     createPairingEmailHandler({db,baseUrl,send:pairingSend,localRuntime:local}));
@@ -129,6 +140,12 @@ export async function outboxDeliveryPlan(db,baseUrl,req,{types=null}={}){
     &&inviteRequestSend){
     handlers.set(INVITE_REQUEST_EVENT_TYPE,createInviteRequestNotificationHandler({
       db,baseUrl,send:inviteRequestSend,localRuntime:local,
+    }));
+  }
+  if(include(FEEDBACK_SUBMITTED_EVENT_TYPE)&&feedbackNotificationConfiguration({localRuntime:local})
+    &&feedbackSend){
+    handlers.set(FEEDBACK_SUBMITTED_EVENT_TYPE,createFeedbackSubmittedHandler({
+      db,baseUrl,send:feedbackSend,localRuntime:local,
     }));
   }
   if(include(REMINDER_EMAIL_EVENT_TYPE)&&reminderSend){

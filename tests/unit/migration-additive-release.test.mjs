@@ -1,10 +1,8 @@
 // Zero-downtime additive release, end to end on real migrated SQLite (ID-87,
-// #371). The migration contract module is replaced by the checked-in
-// contracts with migration 21 declared 'additive' (it only adds the
-// invite_requests table and its indexes, so the real migration check accepts
-// the declaration). Everything else is the production code: health, circle
-// pairing, schedule and pairing readiness, admin diagnostics, the schema
-// capability check and the migration runner.
+// #371), using the first real additive migration: v22, the feedback tables
+// (#353). Everything is the production code: health, circle pairing,
+// schedule and pairing readiness, admin diagnostics, the schema capability
+// check and the migration runner.
 //
 // Release order: merge (code at N, database at N-1, app ready) -> protected
 // cutover applies N (app ready throughout) -> the feature flag goes on, and
@@ -13,22 +11,14 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, mock, test } from 'node:test';
+import { afterEach, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
 
 import { MIGRATION_PLANS } from '../../db/migration-plan.js';
 
-const realContract=await import('../../db/migration-contract.js?additive-release=real');
-const V21=MIGRATION_PLANS[20];
-const ADDITIVE_CONTRACTS=Object.freeze(realContract.MIGRATION_CONTRACTS.map(contract=>contract.version===21
-  ?Object.freeze({
-    ...contract,
-    compatibility:'additive',
-    introduces:Object.freeze({tables:[...V21.tables],indexes:[...V21.indexes],triggers:[...V21.triggers]}),
-  })
-  :contract));
-mock.module('../../db/migration-contract.js',{exports:{...realContract,MIGRATION_CONTRACTS:ADDITIVE_CONTRACTS}});
+const { MIGRATION_CONTRACTS, validateMigrationContracts }=await import('../../db/migration-contract.js');
+const V22=MIGRATION_PLANS[21];
 
 const { readAdminDiagnostics }=await import('../../api/_admin-diagnostics.js');
 const { ensureCirclePairingReadiness }=await import('../../api/_circle-pairing.js');
@@ -50,7 +40,7 @@ const {
 }=await import('../../db/migration-runner.js');
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
-const N=21;
+const N=22;
 const resources=[];
 
 afterEach(async()=>{
@@ -85,11 +75,11 @@ async function readinessCard(db){
 }
 
 test('the additive declaration used here passes the real migration check',()=>{
-  assert.equal(realContract.validateMigrationContracts(ADDITIVE_CONTRACTS),true);
-  assert.deepEqual(inspectMigrationCompatibility({migrations:EXECUTABLE_MIGRATIONS,contracts:ADDITIVE_CONTRACTS}),[]);
+  assert.equal(validateMigrationContracts(MIGRATION_CONTRACTS),true);
+  assert.deepEqual(inspectMigrationCompatibility({migrations:EXECUTABLE_MIGRATIONS,contracts:MIGRATION_CONTRACTS}),[]);
   assert.equal(pendingAdditiveContract()?.version,N,'production modules see the declaration');
-  assert.deepEqual(ADDITIVE_CONTRACTS[N-1].introduces,
-    {tables:['invite_requests'],indexes:[...V21.indexes],triggers:[]});
+  assert.deepEqual(MIGRATION_CONTRACTS[N-1].introduces,
+    {tables:['feedback_items','feedback_votes','feedback_events'],indexes:[...V22.indexes],triggers:[]});
 });
 
 test('code at N stays ready on every surface while the database moves from N-1 to N',async()=>{
@@ -140,11 +130,11 @@ test('one additive migration behind is still judged exactly',async()=>{
   assert.equal(await inspectDatabaseReadiness(db),true);
 
   // A half-created introduced table is drift, and grants no capability.
-  const create=V21.operations.find(operation=>operation.operation==='ensure-table').sql;
+  const create=V22.operations.find(operation=>operation.operation==='ensure-table').sql;
   await db.execute(create);
   assert.equal(await inspectDatabaseReadiness(db),false);
   assert.equal(await schemaCapabilityAvailable(db,{version:N,env:{}}),false);
-  await db.execute('DROP TABLE invite_requests');
+  await db.execute('DROP TABLE feedback_items');
   assert.equal(await inspectDatabaseReadiness(db),true);
 
   // Drift in the existing schema still blocks.
