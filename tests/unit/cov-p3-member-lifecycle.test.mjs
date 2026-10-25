@@ -27,6 +27,19 @@ function sealCursor(payload,secret=SECRET){
   return `r1.${Buffer.concat([nonce,cipher.getAuthTag(),body]).toString('base64url')}`;
 }
 
+// Flips every bit of the last ciphertext byte, so the result always differs
+// from the sealed cursor. For this test's payload, the sealed cursor is
+// 67 bytes, so 67 mod 3 = 1: the last two base64url chars encode only the
+// final ciphertext byte, and `AA` means that byte is 0x00 — probability
+// 1/256. The last char carries only 2 data bits plus 4 fixed padding bits,
+// so char-level tampering is length-dependent and fragile; flip the byte
+// itself instead.
+function tamperCursor(cursor){
+  const raw=Buffer.from(cursor.slice('r1.'.length),'base64url');
+  raw[raw.length-1]^=0xff;
+  return `r1.${raw.toString('base64url')}`;
+}
+
 function rosterDb({scope=[{circle_id:20}],max=[{user_id:9}],page=[]}={}){
   const statements=[];
   const responses=[{rows:scope},{rows:max},{rows:page}];
@@ -168,7 +181,7 @@ test('tampered, malformed, and wrongly shaped cursors are rejected opaquely',asy
     `r1.${'A'.repeat(700)}`,
     `r1.${'B'.repeat(39)}`,
     `r1.${'A'.repeat(36)}`,
-    sealCursor(valid).slice(0,-2)+'AA',
+    tamperCursor(sealCursor(valid)),
     sealCursor([1,2]),
     sealCursor({...valid,extra:true}),
     sealCursor({...valid,v:2}),
