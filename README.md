@@ -175,7 +175,7 @@ matching template.
 
 ## Security baseline
 
-- Sessions use 12-hour `Secure`, `HttpOnly`, `SameSite=Lax` cookies. Each is
+- Sessions use 12-hour `Secure` (in production / over HTTPS), `HttpOnly`, `SameSite=Lax` cookies. Each is
   backed by a hashed, revocable database row, with at most eight live sessions
   per account.
 - Google sign-in uses state, PKCE, a nonce and a stable provider subject.
