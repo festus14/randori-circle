@@ -18,8 +18,9 @@ The `deployability` workflow is intentionally fast and provider-neutral. It has 
 - the package and CI agree on the supported Node.js 24 runtime;
 - every grouped API rewrite targets a checked-in handler;
 - the SPA fallback is last, so it cannot shadow API routes;
-- API cache-safety and minimum-safe browser security-header values remain intact; and
-- every scheduled job has a valid five-field schedule and a matching route.
+- API cache-safety and minimum-safe browser security-header values remain intact;
+- every scheduled job has a valid five-field schedule and a matching route; and
+- every migration declared additive really is additive, so merged code may run one migration ahead of the database (ID-87).
 
 It also pins the five-minute outbox worker and its hourly delivery-health watchdog:
 the worker retains its protected two-minute deadline, while the watchdog keeps

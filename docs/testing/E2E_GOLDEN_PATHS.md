@@ -76,6 +76,7 @@ Playwright worker process and never through a test-only runtime flag:
 | Real execution provider (Piston / Vercel Sandbox) | External network, nondeterministic | `npm run smoke:execution` canary |
 | Vercel edge routing and the cron scheduler trigger | Only exists on Vercel | `check:deployability`, `production-smoke` workflow, cron route exercised directly (`/api/cron/outbox`, weekly route in `secondary-pairing-email-runtime.spec.ts`) |
 | Video / WebRTC media between two browsers | Needs real media devices and TURN | Not a golden path; mocked archive/media cleanup specs |
+| Zero-downtime additive release (code one additive migration ahead of the database, ID-87) | Operational, not a member journey; the real runtime always migrates to the latest checked-in version, and no checked-in migration is additive yet | `tests/unit/migration-additive-release.test.mjs` (real migrated SQLite moving from N-1 to N: health, circle-pairing, schedule and pairing readiness, admin diagnostics, schema capability), `tests/unit/migration-release-policy.test.mjs` (breaking N, code behind the database, two versions behind, mutation tests), `tests/unit/migration-compatibility-check.test.mjs` |
 
 ## Flake resistance
 

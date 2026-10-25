@@ -4422,6 +4422,83 @@ discloses activity, and no signed-out page shows them). Dropping only
 
 **Recovery.** Revert the commit; the totals become public again.
 
+## ID-87: Release additive migrations with no downtime (expand, migrate, use)
+
+Status: implemented; no flag, no migration. Issue #371, the prerequisite for
+#353, #372, #374 and every later schema change.
+
+**Context.** Health, `/api/init`, circle-pairing and schedule readiness
+required the ledger to equal the code's latest version exactly. The protected
+cutover has to run from a `main` commit that already contains the migration,
+so every migration merge deployed code at N against a database at N-1:
+readiness failed and pairing endpoints returned 503 for the 20-40 minutes of
+rehearsal, status and apply.
+
+**Decision.**
+- Each contract in `db/migration-contract.js` declares
+  `compatibility: 'additive' | 'breaking'`. An additive contract also lists
+  the tables, indexes and triggers it `introduces`. Migrations 1-21 stay
+  `breaking`: the code that shipped with them assumes their schema, so this
+  change widens readiness for no shipped version and changes nothing on merge.
+  Contract fields are not part of any checksum; every existing checksum is
+  unchanged.
+- Readiness (`db/migration-compatibility.js`): code at N is ready when the
+  ledger is at N, or at N-1 when migration N is additive. In the second case
+  the schema must match N-1 exactly: the code's manifest minus what N
+  introduces, so a half-created new table is drift. Two versions behind, a
+  breaking migration still to apply, and a ledger newer than the code stay
+  not ready. Every other rule is unchanged (each applied row's checksum and
+  metadata, key control, membership). Health readiness, `/api/init`,
+  circle-pairing and schedule readiness use it; readiness now reads the
+  ledger before inspecting the schema, since the version picks the manifest.
+  Pairing publication readiness checks only the v6 core contract, already
+  accepted any later ledger prefix, and cannot be changed by an additive
+  migration.
+- Admin diagnostics reports `pending_additive`: the readiness card is
+  *Degraded* with "pending additive migration vN" while the app stays ready.
+- The migration check (`db/migration-compatibility-check.js`) proves an
+  additive migration is additive: only new tables; new indexes on new tables,
+  or non-unique ones on existing tables; triggers and seed rows on new tables
+  only; `introduces` exactly matching. It refuses DROP, ALTER, RENAME, UPDATE,
+  DELETE, REPLACE and PRAGMA statements, table redefinition, a unique index or
+  trigger on an existing table, triggers writing existing tables, and unknown
+  operations, after stripping comments and literals. `ALTER TABLE ... ADD
+  COLUMN` has no runner operation yet and is refused. The executable
+  migrations assert it when they load, so no migration tool can apply a
+  mislabelled migration, and `npm run check:deployability` reports it.
+- Feature gating (`api/_schema-capability.js`): code that uses an additive
+  migration's tables checks the exact ledger row for N, cached per database
+  (30 s while pending, 5 min once present, errors uncached).
+  `schemaFeatureAvailable` adds the feature flag for request paths; account
+  deletion and retention use the schema check alone so stored rows are still
+  deleted with the flag off.
+- Release order and rollback are in the production migration runbook: merge
+  (ready on N-1), rehearsal, status and apply N (ready on N), then flag on.
+  Roll back by turning the flag off, then PITR only if needed; never roll code
+  back below the database. Breaking migrations keep the strict behaviour.
+
+**Alternatives.** Merging migrations without the code that uses them and
+shipping that code in a later PR (two reviews and two deploys per change, and
+nothing stops the code from merging first). Tolerating any lag (code could run
+against a schema several changes old). Marking v21 additive, since its SQL is
+(the code that shipped with it does not check for its table). Inferring
+compatibility from SQL alone (the declaration is the author's promise that the
+code gates the new tables; the check only proves the SQL half).
+
+**Tests.** On real migrated SQLite: code at N with N additive stays ready on
+every surface while the database moves from N-1 to N; a breaking N is not
+ready at N-1; code at N-1 is not ready at N; two versions behind is not ready;
+drift and tampered ledger rows still block at N-1. Mutation tests load copies
+of the readiness module with the tolerance widened (to N-2, to breaking
+migrations, to an older additive migration, or with the schema checks
+dropped) and require every copy to fail the policy. The check rejects
+destructive SQL in many forms, and a mislabelled real migration (v20) stops
+the migration tooling from loading.
+
+**Rollout.** Takes effect on merge and changes nothing until the first
+additive migration (#353's v22) lands. No workflow file, digest pin or
+production setting changes.
+
 ## ID-88: Force zod to `^4.6.6` via npm overrides to fix GHSA-mrhx-c7xc-m3w5
 
 Status: implemented; no flag, no migration. Security fix unblocking CI

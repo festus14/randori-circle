@@ -66,7 +66,7 @@ test('migration contracts reject empty, gapped, unnamed and badly fingerprinted 
   assert.throws(()=>validateMigrationContracts([{version:1, name:'one'}]), /1 has an invalid checksum/);
   assert.throws(()=>validateMigrationContracts([{version:1, name:'one', checksum:'A'.repeat(64)}]), /invalid checksum/);
   assert.throws(()=>validateMigrationContracts([{version:1, name:'one', checksum:'a'.repeat(63)}]), /invalid checksum/);
-  assert.equal(validateMigrationContracts([{version:1, name:'one', checksum:HEX}]), true);
+  assert.equal(validateMigrationContracts([{version:1, name:'one', checksum:HEX, compatibility:'breaking'}]), true);
 });
 
 test('ledger rows require a non-negative integer duration and a known disposition before any write', async ()=>{

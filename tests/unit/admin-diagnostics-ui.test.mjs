@@ -311,6 +311,11 @@ test('readiness card summarises the check and every ledger state', () => {
   assert.deepEqual(lines({ state: 'behind', currentVersion: 21 }, { category: 'ledger_behind' }),
     ['The readiness check fails.', 'Migration ledger: v21 of v23; 2 migrations pending.']);
   assert.equal(lines({ state: 'behind', currentVersion: 22 })[1], 'Migration ledger: v22 of v23; 1 migration pending.');
+  // ID-87: one additive migration behind, the app stays ready and degraded.
+  const pending = cardView('readiness', { ...card, status: 'degraded', category: 'ledger_pending_additive',
+    ledger: { ...card.ledger, latest: null, state: 'pending_additive', currentVersion: 22, pendingVersion: 23 } });
+  assert.deepEqual([pending.label, pending.tone, pending.lines], ['Degraded', 'warning', ['The readiness check passes.',
+    'Migration ledger: v22 of v23; pending additive migration v23. The app stays ready until the cutover applies it.']]);
   assert.equal(lines({ state: 'ahead', currentVersion: 24 })[1], 'The database schema (v24) is newer than this app (v23).');
   assert.equal(lines({ state: 'missing' })[1], 'The migration ledger is missing.');
   assert.equal(lines({ state: 'invalid' })[1], 'The migration ledger does not match the reviewed manifest.');

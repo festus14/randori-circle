@@ -11,7 +11,8 @@
 // administrator can read it: an existing account with is_admin=1, not a demo
 // account, with a live session (and, when circle membership is enforced, an
 // active membership). Ordinary circle owners are refused.
-import { LATEST_MIGRATION_VERSION, MIGRATION_CONTRACTS } from '../db/migration-contract.js';
+import { MIGRATION_CONTRACTS } from '../db/migration-contract.js';
+import { LEDGER_READINESS_STATES, ledgerReadiness } from '../db/migration-compatibility.js';
 import {
   migrationLedgerExists,
   readMigrationLedger,
@@ -470,19 +471,27 @@ async function defaultReadiness(db,env){
   }
 }
 
-export async function readMigrationLedgerSummary(db){
+// `pending_additive` (ID-87): the ledger is one version behind and that
+// version is additive, so the app is still ready; the protected cutover for
+// `pendingVersion` has not run yet.
+export async function readMigrationLedgerSummary(db,{contracts=MIGRATION_CONTRACTS}={}){
+  const expectedVersion=contracts.at(-1)?.version||0;
   if(!await migrationLedgerExists(db)){
-    return Object.freeze({state:'missing',currentVersion:0,expectedVersion:LATEST_MIGRATION_VERSION,
+    return Object.freeze({state:'missing',currentVersion:0,expectedVersion,pendingVersion:null,
       appliedCount:0,latest:null,recent:Object.freeze([])});
   }
-  const rows=await readMigrationLedger(db,{limit:Math.min(1000,MIGRATION_CONTRACTS.length+1)});
+  const rows=await readMigrationLedger(db,{limit:Math.min(1000,contracts.length+1)});
   const rawVersions=rows.map(row=>Number(row.version)).filter(Number.isSafeInteger);
   const rawCurrent=rawVersions.length?Math.max(...rawVersions):0;
   let state;
   let normalized=null;
+  let pendingVersion=null;
   try{
-    normalized=validateMigrationLedger(rows,MIGRATION_CONTRACTS);
-    state=normalized.currentVersion===LATEST_MIGRATION_VERSION?'current':'behind';
+    normalized=validateMigrationLedger(rows,contracts);
+    const readiness=ledgerReadiness(normalized,{contracts});
+    state=readiness.state===LEDGER_READINESS_STATES.CURRENT?'current'
+      :readiness.state===LEDGER_READINESS_STATES.PENDING_ADDITIVE?'pending_additive':'behind';
+    pendingVersion=readiness.pendingVersion;
   }catch(error){
     state=Number.isSafeInteger(error?.details?.databaseVersion)?'ahead':'invalid';
   }
@@ -493,7 +502,8 @@ export async function readMigrationLedgerSummary(db){
   return Object.freeze({
     state,
     currentVersion:normalized?normalized.currentVersion:rawCurrent,
-    expectedVersion:LATEST_MIGRATION_VERSION,
+    expectedVersion,
+    pendingVersion,
     appliedCount:rows.length,
     latest:recent[0]||null,
     recent:Object.freeze(recent),
@@ -507,8 +517,10 @@ async function readReadinessCard(db,nowMs,{env,checkReadiness}){
   ]);
   let status='healthy';
   let category=null;
-  if(ledger.state!=='current'){ status='failed'; category=`ledger_${ledger.state}`; }
+  const ledgerReady=ledger.state==='current'||ledger.state==='pending_additive';
+  if(!ledgerReady){ status='failed'; category=`ledger_${ledger.state}`; }
   else if(!readiness.ready){ status='failed'; category=readiness.reason||'not_ready'; }
+  else if(ledger.state==='pending_additive'){ status='degraded'; category='ledger_pending_additive'; }
   return Object.freeze({
     status,
     category,
