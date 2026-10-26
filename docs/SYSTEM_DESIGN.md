@@ -321,9 +321,16 @@ complete definition.
   completed rollout: singleton `circle_membership_rollout` row with
   `registrations_closed = 1`, exactly one non-archived primary
   circle, and every non-demo account carrying valid provenance —
-  a `membership.backfilled` audit event or an `invitation.accepted`
-  audit event (`membership-readiness.js`,
-  `inspectCompletedMembershipRollout`). Steady-state readiness is
+  a `membership.backfilled` audit event, an `invitation.accepted`
+  audit event, or an `activation.verified` audit event
+  (`db/membership-readiness.js`,
+  `inspectCompletedMembershipRollout`). The activation provenance
+  covers password sign-up through email activation (ID-84 / #349):
+  a used, unrevoked invitation, its consumed
+  `auth_email_activations` row in the same circle, and dedupe key
+  `activation-verified:<activation id>`; see the
+  [readiness-503 runbook](runbooks/readiness-503.md) for the
+  activation-provenance case. Steady-state readiness is
   deliberately weaker: a removed or inactive member may keep an
   account and historical audit trail without taking the product
   offline; current active ownership, orphan safety and canonical
@@ -701,12 +708,15 @@ each step names the route, the table and the doc with the detail.
 2. **Join.** Invitee opens the link; `GET /api/invitations/:id`
    prepares a claim bound to that invitation
    ([AUTH_CLAIM_BINDING.md](AUTH_CLAIM_BINDING.md)). They sign up
-   with Google (OIDC, §3.3) or email + password: signup writes
-   `auth_email_activations`, sends a verification link, and on
-   verify creates the `auth_accounts` row and a
-   `circle_memberships` row, plus a `circle_audit_events`
-   `invitation.accepted` row. Open signup is gated: account
-   creation only in the tab that prepared a live invitation
+   with Google (OIDC, §3.3), which records a `circle_audit_events`
+   `invitation.accepted` row, or with email + password through
+   email activation: signup writes `auth_email_activations`, sends
+   a verification link, and on verify creates the `auth_accounts`
+   row and a `circle_memberships` row, plus a
+   `circle_audit_events` `activation.verified` row — not an
+   `invitation.accepted` row (ID-84 / #349; see §4.3). Open signup
+   is gated: account creation only in the tab that prepared a
+   live invitation
    ([INVITE_GATED_SIGNUP.md](INVITE_GATED_SIGNUP.md)).
 3. **Availability.** Member sets "Available" (or "Skip this cycle")
    for the upcoming cycle → `pairing_cycle_availability`
@@ -781,7 +791,11 @@ sequenceDiagram
     Invitee->>SPA: Sign up (Google or password + activation link)
     SPA->>Auth: Signup / activation-verify with claim
     Auth->>DB: Create auth_accounts + circle_memberships
-    Auth->>DB: INSERT circle_audit_events invitation.accepted
+    alt Google sign-up
+        Auth->>DB: INSERT circle_audit_events invitation.accepted
+    else Password sign-up through email activation (ID-84 / #349)
+        Auth->>DB: INSERT circle_audit_events activation.verified
+    end
     Auth-->>SPA: Session cookie
 ```
 
