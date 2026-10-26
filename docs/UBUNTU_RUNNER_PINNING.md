@@ -41,14 +41,22 @@ and `scripts/check-backup-controls.mjs` were updated to match the new bytes.
 
 ## Canary
 
-`ubuntu-26-canary.yml` runs on pull requests to `main`, every Monday at 06:23
-UTC, and on manual dispatch. Its permissions are `contents: read`, and it has no
+`ubuntu-26-canary.yml` runs on pull requests to `main`, on pushes to `main`,
+every Monday at 06:23 UTC, and on manual dispatch. Its permissions are
+`contents: read`, and it has no
 secrets, no environment, no production calls, and no cron dispatch. It repeats
 the `e2e` gate (dependency install, production audit, catalogue validation,
 runtime-DDL, syntax, migrations, coverage, Chromium) and first logs the OS
 release, kernel, Node/npm, ICU/OpenSSL, timezone/locale, libSQL's SQLite
 version, glibc, and font count. You can compare that log line by line with an
 `ubuntu-24.04` run.
+
+A merge to `main` does not produce two canary runs: the `pull_request`
+trigger fires only on opened / synchronize / reopened (not on merge /
+close), and its run is on the PR's preview merge ref, while the push run
+is on `refs/heads/main`. Push / schedule / dispatch runs on `main` share
+one concurrency group (`cancel-in-progress: true`), so a newer run on
+`main` cancels an in-flight one: runs never overlap and are not queued.
 
 The canary runs in parallel with the required checks and is not in branch
 protection, so the time to merge does not grow.
