@@ -29,8 +29,8 @@ own data:
 - `messages` — only messages the member sent.
 - `code_runs` — the member's own code runs, solo and in pair rooms.
 - `notification_preferences`, `custom_questions` (authored by the member),
-  `invitations` (sent, accepted, and received — pending invitations
-  addressed to the member, matched by email hash),
+  `invitations` (sent, accepted, and received — pending, unexpired
+  invitations addressed to the member, matched by email hash),
   `invite_requests` (the member's own pending requests).
 - `ai` — AI sessions the member started, feedback on those sessions, AI
   consent, and per-month AI usage and reservations.
@@ -60,7 +60,10 @@ Schedule proposals are projected, not copied: stored
 `proposed_by` id is another member's id whenever the partner proposed the
 time. The export emits only `{instant, proposed_by_me}` for each entry
 (`proposed_by_me: null` for a legacy entry, whose proposer is unknown),
-so no raw partner id reaches the archive. The same audit found no other
+so no raw partner id reaches the archive. A non-array
+`proposed_times` value is normalised to a single
+`{instant, proposed_by_me: null}` entry, with the instant kept only
+when the stored value was a bare string (otherwise `null`). The same audit found no other
 raw partner numeric id in the export: the remaining JSON blobs are the
 member's own rows' payloads (attestation snapshots in code runs hold
 only week/pair-group ids, hashes and signatures).
@@ -84,6 +87,10 @@ The excluded classes are:
   (their email is scrubbed on decision).
 - Used or revoked invitations addressed to the member: a used one is in
   `invitations.accepted`; a revoked one is not exported.
+- Expired invitations addressed to the member: the received query
+  filters on `datetime(expires_at) > datetime('now')`, so an
+  expired-but-unused invitation is not exported as `pending` (it is
+  excluded, not relabelled `expired`).
 
 A future inventory table with no explicit coverage entry is excluded at
 runtime ("not yet reviewed") and `tests/unit/data-export.test.mjs`

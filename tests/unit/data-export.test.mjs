@@ -100,10 +100,15 @@ async function fixture(){
       VALUES ('33333333-3333-4333-8333-333333333333',1,'${HEX('5')}','${HEX('6')}',3,'2026-01-01T00:00:00.000Z','2026-01-08T00:00:00.000Z',NULL,NULL,NULL)`,
     // Pending invitation addressed to the member (hash of their email),
     // one addressed to the partner (must not appear in the member's
-    // export), one revoked, and one used by the member (accepted, not
-    // received).
+    // export), one revoked, one used by the member (accepted, not
+    // received), and one expired-but-unused addressed to the member
+    // (excluded by the received expiry filter, not labelled pending).
+    // The pending invitation's expiry is far in the future so the
+    // expiry filter keeps it regardless of when the test runs.
     `INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by,revoked_at)
-      VALUES ('66666666-6666-4666-8666-666666666666',1,'${HEX('c')}','${hashInvitationEmail('member@example.test')}',1,'2026-01-04T00:00:00.000Z','2026-01-11T00:00:00.000Z',NULL,NULL,NULL)`,
+      VALUES ('66666666-6666-4666-8666-666666666666',1,'${HEX('c')}','${hashInvitationEmail('member@example.test')}',1,'2026-01-04T00:00:00.000Z','2099-01-11T00:00:00.000Z',NULL,NULL,NULL)`,
+    `INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by,revoked_at)
+      VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',1,'${HEX('b')}','${hashInvitationEmail('member@example.test')}',1,'2026-01-04T00:00:00.000Z','2020-01-01T00:00:00.000Z',NULL,NULL,NULL)`,
     `INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by,revoked_at)
       VALUES ('77777777-7777-4777-8777-777777777777',1,'${HEX('d')}','${hashInvitationEmail('partner@example.test')}',1,'2026-01-04T00:00:00.000Z','2026-01-11T00:00:00.000Z',NULL,NULL,NULL)`,
     `INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by,revoked_at)
@@ -277,8 +282,9 @@ test('the export holds the member\'s own data from every exported section',async
   assert.equal(archive.invitations.sent.length,1);
   assert.equal(archive.invitations.accepted.length,2);
   assert.equal(archive.invitations.accepted[0].created_by,'Owner');
-  // Only the pending invitation addressed to the member is received:
-  // the partner's, the revoked one and the already-accepted one are not.
+  // Only the pending, unexpired invitation addressed to the member is received:
+  // the partner's, the revoked one, the already-accepted one and the
+  // expired-but-unused one are not.
   assert.equal(archive.invitations.received.length,1);
   assert.equal(archive.invitations.received[0].invitation_id,'66666666-6666-4666-8666-666666666666');
   assert.equal(archive.invitations.received[0].created_by,'Owner');
@@ -305,6 +311,33 @@ test('the export holds the member\'s own data from every exported section',async
   assert.equal(archive.counts.messages,1);
   assert.equal(archive.counts.code_runs,2);
   assert.equal(archive.counts.feedback_items,0);
+});
+
+test('expired-but-unused invitations are excluded from received, not labelled pending',async()=>{
+  const db=await fixture();
+  const archive=await buildDataExport(db,{userId:2});
+  assert.equal(archive.invitations.received.length,1);
+  assert.ok(!archive.invitations.received.some(row=>row.invitation_id==='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'));
+  assert.ok(!JSON.stringify(archive.invitations.received).includes('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'));
+});
+
+test('non-array proposed_times normalises to a single projected entry',async()=>{
+  const cases=[
+    // A bare instant, with or without JSON string quoting.
+    ['2026-01-09T10:00:00.000Z',{instant:'2026-01-09T10:00:00.000Z',proposed_by_me:null}],
+    ['"2026-01-09T10:00:00.000Z"',{instant:'2026-01-09T10:00:00.000Z',proposed_by_me:null}],
+    // Anything else collapses to a null instant, never the raw value.
+    ['123',{instant:null,proposed_by_me:null}],
+    ['null',{instant:null,proposed_by_me:null}],
+    // An object without proposed_by is not projected from its instant.
+    ['{"instant":"2026-01-09T10:00:00.000Z"}',{instant:null,proposed_by_me:null}],
+  ];
+  for(const [stored,expected] of cases){
+    const db=await fixture();
+    await db.execute({sql:`UPDATE pair_schedules SET proposed_times=? WHERE id=1`,args:[stored]});
+    const archive=await buildDataExport(db,{userId:2});
+    assert.deepEqual(archive.schedules.primary[0].proposed_times,expected,stored);
+  }
 });
 
 test('no other member\'s private data and no secret appears anywhere in the archive',async()=>{

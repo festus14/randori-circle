@@ -169,7 +169,12 @@ function parsedJson(value){
  * id is another member's id whenever the partner proposed the time, so it
  * must never reach the archive. The projection keeps only the instant and
  * whether the requesting member proposed it; a legacy entry, whose
- * proposer is unknown, gets proposed_by_me:null. Every other JSON blob
+ * proposer is unknown, gets proposed_by_me:null. A non-array
+ * proposed_times value is normalised to a single projected entry —
+ * {instant, proposed_by_me:null} — with the instant kept only when the
+ * stored value was a bare string, otherwise null, so no unprojected
+ * value (null, a number, or an object without proposed_by) leaks
+ * through. Every other JSON blob
  * the export carries was audited for the same shape and carries no
  * partner numeric id: session-run attestation snapshots hold only
  * week/pair-group ids, hashes and signatures; ai_feedback.feedback_json
@@ -183,7 +188,7 @@ function projectProposedTimes(value,userId){
       return Object.freeze({instant:typeof parsed.instant==='string'?parsed.instant:null,
         proposed_by_me:Number.isSafeInteger(proposedBy)?proposedBy===userId:null});
     }
-    return parsed;
+    return Object.freeze({instant:typeof parsed==='string'?parsed:null,proposed_by_me:null});
   }
   return Object.freeze(parsed.map(entry=>{
     if(typeof entry==='string') return Object.freeze({instant:entry,proposed_by_me:null});
@@ -811,9 +816,12 @@ export async function buildDataExport(db,{userId}={}){
 
   // Pending invitations addressed to this member: circle_invitations
   // stores only the email hash, so match it with the same
-  // hashInvitationEmail the invitation flow uses. Used, revoked and
-  // already-accepted invitations are not "pending" — an accepted one is
-  // in `accepted` above. No token or email hash is exported.
+  // hashInvitationEmail the invitation flow uses. Used, revoked,
+  // already-accepted and expired invitations are not "pending" — an
+  // accepted one is in `accepted` above, and expiry is filtered here
+  // (datetime(expires_at) > datetime('now')) rather than relabelling
+  // expired rows, so an expired-but-unused invitation never appears
+  // as pending. No token or email hash is exported.
   const receivedEmailHash=hashInvitationEmail(email);
   const {rows:receivedRows,truncated:receivedTruncated}=receivedEmailHash
     ?await cappedQuery(db,
@@ -825,6 +833,7 @@ export async function buildDataExport(db,{userId}={}){
       LEFT JOIN auth_accounts creator ON creator.id=invitation.created_by
       WHERE invitation.email_hash=? AND invitation.used_at IS NULL
         AND invitation.used_by IS NULL AND invitation.revoked_at IS NULL
+        AND datetime(invitation.expires_at)>datetime('now')
       ORDER BY invitation.created_at DESC LIMIT ?`,
       [receivedEmailHash],DATA_EXPORT_SECTION_LIMITS.invitationsReceived)
     :{rows:[],truncated:false};
