@@ -351,52 +351,16 @@ countdowns and stats.
 
 ## 6. Design tokens
 
-Tokens are CSS custom properties in `:root` (dark) and `:root.light`. The
-existing canonical `--color-*` names stay, because
-`tests/unit/ui-shell-contract.test.mjs` asserts them. New names are added, and
-legacy aliases (`--bg`, `--ink-*`, `--accent`, `--ok`…) keep resolving to them
-until WP-Z removes the aliases.
+Tokens are CSS custom properties in `:root` (dark) and `:root.light`.
+The canonical `--color-*` names stay, because
+`tests/unit/ui-shell-contract.test.mjs` asserts them.
 
-```css
-:root{
-  /* color: the existing contract names keep their meaning; values come from Option A */
-  --color-canvas:#0B0D12; --color-surface:#12151C; --color-surface-raised:#1A1E27;
-  --color-surface-active:#222734; --color-border:#2A3040; --color-control-border:#5A6378;
-  --color-text:#EEF0F6; --color-text-secondary:#B4BBCB; --color-text-muted:#8C95A8;
-  --color-action:#8B97FF; --color-action-hover:#A1ABFF; --color-on-action:#0B0D12;
-  --color-success:#4ADE9B; --color-warning:#F5C451; --color-danger:#FF7A85; --color-info:#6CC4FF;
-  --color-focus:#A5B0FF;
-  --color-success-surface:#14301F; --color-warning-surface:#33290F;
-  --color-danger-surface:#3A1A20; --color-info-surface:#10263A;
-  --color-scrim:rgb(5 6 10 / .64);
-
-  /* spacing: 4 px base, 8 pt rhythm */
-  --space-0:0; --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
-  --space-5:20px; --space-6:24px; --space-8:32px; --space-10:40px; --space-12:48px; --space-16:64px;
-
-  /* radius */
-  --radius-xs:6px; --radius-sm:8px; --radius-md:12px; --radius-lg:16px; --radius-xl:24px; --radius-full:999px;
-
-  /* elevation (dark relies on surface steps plus a subtle shadow) */
-  --shadow-1:0 1px 2px rgb(0 0 0 / .30);
-  --shadow-2:0 4px 12px rgb(0 0 0 / .32), 0 1px 2px rgb(0 0 0 / .24);
-  --shadow-3:0 16px 40px rgb(0 0 0 / .45), 0 2px 6px rgb(0 0 0 / .25);
-
-  /* z-index scale (replaces the ad-hoc 40/50/55/70/80/85/90/120) */
-  --z-base:0; --z-sticky:100; --z-dropdown:200; --z-banner:300; --z-overlay:400;
-  --z-modal:500; --z-toast:600; --z-skip-link:700;
-
-  /* motion */
-  --ease-out:cubic-bezier(.2,.8,.2,1); --ease-in-out:cubic-bezier(.4,0,.2,1);
-  --dur-1:120ms; --dur-2:180ms; --dur-3:260ms;
-
-  /* layout */
-  --content-max:1200px; --reading-max:680px; --sidebar-w:240px; --topbar-h:56px;
-  --tap-min:44px;
-}
-```
-
-Rules:
+The authoritative token list — every remaining token, its dark/light
+values, its use counts, the 31 legacy aliases WP-Z (#400) removed and
+the 6 proven-dead canonicals it deleted — is
+[TOKENS.md](TOKENS.md). Do not duplicate the list here; it drifted
+once already (the copy below used to carry the aliases and the dead
+tokens). The rules still apply:
 
 - Color comes only from tokens. Inline `style="color:#…"`, `background:#c8f6a0`
   and hard-coded `#0f0f10` must go. There are 388 inline `style=`

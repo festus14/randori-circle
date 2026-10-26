@@ -1022,7 +1022,7 @@ async function handleWeeks(req,res){
     const person=id=>idTo.get(Number(id))||{name:`Member ${Number(id)}`,color:'#999'};
     const pairs=publication.pairs.map(pair=>{
       const a=person(pair.aId);
-      const b=pair.isAI?{name:'Solo practice',color:'var(--accent)'}:person(pair.bId);
+      const b=pair.isAI?{name:'Solo practice',color:'var(--color-action)'}:person(pair.bId);
       return {
         pg_id:pair.groupId,week_id:publication.weekId,a_id:pair.aId,b_id:pair.bId,c_id:null,
         a_name:a.name,b_name:b.name,c_name:null,a_color:a.color,b_color:b.color,c_color:null,

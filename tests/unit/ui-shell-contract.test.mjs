@@ -23,15 +23,30 @@ test('light and dark themes define and consume semantic status and control token
       );
     }
   }
-  assert.match(html, /--bad:var\(--color-danger\)/);
-  assert.match(html, /--ink-3:var\(--color-text-muted\)/);
+  // WP-Z (#400): the 31 legacy aliases are gone — no alias definition and
+  // no alias var() use may come back — and the six proven-dead canonicals
+  // (--ease-in-out, --space-0, --space-16, --z-banner, --z-base,
+  // --z-overlay) stay deleted. Canonical tokens only.
+  for (const alias of [
+    'bg', 'bg-2', 'bg-3', 'bg-4', 'card', 'card-2', 'border', 'control-border',
+    'line', 'line-strong', 'ink', 'ink-2', 'ink-3', 'accent', 'accent-2',
+    'accent-3', 'accent-4', 'ok', 'warn', 'bad', 'info', 'focus',
+    'ok-surface', 'warn-surface', 'bad-surface', 'info-surface', 'radius',
+    'shadow', 'shadow-soft', 'max', 'gap',
+  ]) {
+    assert.doesNotMatch(html, new RegExp(`--${alias}:`), `--${alias} must not be defined`);
+    assert.doesNotMatch(html, new RegExp(`var\\(--${alias}[\\s,)]`), `--${alias} must not be used`);
+  }
+  for (const dead of ['ease-in-out', 'space-0', 'space-16', 'z-banner', 'z-base', 'z-overlay']) {
+    assert.doesNotMatch(html, new RegExp(`--${dead}:`), `--${dead} must stay deleted`);
+  }
   assert.doesNotMatch(html, /var\(--muted\)/);
-  assert.match(html, /\.status-chip\.status-success\{[^}]+var\(--ok-surface\)[^}]+var\(--ok\)/);
-  assert.match(html, /\.status-chip\.status-warning\{[^}]+var\(--warn-surface\)[^}]+var\(--warn\)/);
-  assert.match(html, /\.status-chip\.status-danger\{[^}]+var\(--bad-surface\)[^}]+var\(--bad\)/);
+  assert.match(html, /\.status-chip\.status-success\{[^}]+var\(--color-success-surface\)[^}]+var\(--color-success\)/);
+  assert.match(html, /\.status-chip\.status-warning\{[^}]+var\(--color-warning-surface\)[^}]+var\(--color-warning\)/);
+  assert.match(html, /\.status-chip\.status-danger\{[^}]+var\(--color-danger-surface\)[^}]+var\(--color-danger\)/);
   assert.match(html, /class="kbd status-chip log-badge/);
   assert.match(html, /class="kbd status-chip status-success"/);
-  assert.match(html, /\.input,\.textarea,\.select\{[^}]+var\(--control-border\)/);
+  assert.match(html, /\.input,\.textarea,\.select\{[^}]+var\(--color-control-border\)/);
 });
 
 test('shell markup exposes landmarks, focus controls, and live state semantics', () => {
@@ -95,7 +110,7 @@ test('user-visible copy has no implementation jargon (final cleanup)', () => {
 
 test('empty-state titles use the body text token and only the leading icon is muted', () => {
   assert.match(html, /\.rc-empty-title\{[^}]*color:var\(--color-text\)/);
-  assert.match(html, /\.rc-empty > \.rc-icon:first-child\{color:var\(--ink-3\)\}/);
+  assert.match(html, /\.rc-empty > \.rc-icon:first-child\{color:var\(--color-text-muted\)\}/);
   assert.doesNotMatch(html, /\.rc-empty > :first-child\{/);
   assert.match(html, /id="catalogEmptyTitle" class="[^"]*\brc-empty-title\b/);
   // The #0f0f10 inline-color shim is gone because no inline style uses it.

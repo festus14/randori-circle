@@ -112,7 +112,7 @@ test('initials and avatar ink stay readable', () => {
   assert.equal(view.avatarInk('#ffffff'), '#0B0D12');
   assert.equal(view.avatarInk('#fff'), '#0B0D12');
   assert.equal(view.avatarInk('#101010'), '#FFFFFF');
-  assert.equal(view.avatarInk('var(--accent)'), '');
+  assert.equal(view.avatarInk('var(--color-action)'), '');
   assert.equal(view.avatarInk(null), '');
 });
 

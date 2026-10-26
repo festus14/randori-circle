@@ -35,6 +35,7 @@ runtime, so it is listed separately under
 | Doc | What it covers |
 | --- | --- |
 | [design/UI_REDESIGN_SPEC.md](design/UI_REDESIGN_SPEC.md) | The UI redesign spec: Dojo Indigo tokens, `rc-` components, navigation and work packages. Its status line says "proposed", but it is the working reference for all UI changes |
+| [design/TOKENS.md](design/TOKENS.md) | The authoritative design-token list: every remaining token with dark/light values, the 31 legacy aliases and 6 dead canonicals removed by #400, and the enforced CSS/JS byte budget |
 
 ## Auth and identity
 

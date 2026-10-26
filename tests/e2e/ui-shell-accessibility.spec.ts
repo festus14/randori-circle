@@ -62,7 +62,7 @@ async function renderedStatusContrast(page: Page) {
   return page.evaluate(() => {
     const host = document.createElement('div');
     host.id = 'contrast-probes';
-    host.style.cssText = 'position:fixed;left:0;top:0;z-index:200;background:var(--card);padding:4px';
+    host.style.cssText = 'position:fixed;left:0;top:0;z-index:200;background:var(--color-surface);padding:4px';
     host.innerHTML = [
       '<span class="kbd status-chip">information</span>',
       '<span class="kbd status-chip status-success">success</span>',

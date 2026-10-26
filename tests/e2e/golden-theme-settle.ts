@@ -31,7 +31,7 @@ import {Page} from '@playwright/test';
 //         that is the exercise-suggestions region, whose first `.btn` is a
 //         ghost Hide button), danger as in (3). Disabled controls are
 //         skipped (`:disabled`, plus `aria-disabled` on `.btn`, which shares
-//         the disabled palette `--bg-4` / `--ink-3`), and a non-`.btn`
+//         the disabled palette `--color-surface-active` / `--color-text-muted`), and a non-`.btn`
 //         button has no themed background at all, so either would never
 //         equal the settled theme variables and the wait would time out
 //         opaquely instead of checking a real transitioning element.
@@ -91,9 +91,9 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
       // would be checked against the wrong background and the wait would
       // time out opaquely. Verified against index.html: the current
       // catalog card uses `var(--color-action-subtle)`, `.rc-card--raised`
-      // uses `var(--card-2)` = `--color-surface-raised`, and
-      // `.modal` / `.rc-dialog` use `var(--card)` = `--color-surface`;
-      // all three inherit `--ink` = `--color-text` for foreground.
+      // uses `var(--color-surface-raised)`, and
+      // `.modal` / `.rc-dialog` use `var(--color-surface)`;
+      // all three inherit `--color-text` for foreground.
       if(element.classList.contains('catalog-card')&&element.getAttribute('aria-current')==='true')
         return {bgVar:'--color-action-subtle',fgVar:'--color-text'};
       if(element.classList.contains('rc-card--raised')) return {bgVar:'--color-surface-raised',fgVar:'--color-text'};
