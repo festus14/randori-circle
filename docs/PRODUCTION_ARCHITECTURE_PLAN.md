@@ -1,5 +1,11 @@
 # Randori Circle: Production Architecture and Delivery Plan
 
+> **Historical — superseded for current-runtime questions.**
+> This document describes a proposed Next.js / PostgreSQL target, not the
+> deployed stack. For how the system works today, see
+> [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md). This file is kept as the record of
+> the proposal and is not deleted.
+
 Status: proposed target; not the current runtime
 
 Audience: product, engineering, security, and operations  
