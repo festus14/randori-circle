@@ -197,7 +197,7 @@ harness style in `tests/e2e/ui-shell-accessibility.spec.ts`, and
 `tests/unit/pairing-view.test.mjs` (premise unchanged: `avatarInk`
 returns `''` for any non-hex string). `--accent-4` and
 `--shadow-soft` had zero uses anywhere and were deleted with no
-call-site migration.
+call-site migration. One JS-string-form use inside `index.html` itself escaped the `var()` sweep and was fixed after review: `getPropertyValue('--card')` in `boardSurfaceColor()` (board canvas surface), now `getPropertyValue('--color-surface')`.
 
 | Alias | → Canonical | Uses in `index.html` |
 | --- | --- | ---: |
