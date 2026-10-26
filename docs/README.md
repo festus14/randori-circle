@@ -155,10 +155,21 @@ migrations have run).
 | [KEY_ROTATION.md](KEY_ROTATION.md) | Staged, forward-only rotation of the four credential key rings through the key-control workflow (ID-19, ID-31) |
 | [OUTBOX_EXTERNAL_SCHEDULER.md](OUTBOX_EXTERNAL_SCHEDULER.md) | Setting up cron-job.org to call `/api/cron/outbox` every five minutes with `OUTBOX_DISPATCH_SECRET` (ID-67) |
 | [OUTBOX_DISPATCH_WATCHDOG.md](OUTBOX_DISPATCH_WATCHDOG.md) | The hourly watchdog that alerts on outbox delivery health (ID-43, updated by ID-67) |
+| [runbooks/README.md](runbooks/README.md) | The on-call checklist and the runbook index: what to check first, in order |
+| [runbooks/readiness-503.md](runbooks/readiness-503.md) | Readiness 503 triage: telling schema/ledger, key-control, and membership-provenance blockers apart (ID-84, ID-85) |
+| [runbooks/email-not-arriving.md](runbooks/email-not-arriving.md) | Email not arriving: outbox health, dead letters, provider reasons, Resend, replay |
+| [runbooks/scheduler-stopped.md](runbooks/scheduler-stopped.md) | Scheduler stopped: cron-job.org and the GitHub outbox-dispatch backup, the watchdog alerts |
+| [runbooks/google-sign-in.md](runbooks/google-sign-in.md) | Google sign-in broken: `APP_URL` vs request host, OAuth client origins and redirect URIs, publishing status |
+| [runbooks/domain-dns.md](runbooks/domain-dns.md) | Domain and DNS: `randoricircle.com` records (Resend DKIM, SPF, and DMARC), redirects, and certificates |
+| [runbooks/schema-migration-cutover.md](runbooks/schema-migration-cutover.md) | Schema migration cutover: short version of the protected migration runbook |
+| [runbooks/backup-restore.md](runbooks/backup-restore.md) | Backup restore: short version of the PITR rehearsal runbook, plus a real restore |
+| [runbooks/rollback-bad-deploy.md](runbooks/rollback-bad-deploy.md) | Rollback a bad deploy: Vercel Instant Rollback, reverting a merge, Hobby limitations |
+| [runbooks/feature-flags.md](runbooks/feature-flags.md) | Turning feature flags on and off, including the irreversible ones |
+| [runbooks/rotating-secrets.md](runbooks/rotating-secrets.md) | Rotating secrets and keys, and when to use the key-rotation runbook instead |
+| [postmortems/TEMPLATE.md](postmortems/TEMPLATE.md) | Incident postmortem template |
+| [postmortems/2026-10-22-readiness-503.md](postmortems/2026-10-22-readiness-503.md) | Postmortem: the 2026-10-22 readiness 503 on the first activation join (ID-84, ID-85) |
 
 The chat retention runbook is under [Privacy and data](#privacy-and-data).
-Incident runbooks and a postmortem template are tracked in
-[#361](https://github.com/festus14/randori-circle/issues/361).
 
 ## Testing and CI
 
