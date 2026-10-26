@@ -2,7 +2,7 @@
 
 Status: current runtime. Every claim in this document was checked against the
 code and configuration on `main` at the time of writing; the
-[spot-check appendix](#appendix-spot-checks) lists the evidence for the
+[spot-check appendix](#appendix--spot-checks) lists the evidence for the
 load-bearing claims. Where this document and an older doc disagree, this
 document wins for the current runtime; the older doc is marked historical
 where it is known to be out of date.
@@ -73,7 +73,8 @@ that target as current.
 | Execution sandbox | Vercel Sandbox microVM or a self-hosted Piston-compatible endpoint, selected by `EXECUTION_PROVIDER`. | `api/_execution.js` |
 | Feedback platform | Product feedback from members (bug / feature request / general), behind `FEEDBACK_ENABLED`, migration v22. Distinct from AI coaching feedback (`ai_feedback`). | `docs/FEEDBACK.md`; `api/_feedback-api.js` |
 | AI coaching | Consent-gated AI feedback in `api/ai.js`. Off in production (`AI_ENABLED` off). | `api/ai.js`; `docs/ENVIRONMENT.md` |
-| Export | Private `.ics` calendar export, generated in the browser from an accepted session. No server-side export endpoint. | `assets/calendar-export.js` |
+| Export | Private `.ics` calendar export, generated in the browser from an accepted session. | `assets/calendar-export.js` |
+| Data Export | Server-side JSON archive of the member's own data (`randori-circle-data-export.json`, `version: 1`, 5 MB cap), via `GET /api/auth/account/export`, behind `DATA_EXPORT_ENABLED`. Partners appear by display name only. See [DATA_EXPORT.md](DATA_EXPORT.md) (ID-90). | `api/auth.js`; `api/_data-export.js`; `assets/data-export.js` |
 | Observability | Sentry (production only), client/server `app_logs`, admin Diagnostics. | `api/_sentry.js`; `api/_admin-diagnostics.js` |
 | Schedulers | Vercel cron (weekly pairing only), GitHub Actions (watchdogs, smoke, backup rehearsal), cron-job.org (outbox). | `vercel.json` crons; `.github/workflows/` |
 | Local runtime | `npm run dev` serves the real handlers on loopback with a local SQLite file, seeded owner + circle, email captured locally, Run unavailable. | `scripts/local-server.mjs`; `README.md` |
@@ -82,19 +83,23 @@ that target as current.
 
 Public paths are rewritten in `vercel.json` to a handler plus an
 `?endpoint=` query. The catch-all rewrite at the end of `vercel.json`
-sends every other path to `/` (the SPA).
+sends every other path to `/` (the SPA). The exceptions are bare
+`/api/invitations` (POST create / GET list), `/api/circles`, and
+`/api/code-document`: `vercel.json` has no rewrite and no `?endpoint=`
+for any of them, so they reach `api/invitations.js`, `api/circles.js`,
+and `api/code-document.js` via Vercel filesystem routing.
 
 | Handler | Serves (rewritten public paths) |
 | --- | --- |
-| `api/auth.js` | `/api/auth/*`: capabilities, signup, activation resend/verify, password-reset request/consume, recent-auth, identities, identity-password, identity-google-unlink, login, me, logout, logout-all, account/delete, Google start / reauth start / link start / callback |
+| `api/auth.js` | `/api/auth/*`: capabilities, signup, activation resend/verify, password-reset request/consume, recent-auth, identities, identity-password, identity-google-unlink, login, me, logout, logout-all, account/delete, account/export, Google start / reauth start / link start / callback |
 | `api/data.js` | `/api/circle`, `/api/weeks`, `/api/history`, `/api/progress`, `/api/init`, `/api/profile`, `/api/my-pair`, `/api/pair-recap`, `/api/exercise-suggestions`, `/api/session-completion`, `/api/session-controls`, `/api/meeting-link`, `/api/stats`, `/api/schedule`, `/api/messages`, `/api/questions`, `/api/runs`, `/api/leetcode`, `/api/leetcode/sync`, `/api/execute`, `/api/logs`, `/api/health*`, `/api/feedback`, `/api/feedback/mine` |
 | `api/ops.js` | `/api/circle/health`, `/api/settings/availability`, `/api/pairing/run`, `/api/admin/reshuffle`, `/api/cron/weekly`, `/api/cron/outbox-health`, `/api/cron/execution-smoke`, `/api/cron/outbox`, `/api/admin/outbox/replay`, `/api/admin/diagnostics`, `/api/admin/demo-*`, `/api/notifications/prefs` |
-| `api/invitations.js` | `/api/invitations/prepare`, `/api/invite-requests`, `/api/invite-requests/decision`, `/api/invitations/:id` (create / list / accept / revoke invitations; invite-request intake and owner decision) |
+| `api/invitations.js` | `/api/invitations/prepare`, `/api/invite-requests`, `/api/invite-requests/decision`, `/api/invitations/:id` (accept / revoke invitations; invite-request intake and owner decision; bare `/api/invitations` is create / list — see the filesystem-routing note above) |
 | `api/members.js` | `/api/members` (owner roster) |
-| `api/circles.js` | Circle create / select / archive (multi-circle control plane; off in production) |
+| `api/circles.js` | `/api/circles` (filesystem routing, no rewrite): circle create / select / archive (multi-circle control plane; off in production) |
 | `api/video.js` | `/api/video/signal`, `/api/video/ice`, `/api/video/join`, `/api/video/leave` |
 | `api/ai.js` | `/api/ai/analyze`, `/api/ai/feedback`, `/api/ai/feedback/:id`, `/api/ai/history` (off in production) |
-| `api/code-document.js` | Shared Yjs code documents for a pair room |
+| `api/code-document.js` | `/api/code-document` (filesystem routing, no rewrite): shared Yjs code documents for a pair room |
 
 Shared helpers (`api/_*.js`) are never routes. The authorization helpers
 that matter most are §5: `_pair-access.js`, `_active-circle.js`,
@@ -133,15 +138,22 @@ pinned sources.
 
 From `vercel.json`, applied to `/(.*)`:
 
-- `Content-Security-Policy`: `default-src 'self'; base-uri 'self';
-  object-src 'none'; frame-ancestors 'none'; form-action 'self'
-  https://accounts.google.com;` with `script-src` / `style-src` /
-  `font-src` allowing `'self'`, `'unsafe-inline'` (and `'unsafe-eval'`
-  for scripts) plus `js-de.sentry-cdn.com`, `cdnjs.cloudflare.com`,
-  `unpkg.com`, `cdn.jsdelivr.net`; `img-src 'self' data: blob:`;
-  `media-src 'self' blob:`; `worker-src 'self' blob:`; `connect-src
-  'self' https://*.sentry.io https://*.ingest.sentry.io
-  https://in.logtail.com`; `upgrade-insecure-requests`.
+- `Content-Security-Policy`, quoted per directive from `vercel.json`:
+  `default-src 'self'; base-uri 'self'; object-src 'none';
+  frame-ancestors 'none'; form-action 'self'
+  https://accounts.google.com; script-src 'self' 'unsafe-inline'
+  'unsafe-eval' https://js-de.sentry-cdn.com
+  https://cdnjs.cloudflare.com https://unpkg.com
+  https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'
+  https://cdnjs.cloudflare.com https://unpkg.com
+  https://cdn.jsdelivr.net; font-src 'self' data:
+  https://cdnjs.cloudflare.com https://unpkg.com
+  https://cdn.jsdelivr.net; img-src 'self' data: blob:; media-src
+  'self' blob:; worker-src 'self' blob:; connect-src 'self'
+  https://*.sentry.io https://*.ingest.sentry.io;
+  upgrade-insecure-requests`. Note `font-src` allows neither
+  `'unsafe-inline'` nor `'unsafe-eval'`, and `connect-src` lists only
+  Sentry — there is no logtail source.
 - `Referrer-Policy: no-referrer`
 - `Permissions-Policy: camera=(self), microphone=(self),
   geolocation=()`
@@ -177,10 +189,13 @@ From `vercel.json`, applied to `/(.*)`:
   (`RECENT_AUTH_MAX_AGE_SECONDS = 10*60`), by password or Google
   re-auth. See [LIFECYCLE_RECENT_AUTH.md](LIFECYCLE_RECENT_AUTH.md).
 - **Capabilities.** `GET /api/auth/capabilities` advertises what is
-  actually on (e.g. `verified_invite`, `verifiedEmailActivation`,
-  `passwordReset`, `identityManagement`, `inviteRequests`,
-  `circleHealth`, `adminDiagnostics`, `accountDeletion`) so the UI
-  never advertises more than the server offers.
+  actually on (e.g. `verifiedEmailActivation`, `passwordReset`,
+  `identityManagement`, `inviteRequests`, `circleHealth`,
+  `adminDiagnostics`, `accountDeletion`, `dataExport`) so the UI
+  never advertises more than the server offers. Separately, the same
+  response carries `registrationMode` — one of `local_invite`,
+  `verified_invite`, `local_open`, `private_beta` — which is a
+  registration mode, not a capability key.
 - **Rate limits.** `auth_rate_limits` keys attempts per operation;
   feedback has its own limits (§6.4).
 
@@ -390,7 +405,7 @@ sequenceDiagram
 | Job | Schedule | Runs on | Entry point |
 | --- | --- | --- | --- |
 | Weekly pairing publication | Sunday 08:00 UTC (`0 8 * * 0`) | Vercel cron | `/api/cron/weekly` |
-| Outbox worker | Every 5 minutes (`*/5 * * * *`) | cron-job.org (ID-67); `outbox-dispatch` GitHub workflow as slower backup | `/api/cron/outbox` |
+| Outbox worker | Every 5 minutes (`*/5 * * * *`) | cron-job.org (ID-67); `outbox-dispatch` GitHub workflow as backup | `/api/cron/outbox` |
 | Outbox delivery-health watchdog | Hourly, minute 37 | GitHub Actions | `/api/cron/outbox-health` assessment via `outbox-dispatch-watchdog.yml` |
 | Backup restore rehearsal | Monday 03:17 UTC | GitHub Actions | `turso-backup-restore-rehearsal.yml` |
 | Backup watchdog | Hourly, minute 47 | GitHub Actions | `turso-backup-restore-watchdog.yml` |
@@ -455,7 +470,7 @@ sequenceDiagram
     Cron->>Ops: GET /api/cron/weekly (CRON_SECRET)
     Ops->>DB: Check DB time in Sun [08:00, 10:00) UTC — else refuse
     Ops->>DB: Read explicit Available decisions for cycle
-    Ops->>DB: Compute pairing; write publication + generation token
+    Ops->>DB: Compute pairing, write publication + generation token
     Ops->>DB: Enqueue pairing outbox events (idempotent)
     Ops-->>Cron: {ok:true, publication}
     Outbox->>DB: Claim + deliver pairing emails
@@ -513,6 +528,7 @@ the exact string `true`.
 | `CIRCLE_HEALTH_ENABLED` | Owner-only Circle health card | On |
 | `ADMIN_DIAGNOSTICS_ENABLED` | Read-only admin Diagnostics | On |
 | `ACCOUNT_DELETION_ENABLED` | Self-service Delete account | On |
+| `DATA_EXPORT_ENABLED` | Download my data in Edit profile (`GET /api/auth/account/export`): JSON archive of the member's own data | Off |
 | `OUTBOX_PII_RETENTION_ENABLED` | Outbox PII redaction after 7 / 30 days | On (owner) |
 | `FEEDBACK_ENABLED` | Product feedback endpoints + admin `feedback.submitted` notification | Off |
 | `AI_ENABLED` | Consent-gated AI coaching feedback | Off |
