@@ -51,6 +51,44 @@ async function rows(event){
     FROM app_logs WHERE event=? ORDER BY id`,args:[event]})).rows;
 }
 
+// No-leak check over the smoke body plus the saved DB rows. The body carries
+// a live durationMs per language (and checkedAt), and each row carries an
+// auto-increment id, a numeric claim-id message, and a meta_json holding
+// durations: a duration/id of exactly 402 — or containing it, e.g. 1402/4020 —
+// tripped the old bare `402` substring match. Those numeric fields are
+// stripped first (meta_json is parsed, stripped, and re-stringified).
+// Boundary-aware `402` alone is NOT enough: `"durationMs":402`, `"id":402`
+// and `"message":"402"` are themselves standalone tokens. A genuine leak (a
+// standalone 402 from the provider-error cause, a provider URL/token/secret,
+// or provider output in any other field) still fails.
+function stripExecutionSmokeNumbers(value){
+  if(Array.isArray(value)) return value.map(stripExecutionSmokeNumbers);
+  if(value&&typeof value==='object'){
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key])=>!['checkedAt','durationMs','ageSeconds','claimAgeSeconds'].includes(key))
+      .map(([key,entry])=>[key,stripExecutionSmokeNumbers(entry)]));
+  }
+  return value;
+}
+
+function sanitizedExecutionSmokeRows(savedRows){
+  return (savedRows||[]).map(row=>{
+    const {id:_id,...rest}=row||{};
+    const out={...rest};
+    if(typeof out.message==='string'&&/^\d+$/.test(out.message)) delete out.message;
+    if(typeof out.meta_json==='string'){
+      try{ out.meta_json=JSON.stringify(stripExecutionSmokeNumbers(JSON.parse(out.meta_json))); }catch{ /* Keep raw: it is checked below. */ }
+    }
+    return out;
+  });
+}
+
+function assertNoExecutionSmokeLeak(body,savedRows){
+  const serialized=JSON.stringify(stripExecutionSmokeNumbers(body))
+    +JSON.stringify(sanitizedExecutionSmokeRows(savedRows));
+  assert.doesNotMatch(serialized,/vercel\.com|piston|token|secret|Traceback|Sandbox|(?<![\d.])402(?![\d.])/i);
+}
+
 async function insertLog({source='runner',event='execution_smoke_claim',message='schedule',age='-1 minutes',
   userId=null,meta=null}){
   const inserted=await db.execute({sql:`INSERT INTO app_logs (level,source,event,message,meta_json,user_id,created_at)
@@ -434,9 +472,9 @@ test('each language failure maps to its own status and the result is saved as a 
   assert.equal(outcome.body.ok,false);
   assert.equal(outcome.body.languages.javascript.status,'provider_error');
   assert.equal(outcome.body.languages.python.status,'provider_error');
-  const serialized=JSON.stringify(outcome.body)+JSON.stringify(await rows('execution_smoke_result'));
-  assert.doesNotMatch(serialized,/vercel\.com|piston|token|secret|Traceback|Sandbox|402/i);
-  assert.equal((await rows('execution_smoke_result'))[0].level,'warn');
+  const savedRows=await rows('execution_smoke_result');
+  assertNoExecutionSmokeLeak(outcome.body,savedRows);
+  assert.equal(savedRows[0].level,'warn');
 
   await db.execute('DELETE FROM app_logs');
   const timed=await runExecutionSmoke({trigger:'deploy',getDb:()=>db,env:SANDBOX,
@@ -447,6 +485,32 @@ test('each language failure maps to its own status and the result is saved as a 
   const thrown=await runExecutionSmoke({trigger:'deploy',getDb:()=>db,env:SANDBOX,
     execute:()=>{ throw new TypeError('sync'); }});
   assert.equal(thrown.body.languages.javascript.status,'provider_error');
+});
+
+test('execution smoke no-leak check ignores a 402 duration / row id but still catches a genuine 402 leak',()=>{
+  const cleanBody={ok:false,checkedAt:'2026-10-26T11:00:00Z',
+    languages:{javascript:{status:'provider_error',durationMs:402},
+      python:{status:'provider_error',durationMs:1402}}};
+  const cleanRows=[{id:402,level:'warn',source:'execution-smoke',event:'execution_smoke_result',
+    message:'402',meta_json:JSON.stringify({javascript:{status:'provider_error',durationMs:4020},
+      python:{status:'provider_error',durationMs:7}}),user_id:null,route:null,ua:null,ip:null}];
+  // The old bare-`402` assertion fails on this clean body + rows: that was the flake.
+  assert.throws(()=>assert.doesNotMatch(JSON.stringify(cleanBody)+JSON.stringify(cleanRows),
+    /vercel\.com|piston|token|secret|Traceback|Sandbox|402/i),assert.AssertionError);
+  assertNoExecutionSmokeLeak(cleanBody,cleanRows);
+  // Each of these must still fail: a standalone 402 from a leaked error cause,
+  // a provider URL/token/secret, provider output, or a leak inside a row.
+  for(const [body,savedRows] of [
+    [{...cleanBody,detail:'https://api.vercel.com/v1/sandboxes?token=private-provider-token 402'},cleanRows],
+    [{...cleanBody,detail:'provider returned 402'},cleanRows],
+    [{...cleanBody,detail:'Traceback (most recent call last)'},cleanRows],
+    [{...cleanBody,detail:'Sandbox could not be created'},cleanRows],
+    [{...cleanBody,detail:'leaked secret-output'},cleanRows],
+    [{...cleanBody,status:402},cleanRows],
+    [cleanBody,[{...cleanRows[0],message:'claim 402 failed'}]],
+    [cleanBody,[{...cleanRows[0],meta_json:JSON.stringify({javascript:{status:'provider_error',
+      durationMs:1,detail:'token=private'}})}]],
+  ]) assert.throws(()=>assertNoExecutionSmokeLeak(body,savedRows),assert.AssertionError);
 });
 
 test('a hung provider call is cut off at the deadline and reported as timeout',async()=>{
