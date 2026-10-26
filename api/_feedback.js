@@ -116,13 +116,8 @@ function projectFeedbackItem(row){
 }
 
 /**
- * Store one feedback item, its creation event, and one
- * `feedback.submitted` outbox event per admin recipient, in a single
- * transaction. A retry with the same idempotency key and the same
- * (redacted) payload replays the stored item without a second row or a
- * second email; the same key with different content is a 409.
- * `adminEmails` is the configured-admin set (getAdminEmails); accounts
- * with is_admin=1 are found from the database itself.
+ * The per-author idempotency lookup shared by the replay pre-check and
+ * the insert path's in-transaction re-check.
  */
 const EXISTING_FEEDBACK_SQL=`SELECT id,circle_id,author_user_id,kind,title,body,status,visibility,
   diagnostics_json,created_at,updated_at,closed_at,
@@ -195,6 +190,16 @@ export async function lookupFeedbackReplay(db,{circleId,authorUserId,input}={}){
   return Object.freeze({item:projectFeedbackItem(stored),replayed:true,
     outboxEvents:Object.freeze([])});
 }
+
+/**
+ * Store one feedback item, its creation event, and one
+ * `feedback.submitted` outbox event per admin recipient, in a single
+ * transaction. A retry with the same idempotency key and the same
+ * (redacted) payload replays the stored item without a second row or a
+ * second email; the same key with different content is a 409.
+ * `adminEmails` is the configured-admin set (getAdminEmails); accounts
+ * with is_admin=1 are found from the database itself.
+ */
 export async function submitFeedback(db,{circleId,authorUserId,input,adminEmails=[],nowSeconds=null,
   notify=true}={}){
   if(!db||typeof db.transaction!=='function') throw new TypeError('database client is required');
