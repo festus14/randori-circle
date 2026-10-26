@@ -151,7 +151,108 @@ On a failed run:
 5. Rotate the Platform API token if exposure is suspected. Do not invalidate database tokens globally; the generated database tokens expire after 30 minutes.
 6. Re-run only after the cleanup summary proves the original source write state and disposable-target state. A failed or stale monitor summary cannot authorize production migration.
 
-If restoration is needed during an incident, stop application writes, choose a recovery point inside the 30-minute RPO, restore to an isolated database, rerun the same integrity/foreign-key/schema/digest checks, and cut over only after ownership and application validation. Roll back a failed cutover by restoring the previously recorded database endpoint and credentials; retain both databases until the rollback is verified. The scheduled rehearsal never performs that cutover.
+If restoration is needed during an incident, stop application writes, choose a recovery point inside the 30-minute RPO, restore to an isolated database, rerun the same integrity/foreign-key/schema/digest checks, re-apply account deletions newer than the recovery point (next section) before cutover, and cut over only after ownership and application validation. Roll back a failed cutover by restoring the previously recorded database endpoint and credentials; retain both databases until the rollback is verified. The scheduled rehearsal never performs that cutover.
+
+## Re-applying account deletions after a restore (issue #366, ID-89)
+
+A point-in-time restore to T brings back the database as of T — including
+personal data deleted after T. No cutover is complete until every deletion
+newer than the restore point has been re-applied to the restored database
+and verified there. The weekly rehearsal never does this against
+production: it deletes no real account. Re-application is covered by unit
+tests on real migrated SQLite
+(`tests/unit/account-deletion-restore-reapplication.test.mjs`, which
+simulates the restore with a pre-deletion database, and
+`tests/unit/deletion-ledger-cli.test.mjs` for the operator CLI), and the
+operator performs it manually at restore time with the procedure below.
+
+### The deletion ledger
+
+One entry per tombstoned account, and nothing else:
+
+```json
+{"version":1,"exported_at":"2026-10-25T10:05:00.000Z","entries":[
+  {"account_id":42,"deleted_at":"2026-10-25T09:31:12.417Z","created_at":"2026-01-15T08:00:00.000Z"}
+]}
+```
+
+- `deleted_at` is the earliest `account.deleted` audit event for the
+  account. It is `null` when no audit row exists; a null entry is always
+  treated as due, and re-application is a no-op for an account that is
+  already tombstoned, so the fail-safe direction is to re-apply.
+- `created_at` distinguishes the two ways an account can be absent from the
+  restored database: created after the restore point (correctly absent,
+  nothing to re-apply) versus created before it (inconsistent — fail
+  closed, do not cut over).
+- The ledger is built from the still-live **source** database — PITR
+  creates a new database and never deletes the source. A ledger table
+  inside the database would roll back with the restore it is meant to
+  repair. The ledger file lives only on the operator's machine, outside
+  any database: never commit it, never upload it as a GitHub artifact, and
+  destroy it once the cutover is verified. It holds only opaque account
+  ids and timestamps, but it is still deleted after use.
+
+### Procedure
+
+1. **Export, from the source database**, before cutover (never against the
+   restored database, which has no post-restore-point deletions to list):
+   ```bash
+   TURSO_DATABASE_URL=<source url> TURSO_AUTH_TOKEN=<source token> JWT_SECRET=<server secret> \
+     node scripts/deletion-ledger.mjs export --out /operator/path/deletion-ledger-<restore-point>.json \
+       [--restore-point <requested-PITR-instant-ISO>]
+   ```
+   The file is written mode `0600`, created exclusively: the CLI refuses
+   to overwrite an existing file or follow a symlink. `--out` must point
+   outside the repository (the CLI rejects in-repository paths, and
+   `deletion-ledger*.json` is gitignored as a second line of defence).
+   The CLI prints counts only, never account ids.
+   `--restore-point` on export is minimisation only: it shrinks what is
+   written to the file, keeping null-`deleted_at` entries. It is not a
+   substitute for reapply-time filtering — `reapply` and `verify` still
+   filter by their own `--restore-point`, which is the gate that decides
+   what is re-applied.
+2. **Re-apply, against the restored database** (never the source), with
+   the **requested** PITR timestamp as the restore point — not the
+   provider's `branched_at`, which can fall slightly later. Using the
+   requested instant can only cause a redundant no-op re-application for a
+   deletion that landed between the two instants; it can never skip one.
+   `JWT_SECRET` must be the secret in effect when the deletions were made,
+   not a rotated replacement: re-application re-hashes invitation emails
+   exactly as the deletion did, so a different secret produces different
+   hashes and the scrub will not match the original deletion's hashes.
+   The CLI validates `JWT_SECRET` presence up front (typed config error)
+   for `export` and `reapply`; `verify` needs no secret.
+   ```bash
+   TURSO_DATABASE_URL=<restored url> TURSO_AUTH_TOKEN=<restored token> JWT_SECRET=<server secret> \
+     node scripts/deletion-ledger.mjs reapply --ledger /operator/path/deletion-ledger-<restore-point>.json \
+       --restore-point <requested-PITR-instant-ISO>
+   ```
+   Re-application runs the same scrubbing statements as a self-service
+   deletion, keeping the original deletion time as the audit instant, and
+   deliberately skips the recent-auth proof and the last-owner/last-admin
+   gates: the original deletion already passed them in the real timeline,
+   and the restored database holds stale, pre-restore membership and
+   ownership state (see `api/_account-deletion.js`). It stops on the
+   first entry it cannot re-apply — fail closed, do not cut over.
+   Re-running it is a no-op for entries already tombstoned.
+3. **Verify, against the restored database**, before cutover:
+   ```bash
+   TURSO_DATABASE_URL=<restored url> TURSO_AUTH_TOKEN=<restored token> \
+     node scripts/deletion-ledger.mjs verify --ledger /operator/path/deletion-ledger-<restore-point>.json \
+       --restore-point <requested-PITR-instant-ISO>
+   ```
+   Exit 0 with `missing: 0` is required. Any missing id blocks the
+   cutover: investigate, re-run `reapply` for that entry, and do not cut
+   over with a missing id. An empty ledger verifies trivially — still run
+   it, so the check is on the record rather than assumed.
+4. **Cut over** only after verification passes, then **destroy the
+   ledger file** once the cutover is verified. If the cutover is rolled
+   back to the pre-restore database, the ledger is moot (that database
+   already contains the deletions); destroy the file either way.
+5. **If the source database itself is destroyed**, this procedure cannot
+   run: the ledger is built from the source. That residual gap — a
+   durable off-database ledger written at deletion time — is follow-up
+   work (see the ID-89 decision entry), not part of this runbook.
 
 ## Promotion gate
 

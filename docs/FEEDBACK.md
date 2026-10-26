@@ -1,7 +1,7 @@
 # Product feedback (issue #353)
 
 Status: backend data model and API, migration v22 (decision
-[ID-89](IMPLEMENTED_DECISIONS.md#id-89-product-feedback-shared-platform-for-bug-reports-feature-requests-and-product-feedback)).
+[ID-90](IMPLEMENTED_DECISIONS.md#id-90-product-feedback-shared-platform-for-bug-reports-feature-requests-and-product-feedback)).
 The triage UI and the member-facing feedback form are built separately
 against the contract below. There is no triage UI yet: items stay `open`
 until a later issue adds status changes.
