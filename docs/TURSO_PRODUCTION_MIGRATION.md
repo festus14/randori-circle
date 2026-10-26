@@ -165,6 +165,19 @@ CLI, run only after step 2.
 2. **Restore with PITR only if needed**, using the recovery procedure below,
    to a point before migration N. The deployed code (at N) stays ready on the
    restored N-1 database, because N is additive.
+3. **After a PITR, do not rely on lifecycle paths until the stale
+   capability cache is gone.** The schema-capability cache lives in each
+   instance's memory (`api/_schema-capability.js`), not in the database, so
+   restoring the database does not clear it: a warm instance that already
+   cached migration N as present keeps reporting it present for up to
+   5 minutes (`SCHEMA_CAPABILITY_AVAILABLE_TTL_MS = 5 * 60 * 1000`), even
+   though the ledger row and the new tables are gone. Turning the flag off
+   (step 1) already protects the feature paths, because
+   `schemaFeatureAvailable` returns `false` without consulting the cache
+   when the flag is off — but lifecycle paths that gate only on
+   `schemaCapabilityAvailable` have no flag to protect them. Keep the flag
+   off and either wait out the 5-minute TTL or redeploy (a redeploy starts
+   fresh instances with an empty cache) before relying on lifecycle paths.
 
 Do not roll the code back to N-1 while the database is at N. Code is never
 ready on a database newer than itself, so readiness would fail. Leave the code
