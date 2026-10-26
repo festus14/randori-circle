@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -211,6 +211,7 @@ test('bracket, optional-chain, destructured and aliased reads count', () => {
   const code = parseCodeEnvVars([{
     path: 'api/a.js',
     content: [
+      'const env = process.env;',
       "export const a = process.env['BRACKET_VAR'];",
       'export const b = env?.OPTIONAL_VAR;',
       'const { DESTRUCTURED_VAR } = process.env;',
@@ -229,7 +230,7 @@ test('key-ring *Env properties resolve through dynamic access', () => {
     path: 'api/_key-rotation.js',
     content: [
       'const RINGS = [{ keyEnv: "RING_KEY", versionEnv: "RING_KEY_VERSION" }];',
-      'export function read(env) { return env[RINGS[0].keyEnv]; }',
+      'export function read(env = process.env) { return env[RINGS[0].keyEnv]; }',
     ].join('\n'),
   }]);
   assert.ok(code.has('RING_KEY'));
@@ -482,12 +483,23 @@ test('a docs file missing from the docs index fails', () => {
   ]);
 });
 
-test('archived docs files are exempt from the docs index check', () => {
-  const archived = validateDocsIndex({
+test('archived docs files are exempt from the docs index check, with a reason', () => {
+  const withHeader = validateDocsIndex({
     docsIndex: '# Index\n\n[GUIDE.md](GUIDE.md)\n',
     docsFiles: ['docs/README.md', 'docs/GUIDE.md', 'docs/archive/OLD.md'],
+    docsContents: [
+      { path: 'docs/archive/OLD.md', content: '# Old\n\n<!-- Archived: superseded by GUIDE.md -->\n' },
+    ],
   });
-  assert.deepEqual(archived, []);
+  assert.deepEqual(withHeader, []);
+  const withReadmeEntry = validateDocsIndex({
+    docsIndex: '# Index\n\n[GUIDE.md](GUIDE.md)\n',
+    docsFiles: ['docs/README.md', 'docs/GUIDE.md', 'docs/archive/OLD.md'],
+    docsContents: [
+      { path: 'docs/archive/README.md', content: '# Archive\n\n- [OLD.md](OLD.md) — superseded by GUIDE.md\n' },
+    ],
+  });
+  assert.deepEqual(withReadmeEntry, []);
   const allowlisted = validateDocsIndex({
     docsIndex: '# Index\n\n[GUIDE.md](GUIDE.md)\n',
     docsFiles: ['docs/README.md', 'docs/GUIDE.md', 'docs/ORPHAN.md'],
@@ -497,6 +509,32 @@ test('archived docs files are exempt from the docs index check', () => {
   assert.ok(ARCHIVED_DOC_ALLOWLIST instanceof Map);
   const missing = validateDocsIndex({ docsIndex: null, docsFiles: [] });
   assert.deepEqual(missing, ['docs/README.md: docs index is missing or empty']);
+});
+
+test('an archived doc without a reason fails, as does an allowlist entry without a reason', () => {
+  const noReason = validateDocsIndex({
+    docsIndex: '# Index\n\n[GUIDE.md](GUIDE.md)\n',
+    docsFiles: ['docs/README.md', 'docs/GUIDE.md', 'docs/archive/OLD.md'],
+    docsContents: [{ path: 'docs/archive/OLD.md', content: '# Old\n\nNo reason recorded.\n' }],
+  });
+  assert.ok(noReason.some((error) => error.includes('docs/archive/OLD.md is archived but has no reason')));
+  // A bare listing in docs/archive/README.md (no reason text) does not count.
+  const bareListing = validateDocsIndex({
+    docsIndex: '# Index\n\n[GUIDE.md](GUIDE.md)\n',
+    docsFiles: ['docs/README.md', 'docs/GUIDE.md', 'docs/archive/OLD.md'],
+    docsContents: [
+      { path: 'docs/archive/OLD.md', content: '# Old\n' },
+      { path: 'docs/archive/README.md', content: '# Archive\n\n[OLD.md](OLD.md)\n' },
+    ],
+  });
+  assert.ok(bareListing.some((error) => error.includes('is archived but has no reason')));
+  const emptyAllowlist = validateDocsIndex({
+    docsIndex: '# Index\n\n[GUIDE.md](GUIDE.md)\n',
+    docsFiles: ['docs/README.md', 'docs/GUIDE.md', 'docs/ORPHAN.md'],
+    archivedAllowlist: new Map([['docs/ORPHAN.md', '   ']]),
+  });
+  assert.ok(emptyAllowlist.some((error) => error.includes('ARCHIVED_DOC_ALLOWLIST without a non-empty reason')));
+  assert.ok(emptyAllowlist.some((error) => error.includes('docs/ORPHAN.md is not indexed')));
 });
 
 test('missing required files and empty sections are reported, not crashed on', () => {
@@ -554,4 +592,338 @@ test('the CLI passes on a minimal fixture tree and fails with file:line on drift
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('the CLI runs through a symlinked script path (realpath main guard)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'check-docs-symlink-'));
+  try {
+    const write = (rel, content) => {
+      const target = join(dir, rel);
+      mkdirSync(join(dir, rel.split('/').slice(0, -1).join('/')), { recursive: true });
+      writeFileSync(target, content);
+    };
+    write('README.md', '# Fixture\n\n[Guide](docs/GUIDE.md)\n');
+    write('docs/README.md', '# Index\n\n[GUIDE.md](GUIDE.md)\n[ENVIRONMENT.md](ENVIRONMENT.md)\n[IMPLEMENTED_DECISIONS.md](IMPLEMENTED_DECISIONS.md)\n');
+    write('docs/ENVIRONMENT.md', ENVIRONMENT);
+    write('docs/IMPLEMENTED_DECISIONS.md', DECISIONS);
+    write('docs/GUIDE.md', GUIDE);
+    write('.env.example', ENV_EXAMPLE);
+    write('api/a.js', CODE);
+    const link = join(dir, 'check-docs-link.mjs');
+    symlinkSync(SCRIPT, link);
+    const pass = spawnSync(process.execPath, [link], { cwd: dir, encoding: 'utf8' });
+    assert.equal(pass.status, 0, pass.stderr || pass.stdout);
+    assert.equal(JSON.parse(pass.stdout).ok, true);
+    write('api/a.js', "export const x = process.env.DRIFTED_VAR;\n");
+    const fail = spawnSync(process.execPath, [link], { cwd: dir, encoding: 'utf8' });
+    assert.equal(fail.status, 1);
+    assert.ok(JSON.parse(fail.stderr).errors.some((error) => error.includes('DRIFTED_VAR')));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reference-style links are checked in both directions', () => {
+  const missing = validateLinks({
+    linkSources: [{ path: 'docs/GUIDE.md', content: '# Guide\n\n[Missing][ref1]\n\n[ref1]: NOPE.md\n' }],
+    anchorSources: [{ path: 'docs/GUIDE.md', content: '# Guide\n' }],
+    paths: new Set(['docs/GUIDE.md']),
+    directories: new Set(['docs']),
+  });
+  assert.ok(missing.some((error) => error.includes('relative link NOPE.md points to missing file docs/NOPE.md')));
+  assert.ok(missing.some((error) => error.includes('docs/GUIDE.md:3:')));
+  assert.ok(missing.some((error) => error.includes('docs/GUIDE.md:5:')));
+  for (const [name, content] of [
+    ['full', '# G\n\n[Text][label]\n\n[label]: NOPE.md\n'],
+    ['collapsed', '# G\n\n[NOPE.md][]\n\n[NOPE.md]: NOPE.md\n'],
+    ['shortcut', '# G\n\n[NOPE.md]\n\n[NOPE.md]: NOPE.md\n'],
+  ]) {
+    const errors = validateLinks({
+      linkSources: [{ path: 'docs/GUIDE.md', content }],
+      anchorSources: [{ path: 'docs/GUIDE.md', content: '# G\n' }],
+      paths: new Set(['docs/GUIDE.md']),
+      directories: new Set(['docs']),
+    });
+    assert.ok(errors.length > 0, `${name} reference must be checked`);
+  }
+  // A shortcut reference with no definition is literal text, not a link.
+  assert.deepEqual(extractLinks('docs/GUIDE.md', '# G\n\n[Not a link]\n'), []);
+  // A doc linked from docs/README.md ONLY via reference style is indexed.
+  const indexed = validateDocsIndex({
+    docsIndex: '# Index\n\n[GUIDE.md][guide]\n\n[guide]: GUIDE.md\n',
+    docsFiles: ['docs/README.md', 'docs/GUIDE.md'],
+  });
+  assert.deepEqual(indexed, []);
+  // Reference definitions accept angle destinations and titles.
+  assert.deepEqual(
+    extractLinks('docs/GUIDE.md', '# G\n\n[Text][a]\n\n[a]: <B.md> "title"\n'),
+    [{ target: 'B.md', line: 3 }, { target: 'B.md', line: 5 }],
+  );
+});
+
+test('inline links accept single-quote / paren titles and multi-line destinations', () => {
+  for (const content of [
+    "# G\n\n[Missing](NOPE.md 'title')\n",
+    '# G\n\n[Missing](NOPE.md (title))\n',
+    '# G\n\n[Missing](\nNOPE.md)\n',
+    '# G\n\n[Missing](NOPE.md\n"title")\n',
+  ]) {
+    const errors = validateLinks({
+      linkSources: [{ path: 'docs/GUIDE.md', content }],
+      anchorSources: [{ path: 'docs/GUIDE.md', content: '# G\n' }],
+      paths: new Set(['docs/GUIDE.md']),
+      directories: new Set(['docs']),
+    });
+    assert.ok(errors.some((error) => error.includes('NOPE.md points to missing file')), content);
+  }
+});
+
+test('fenced examples do not count as documenting vars, flags or decision rows', () => {
+  const { environment } = parseDocumentedEnvVars([
+    '# Environment',
+    '',
+    '```md',
+    '| `FENCED_VAR` | In an example |',
+    '```',
+    '',
+    '| Variable | Purpose |',
+    '| --- | --- |',
+    '| `REAL_VAR` | Real |',
+    '',
+    '### Dispatch inputs and step values',
+    '',
+    '```md',
+    '`FENCED_DISPATCH`',
+    '```',
+    '',
+    '`REAL_DISPATCH`',
+    '',
+  ].join('\n'), 'REAL_VAR=\nREAL_DISPATCH=\n');
+  assert.ok(!environment.has('FENCED_VAR'));
+  assert.ok(!environment.has('FENCED_DISPATCH'));
+  assert.ok(environment.has('REAL_VAR'));
+  assert.ok(environment.has('REAL_DISPATCH'));
+  const flags = parseFlagTable([
+    '## Feature flags',
+    '',
+    '```md',
+    '| `FENCED_FLAG` | Example |',
+    '```',
+    '',
+    '| Flag | What |',
+    '| --- | --- |',
+    '| `REAL_FLAG` | Real |',
+  ].join('\n'));
+  assert.ok(!flags.has('FENCED_FLAG'));
+  assert.ok(flags.has('REAL_FLAG'));
+  const decisions = validateDecisions([
+    '# Decisions',
+    '',
+    '## Index',
+    '',
+    '| ID | Title |',
+    '| --- | --- |',
+    '| [ID-01](#id-01-first-decision) | First decision |',
+    '',
+    '```md',
+    '| [ID-99](#id-99-fake) | Fake row |',
+    '```',
+    '',
+    '## ID-01: First decision',
+    '',
+    'Body.',
+  ].join('\n'));
+  assert.deepEqual(decisions, []);
+});
+
+test('an unrelated env object does not invent an env read', () => {
+  const unrelated = parseCodeEnvVars([
+    { path: 'api/a.js', content: 'export function read(env) { return env.UNRELATED_VAR; }\n' },
+    { path: 'api/b.js', content: "const env = { UNRELATED_VAR: 'x' };\nexport const y = env.UNRELATED_VAR;\n" },
+    { path: 'api/c.js', content: "export function read(env) { return env.UNRELATED_VAR; }\nread({ UNRELATED_VAR: 'x' });\n" },
+  ]);
+  assert.deepEqual([...unrelated.keys()], []);
+  const proved = parseCodeEnvVars([
+    { path: 'api/a.js', content: 'export function read(env = process.env) { return env.PROVED_VAR; }\n' },
+    { path: 'api/b.js', content: 'const env = process.env;\nexport const y = env.PROVED_TWO;\n' },
+    { path: 'api/c.js', content: 'const { env } = process;\nexport const z = env.PROVED_THREE;\n' },
+    { path: 'api/d.js', content: "export function helper(env) { return env.TRANSITIVE_VAR; }\nexport function main(env = process.env) { return helper(env); }\n" },
+    { path: 'api/e.js', content: 'const env = { ...process.env };\nexport const w = env.SPREAD_VAR;\n' },
+    { path: 'api/f.js', content: 'export function read(env = process.env) { const copy = Object.assign({}, env); return copy.ASSIGN_VAR; }\n' },
+  ]);
+  for (const name of ['PROVED_VAR', 'PROVED_TWO', 'PROVED_THREE', 'TRANSITIVE_VAR', 'SPREAD_VAR', 'ASSIGN_VAR']) {
+    assert.ok(proved.has(name), name);
+  }
+});
+
+test('cross-file imported string consts and 1-char vars count', () => {
+  const code = parseCodeEnvVars([
+    { path: 'api/constants.js', content: "export const FLAG = 'CROSS_FILE_VAR';\n" },
+    { path: 'api/b.js', content: "import { FLAG } from './constants.js';\nexport const x = process.env[FLAG];\n" },
+    { path: 'api/c.js', content: 'export const y = process.env.A;\n' },
+    { path: 'api/d.js', content: "import * as C from './constants.js';\nexport const z = process.env[C.FLAG];\n" },
+  ]);
+  assert.ok(code.has('CROSS_FILE_VAR'));
+  assert.ok(code.has('A'));
+  // A 1-char documented var is documented, not unread.
+  const { environment, example } = parseDocumentedEnvVars(
+    '# Environment\n\n| Variable | Purpose |\n| --- | --- |\n| `A` | One char |\n',
+    'A=\n',
+  );
+  assert.ok(environment.has('A'));
+  assert.ok(example.has('A'));
+});
+
+test('cross-file env parameters are proved by a cross-file call site', () => {
+  const code = parseCodeEnvVars([
+    { path: 'scripts/helper.js', content: 'export function helper(env) { return env.CROSS_PARAM; }\n' },
+    { path: 'scripts/main.js', content: "import { helper } from './helper.js';\nhelper(process.env);\n" },
+    { path: 'scripts/other.js', content: 'export function other(env) { return env.CROSS_BAD; }\n' },
+    { path: 'scripts/caller.js', content: "import { other } from './other.js';\nother({ CROSS_BAD: 'x' });\n" },
+  ]);
+  assert.ok(code.has('CROSS_PARAM'));
+  assert.ok(!code.has('CROSS_BAD'));
+});
+
+test('the scanner covers .js/.mjs/.cjs in code dirs and .yaml workflows', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'check-docs-ext-'));
+  try {
+    const write = (rel, content) => {
+      const target = join(dir, rel);
+      mkdirSync(join(dir, rel.split('/').slice(0, -1).join('/')), { recursive: true });
+      writeFileSync(target, content);
+    };
+    write('README.md', '# Fixture\n\n[Guide](docs/GUIDE.md)\n');
+    write('docs/README.md', '# Index\n\n[GUIDE.md](GUIDE.md)\n[ENVIRONMENT.md](ENVIRONMENT.md)\n[IMPLEMENTED_DECISIONS.md](IMPLEMENTED_DECISIONS.md)\n');
+    write('docs/ENVIRONMENT.md', ENVIRONMENT);
+    write('docs/IMPLEMENTED_DECISIONS.md', DECISIONS);
+    write('docs/GUIDE.md', GUIDE);
+    write('.env.example', ENV_EXAMPLE);
+    write('api/a.js', CODE);
+    write('scripts/foo.js', "export const x = process.env.SCRIPTS_JS_VAR;\n");
+    write('api/b.mjs', "export const x = process.env.API_MJS_VAR;\n");
+    write('api/c.cjs', "module.exports = { x: process.env.API_CJS_VAR };\n");
+    write('.github/workflows/extra.yaml', 'name: extra\non: [push]\njobs:\n  job:\n    steps:\n      - run: echo $WORKFLOW_YAML_VAR\n');
+    const errors = validateDocsContract(inspectDocsContract(dir));
+    for (const name of ['SCRIPTS_JS_VAR', 'API_MJS_VAR', 'API_CJS_VAR', 'WORKFLOW_YAML_VAR']) {
+      assert.ok(errors.some((error) => error.includes(name)), `${name} must be scanned`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('one-line run: VAR=… assignments are shell-local', () => {
+  const code = parseCodeEnvVars([
+    {
+      path: '.github/workflows/test.yml',
+      content: [
+        'name: test',
+        'on: [push]',
+        'jobs:',
+        '  job:',
+        '    steps:',
+        '      - run: MASKED_VAR=local',
+        '      - run: echo $MASKED_VAR',
+        '      - run: export EXPORTED_MASK=local',
+        '      - run: echo $EXPORTED_MASK',
+        '      - run: echo $REAL_VAR',
+      ].join('\n'),
+    },
+  ]);
+  assert.ok(!code.has('MASKED_VAR'), 'run: assignment must not invent a read');
+  assert.ok(!code.has('EXPORTED_MASK'));
+  assert.ok(code.has('REAL_VAR'));
+});
+
+test('a symlinked docs file is followed by the repo walk', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'check-docs-symfile-'));
+  try {
+    const write = (rel, content) => {
+      const target = join(dir, rel);
+      mkdirSync(join(dir, rel.split('/').slice(0, -1).join('/')), { recursive: true });
+      writeFileSync(target, content);
+    };
+    write('README.md', '# Fixture\n\n[Guide](docs/GUIDE.md)\n');
+    write('docs/README.md', '# Index\n\n[GUIDE.md](GUIDE.md)\n[ENVIRONMENT.md](ENVIRONMENT.md)\n[IMPLEMENTED_DECISIONS.md](IMPLEMENTED_DECISIONS.md)\n[LINKED.md](LINKED.md)\n');
+    write('docs/ENVIRONMENT.md', ENVIRONMENT);
+    write('docs/IMPLEMENTED_DECISIONS.md', DECISIONS);
+    write('docs/GUIDE.md', GUIDE);
+    write('.env.example', ENV_EXAMPLE);
+    write('api/a.js', CODE);
+    write('real-linked.md', '# Linked\n');
+    symlinkSync(join(dir, 'real-linked.md'), join(dir, 'docs/LINKED.md'));
+    const contract = inspectDocsContract(dir);
+    assert.ok(contract.docsFiles.includes('docs/LINKED.md'));
+    assert.deepEqual(validateDocsContract(contract), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('query strings, split destinations and escaped parentheses in links', () => {
+  const query = validateLinks({
+    linkSources: [{ path: 'docs/GUIDE.md', content: '# Guide\n\n[Other](OTHER.md?raw=true)\n[Anchored](OTHER.md?x=1#other)\n' }],
+    anchorSources: [
+      { path: 'docs/GUIDE.md', content: '# Guide\n' },
+      { path: 'docs/OTHER.md', content: '# Other\n' },
+    ],
+    paths: new Set(['docs/GUIDE.md', 'docs/OTHER.md']),
+    directories: new Set(['docs']),
+  });
+  assert.deepEqual(query, []);
+  // A destination split across lines in the middle of the name still resolves.
+  const split = validateLinks({
+    linkSources: [{ path: 'docs/GUIDE.md', content: '# Guide\n\n[Missing](NO\nPE.md)\n' }],
+    anchorSources: [{ path: 'docs/GUIDE.md', content: '# Guide\n' }],
+    paths: new Set(['docs/GUIDE.md']),
+    directories: new Set(['docs']),
+  });
+  assert.ok(split.some((error) => error.includes('NOPE.md points to missing file docs/NOPE.md')));
+  // Escaped parentheses are a filename with parentheses, not a terminator.
+  assert.deepEqual(
+    extractLinks('docs/GUIDE.md', '# G\n\n[File](file\\(1\\).md)\n'),
+    [{ target: 'file(1).md', line: 3 }],
+  );
+});
+
+test('function expressions, Object.assign copies and malformed code', () => {
+  const code = parseCodeEnvVars([
+    { path: 'api/a.js', content: 'export const read = function (env = process.env) { return env.FUNC_EXPR_VAR; };\n' },
+    { path: 'api/b.js', content: 'export function read(env = process.env) { const copy = Object.assign({}, process.env); return copy.ASSIGN_ENV_VAR; }\n' },
+    { path: 'api/c.js', content: 'export function broken(env = process.env { return env.BROKEN_VAR; }\n' },
+  ]);
+  assert.ok(code.has('FUNC_EXPR_VAR'));
+  assert.ok(code.has('ASSIGN_ENV_VAR'));
+  assert.ok(!code.has('BROKEN_VAR'), 'malformed code must not crash or invent a read');
+});
+
+test('default + named imports, re-exported helpers and Map docsContents', () => {
+  const code = parseCodeEnvVars([
+    { path: 'api/constants.js', content: "export default 'DEFAULT_VAR';\nexport const FLAG = 'NAMED_VAR';\n" },
+    { path: 'api/b.js', content: "import Def, { FLAG } from './constants.js';\nexport const x = process.env[Def];\nexport const y = process.env[FLAG];\n" },
+    { path: 'scripts/helper.js', content: 'export function helper(env) { return env.REEXPORT_PARAM; }\n' },
+    { path: 'scripts/middle.js', content: "export { helper } from './helper.js';\n" },
+    { path: 'scripts/main.js', content: "import { helper } from './middle.js';\nhelper(process.env);\n" },
+  ]);
+  assert.ok(code.has('DEFAULT_VAR'));
+  assert.ok(code.has('NAMED_VAR'));
+  assert.ok(code.has('REEXPORT_PARAM'));
+  const indexed = validateDocsIndex({
+    docsIndex: '# Index\n\n[GUIDE.md](GUIDE.md)\n',
+    docsFiles: ['docs/README.md', 'docs/GUIDE.md', 'docs/archive/OLD.md'],
+    docsContents: new Map([['docs/archive/OLD.md', '<!-- Archived: superseded -->\n']]),
+  });
+  assert.deepEqual(indexed, []);
+  // A bare Index row (no link) is parsed, then fails its anchor check.
+  const bare = validateDecisions(DECISIONS.replace(
+    '| [ID-01](#id-01-first-decision) | First decision | Area | Active |',
+    '| ID-01 | First decision | Area | Active |',
+  ));
+  assert.ok(bare.some((error) => error.includes('links to #(none)')));
+});
+
+test('inspectDocsContract on a missing directory reports missing files, not crashes', () => {
+  const errors = validateDocsContract(inspectDocsContract('/tmp/does-not-exist-randori-check-docs'));
+  assert.ok(errors.some((error) => error.includes('README.md: required documentation file is missing')));
 });
