@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test';
+import { waitForThemeSettled } from './golden-theme-settle';
 import { mockApi, resetClientState } from './helpers';
 
 const member = {
@@ -174,6 +175,9 @@ test('anonymous shell has landmarks, truthful copy, AA themes, and reduced motio
   await page.keyboard.press('Escape');
   await page.locator('#themeToggle').click();
   await expect(page.locator('html')).toHaveClass(/light/);
+  // Theme switches animate colours; check the settled state, not a
+  // transition frame, before the contrast reads and the axe run below.
+  await waitForThemeSettled(page, '#view-landing', true);
   const lightRatios = await renderedStatusContrast(page);
   expect(Math.min(...lightRatios)).toBeGreaterThanOrEqual(4.5);
   await page.locator('#landingSignin').click();
