@@ -19,7 +19,11 @@ import {
   PairingRecoveryError,
 } from './_pairing-recovery.js';
 import { MIGRATION_CONTRACTS } from '../db/migration-contract.js';
-import { inspectLedgerReadiness, readinessManifestForLedger } from '../db/migration-compatibility.js';
+import {
+  findPendingIntroducedArtifacts,
+  inspectLedgerReadiness,
+  readinessManifestForLedger,
+} from '../db/migration-compatibility.js';
 import { inspectSchema, readOnlyDatabase } from '../db/schema-inspector.js';
 import { READINESS_SCHEMA_MANIFEST } from '../db/schema-readiness-manifest.js';
 
@@ -74,7 +78,8 @@ function scopeForCircle(circleId){
 /**
  * Read-only request-path readiness. Migration v13 is never created here. The
  * ledger must be current, or one additive migration behind (ID-87); the owned
- * tables must then match the version actually applied.
+ * tables must then match the version actually applied, and none of the
+ * pending migration's introduced artifacts may already exist (#379).
  */
 export async function ensureCirclePairingReadiness(db,{contracts=MIGRATION_CONTRACTS}={}){
   if(!db||typeof db.execute!=='function') fail('CIRCLE_PAIRING_INPUT_INVALID','A database client is required.');
@@ -82,6 +87,12 @@ export async function ensureCirclePairingReadiness(db,{contracts=MIGRATION_CONTR
     const readOnly=readOnlyDatabase(db);
     const ledger=await inspectLedgerReadiness(readOnly,{contracts});
     if(!ledger.ready) fail('CIRCLE_PAIRING_SCHEMA_UNAVAILABLE','Pairing schema is unavailable.');
+    // Owned scope: the inspector below is blind to artifacts outside the
+    // owned tables, so a half-created artifact the pending migration
+    // introduces must be rejected here (#379) instead of relying on it.
+    if((await findPendingIntroducedArtifacts(readOnly,ledger,{contracts})).length!==0){
+      fail('CIRCLE_PAIRING_SCHEMA_UNAVAILABLE','Pairing schema is unavailable.');
+    }
     const schema=await inspectSchema(readOnly,{
       manifest:readinessManifestForLedger(CIRCLE_PAIRING_READINESS_MANIFEST,ledger,{contracts}),
       maxSchemaObjects:MAX_READINESS_SCHEMA_OBJECTS,

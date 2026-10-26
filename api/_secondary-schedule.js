@@ -14,7 +14,12 @@ import {
   ScheduleInputError,
   ScheduleTemporalError,
 } from './_schedule.js';
-import { inspectLedgerReadiness, readinessManifestForLedger } from '../db/migration-compatibility.js';
+import { MIGRATION_CONTRACTS } from '../db/migration-contract.js';
+import {
+  findPendingIntroducedArtifacts,
+  inspectLedgerReadiness,
+  readinessManifestForLedger,
+} from '../db/migration-compatibility.js';
 import { inspectSchema, readOnlyDatabase } from '../db/schema-inspector.js';
 import { READINESS_SCHEMA_MANIFEST } from '../db/schema-readiness-manifest.js';
 import { secondaryScheduleNotificationEvents } from './_secondary-schedule-email.js';
@@ -146,16 +151,23 @@ function readinessCache(db){
 /**
  * Read-only request-path probe. Migration v16 is never created here. The
  * ledger must be current, or one additive migration behind (ID-87); the owned
- * tables must then match the version actually applied.
+ * tables must then match the version actually applied, and none of the
+ * pending migration's introduced artifacts may already exist (#379).
  */
-async function probeSecondaryScheduleReadiness(db){
+async function probeSecondaryScheduleReadiness(db,{contracts=MIGRATION_CONTRACTS}={}){
   if(!db||typeof db.execute!=='function') fail('SECONDARY_SCHEDULE_INPUT_INVALID','A database client is required.');
   try{
     const readOnly=readOnlyDatabase(db);
-    const ledger=await inspectLedgerReadiness(readOnly);
+    const ledger=await inspectLedgerReadiness(readOnly,{contracts});
     if(!ledger.ready) fail('SECONDARY_SCHEDULE_SCHEMA_UNAVAILABLE','Schedule schema is unavailable.');
+    // Owned scope: the inspector below is blind to artifacts outside the
+    // owned tables, so a half-created artifact the pending migration
+    // introduces must be rejected here (#379) instead of relying on it.
+    if((await findPendingIntroducedArtifacts(readOnly,ledger,{contracts})).length!==0){
+      fail('SECONDARY_SCHEDULE_SCHEMA_UNAVAILABLE','Schedule schema is unavailable.');
+    }
     const schema=await inspectSchema(readOnly,{
-      manifest:readinessManifestForLedger(SCHEDULE_READINESS_MANIFEST,ledger),
+      manifest:readinessManifestForLedger(SCHEDULE_READINESS_MANIFEST,ledger,{contracts}),
       maxSchemaObjects:MAX_READINESS_SCHEMA_OBJECTS,
     });
     if(!schema.ok||schema.warnings.length!==0){
@@ -168,12 +180,16 @@ async function probeSecondaryScheduleReadiness(db){
   }
 }
 
-export async function ensureSecondaryScheduleReadiness(db){
+export async function ensureSecondaryScheduleReadiness(db,{contracts=MIGRATION_CONTRACTS}={}){
   if(!db||typeof db.execute!=='function') fail('SECONDARY_SCHEDULE_INPUT_INVALID','A database client is required.');
+  // A caller-supplied contract set (tests modelling other code versions)
+  // must neither read nor poison the production cache, which is keyed by
+  // database alone; probe it directly instead.
+  if(contracts!==MIGRATION_CONTRACTS) return probeSecondaryScheduleReadiness(db,{contracts});
   const {cache,key}=readinessCache(db);
   const existing=cache.get(key);
   if(existing) return existing;
-  const pending=probeSecondaryScheduleReadiness(db);
+  const pending=probeSecondaryScheduleReadiness(db,{contracts});
   cache.set(key,pending);
   try{ return await pending; }
   catch(error){
