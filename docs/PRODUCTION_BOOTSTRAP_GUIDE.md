@@ -225,6 +225,8 @@ Each restore temporarily uses one database slot and storage quota. The
 rehearsal needs a snapshot no older than 30 minutes, so the 1-day window is
 sufficient on paper. No real Free-plan rehearsal has been run yet, so treat
 Free-plan support as unverified until the first rehearsal succeeds.
+The restore procedure itself is the
+[backup restore runbook](runbooks/backup-restore.md).
 
 ## 4. Vercel Production environment
 
@@ -337,7 +339,10 @@ variables only at build/deploy time.
 
 Google readiness does not need the database: after the redeploy,
 `/api/auth/capabilities` should report `googleOAuth:true` (while
-`IDENTITY_MANAGEMENT_ENABLED` stays false).
+`IDENTITY_MANAGEMENT_ENABLED` stays false). If Google sign-in breaks
+on a configured system, triage with the
+[Google sign-in runbook](runbooks/google-sign-in.md) rather than
+re-running this setup.
 
 ## 6. Resend
 
@@ -353,7 +358,10 @@ Google readiness does not need the database: after the redeploy,
 Resend values alone send nothing until the outbox has work. Primary-circle
 pairing and schedule emails need only Resend, `APP_URL`, and the outbox
 dispatcher. Invitation email additionally needs
-`INVITATION_EMAIL_DELIVERY_ENABLED=true` (section 10).
+`INVITATION_EMAIL_DELIVERY_ENABLED=true` (section 10). If mail does
+not arrive on a configured system, triage with the
+[email runbook](runbooks/email-not-arriving.md) and the
+[domain/DNS runbook](runbooks/domain-dns.md).
 
 ## 7. GitHub protected environments
 
@@ -453,6 +461,9 @@ Once `production` is populated, the next `outbox-dispatch` run should reach
 expected.
 
 ## 8. Protected migration sequence
+
+The short version of this sequence is the
+[schema migration cutover runbook](runbooks/schema-migration-cutover.md).
 
 Every step uses the same latest `main` commit. Any merge to `main` or any
 production mutation invalidates the previous rehearsal and fingerprint. Only
@@ -669,9 +680,13 @@ step 1 above, one redeploy per step:
    security**, confirms with Google, and adds a password. A Google-only
    account cannot use "Forgot password?" to create a first password.
 
-Mail is sent only when the five-minute `outbox-dispatch` workflow runs, so a
-verification or reset email normally arrives within 5–15 minutes, and later if
-GitHub delays the schedule. The links still expire after 30 minutes.
+Auth, invitation, and schedule mail is normally sent right after its request
+commits (ID-64), so a verification or reset email normally arrives within
+minutes; pairing mail and retries wait for the outbox scheduler (every five
+minutes from cron-job.org, GitHub as backup). If mail does not arrive,
+triage with the [email runbook](runbooks/email-not-arriving.md) and the
+[scheduler runbook](runbooks/scheduler-stopped.md). The links still expire
+after 30 minutes.
 
 ## 11. Verify
 
@@ -684,7 +699,7 @@ gh run list --workflow outbox-dispatch.yml --limit 3
 
 | Stage | `/api/health` | Capabilities |
 | --- | --- | --- |
-| Today | 503 | `googleOAuth:false` |
+| Before setup (historical) | 503 | `googleOAuth:false` |
 | After Google + redeploy | 503 until schema ready | `googleOAuth:true`, `passwordSignup:false`, `registrationMode:"private_beta"` |
 | MVP live | 200 `ready` | `googleOAuth:true`, `passwordSignup:false`, `verifiedEmailActivation:false`, `passwordReset:false`, `identityManagement:false` |
 
@@ -856,26 +871,33 @@ follows the canonical redirect for page paths and checks the page it lands on.
 
 ### Rollback
 
-1. **Instant Rollback.** In Vercel → Deployments, roll back to the last
-   Production deployment before #344. It has the old `APP_URL` baked in and no
-   redirects, so production is consistent again at once. On the Hobby plan,
-   Instant Rollback may only go back to the immediately previous Production
-   deployment (verify this in the dashboard before relying on it). If other
-   merges have landed since #344, that target would not be the pre-#344
-   deployment. In that case, freeze merges and go straight to steps 2 to 4.
-2. **Environment.** Set Vercel Production `APP_URL` back to
-   `https://randori-circle-self.vercel.app`, and the GitHub `production`
-   variable `APP_URL` likewise.
-3. **Revert the merge** on `main`, with GitHub's Revert button on #344 or
-   `git revert -m 1 <merge sha>` in a pull request, and merge it. Its build
-   reads the restored `APP_URL`.
-4. **Re-promote.** When the revert's Production deployment is Ready, promote it
-   (or undo the rollback) so production follows `main` again. After an Instant
-   Rollback, Vercel may stop assigning the production domains to new
-   Production deployments until the rollback is undone. Check that
-   `randoricircle.com`, `www.randoricircle.com` and the old alias all point at
-   the revert deployment.
-5. cron-job.org can stay on either URL, because both hosts serve `/api/*`.
+The general rollback procedure — flag off first, Instant Rollback,
+revert the merge, re-promote — is the
+[rollback runbook](runbooks/rollback-bad-deploy.md). For this switch
+specifically:
+
+1. **Instant Rollback** to the last Production deployment before
+   #344. It has the old `APP_URL` baked in and no redirects, so
+   production is consistent again at once. On the Hobby plan,
+   Instant Rollback may only go back to the immediately previous
+   Production deployment (verify this in the dashboard before
+   relying on it). If other merges have landed since #344, freeze
+   merges and go straight to steps 2 to 3.
+2. **Environment + revert.** Set Vercel Production `APP_URL` back to
+   `https://randori-circle-self.vercel.app`, and the GitHub
+   `production` variable `APP_URL` likewise. Revert the merge on
+   `main` (GitHub's Revert button on #344, or
+   `git revert -m 1 <merge sha>` in a pull request) and merge it. Its
+   build reads the restored `APP_URL`.
+3. **Re-promote.** When the revert's Production deployment is Ready,
+   promote it (or undo the rollback) so production follows `main`
+   again. After an Instant Rollback, Vercel may stop assigning the
+   production domains to new Production deployments until the
+   rollback is undone. Check that `randoricircle.com`,
+   `www.randoricircle.com` and the old alias all point at the revert
+   deployment.
+4. cron-job.org can stay on either URL, because both hosts serve
+   `/api/*`.
 
 The Google client still lists both origins, so it needs no change. The old-alias
 redirect is a 307, so browsers have not cached it. Members sign in once more on
@@ -890,14 +912,25 @@ rollback is expected, remove the old-alias entries from the Google client.
 
 ## Related runbooks
 
+This guide is the setup checklist from a dark deploy to the MVP. For
+an incident on a running system, use the task-focused runbooks
+instead of re-running setup — they link back here where setup detail
+is needed.
+
 - [Turso overview and rollout](../TURSO.md)
 - [Google OAuth](../GOOGLE_OAUTH.md)
-- [Production migration](TURSO_PRODUCTION_MIGRATION.md)
-- [Backup/restore rehearsal](TURSO_BACKUP_RESTORE_REHEARSAL.md)
+- [Production migration](TURSO_PRODUCTION_MIGRATION.md) — short version: [schema migration cutover](runbooks/schema-migration-cutover.md)
+- [Backup/restore rehearsal](TURSO_BACKUP_RESTORE_REHEARSAL.md) — short version: [backup restore](runbooks/backup-restore.md)
 - [Backup watchdog activation](BACKUP_WATCHDOG_ACTIVATION.md)
-- [Outbox dispatch watchdog](OUTBOX_DISPATCH_WATCHDOG.md)
+- [Outbox dispatch watchdog](OUTBOX_DISPATCH_WATCHDOG.md) — scheduler triage: [scheduler stopped](runbooks/scheduler-stopped.md)
 - [Outbox external scheduler](OUTBOX_EXTERNAL_SCHEDULER.md)
-- [Credential key rotation and adoption](KEY_ROTATION.md)
+- [Credential key rotation and adoption](KEY_ROTATION.md) — rotation pointers: [rotating secrets](runbooks/rotating-secrets.md)
 - [Admin data initialization](ADMIN_DATA_INITIALIZATION.md)
-- [Invitation email delivery](INVITATION_EMAIL_DELIVERY.md)
-- [Deployment gates](DEPLOYMENT_GATES.md)
+- [Invitation email delivery](INVITATION_EMAIL_DELIVERY.md) — mail triage: [email not arriving](runbooks/email-not-arriving.md)
+- [Deployment gates](DEPLOYMENT_GATES.md) — rollback: [rollback a bad deploy](runbooks/rollback-bad-deploy.md)
+- [On-call checklist](runbooks/README.md)
+- [Readiness 503 triage](runbooks/readiness-503.md)
+- [Google sign-in](runbooks/google-sign-in.md)
+- [Domain and DNS](runbooks/domain-dns.md)
+- [Feature flags](runbooks/feature-flags.md)
+- [2026-10-22 readiness postmortem](postmortems/2026-10-22-readiness-503.md)
