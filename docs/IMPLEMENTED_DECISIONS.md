@@ -4946,3 +4946,65 @@ already stored stay until retention or account deletion removes them.
 
 **Recovery.** Turn `FEEDBACK_ENABLED` off: the endpoints return 404
 again and nothing touches the new tables. No schema change is needed.
+
+## ID-92: Force dompurify to `^3.4.17` via npm overrides to clear the dev-only audit findings (#382)
+
+**Context.** A fresh full `npm audit` (dev included) showed 2 findings, both
+for `dompurify` via `monaco-editor`: `dompurify` critical (8 advisories,
+worst GHSA-cg2g-xh64-v4q7, range `<=3.4.16`) and `monaco-editor` moderate
+(range `0.54.0-dev-20250909 - 0.56.0`). The chain is
+`y-monaco@0.1.6` -> peer `monaco-editor@0.56.0` -> `dompurify@3.4.8`
+(exact pin). `npm run audit:prod` was already clean (0 vulnerabilities)
+and stays clean.
+
+**Decision.**
+- `package.json` gains `"overrides": { "dompurify": "^3.4.17" }` alongside
+  the existing zod override (ID-88). A clean `npm ci` now installs exactly
+  one `dompurify` copy, 3.4.17, and the full `npm audit` reports
+  `found 0 vulnerabilities`.
+- The override is not scoped to dev — npm overrides cannot be — but its
+  effective scope is dev-only: `dompurify` appears nowhere in the
+  production tree. The only consumer is dev-only `monaco-editor`
+  (a `y-monaco` peer dependency), and no production dependency depends on
+  `dompurify` (`npm ls dompurify` shows only the
+  `y-monaco -> monaco-editor -> dompurify` chain).
+- The audit itself is not weakened: no audit-level change, no `--force`
+  bypass, no ignored advisory, no downgrade.
+- The finding was never exploitable in this repo even before the fix:
+  the installed `monaco-editor` package is never bundled or executed.
+  Runtime Monaco loads from CDN 0.45.0 in `index.html`; the build aliases
+  the one imported `monaco-editor` entry point to
+  `assets/monaco-api-shim.js` (`check:crdt` verifies the bundle), and the
+  checked-in `assets/crdt-editor.js` contains zero `dompurify` references.
+  The installed copy existed only to satisfy `y-monaco`'s peer dependency
+  at bundle time.
+
+**Alternatives considered and rejected.**
+- Bumping `y-monaco`: 0.1.6 is still the latest release, so there is
+  nothing to bump to.
+- Bumping `monaco-editor` 0.56.0 -> 0.57.0 (latest): 0.57.0 still pins
+  `dompurify 3.4.15` (checked with `npm view`), which is still in the
+  vulnerable `<=3.4.16` range — an unrelated bump that does not fix the
+  advisory, so it was not taken.
+- Adding `dompurify` as a direct devDependency: the direct copy would
+  satisfy the top level, but npm would still install the nested
+  `monaco-editor`-pinned 3.4.8 copy, leaving the audit finding in place.
+  Only the override forces the single pinned copy up.
+
+**Verification.**
+- Fresh `npm audit` before: 2 findings (1 critical, 1 moderate).
+  After a clean `npm ci`: 0 findings; `audit:prod` still 0.
+- `test:unit`: 2838 pass, 0 fail (includes `crdt-bundle` and
+  `crdt-editor-hydration-lock`). `test:coverage`: lines 98.32%,
+  branches 93.72%, functions 99.51% (thresholds 97/92/99). All `check:*`
+  scripts and `validate:catalog` pass; `check:crdt` confirms the bundle
+  is unchanged by the override.
+
+**Removal.** Drop the override once an upstream `monaco-editor` release
+requires `dompurify >=3.4.17`, then re-run `npm install` and confirm the
+3.4.8 pin does not return. Until then, removing the override
+reintroduces the vulnerable 3.4.8 copy and fails the full audit.
+
+**Recovery.** Revert the commit; the vulnerable copy returns and the full
+audit reports 2 findings again. No code, flag, migration or production
+change.
