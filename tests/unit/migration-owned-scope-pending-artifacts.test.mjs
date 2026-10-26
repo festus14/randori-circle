@@ -14,9 +14,11 @@
 // the table case uses that; the issue's v21/invite_requests scenario is the
 // same shape one version down. The index/trigger cases use synthetic
 // contracts (real contracts 1..21 plus a v22 that introduces one
-// non-unique index / one trigger on the non-owned `circles` table), which
-// the additive check allows on existing tables and the owned-scope
-// inspector is blind to by construction.
+// non-unique index / one trigger on the non-owned `circles` table). The
+// non-unique index is allowed on an existing table by the additive check;
+// the trigger case is hypothetical / defence-in-depth, since that check
+// refuses triggers on existing tables, and the owned-scope inspector is
+// blind to both by construction.
 //
 // Each scenario uses a fresh database client: ensureSecondaryScheduleReadiness
 // caches a success per client, so re-probing the same client after

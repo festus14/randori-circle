@@ -4461,6 +4461,9 @@ rehearsal, status and apply.
   so it is blind to a half-created introduced table and to introduced indexes
   or triggers on tables outside the scope, while the full-manifest health
   probe already caught those as unexpected artifacts.
+  Residual: the secondary-schedule probe caches a clean success indefinitely
+  per DB/client, so a warm process could keep returning ready if a
+  half-created artifact appears later; tracked in #395.
   Pairing publication readiness checks only the v6 core contract, already
   accepted any later ledger prefix, and cannot be changed by an additive
   migration.
