@@ -131,6 +131,10 @@ export function createFeedbackSubmittedHandler({db,baseUrl,send,localRuntime=fal
   if(!origin) throw new TypeError('valid feedback submitted notification base URL required');
   return async(event,{signal}={})=>{
     const metadata=notificationMetadata(event);
+    // Mirrors the reminder handler: the handler is registered whenever a
+    // sender exists, and drains queued rows to `suppressed` while the flag
+    // is off instead of leaving them pending for the watchdog.
+    if(!feedbackEnabled()) return {status:'suppressed',reasonCode:'FEEDBACK_DISABLED'};
     const current=await db.execute({
       sql:`SELECT item.kind AS item_kind,item.title AS item_title,
           account.email,account.is_admin,preference.email_enabled

@@ -23,6 +23,7 @@ import {
   FeedbackInputError,
   consumeFeedbackRateLimits,
   listMyFeedback,
+  lookupFeedbackReplay,
   submitFeedback,
 } from './_feedback.js';
 
@@ -102,6 +103,22 @@ async function handleSubmit(req,res){
   if(!input.ok) return res.status(400).json({error:'invalid feedback',fields:input.fields});
   const context=await feedbackContext(req,res);
   if(!context) return;
+  // An exact replay is answered before the rate limiter: a retry must
+  // never burn budget or 429. A same-key/different-content submission is
+  // a 409 here for the same reason.
+  try{
+    const replay=await lookupFeedbackReplay(context.db,{circleId:context.circleId,
+      authorUserId:context.userId,input:input.value});
+    if(replay) return res.status(200).json({ok:true,replayed:true,item:replay.item});
+  }catch(error){
+    if(error instanceof FeedbackConflictError){
+      return res.status(409).json({error:'idempotency key already used for different feedback',
+        code:'feedback_idempotency_conflict'});
+    }
+    if(error instanceof FeedbackInputError) return res.status(400).json({error:error.message});
+    captureSentryException(error,{tags:{event:'feedback_replay_lookup_fail',source:'server'}});
+    return res.status(503).json({error:'feedback unavailable'});
+  }
   let rate;
   try{
     rate=await consumeFeedbackRateLimits(context.db,{userId:context.userId,ip:clientAddress(req)});
@@ -151,7 +168,8 @@ async function handleMine(req,res){
   const context=await feedbackContext(req,res);
   if(!context) return;
   try{
-    const page=await listMyFeedback(context.db,{authorUserId:context.userId,limit,cursor});
+    const page=await listMyFeedback(context.db,{authorUserId:context.userId,circleId:context.circleId,
+      limit,cursor});
     return res.json({ok:true,items:page.items,next_cursor:page.nextCursor});
   }catch(error){
     if(error instanceof FeedbackInputError) return res.status(400).json({error:error.message});

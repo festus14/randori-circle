@@ -33,8 +33,8 @@ HTTP capture).
 | `kind` | Required. `bug`, `feature_request`, or `feedback`. |
 | `title` | Required string. Trimmed, NFC-normalized; 1–120 code points; no control, line-separator, or bidi-override characters. |
 | `body` | Required string. Trimmed, CRLF→LF; 1–4000 code points. Newlines and tabs allowed; other controls rejected. |
-| `diagnostics` | Optional JSON object, bugs only. At most 20 fields, scalar values (text ≤500 chars, finite numbers, true/false, null), at most 4096 bytes serialized. Any other kind with diagnostics → `400`. |
-| `idempotency_key` | Required string, 8–128 characters. A retry with the same key and the same (redacted) payload replays the stored item; the same key with different content → `409 {"code":"feedback_idempotency_conflict"}`. Idempotency is per author: two members may reuse a key. |
+| `diagnostics` | Optional JSON object, bugs only. At most 20 fields, scalar values (text ≤500 chars, finite numbers, true/false, null), at most 4096 bytes serialized. Keys must be plain field names (`[A-Za-z0-9_.-]+`): an email, IP literal, JWT or token as a key is rejected. Any other kind with diagnostics → `400`. |
+| `idempotency_key` | Required string, 8–128 characters. A retry with the same key and the same (redacted) payload replays the stored item; the same key with different content → `409 {"code":"feedback_idempotency_conflict"}`. Idempotency is per author: two members may reuse a key. Two simultaneous same-key POSTs that collide on the unique index re-read the winner's row and replay it (or 409) instead of failing with `503`. |
 
 - Before storage, title, body and diagnostics pass through the shared
   server-side redaction (`api/_client-log-policy.js`): emails, tokens,
@@ -45,7 +45,9 @@ HTTP capture).
   10 submissions per rolling hour and 30 per rolling day, enforced
   separately per member and per client address (IPv6 keyed by its /64).
   The first exhausted dimension stops. Invalid input (`400`) never spends
-  budget. Exhaustion → `429 {"error":"too many requests; try again later","retry_after_seconds":n}` plus `Retry-After`.
+  budget, and neither does an exact replay or a same-key conflict: the
+  idempotency key is looked up before the limiter. Exhaustion →
+  `429 {"error":"too many requests; try again later","retry_after_seconds":n}` plus `Retry-After`.
 
 Responses:
 
@@ -72,7 +74,7 @@ UI lands; `visibility` is always `private` for now.
 `GET /api/feedback/mine` (rewritten to `/api/data?endpoint=feedback-mine`)
 
 - Same session and active-circle rules as submission. The list is the
-  caller's own items across all their circles, newest first.
+  caller's own items in the active circle, newest first.
 - Query parameters: `limit` 1–100 (default 50), `cursor` opaque
   `next_cursor` from the previous page. Anything else → `400`.
 
@@ -101,7 +103,9 @@ account with `is_admin=1` (not demo), plus every account whose email is in
 handler re-reads state and suppresses when the item is gone, the
 recipient is no longer an app admin, they have email notifications
 switched off (`user_notification_prefs.email_enabled=0`), or their email
-is invalid. The email contains only the kind, the redacted title and a
+is invalid. While `FEEDBACK_ENABLED` is off the handler suppresses with
+`FEEDBACK_DISABLED`, so queued rows drain instead of aging into a backlog
+alert. The email contains only the kind, the redacted title and a
 link to the triage view (`/?view=feedback&id=<feedback_id>`, which the
 triage UI will implement); the body is never emailed.
 
@@ -131,9 +135,10 @@ triage UI will implement); the body is never emailed.
   cast, and the events on their items are deleted; events they acted in
   keep the event with the actor cleared; queued `feedback.submitted`
   notifications about their submissions are suppressed and lose their
-  title. The deletion checks the v22 ledger row inside its own
-  transaction, so it works on a v21 database too (no feedback rows can
-  exist there). See `docs/ACCOUNT_DELETION.md`.
+  title. The deletion probes the feedback tables directly
+  (`SELECT … LIMIT 0`) and treats a missing table as not installed, so it
+  works on a v21 database too (no feedback rows can exist there). See
+  `docs/ACCOUNT_DELETION.md`.
 - Export (#365) will include the member's feedback once it lands; votes
   they cast belong to other members' items and are not part of the export.
 

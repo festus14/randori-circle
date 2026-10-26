@@ -4726,7 +4726,7 @@ and lifecycle guarantees as the invite-request intake.
   `/api/feedback` → `endpoint=feedback`, `/api/feedback/mine` →
   `endpoint=feedback-mine`): `POST /api/feedback` (201, or 200 on an
   idempotent replay) and `GET /api/feedback/mine` (newest first, cursor
-  pages, the caller's items only). Reads and writes authorize against the
+  pages, the caller's items in the active circle only). Reads and writes authorize against the
   session and the active circle (403 without a membership, 409
   `circle_selection_required` when several circles are active and none is
   selected). With the flag off, or while v22 is still pending, both
@@ -4735,14 +4735,21 @@ and lifecycle guarantees as the invite-request intake.
 - **Abuse limits.** 10 submissions per rolling hour and 30 per rolling day,
   enforced separately per member and per client address (IPv6 keyed by its
   /64) in the shared `auth_rate_limits` table with keyed hashes; the first
-  exhausted dimension stops. Invalid input never spends budget. A retry
+  exhausted dimension stops. Invalid input never spends budget. The
+  route looks up the idempotency key before the limiter, so an exact
+  replay (or a same-key conflict) never spends budget either; two
+  simultaneous same-key POSTs that collide on the unique index re-read
+  the winner's row and replay it (or 409) instead of failing with 503.
+  A retry
   with the same client-supplied idempotency key and the same (redacted)
   payload replays the stored item; the same key with different content is
   a 409. Idempotency is per author.
 - **Privacy.** Title, body and diagnostics pass through the shared
   server-side redaction (`api/_client-log-policy.js`) before storage:
   emails, tokens, secrets, JWTs, credentials, IPs and user agents are
-  replaced. No raw IP or user agent is stored in any feedback table
+  replaced. Diagnostics keys must be plain field names — an email, IP,
+  JWT or token as a key is rejected at validation, and storage collapses
+  an unsafe key to `[redacted]` instead of storing it verbatim. No raw IP or user agent is stored in any feedback table
   (ID-82). The admin email (below) carries only kind, redacted title and a
   triage link — never the body.
 - **Retention.** Owner decision (2026-10-22): closed items are kept for 12
@@ -4756,15 +4763,18 @@ and lifecycle guarantees as the invite-request intake.
   the votes they cast, and the events on their items; events they acted in
   keep the event with the actor cleared; queued `feedback.submitted`
   notifications about their submissions are suppressed and lose their
-  title. The deletion probes the v22 ledger row inside its own
-  transaction, so it works on a v21 database too. The inventory test
+  title. The deletion probes the feedback tables directly
+  (`SELECT … LIMIT 0`) and treats a missing table as not installed, so
+  it works on a v21 database too. The inventory test
   covers the new tables.
 - **Notifications.** Outbox event `feedback.submitted` v1, one event per
   admin recipient (every `is_admin=1` non-demo account plus every account
   in `ADMIN_EMAILS`), idempotency key
   `feedback-submitted/v1/<feedback_id>/<admin_id>`. Delivery re-reads
   state and suppresses when the item is gone, the recipient is no longer
-  an admin, or they have email notifications switched off.
+  an admin, or they have email notifications switched off. While the
+  flag is off the handler suppresses with `FEEDBACK_DISABLED`, so queued
+  rows drain instead of aging into a backlog alert.
 - **Release order.** Merge with production at v21 (ready, diagnostics
   *Degraded* with "pending additive migration v22"), run the protected
   rehearsal → status → apply v22 cutover as soon as it is ready (owner

@@ -52,13 +52,30 @@ function isPlainObject(value){
   return prototype===Object.prototype||prototype===null;
 }
 
+// Diagnostics keys are stored verbatim in diagnostics_json, so a key must
+// be a plain field name — never an email, an IP literal, a JWT, or a
+// token-looking string smuggled in as a key. The charset alone does not
+// suffice (an IPv4 literal and a bare token both match it), so the extra
+// shapes are rejected explicitly. submitFeedback applies the same predicate
+// as a backstop and collapses an unsafe key to '[redacted]' instead of
+// storing it.
+export const DIAGNOSTICS_KEY_PATTERN=/^[A-Za-z0-9_.\-]+$/;
+const DIAGNOSTICS_KEY_IPV4=/^\d{1,3}(?:\.\d{1,3}){3}$/;
+const DIAGNOSTICS_KEY_TOKEN=/^(?:eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*|sk_(?:live|test)_|ghp_|gho_|github_pat_|xox[baprs]-|AKIA[0-9A-Z]{16}|[A-Za-z0-9_.\-]{32,})$/;
+
+export function diagnosticsKeySafe(key){
+  return typeof key==='string'&&key.length>0&&key.length<=64
+    &&DIAGNOSTICS_KEY_PATTERN.test(key)&&!DIAGNOSTICS_KEY_IPV4.test(key)
+    &&!DIAGNOSTICS_KEY_TOKEN.test(key);
+}
+
 function validateDiagnostics(value){
   if(value===undefined||value===null) return null;
   if(!isPlainObject(value)) return 'Diagnostics must be a JSON object.';
   const keys=Object.keys(value);
   if(keys.length>FEEDBACK_DIAGNOSTICS_MAX_KEYS) return 'Diagnostics has too many fields.';
   for(const key of keys){
-    if(typeof key!=='string'||!key||key.length>64||UNSAFE_TEXT.test(key)) return 'Diagnostics has an invalid field name.';
+    if(!diagnosticsKeySafe(key)) return 'Diagnostics has an invalid field name.';
     const field=value[key];
     if(typeof field==='string'){
       if(field.length>FEEDBACK_DIAGNOSTICS_MAX_STRING||UNSAFE_TEXT.test(field)) return 'A diagnostics field is too long or contains unsupported characters.';

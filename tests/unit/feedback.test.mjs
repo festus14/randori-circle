@@ -21,8 +21,10 @@ import {
 } from '../../api/_feedback-config.js';
 import {
   FeedbackConflictError,
+  FeedbackInputError,
   consumeFeedbackRateLimits,
   listMyFeedback,
+  lookupFeedbackReplay,
   submitFeedback,
 } from '../../api/_feedback.js';
 import {
@@ -31,6 +33,9 @@ import {
   createFeedbackSubmittedHandler,
   feedbackNotificationConfiguration,
 } from '../../api/_feedback-notification.js';
+import { outboxDeliveryPlan } from '../../api/_outbox-delivery.js';
+import { OutboxDeliveryError, runOutboxInvocation } from '../../api/_outbox.js';
+import { readOutboxDeliveryHealth } from '../../api/_outbox-health.js';
 import {
   purgeClosedFeedback,
   runFeedbackRetention,
@@ -315,6 +320,8 @@ test('notification: configuration, event construction, and idempotency key shape
 
 test('notification handler: delivers kind + title + link, never the body',async()=>{
   const {db}=await fixture();
+  process.env.FEEDBACK_ENABLED='true';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.ADMIN_EMAILS='';
   const submitted=await submitFeedback(db,{circleId:1,authorUserId:2,
     input:validateFeedbackInput(validInput({kind:'feature_request',idempotency_key:'notify-key-12345678'})).value,
@@ -337,6 +344,8 @@ test('notification handler: delivers kind + title + link, never the body',async(
 
 test('notification handler: suppresses when the item, admin status, or email preference is gone',async()=>{
   const {db}=await fixture();
+  process.env.FEEDBACK_ENABLED='true';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   const submitted=await submitFeedback(db,{circleId:1,authorUserId:2,
     input:validateFeedbackInput(validInput({idempotency_key:'suppress-key-12345678'})).value,
     adminEmails:[],notify:false});
@@ -359,4 +368,186 @@ test('notification handler: suppresses when the item, admin status, or email pre
     /Outbox delivery failed/);
   await assert.rejects(handler([])({eventVersion:1,idempotencyKey:'k',payload:{...eventFor(1).payload,extra:1}},{}),
     /Outbox delivery failed/);
+});
+
+test('notification handler: flag off suppresses with FEEDBACK_DISABLED without sending',async()=>{
+  const {db}=await fixture();
+  delete process.env.FEEDBACK_ENABLED;
+  delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
+  const submitted=await submitFeedback(db,{circleId:1,authorUserId:2,
+    input:validateFeedbackInput(validInput({idempotency_key:'flagoff-key-12345678'})).value,
+    adminEmails:[],notify:false});
+  const sent=[];
+  const handler=createFeedbackSubmittedHandler({db,baseUrl:'https://randoricircle.com',
+    send:async(message)=>{ sent.push(message); return {providerName:'test'}; }});
+  const outcome=await handler({eventVersion:1,idempotencyKey:'k',payload:{
+    feedback_id:submitted.item.id,circle_id:1,author_user_id:2,recipient_user_id:1,
+    kind:'feedback',title:'A suggestion',template_version:1}},{});
+  assert.deepEqual(outcome,{status:'suppressed',reasonCode:'FEEDBACK_DISABLED'});
+  assert.equal(sent.length,0);
+});
+
+test('outbox drain: a flag-off queued row drains to suppressed, never delivery_stale',async()=>{
+  const {db}=await fixture();
+  const submitted=await submitFeedback(db,{circleId:1,authorUserId:2,
+    input:validateFeedbackInput(validInput({idempotency_key:'drain-key-12345678'})).value,
+    adminEmails:[],notify:true});
+  assert.equal(submitted.outboxEvents.length,1);
+  delete process.env.FEEDBACK_ENABLED;
+  delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
+  process.env.RESEND_API_KEY='re_test_key';
+  process.env.RESEND_FROM='Randori <noreply@example.test>';
+  try{
+    const plan=await outboxDeliveryPlan(db,'https://randoricircle.com',{});
+    assert.equal(plan.handlers.has(FEEDBACK_SUBMITTED_EVENT_TYPE),true);
+    await runOutboxInvocation({db,handlers:plan.handlers,eventTypes:[FEEDBACK_SUBMITTED_EVENT_TYPE]});
+    const rows=await db.execute(`SELECT status FROM outbox_events WHERE event_type=?`,
+      [FEEDBACK_SUBMITTED_EVENT_TYPE]);
+    assert.deepEqual(rows.rows.map(row=>row.status),['suppressed']);
+    const health=await readOutboxDeliveryHealth(db);
+    assert.equal(health.dueCount,0);
+    assert.equal(health.oldestDueAgeMs,null);
+  }finally{
+    delete process.env.RESEND_API_KEY;
+    delete process.env.RESEND_FROM;
+  }
+});
+
+test('validation: diagnostics keys that are emails, IPs, JWTs or tokens are rejected',()=>{
+  for(const key of ['user@example.test','192.168.1.1',
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature','tok_live_example_1234567890abcdef','a'.repeat(40)]){
+    const result=validateFeedbackInput(validInput({kind:'bug',diagnostics:{[key]:'Chrome'}}));
+    assert.equal(result.ok,false,key);
+    assert.ok(result.fields.diagnostics,key);
+  }
+  assert.equal(validateFeedbackInput(validInput({kind:'bug',
+    diagnostics:{browser:'Chrome','os.version':'macOS'}})).ok,true);
+});
+
+test('submit: an unsafe diagnostics key is collapsed to [redacted], never stored verbatim',async()=>{
+  const {db}=await fixture();
+  const value={...validateFeedbackInput(validInput({kind:'bug'})).value,
+    diagnostics:{'user@example.test':'x','192.168.0.1':'y','tok_live_example_1234567890abcdef':'z',browser:'Chrome'}};
+  const submitted=await submitFeedback(db,{circleId:1,authorUserId:2,input:value,adminEmails:[],notify:false});
+  const stored=await db.execute(`SELECT diagnostics_json FROM feedback_items WHERE id=?`,[submitted.item.id]);
+  const diagnostics=JSON.parse(stored.rows[0].diagnostics_json);
+  assert.ok(!Object.keys(diagnostics).some(key=>key.includes('@')||key.includes('192.168')||key.includes('tok_live_example')));
+  assert.equal(diagnostics['[redacted]'],'z');
+  assert.equal(diagnostics.browser,'Chrome');
+});
+
+test('submit: diagnostics too large after redaction fail closed',async()=>{
+  const {db}=await fixture();
+  const big=Object.fromEntries(Array.from({length:20},(_,i)=>[`field${i}`,'x'.repeat(300)]));
+  await assert.rejects(submitFeedback(db,{circleId:1,authorUserId:2,
+    input:{kind:'bug',title:'Too big',body:'Body',diagnostics:big,idempotencyKey:'too-big-key-12345678'},
+    adminEmails:[],notify:false}),/diagnostics are too large after redaction/);
+});
+
+test('submit: a unique-constraint race re-reads and replays instead of 503',async()=>{
+  const {db}=await fixture();
+  const input=validateFeedbackInput(validInput({idempotency_key:'race-key-12345678'})).value;
+  const first=await submitFeedback(db,{circleId:1,authorUserId:2,input,adminEmails:[],notify:false});
+  assert.equal(first.replayed,false);
+  // Racing transaction: its snapshot predates the winner's commit, so its
+  // SELECT sees nothing and its INSERT hits the unique index.
+  const racingDb={execute:(...args)=>db.execute(...args),
+    transaction:async()=>{
+      const transaction=await db.transaction('write');
+      const realExecute=transaction.execute.bind(transaction);
+      transaction.execute=async(statement)=>{
+        const sql=typeof statement==='string'?statement:statement?.sql||'';
+        if(sql.includes('FROM feedback_items WHERE author_user_id=? AND idempotency_key=?')){
+          return {rows:[]};
+        }
+        if(sql.includes('INSERT INTO feedback_items')){
+          const error=new Error('UNIQUE constraint failed: feedback_items.author_user_id, feedback_items.idempotency_key');
+          error.code='SQLITE_CONSTRAINT_UNIQUE';
+          throw error;
+        }
+        return realExecute(statement);
+      };
+      return transaction;
+    }};
+  const raced=await submitFeedback(racingDb,{circleId:1,authorUserId:2,input,adminEmails:[],notify:false});
+  assert.equal(raced.replayed,true);
+  assert.equal(raced.item.id,first.item.id);
+  const other={...input,title:'Different title'};
+  await assert.rejects(submitFeedback(racingDb,{circleId:1,authorUserId:2,input:other,
+    adminEmails:[],notify:false}),FeedbackConflictError);
+});
+
+test('replay lookup: exact replay answers without the limiter; conflict is 409',async()=>{
+  const {db}=await fixture();
+  const input=validateFeedbackInput(validInput({idempotency_key:'lookup-key-12345678'})).value;
+  assert.equal(await lookupFeedbackReplay(db,{circleId:1,authorUserId:2,input}),null);
+  const first=await submitFeedback(db,{circleId:1,authorUserId:2,input,adminEmails:[],notify:false});
+  const replay=await lookupFeedbackReplay(db,{circleId:1,authorUserId:2,input});
+  assert.equal(replay.replayed,true);
+  assert.equal(replay.item.id,first.item.id);
+  const other={...input,title:'Different title'};
+  await assert.rejects(lookupFeedbackReplay(db,{circleId:1,authorUserId:2,input:other}),FeedbackConflictError);
+});
+
+test('/mine: filters by the active circle, not just the author',async()=>{
+  const {db}=await fixture();
+  await db.execute(`INSERT INTO circles (id,public_id,slug,name,is_primary,created_by,archived_at)
+    VALUES (2,'circle-two','two','Circle Two',0,1,NULL)`);
+  const first=await submitFeedback(db,{circleId:1,authorUserId:2,
+    input:validateFeedbackInput(validInput({idempotency_key:'mine-c1-12345678'})).value,
+    adminEmails:[],notify:false});
+  const second=await submitFeedback(db,{circleId:2,authorUserId:2,
+    input:validateFeedbackInput(validInput({idempotency_key:'mine-c2-12345678'})).value,
+    adminEmails:[],notify:false});
+  assert.deepEqual((await listMyFeedback(db,{authorUserId:2,circleId:1})).items.map(item=>item.id),
+    [first.item.id]);
+  assert.deepEqual((await listMyFeedback(db,{authorUserId:2,circleId:2})).items.map(item=>item.id),
+    [second.item.id]);
+  assert.deepEqual((await listMyFeedback(db,{authorUserId:2})).items.map(item=>item.id).sort(),
+    [first.item.id,second.item.id].sort());
+});
+
+test('notification handler: provider failures classify retryable by status',async()=>{
+  const {db}=await fixture();
+  process.env.FEEDBACK_ENABLED='true';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  const submitted=await submitFeedback(db,{circleId:1,authorUserId:2,
+    input:validateFeedbackInput(validInput({idempotency_key:'provider-key-12345678'})).value,
+    adminEmails:[],notify:false});
+  const event={eventVersion:1,idempotencyKey:'k',payload:{
+    feedback_id:submitted.item.id,circle_id:1,author_user_id:2,recipient_user_id:1,
+    kind:'feedback',title:'A suggestion',template_version:1}};
+  const handlerFor=(send)=>createFeedbackSubmittedHandler({db,baseUrl:'https://randoricircle.com',send});
+  for(const [status,retryable,code] of [[429,true,'PROVIDER_RATE_LIMITED'],[400,false,'PROVIDER_REJECTED'],
+    [500,true,'PROVIDER_FAILED'],[undefined,true,'PROVIDER_FAILED']]){
+    const send=async()=>{ const error=new Error('provider down'); if(status!==undefined) error.statusCode=status; throw error; };
+    await assert.rejects(handlerFor(send)(event,{}),error=>{
+      assert.equal(error.code,code);
+      assert.equal(error.retryable,retryable);
+      return true;
+    });
+  }
+  // A delivery result carrying an error takes the same path.
+  await assert.rejects(handlerFor(async()=>({error:Object.assign(new Error('rejected'),{statusCode:403}) }))(event,{}),
+    error=>error.code==='PROVIDER_REJECTED'&&error.retryable===false);
+  // An OutboxDeliveryError from the provider passes through unchanged.
+  const passthrough=new OutboxDeliveryError('PROVIDER_REJECTED',{retryable:false});
+  await assert.rejects(handlerFor(async()=>{ throw passthrough; })(event,{}),
+    error=>error===passthrough);
+});
+
+test('list: a malformed stored row fails closed, and a storage failure propagates',async()=>{
+  const malformed={execute:async()=>({rows:[{id:null}]})};
+  await assert.rejects(listMyFeedback(malformed,{authorUserId:2}),FeedbackInputError);
+  assert.deepEqual(await listMyFeedback({execute:async()=>({rows:[]})},{authorUserId:2}),{items:[],nextCursor:null});
+  const failing={execute:async()=>{ throw new Error('list storage down'); }};
+  await assert.rejects(listMyFeedback(failing,{authorUserId:2}),/list storage down/);
+  await assert.rejects(listMyFeedback({execute:async()=>({rows:[]})},{authorUserId:2,circleId:0}),TypeError);
+  await assert.rejects(lookupFeedbackReplay(null,{circleId:1,authorUserId:2,input:{}}),TypeError);
+});
+
+test('rate limits: an invalid counter state fails closed',async()=>{
+  process.env.JWT_SECRET=JWT_SECRET;
+  const db={execute:async()=>({rows:[{attempts:0}]})};
+  await assert.rejects(consumeFeedbackRateLimits(db,{userId:2}),/invalid rate limit state/);
 });

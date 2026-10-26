@@ -10,6 +10,7 @@ const SCHEDULE='schedule.email.requested';
 const INVITATION='invitation.email.requested';
 const ACTIVATION='auth.emailverification.requested';
 const RESET='auth.passwordreset.requested';
+const FEEDBACK='feedback.submitted';
 const REMINDER='reminder.email.requested';
 
 const state={};
@@ -45,6 +46,9 @@ mock.module('../../api/_password-reset.js',{exports:{
 }});
 mock.module('../../api/_reminders.js',{exports:{
   REMINDER_EMAIL_EVENT_TYPE:REMINDER,createReminderEmailHandler:factory('reminder'),
+}});
+mock.module('../../api/_feedback-notification.js',{exports:{
+  FEEDBACK_SUBMITTED_EVENT_TYPE:FEEDBACK,createFeedbackSubmittedHandler:factory('feedback'),
 }});
 mock.module('../../api/_local-runtime.js',{exports:{
   localIdentityAdapterEnabled:()=>state.local,
@@ -102,10 +106,11 @@ test('local development captures every mail type with its kind and at most four 
   state.local=true;
   const plan=await outboxDeliveryPlan('db','http://127.0.0.1:3000',{});
   assert.equal(plan.local,true);
-  assert.deepEqual([...plan.handlers.keys()],[PAIRING,SCHEDULE,INVITATION,ACTIVATION,RESET,REMINDER]);
+  assert.deepEqual([...plan.handlers.keys()],[PAIRING,SCHEDULE,INVITATION,ACTIVATION,RESET,FEEDBACK,REMINDER]);
   assert.deepEqual(state.invitationConfigCalls,[{localRuntime:true}]);
   assert.equal(plan.handlers.get(PAIRING).localRuntime,true);
   assert.equal(plan.handlers.get(SCHEDULE).localRuntime,true);
+  assert.equal(plan.handlers.get(FEEDBACK).localRuntime,true);
   assert.equal(plan.handlers.get(INVITATION).localRuntime,true);
   assert.equal(plan.handlers.get(REMINDER).localScope,true);
   assert.equal(state.senderCalls.length,0,'no provider client is created for local capture');
@@ -156,13 +161,14 @@ test('a configured provider is shared across types and unconfigured flows are om
   state.invitationConfig=null;
   state.resetConfig=null;
   const plan=await outboxDeliveryPlan('db','https://randori.example.test',{});
-  assert.deepEqual([...plan.handlers.keys()],[PAIRING,SCHEDULE,ACTIVATION,REMINDER]);
+  assert.deepEqual([...plan.handlers.keys()],[PAIRING,SCHEDULE,ACTIVATION,FEEDBACK,REMINDER]);
   assert.equal(state.senderCalls.length,1,'one provider client is created per plan');
   assert.equal(state.senderCalls[0].from,'Randori <mail@randori.example.test>');
   assert.equal(typeof state.senderCalls[0].resend.emails.send,'function');
   const send=plan.handlers.get(PAIRING).send;
   assert.equal(plan.handlers.get(SCHEDULE).send,send);
   assert.equal(plan.handlers.get(ACTIVATION).send,send);
+  assert.equal(plan.handlers.get(FEEDBACK).send,send);
   assert.equal(plan.handlers.get(REMINDER).send,send);
   assert.equal(plan.handlers.get(PAIRING).localRuntime,false);
   assert.deepEqual(state.invitationConfigCalls,[{localRuntime:false}]);
