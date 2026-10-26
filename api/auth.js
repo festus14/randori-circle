@@ -1190,6 +1190,12 @@ async function handleGoogleCallback(req,res){
   const nameFromEmail = email.split('@')[0].slice(0,32);
   const finalName = (displayName ? String(displayName).trim().slice(0,32) : nameFromEmail) || nameFromEmail;
   const color = deterministicColor(finalName.toLowerCase());
+  // #397: The Google name applies on account creation only. A Google sign-in
+  // alone must never overwrite a member-set display name (set via
+  // POST /api/profile), so the existing-account UPDATEs below must not touch
+  // display_name. For an existing account the session carries the stored
+  // display name; finalName is only a fallback for a blank stored name.
+  let sessionDisplayName=finalName;
   if(purpose.startsWith('link:')){
     const match=/^link:([1-9]\d*):([a-f0-9]{64})$/.exec(purpose);
     const initiatingId=match?Number(match[1]):null;
@@ -1275,7 +1281,7 @@ async function handleGoogleCallback(req,res){
   let providerEmailObserved=false;
   try{
     const bySubject=await db.execute({
-      sql:`SELECT account.id,account.email,account.is_admin,account.password_hash,account.google_sub
+      sql:`SELECT account.id,account.email,account.display_name,account.is_admin,account.password_hash,account.google_sub
         FROM auth_provider_identities identity JOIN auth_accounts account ON account.id=identity.user_id
         WHERE identity.issuer=? AND identity.subject=? LIMIT 2`,
       args:[googleIssuer,googleSub],
@@ -1284,6 +1290,8 @@ async function handleGoogleCallback(req,res){
       const account=bySubject.rows[0];
       authId=Number(account.id);
       sessionEmail=String(account.email).toLowerCase();
+      const storedName=String(account.display_name||'').trim();
+      if(storedName) sessionDisplayName=storedName;
       is_admin_final=!!account.is_admin||getAdminEmails().has(sessionEmail);
       if(identityEnabled){
         const observation=await observeGoogleProviderEmail(db,{
@@ -1293,10 +1301,10 @@ async function handleGoogleCallback(req,res){
         providerEmailObserved=true;
       }
       const refreshed=await db.execute({
-        sql:`UPDATE auth_accounts SET last_login=datetime('now'),display_name=COALESCE(?,display_name),
+        sql:`UPDATE auth_accounts SET last_login=datetime('now'),
           is_admin=?,google_sub=COALESCE(google_sub,?)
           WHERE id=? AND (google_sub IS NULL OR google_sub=?) AND ${LIVE_ACCOUNT_SQL} RETURNING id`,
-        args:[finalName,is_admin_final?1:0,googleSub,authId,googleSub],
+        args:[is_admin_final?1:0,googleSub,authId,googleSub],
       });
       if(refreshed.rows?.length!==1){
         res.writeHead(302,{Location:redirectError('identity_mismatch')}); return res.end();
@@ -1305,17 +1313,19 @@ async function handleGoogleCallback(req,res){
       res.writeHead(302,{Location:redirectError('identity_mismatch')}); return res.end();
     }else{
       const existingIdentity=await db.execute({
-        sql:"SELECT id,email,is_admin,password_hash,google_sub FROM auth_accounts WHERE google_sub=? LIMIT 2",
+        sql:"SELECT id,email,display_name,is_admin,password_hash,google_sub FROM auth_accounts WHERE google_sub=? LIMIT 2",
         args:[googleSub],
       });
       if(existingIdentity.rows?.length===1){
         const account=existingIdentity.rows[0];
         authId=account.id;
         sessionEmail=String(account.email).toLowerCase();
+        const storedName=String(account.display_name||'').trim();
+        if(storedName) sessionDisplayName=storedName;
         is_admin_final=!!account.is_admin||getAdminEmails().has(sessionEmail);
         const changed=await db.execute({
-          sql:`UPDATE auth_accounts SET last_login=datetime('now'),display_name=COALESCE(?,display_name),is_admin=? WHERE id=? AND google_sub=? AND ${LIVE_ACCOUNT_SQL} RETURNING id`,
-          args:[finalName,is_admin_final?1:0,authId,googleSub],
+          sql:`UPDATE auth_accounts SET last_login=datetime('now'),is_admin=? WHERE id=? AND google_sub=? AND ${LIVE_ACCOUNT_SQL} RETURNING id`,
+          args:[is_admin_final?1:0,authId,googleSub],
         });
         if(changed.rows?.length!==1){
           res.writeHead(302,{Location:redirectError('identity_mismatch')}); return res.end();
@@ -1393,7 +1403,7 @@ async function handleGoogleCallback(req,res){
     }
   }
   let ourJwt;
-  try{ ourJwt=await issueSession(db,{uid:authId,id:authId,email:sessionEmail,name:finalName,is_admin:is_admin_final},
+  try{ ourJwt=await issueSession(db,{uid:authId,id:authId,email:sessionEmail,name:sessionDisplayName,is_admin:is_admin_final},
     {recentAuthMethod:'google'}); }
   catch{ res.writeHead(302,{Location:redirectError('session_error')}); return res.end(); }
   appendCookies(res,[sessionCookie(req,ourJwt)]);
