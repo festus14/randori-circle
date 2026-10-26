@@ -55,8 +55,8 @@ A merge to `main` does not produce two canary runs: the `pull_request`
 trigger fires only on opened / synchronize / reopened (not on merge /
 close), and its run is on the PR's preview merge ref, while the push run
 is on `refs/heads/main`. Push / schedule / dispatch runs on `main` share
-one concurrency group (`cancel-in-progress: true`), so they serialise
-instead of overlapping.
+one concurrency group (`cancel-in-progress: true`), so a newer run on
+`main` cancels an in-flight one: runs never overlap and are not queued.
 
 The canary runs in parallel with the required checks and is not in branch
 protection, so the time to merge does not grow.

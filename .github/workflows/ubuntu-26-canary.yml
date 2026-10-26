@@ -6,8 +6,9 @@ on:
   # pull_request fires only on opened/synchronize/reopened (not on merge /
   # close), and its run is on the PR's preview merge ref
   # (refs/pull/<n>/merge), while a push run is on refs/heads/main. The
-  # concurrency group below also serialises push / schedule / dispatch
-  # runs on main (cancel-in-progress).
+  # concurrency group below also means a newer push / schedule / dispatch
+  # run on main cancels an in-flight one (cancel-in-progress): runs
+  # never overlap and are not queued.
   push:
     branches: [main]
   pull_request:
