@@ -70,6 +70,24 @@ test('a clean pending-additive success is not retained: the next call re-probes'
   assert.ok(reads()>afterFirst,'pending_additive success must be evicted, not cached');
 });
 
+test('concurrent pending-additive probes coalesce, then the next sequential call re-probes',async()=>{
+  const db=await databaseAt(N-1);
+  const {client,reads}=traced(db);
+  const results=await Promise.all([
+    ensureSecondaryScheduleReadiness(client),
+    ensureSecondaryScheduleReadiness(client),
+    ensureSecondaryScheduleReadiness(client),
+  ]);
+  assert.deepEqual(results,[true,true,true]);
+  const afterConcurrent=reads();
+  assert.ok(afterConcurrent>0);
+  // One probe's worth of reads for all three concurrent calls: without
+  // coalescing this would be ~3x a single probe. A following sequential
+  // call must re-probe exactly once: without eviction it would read 0 more.
+  assert.equal(await ensureSecondaryScheduleReadiness(client),true);
+  assert.equal(reads(),afterConcurrent*2,'concurrent calls must coalesce and the next call must re-probe');
+});
+
 test('half-created artifact after a cached clean success rejects on the same client',async()=>{
   const db=await databaseAt(N-1);
   assert.equal(await ensureSecondaryScheduleReadiness(db),true);
