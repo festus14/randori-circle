@@ -17,7 +17,7 @@ jobs:
   deployability:
     name: deployability
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -25,11 +25,18 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
+      # The theme-toggle-axe guard parses specs with the pinned typescript
+      # devDependency (#419, precursor #423), so this job installs
+      # dependencies before the checks run.
+      - name: Install dependencies
+        run: npm ci
       - name: Validate repository release contract
         run: npm run check:deployability
       - name: Validate secret-free backup controls
         run: npm run check:backup-controls
       - name: Validate documentation drift
         run: npm run check:docs
+      - name: Validate theme-toggle-axe settle guard
+        run: npm run check:theme-toggle-axe
       - name: Test release-contract failure modes
         run: npm run test:deployability
