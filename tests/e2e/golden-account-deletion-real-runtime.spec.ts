@@ -33,6 +33,67 @@ async function openEditProfile(page:Page){
   await expect(page.locator('#view-profile-setup')).toHaveAttribute('data-mode','edit');
 }
 
+async function waitForThemeSettled(page:Page,selector:string,light:boolean){
+  // Issue #390: the old helper only waited for the `light` class to appear,
+  // then ran axe immediately. The class toggles synchronously, but the
+  // colours it drives animate (`.input`/`.btn` transition `background-color`
+  // and `color` over 120 ms), so on a slow runner axe sampled a transition
+  // frame — dark-theme colours (`#0b0d12` background, contrast 1.04 on
+  // #accountDeletionPassword) in the "light" run. Wait until the transition
+  // has actually finished before axe runs:
+  //  - a sentinel element's computed background + foreground equal the
+  //    settled values for the target theme. The sentinel is the failing
+  //    element when present (#accountDeletionPassword, an `.input`), else
+  //    the first input / danger button / button inside the scanned region,
+  //    else the region itself. Its colours are driven by a CSS variable
+  //    that switches instantly with the theme class, so the variable's
+  //    current value IS the settled target — a transitioning property only
+  //    equals it once the transition ends. No colour is hardcoded: the
+  //    target is read from the live stylesheet, so a palette change cannot
+  //    silently turn this into a fixed sleep / stale assertion.
+  //  - no CSS transition/animation is still running on any element inside
+  //    the scanned region.
+  // This is a poll on the settled state, not a fixed timeout, so it cannot
+  // pass by luck on a slow runner; if the theme never settles it times out
+  // instead of running axe mid-transition.
+  await page.waitForFunction(([targetSelector,wantLight])=>{
+    const root=document.querySelector(targetSelector);
+    if(!root) return false;
+    if(document.documentElement.classList.contains('light')!==wantLight) return false;
+    let sentinel=root.querySelector('#accountDeletionPassword');
+    let bgVar='--color-field';
+    let fgVar='--color-text';
+    if(!sentinel) sentinel=root.querySelector('input');
+    if(!sentinel) {
+      sentinel=root.querySelector('.btn.danger');
+      if(sentinel) { bgVar='--color-danger'; fgVar='--color-on-danger'; }
+    }
+    if(!sentinel) {
+      sentinel=root.querySelector('button');
+      if(sentinel) {
+        if(sentinel.classList.contains('secondary')) { bgVar='--color-surface'; fgVar='--color-text'; }
+        else { bgVar='--color-action'; fgVar='--color-on-action'; }
+      }
+    }
+    if(!sentinel) { sentinel=root; bgVar='--color-surface'; fgVar='--color-text'; }
+    const rootStyle=getComputedStyle(document.documentElement);
+    const toRgb=(hex:string)=>{
+      const value=hex.trim().replace(/^#/,'');
+      if(value.length!==6) return hex.trim();
+      return `rgb(${Number.parseInt(value.slice(0,2),16)}, ${Number.parseInt(value.slice(2,4),16)}, ${Number.parseInt(value.slice(4,6),16)})`;
+    };
+    const style=getComputedStyle(sentinel as Element);
+    if(style.backgroundColor!==toRgb(rootStyle.getPropertyValue(bgVar))) return false;
+    if(style.color!==toRgb(rootStyle.getPropertyValue(fgVar))) return false;
+    for(const element of [root,...root.querySelectorAll('*')]) {
+      for(const animation of element.getAnimations()) {
+        if(animation.playState==='running') return false;
+      }
+    }
+    return true;
+  },[selector,light],{timeout:10_000,polling:10});
+}
+
 async function expectAccessible(page:Page,selector:string,label:string){
   // Theme switches animate colours; check the settled state, not a transition frame.
   await page.emulateMedia({reducedMotion:'reduce'});
@@ -42,6 +103,7 @@ async function expectAccessible(page:Page,selector:string,label:string){
       const isLight=await page.evaluate(()=>document.documentElement.classList.contains('light'));
       if(isLight!==light) await page.evaluate(()=>(document.getElementById('themeToggle') as HTMLButtonElement).click());
       await expect(page.locator('html')).toHaveClass(light?/light/:/^(?!.*\blight\b).*$/);
+      await waitForThemeSettled(page,selector,light);
       const results=await new AxeBuilder({page}).include(selector)
         .withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']).analyze();
       expect(results.violations,`${label} ${width}px ${light?'light':'dark'}`).toEqual([]);
