@@ -525,7 +525,7 @@ test('workspace query parameters can be parsed from the URL without framework qu
 test('first document creation and a workspace CAS serialize to one code authority',async()=>{
   // The two writers run sequentially, in both orders, never concurrently.
   // They used to race via Promise.all through a second file: connection, but
-  // that is not a race the production code can survive on this client: on
+  // a `SQLITE_BUSY` failure on this client poisons the shared connection, so the production retries cannot absorb it: on
   // @libsql/client's local file: client a statement that fails with
   // SQLITE_BUSY poisons its connection — later COMMITs fail with
   // "cannot commit transaction - SQL statements in progress" and later
