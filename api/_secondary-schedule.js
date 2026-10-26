@@ -18,6 +18,7 @@ import { MIGRATION_CONTRACTS } from '../db/migration-contract.js';
 import {
   findPendingIntroducedArtifacts,
   inspectLedgerReadiness,
+  LEDGER_READINESS_STATES,
   readinessManifestForLedger,
 } from '../db/migration-compatibility.js';
 import { inspectSchema, readOnlyDatabase } from '../db/schema-inspector.js';
@@ -153,6 +154,8 @@ function readinessCache(db){
  * ledger must be current, or one additive migration behind (ID-87); the owned
  * tables must then match the version actually applied, and none of the
  * pending migration's introduced artifacts may already exist (#379).
+ * Resolves to the ledger state the probe verified, so the caller can decide
+ * whether the success is safe to retain (see ensureSecondaryScheduleReadiness).
  */
 async function probeSecondaryScheduleReadiness(db,{contracts=MIGRATION_CONTRACTS}={}){
   if(!db||typeof db.execute!=='function') fail('SECONDARY_SCHEDULE_INPUT_INVALID','A database client is required.');
@@ -173,7 +176,7 @@ async function probeSecondaryScheduleReadiness(db,{contracts=MIGRATION_CONTRACTS
     if(!schema.ok||schema.warnings.length!==0){
       fail('SECONDARY_SCHEDULE_SCHEMA_UNAVAILABLE','Schedule schema is unavailable.');
     }
-    return true;
+    return ledger.state;
   }catch(error){
     if(error instanceof SecondaryScheduleError) throw error;
     fail('SECONDARY_SCHEDULE_SCHEMA_UNAVAILABLE','Schedule schema is unavailable.',error);
@@ -185,15 +188,33 @@ export async function ensureSecondaryScheduleReadiness(db,{contracts=MIGRATION_C
   // A caller-supplied contract set (tests modelling other code versions)
   // must neither read nor poison the production cache, which is keyed by
   // database alone; probe it directly instead.
-  if(contracts!==MIGRATION_CONTRACTS) return probeSecondaryScheduleReadiness(db,{contracts});
+  if(contracts!==MIGRATION_CONTRACTS){
+    await probeSecondaryScheduleReadiness(db,{contracts});
+    return true;
+  }
   const {cache,key}=readinessCache(db);
   const existing=cache.get(key);
   if(existing) return existing;
+  // Cache only a success the schema cannot outgrow behind our back (#395).
+  // A `pending_additive` success is exactly the window in which a
+  // half-created introduced artifact can appear: the pending migration is
+  // in flight, so a later probe must re-check instead of trusting the
+  // earlier clean verdict. Retaining it would mask that artifact, while a
+  // TTL would still mask it for the whole TTL and there is no
+  // schema-change signal to subscribe to (migrations run out of process).
+  // So a pending_additive success is coalesced while in flight, then
+  // evicted on settle; the next call re-probes. A `current` success is
+  // retained as before: no migration is in flight, and the cache keeps its
+  // existing URL scoping (per TURSO_DATABASE_URL, else per client).
   const pending=probeSecondaryScheduleReadiness(db,{contracts});
-  cache.set(key,pending);
-  try{ return await pending; }
+  const verdict=pending.then(state=>{
+    if(state!==LEDGER_READINESS_STATES.CURRENT&&cache.get(key)===verdict) cache.delete(key);
+    return true;
+  });
+  cache.set(key,verdict);
+  try{ return await verdict; }
   catch(error){
-    if(cache.get(key)===pending) cache.delete(key);
+    if(cache.get(key)===verdict) cache.delete(key);
     throw error;
   }
 }
