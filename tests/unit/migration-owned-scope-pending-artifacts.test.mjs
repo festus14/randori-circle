@@ -20,9 +20,9 @@
 // refuses triggers on existing tables, and the owned-scope inspector is
 // blind to both by construction.
 //
-// Each scenario uses a fresh database client: ensureSecondaryScheduleReadiness
-// caches a success per client, so re-probing the same client after
-// mutating its schema would return the stale cached verdict.
+// Each scenario uses a fresh database client: it keeps the scenarios
+// independent (see secondary-schedule-stale-cache.test.mjs for the
+// same-client re-probe behaviour, #395).
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

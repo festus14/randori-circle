@@ -4461,9 +4461,18 @@ rehearsal, status and apply.
   so it is blind to a half-created introduced table and to introduced indexes
   or triggers on tables outside the scope, while the full-manifest health
   probe already caught those as unexpected artifacts.
-  Residual: the secondary-schedule probe caches a clean success indefinitely
-  per DB/client, so a warm process could keep returning ready if a
-  half-created artifact appears later; tracked in #395.
+  The secondary-schedule probe retains a clean success only when the
+  ledger was CURRENT when probed (#395). A `pending_additive` success is
+  coalesced while in flight, then evicted on settle, so the next call
+  re-probes and a half-created artifact appearing later is rejected on the
+  same process/client instead of being masked by the earlier clean verdict.
+  A TTL was rejected: it would still mask the artifact for the whole TTL,
+  and there is no schema-change signal to subscribe to (migrations run out
+  of process). The cache keeps its existing URL scoping (per
+  TURSO_DATABASE_URL, else per client). A retained `current` success still
+  assumes the schema is stable once no migration is in flight; drift
+  outside a pending migration is not re-checked, as with the other
+  readiness caches.
   Pairing publication readiness checks only the v6 core contract, already
   accepted any later ledger prefix, and cannot be changed by an additive
   migration.
