@@ -1,5 +1,15 @@
 name: ubuntu-26-canary
 on:
+  # Push to main runs the canary on the merged commit itself, so #390's
+  # "consecutive green runs on main" bar can be satisfied without waiting
+  # for the weekly schedule. This does NOT duplicate the pull_request run:
+  # pull_request fires only on opened/synchronize/reopened (not on merge /
+  # close), and its run is on the PR's preview merge ref
+  # (refs/pull/<n>/merge), while a push run is on refs/heads/main. The
+  # concurrency group below also serialises push / schedule / dispatch
+  # runs on main (cancel-in-progress).
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
   schedule:
