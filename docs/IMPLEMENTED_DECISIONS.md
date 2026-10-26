@@ -18,7 +18,7 @@ runtime. Detailed database procedures remain in
 
 Every entry appears exactly once, in numeric order. The index is the checklist for the log: a new entry must add its row here, and an entry move must keep its row in place.
 
-**Status.** `Active` means the decision stands as written. `Amended` means the entry changed after it first landed — an addendum, a dated in-entry update, or a later entry changing its rule — and the amendment is marked at the top of both entries involved. No entry is marked `Superseded`: no decision in this log has been withdrawn. Cross-references inside an entry body ("see ID-NN") are pointers, not amendments.
+**Status.** `Active` means the decision stands as written. `Amended` means the entry changed after it first landed — an addendum, a dated in-entry update, or a later entry changing its rule — and the amendment is marked at the top of the amended entry and, where a separate entry amends it, at the top of that entry too. No entry is marked `Superseded`: no decision in this log has been withdrawn. Cross-references inside an entry body ("see ID-NN") are pointers, not amendments.
 
 **Dates.** Entries do not carry a landing date, so the index does not invent one. Dated material inside entries (for example ID-83's dated correction) is part of that entry's as-landed history and stays where it is.
 
@@ -97,9 +97,9 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-69](#id-69-add-co-owners-and-app-admin-grants-without-a-schema-change) | Add co-owners and app admin grants without a schema change | Auth & Identity | Active |
 | [ID-70](#id-70-retire-the-legacy-admin-promote-record-non-pii-email-provider-reject-reasons) | Retire the legacy admin promote; record non-PII email provider reject reasons | Security, Secrets & Privacy | Active |
 | [ID-71](#id-71-send-reminders-from-the-outbox-cron-behind-a-flag-without-a-migration) | Send reminders from the outbox cron behind a flag, without a migration | Email & Notifications | Active |
-| [ID-72](#id-72-turn-on-production-client-error-logging-warnerror-signed-in-with-app_logs-retention) | Turn on production client error logging (warn/error, signed-in) with app_logs retention | Observability & Ops | Amended by addendum (PR #326); [ID-82](#id-82-keep-no-raw-ip-address-or-user-agent-in-app_logs) replaces the addendum's `ua` cut-and-redact |
-| [ID-73](#id-73-admin-diagnostics-in-the-circle-view-read-only-and-behind-a-flag) | Admin Diagnostics in the Circle view, read-only and behind a flag | Observability & Ops | Amended by addendum (PR #343) |
-| [ID-74](#id-74-check-the-live-execution-provider-after-each-deploy-and-daily-within-a-fixed-sandbox-budget) | Check the live execution provider after each deploy and daily, within a fixed sandbox budget | Observability & Ops | Amended by addendum (PR #342) |
+| [ID-72](#id-72-turn-on-production-client-error-logging-warnerror-signed-in-with-app_logs-retention) | Turn on production client error logging (warn/error, signed-in) with app_logs retention | Observability & Ops | Amended by addendum (PR #337, post-merge review of PR #326); [ID-82](#id-82-keep-no-raw-ip-address-or-user-agent-in-app_logs) replaces the addendum's `ua` cut-and-redact |
+| [ID-73](#id-73-admin-diagnostics-in-the-circle-view-read-only-and-behind-a-flag) | Admin Diagnostics in the Circle view, read-only and behind a flag | Observability & Ops | Amended by addendum (PR #348; issue #343) |
+| [ID-74](#id-74-check-the-live-execution-provider-after-each-deploy-and-daily-within-a-fixed-sandbox-budget) | Check the live execution provider after each deploy and daily, within a fixed sandbox budget | Observability & Ops | Amended by addendum (PR #348; issue #342) |
 | [ID-75](#id-75-give-the-backup-watchdog-an-eight-hour-grace-for-late-github-schedules) | Give the backup watchdog an eight-hour grace for late GitHub schedules | Backup & Recovery | Active |
 | [ID-76](#id-76-compute-each-members-progress-on-request-from-their-own-records-behind-a-flag) | Compute each member's progress on request from their own records, behind a flag | Product & UI | Active |
 | [ID-77](#id-77-suggest-next-exercises-from-verified-history-without-a-migration) | Suggest next exercises from verified history, without a migration | Product & UI | Active |
@@ -3402,7 +3402,7 @@ Status: implemented behind `ADMIN_DIAGNOSTICS_ENABLED` (default off); no
 migration. Issue #310 (post-MVP roadmap #312). The visual design is
 provisional (`needs-design`).
 
-**Amended by:** the addendum below (PR #343).
+**Amended by:** the addendum below (PR #348; issue #343).
 
 **Context.** Operational health was spread across GitHub Actions runs (outbox
 and backup watchdogs), Sentry, `/api/health/ready` and the admin logs widget on
@@ -3507,7 +3507,7 @@ The deferred #249 seam is replaced by `execution.smoke`, still behind
 Status: implemented. Ops-only: no feature flag, no migration, no new secret.
 Issue #249. This produces the live evidence that #248 and #9 need.
 
-**Amended by:** the addendum below (PR #342).
+**Amended by:** the addendum below (PR #348; issue #342).
 
 **Context.** End-to-end tests mock the code-execution provider. When the public
 Piston API retired, production Run broke while every check stayed green
