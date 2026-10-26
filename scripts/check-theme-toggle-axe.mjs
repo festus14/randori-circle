@@ -775,6 +775,10 @@ function collectEvents(body, module, frame, events, stack) {
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
       if (ts.isIdentifier(node.left) && isFunctionLike(node.right)) {
         locals.set(node.left.text, node.right);
+        // A function RHS classifies as none, so this deletes any old
+        // binding (settle alias / toggle alias / AxeBuilder var): without
+        // it the rebound name would still count as what it used to be.
+        classifyBinding(currentFrame, module, node.left.text, node.right);
         return;
       }
       // `toggle = page.locator('#themeToggle')` reassignment, and

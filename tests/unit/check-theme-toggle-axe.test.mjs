@@ -936,6 +936,40 @@ test('nit 9: an alias reassigned to a non-theme locator stops counting', () => {
   ].join('\n')));
 });
 
+test('re-review nit: arrow-function reassignment deletes the old binding', () => {
+  // Settle alias rebound to an arrow function no longer counts as a settle:
+  // the toggle -> axe pair must fail.
+  assertFails(spec([
+    "test('settle alias rebound to arrow', async ({ page }) => {",
+    '  let s = waitForThemeSettled;',
+    '  s = async () => {};',
+    `  ${TOGGLE}`,
+    '  await s(page);',
+    `  ${AXE}`,
+    '});',
+  ].join('\n')));
+  // Toggle alias rebound to an arrow function no longer counts as a toggle:
+  // the click is dead, so the axe alone must pass.
+  assertPasses(spec([
+    "test('toggle alias rebound to arrow', async ({ page }) => {",
+    "  let t = page.locator('#themeToggle');",
+    '  t = async () => {};',
+    '  await t.click();',
+    `  ${AXE}`,
+    '});',
+  ].join('\n')));
+  // AxeBuilder var rebound to an arrow function no longer counts as axe:
+  // the toggle alone must pass.
+  assertPasses(spec([
+    "test('axe var rebound to arrow', async ({ page }) => {",
+    `  ${TOGGLE}`,
+    '  let a = new AxeBuilder({ page });',
+    '  a = async () => {};',
+    '  await a.analyze();',
+    '});',
+  ].join('\n')));
+});
+
 test('harder, fixed cheaply: aliased AxeBuilder import, helper param binding, caller-closing helpers', () => {
   // Aliased import: new MyAxe(...).analyze() counts as axe.
   assertFails([
