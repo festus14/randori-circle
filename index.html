@@ -2284,6 +2284,9 @@ a.btn{text-decoration:none}
         <!-- Issue #339: account deletion (ACCOUNT_DELETION_ENABLED), filled by assets/account-deletion.js. Visual design is provisional. -->
         <section id="accountDeletion" class="card onboarding-step onboarding-edit-only" data-testid="account-deletion" hidden></section>
 
+        <!-- Issue #365: data export (DATA_EXPORT_ENABLED), filled by assets/data-export.js. Visual design is provisional. -->
+        <section id="dataExport" class="card onboarding-step onboarding-edit-only" data-testid="data-export" hidden></section>
+
         <div id="setupStepAvailability" class="card onboarding-step onboarding-flow-only" data-step-panel="availability" hidden>
           <div class="card-h"><h2 id="setupAvailabilityTitle" tabindex="-1">Are you in for the next cycle?</h2><p id="setupAvailabilityLead" class="onboarding-lead">Pairs are made from members who say they’re in. Choose for this cycle only.</p></div>
           <div class="card-b onboarding-body">
@@ -4328,6 +4331,7 @@ async function refreshMe(){
       ||(capabilities.circleHealth!==undefined&&typeof capabilities.circleHealth!=='boolean')
       ||(capabilities.adminDiagnostics!==undefined&&typeof capabilities.adminDiagnostics!=='boolean')
       ||(capabilities.accountDeletion!==undefined&&typeof capabilities.accountDeletion!=='boolean')
+      ||(capabilities.dataExport!==undefined&&typeof capabilities.dataExport!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
@@ -4346,6 +4350,7 @@ async function refreshMe(){
       circleHealth:capabilities.circleHealth===true,
       adminDiagnostics:capabilities.adminDiagnostics===true,
       accountDeletion:capabilities.accountDeletion===true,
+      dataExport:capabilities.dataExport===true,
       registrationMode:mode,
     });
   }
@@ -7638,6 +7643,37 @@ async function refreshMe(){
   window.addEventListener('randori:auth-refreshed',()=>window._randori_sync_account_deletion());
   Promise.resolve(authCapabilitiesPromise).then(()=>window._randori_sync_account_deletion(),()=>{});
   window._randori_sync_account_deletion();
+  // Data export in Edit profile (assets/data-export.js, issue #365):
+  // imported only for a signed-in member while the server advertises the
+  // capability. The API authorizes every request again.
+  const dataExportView={controller:null,loading:null};
+  function dataExportAllowed(){ return authCapabilities.dataExport===true&&!!me; }
+  window._randori_sync_data_export=()=>{
+    if(dataExportView.controller) return dataExportView.controller.sync();
+    if(!dataExportAllowed()||dataExportView.loading) return;
+    dataExportView.loading=import('/assets/data-export.js').then(module=>{
+      dataExportView.controller=module.mountDataExport({doc:document,host:{
+        enabled:dataExportAllowed,
+        userId:currentAuthActorId,
+        api,
+        download:(filename,text)=>{
+          const blob=new Blob([text],{type:'application/json'});
+          const url=URL.createObjectURL(blob);
+          const anchor=document.createElement('a');
+          anchor.href=url;
+          anchor.download=filename;
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          setTimeout(()=>URL.revokeObjectURL(url),1000);
+        },
+      }});
+      dataExportView.controller?.sync();
+    }).catch(()=>{ dataExportView.loading=null; });
+  };
+  window.addEventListener('randori:auth-refreshed',()=>window._randori_sync_data_export());
+  Promise.resolve(authCapabilitiesPromise).then(()=>window._randori_sync_data_export(),()=>{});
+  window._randori_sync_data_export();
   // One-time notice after the deletion reload (no account data is stored).
   (function showAccountDeletedNotice(){
     let deleted=false;

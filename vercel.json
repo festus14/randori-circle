@@ -95,6 +95,10 @@
       "destination": "/api/auth?endpoint=account-delete"
     },
     {
+      "source": "/api/auth/account/export",
+      "destination": "/api/auth?endpoint=account-export"
+    },
+    {
       "source": "/api/auth/logout",
       "destination": "/api/auth?endpoint=logout"
     },
