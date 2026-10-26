@@ -79,8 +79,18 @@ import {Page} from '@playwright/test';
 
 export async function waitForThemeSettled(page:Page,selector:string|string[],light:boolean){
   const selectors=Array.isArray(selector)?selector:[selector];
-  await page.waitForFunction(([targetSelectors,wantLight])=>{
-    if(document.documentElement.classList.contains('light')!==wantLight) return false;
+  // On timeout, surface the last recorded diagnosis (which check was still
+  // failing, and for animations, which element) instead of a bare
+  // TimeoutError: cross-engine settle failures are otherwise undebuggable
+  // from CI logs alone.
+  try{
+    await page.waitForFunction(([targetSelectors,wantLight])=>{
+    const diag=(reason:string)=>{
+      (window as any).__themeSettleDiag=reason;
+      return false;
+    };
+    if(document.documentElement.classList.contains('light')!==wantLight)
+      return diag(`html class light=${document.documentElement.classList.contains('light')} wantLight=${wantLight}`);
     const rootStyle=getComputedStyle(document.documentElement);
     const toRgb=(hex:string)=>{
       const value=hex.trim().replace(/^#/,'');
@@ -123,7 +133,7 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
     };
     for(const targetSelector of targetSelectors){
       const root=document.querySelector(targetSelector);
-      if(!root) return false;
+      if(!root) return diag(`missing root ${targetSelector}`);
       let sentinel:Element|null=null;
       let palette:{bgVar:string;fgVar:string}|null=null;
       const pick=(candidate:Element|null,next:{bgVar:string;fgVar:string})=>{
@@ -146,8 +156,10 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
       if(sentinel&&palette){
         const style=getComputedStyle(sentinel);
         const target=expected(palette.bgVar,palette.fgVar);
-        if(style.backgroundColor!==target.bg) return false;
-        if(style.color!==target.fg) return false;
+        if(style.backgroundColor!==target.bg)
+          return diag(`sentinel ${sentinel.tagName.toLowerCase()}#${sentinel.id}.${[...sentinel.classList].join('.')} background ${style.backgroundColor} != ${target.bg} (fg ${style.color} vs ${target.fg})`);
+        if(style.color!==target.fg)
+          return diag(`sentinel ${sentinel.tagName.toLowerCase()}#${sentinel.id}.${[...sentinel.classList].join('.')} color ${style.color} != ${target.fg} (bg ${style.backgroundColor} vs ${target.bg})`);
       }
       // An element is rendered if it owns a layout box, or an ancestor of
       // one that does (display:contents renders through its descendants).
@@ -162,10 +174,20 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
       for(const element of [root,...root.querySelectorAll('*')]){
         if(!rendered.has(element)) continue;
         for(const animation of element.getAnimations()){
-          if(animation.playState==='running') return false;
+          if(animation.playState==='running')
+            return diag(`running ${(animation as any).type||'animation'} ${'propertyName' in animation?(animation as any).propertyName:''} on ${element.tagName.toLowerCase()}#${element.id}.${[...element.classList].join('.')} rects=${element.getClientRects().length} playState=${animation.playState}`);
         }
       }
     }
     return true;
   },[selectors,light],{timeout:10_000,polling:10});
+  }catch(error){
+    const diagnosis=await page.evaluate(()=>{
+      return (window as any).__themeSettleDiag as string|undefined;
+    }).catch(()=>undefined);
+    throw new Error(
+      `waitForThemeSettled(${JSON.stringify(selectors)}, light=${light}) timed out: ${diagnosis??'no diagnosis recorded'}`,
+      {cause:error},
+    );
+  }
 }

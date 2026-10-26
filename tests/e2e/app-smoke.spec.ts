@@ -107,9 +107,11 @@ test('browser tests never load the production telemetry SDK (Chromium host-resol
 test('telemetry SDK never initialises under route interception', { tag: '@smoke' }, async ({ page }) => {
   // Cross-engine version of the Chromium host-resolver test above (#399):
   // the loader is aborted at the route layer in every engine, so Sentry
-  // never initialises and no telemetry request can succeed. The failure
-  // mode is net::ERR_BLOCKED_BY_CLIENT, distinct from the host-resolver
-  // failure, by design.
+  // never initialises and no telemetry request can succeed. The exact
+  // failure text is engine-specific — Chromium reports
+  // `net::ERR_BLOCKED_BY_CLIENT.Inspector`, Firefox `NS_ERROR_FAILURE`,
+  // WebKit `Blocked by Web Inspector` — so assert the shape (exactly one
+  // failed telemetry request, blocked at the route layer), not the string.
   const telemetryFailures: string[] = [];
   page.on('requestfailed', request => {
     if (/sentry-cdn\.com|sentry\.io/.test(new URL(request.url()).hostname)) {
@@ -130,7 +132,11 @@ test('telemetry SDK never initialises under route interception', { tag: '@smoke'
     productionOrigin: 'https://randoricircle.com',
   });
   // The loader is requested once the page is idle (after load), not while it parses.
-  await expect.poll(() => telemetryFailures).toEqual(['net::ERR_BLOCKED_BY_CLIENT']);
+  // Exactly one telemetry request, and it failed at the route layer (the
+  // failure text is engine-specific — see the comment above).
+  await expect.poll(() => telemetryFailures).toHaveLength(1);
+  expect(telemetryFailures[0]).toMatch(/BLOCKED_BY_CLIENT|NS_ERROR_FAILURE|Blocked by Web Inspector/);
+  expect(telemetryFailures[0]).not.toBe('net::ERR_NAME_NOT_RESOLVED');
 });
 
 // ID-72: the client logger installs everywhere, including production. This

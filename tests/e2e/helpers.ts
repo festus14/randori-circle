@@ -116,11 +116,14 @@ const defaultApiResponses: Record<string, ApiResponse> = {
 // replacement for the Chromium-only --host-resolver-rules flag: abort the
 // loader (`*.sentry-cdn.com`) and any ingest (`*.sentry.io`) request at the
 // route layer, which works identically in Chromium, Firefox and WebKit. The
-// failure is `net::ERR_BLOCKED_BY_CLIENT`, deliberately distinct from the
-// Chromium host-resolver failure (`net::ERR_NAME_NOT_RESOLVED`) so the
-// Chromium-only telemetry test in app-smoke.spec.ts keeps proving the
-// host-resolver mechanism on its own — call this only from tests that are
-// meant to run under interception, never from that test. Golden specs do
+// failure text is engine-specific (Chromium
+// `net::ERR_BLOCKED_BY_CLIENT.Inspector`, Firefox `NS_ERROR_FAILURE`,
+// WebKit `Blocked by Web Inspector`) but is always a route-layer block,
+// deliberately distinct from the Chromium host-resolver failure
+// (`net::ERR_NAME_NOT_RESOLVED`) so the Chromium-only telemetry test in
+// app-smoke.spec.ts keeps proving the host-resolver mechanism on its own —
+// call this only from tests that are meant to run under interception,
+// never from that test. Golden specs do
 // not call this: the local runtime strips the Sentry loader from the client
 // it serves, and newGoldenPage aborts every off-origin request anyway.
 // Register before the first goto; re-register after any page.unrouteAll().

@@ -136,15 +136,18 @@ files hold Chromium-only tests next to smoke tests):
 - Mocked smoke tests call `blockTelemetry(page)` (in
   `tests/e2e/helpers.ts`) before the first navigation: route interception
   aborts the Sentry loader (`*.sentry-cdn.com`) and any ingest
-  (`*.sentry.io`) with `net::ERR_BLOCKED_BY_CLIENT`, identically in every
-  engine. Re-register after any `page.unrouteAll()`.
+  (`*.sentry.io`) at the route layer in every engine. The failure text is
+  engine-specific (Chromium `net::ERR_BLOCKED_BY_CLIENT.Inspector`,
+  Firefox `NS_ERROR_FAILURE`, WebKit `Blocked by Web Inspector`).
+  Re-register after any `page.unrouteAll()`.
 - Golden smoke tests need no explicit call: the local runtime strips the
   Sentry loader from the client it serves, and `newGoldenPage` aborts
   every off-origin request.
 - `app-smoke.spec.ts` holds both sides of the split: the
   Chromium-host-resolver test (`net::ERR_NAME_NOT_RESOLVED`, no tag, no
   interception — interception would mask the mechanism it guards) and the
-  `@smoke` interception test (`net::ERR_BLOCKED_BY_CLIENT`).
+  `@smoke` interception test (exactly one failed telemetry request; the
+  failure text is engine-specific, see above).
 - `--host-resolver-rules` stays Chromium-only (defence in depth for the
   full suite), never in the shared `use` block.
 

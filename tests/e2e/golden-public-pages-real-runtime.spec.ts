@@ -92,6 +92,10 @@ test('a signed-out visitor opens the Privacy Policy and Terms from the landing p
     for(const item of PAGES){
       await page.goto(`${golden.url}/`,{waitUntil:'domcontentloaded'});
       await expect(page.locator('#view-landing')).toBeVisible();
+      // Let the anonymous catalogue request settle before navigating away:
+      // WebKit reports a pageerror for a fetch aborted by navigation (see
+      // the back-link wait below), even though the app catches it.
+      await expect.poll(() => page.evaluate(() => (window as any)._randori_questions?.state)).toBe('failed');
       const link=page.getByTestId(item.landingLink);
       await expect(link).toBeVisible();
       await expect(link).toHaveAttribute('href',item.path);
@@ -105,6 +109,12 @@ test('a signed-out visitor opens the Privacy Policy and Terms from the landing p
       await page.getByTestId('public-page-back').click();
       await expect(page).toHaveURL(`${golden.url}/`);
       await expect(page.locator('#view-landing')).toBeVisible();
+      // WebKit reports a pageerror when a navigation aborts an in-flight
+      // fetch — even though the app catches the failure (the anonymous
+      // catalogue request ends in a 401 here). Let that request settle
+      // before the next navigation, or the aborted fetch fails the
+      // page-errors assertion below in WebKit.
+      await expect.poll(() => page.evaluate(() => (window as any)._randori_questions?.state)).toBe('failed');
     }
 
     // The in-page privacy note links the full policy too.
