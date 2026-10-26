@@ -104,6 +104,18 @@ async function insertAudit(eventId,{action='dead_lettered',reasonCode,toStatus='
   });
 }
 
+// No-leak check for the outbox-health body. checkedAt/lastDeliveredAt are
+// live ISO timestamps, so they are stripped first: in the #417 canary the
+// milliseconds `.403` in `checkedAt` tripped a bare `403` substring match.
+// 403 must then appear as a standalone token (e.g. the raw provider reason
+// `403:validation_error:...`, a `"403"` key, or `"status":403`), not as a
+// substring of a timestamp (`.403`) or a larger number (`1403`, `403000`).
+function assertNoOutboxHealthLeak(body){
+  const {checkedAt: _checkedAt,lastDeliveredAt: _lastDeliveredAt,...withoutTimestamps}=body;
+  assert.doesNotMatch(JSON.stringify(withoutTimestamps),
+    /example\.test|health-key|validation_error|(?<![\d.])403(?![\d.])/);
+}
+
 before(async()=>{
   await prepareMigrationConnection(realDb);
   const state=await inspectMigrationState(realDb);
@@ -280,7 +292,27 @@ test('outbox health aggregates recent dead-letter provider reject reasons withou
   });
   assert.deepEqual(Object.keys(health.body.recentRejectReasons),
     ['testing_recipient_restricted','domain_not_verified','other']);
-  assert.doesNotMatch(JSON.stringify(health.body),/example\.test|health-key|validation_error|403/);
+  assertNoOutboxHealthLeak(health.body);
+});
+
+test('outbox health no-leak check ignores a .403 timestamp but still catches a genuine 403 leak',()=>{
+  // The exact canary shape from #417: both timestamps end in `.403`.
+  const clean={ok:true,checkedAt:'2026-10-26T08:36:25.403Z',
+    lastDeliveredAt:'2026-10-26T08:36:25.403Z',oldestDueAgeMs:403000,dueCount:0,
+    processingStaleCount:0,oldestStaleLeaseAgeMs:null,deadLetterCount:14,
+    deadLetterWindowMs:86400000,recentRejectReasons:{testing_recipient_restricted:2,domain_not_verified:9,other:1}};
+  assertNoOutboxHealthLeak(clean);
+  // Each of these must still fail the check: a raw provider reason code, the
+  // raw `validation_error` segment, a standalone 403, or a leaked address/key.
+  for(const leaky of [
+    {...clean,recentRejectReasons:{'403:validation_error:domain_not_verified':1}},
+    {...clean,recentRejectReasons:{validation_error:1}},
+    {...clean,recentRejectReasons:{'403':1}},
+    {...clean,recentRejectReasons:{},status:403},
+    {...clean,recentRejectReasons:{},detail:'403:validation_error:domain_not_verified'},
+    {...clean,recentRejectReasons:{},detail:'person@example.test'},
+    {...clean,recentRejectReasons:{},detail:'health-key-1-private'},
+  ]) assert.throws(()=>assertNoOutboxHealthLeak(leaky),assert.AssertionError);
 });
 
 test('outbox health fails closed when the database is unavailable or returns nonsense',async()=>{
