@@ -139,8 +139,11 @@ triage UI will implement); the body is never emailed.
   (`SELECT … LIMIT 0`) and treats a missing table as not installed, so it
   works on a v21 database too (no feedback rows can exist there). See
   `docs/ACCOUNT_DELETION.md`.
-- Export (#365) will include the member's feedback once it lands; votes
-  they cast belong to other members' items and are not part of the export.
+- Export (#365, ID-90) includes the member's own feedback items and
+  only the votes they cast: a vote on another member's item exports as
+  the member's own vote, without that item's title or body; votes other
+  members cast on the member's items are not exported. Feedback events
+  are excluded — they are an append-only audit trail.
 
 ## Release order (ID-87)
 

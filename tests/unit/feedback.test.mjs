@@ -416,7 +416,8 @@ test('outbox drain: a flag-off queued row drains to suppressed, never delivery_s
 
 test('validation: diagnostics keys that are emails, IPs, JWTs or tokens are rejected',()=>{
   for(const key of ['user@example.test','192.168.1.1',
-    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature','tok_live_example_1234567890abcdef','a'.repeat(40)]){
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature','tok_live_example_1234567890abcdef','a'.repeat(40),
+    'sk_live_abc','sk_test_abc','ghp_abcdef','gho_abcdef','github_pat_abcdef','xoxb-12345']){
     const result=validateFeedbackInput(validInput({kind:'bug',diagnostics:{[key]:'Chrome'}}));
     assert.equal(result.ok,false,key);
     assert.ok(result.fields.diagnostics,key);

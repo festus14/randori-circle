@@ -263,7 +263,7 @@ function pickColumn(columns,candidates){
 async function readFeedback(db,userId){
   const empty=Object.freeze({included:false,items:[],votes:[],votes_included:false,events_included:false,
     truncated_items:false,truncated_votes:false,
-    reason:'Feedback tables are not present (issue #353 has not landed).'});
+    reason:'Feedback tables are not present (migration v22 not applied).'});
   if(!await tableExists(db,'feedback_items')) return empty;
   const itemColumns=await tableColumns(db,'feedback_items');
   const authorColumn=pickColumn(itemColumns,['author_user_id','user_id','author_id']);

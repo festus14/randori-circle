@@ -61,7 +61,7 @@ function isPlainObject(value){
 // storing it.
 export const DIAGNOSTICS_KEY_PATTERN=/^[A-Za-z0-9_.\-]+$/;
 const DIAGNOSTICS_KEY_IPV4=/^\d{1,3}(?:\.\d{1,3}){3}$/;
-const DIAGNOSTICS_KEY_TOKEN=/^(?:eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*|sk_(?:live|test)_|ghp_|gho_|github_pat_|xox[baprs]-|AKIA[0-9A-Z]{16}|[A-Za-z0-9_.\-]{32,})$/;
+const DIAGNOSTICS_KEY_TOKEN=/^(?:eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*|sk_(?:live|test)_.+|ghp_.+|gho_.+|github_pat_.+|xox[baprs]-.+|AKIA[0-9A-Z]{16}|[A-Za-z0-9_.\-]{32,})$/;
 
 export function diagnosticsKeySafe(key){
   return typeof key==='string'&&key.length>0&&key.length<=64
