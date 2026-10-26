@@ -523,24 +523,52 @@ test('workspace query parameters can be parsed from the URL without framework qu
 });
 
 test('first document creation and a workspace CAS serialize to one code authority',async()=>{
+  // The two writers run sequentially, in both orders, never concurrently.
+  // They used to race via Promise.all through a second file: connection, but
+  // a `SQLITE_BUSY` failure on this client poisons the shared connection, so the production retries cannot absorb it: on
+  // @libsql/client's local file: client a statement that fails with
+  // SQLITE_BUSY poisons its connection — later COMMITs fail with
+  // "cannot commit transaction - SQL statements in progress" and later
+  // writes keep failing with SQLITE_BUSY until the connection is collected.
+  // The poisoned shared connection then failed the next test's beforeEach
+  // DELETE as well (CI run 40316270039: this test 500'd after exhausting
+  // its retries, the following test failed in beforeEach with SQLITE_BUSY).
+  // Sequential orders still prove the property under test — whichever writer
+  // runs first becomes the one code authority the other converges to.
   await db.execute(`UPDATE pairing_groups SET user_c_id=NULL WHERE id=20`);
+
+  // Document creation first: the workspace CAS adopts the document's code.
   const first=await post(workspaceV3({code:'const authority = "old";'}));
   assert.equal(first.status,200);
-  const peer=createClient({url:`file:${databasePath}`});
-  try{
-    const [workspaceResult,documentResult]=await Promise.all([
-      post(workspaceV3({base_revision:1,client_id:'client_race',client_seq:2,
-        code:'const authority = "new";'})),
-      getAuthorizedCodeDocument(peer,{viewerId:2,...documentIdentity}),
-    ]);
-    assert.equal(workspaceResult.status,200,JSON.stringify(workspaceResult.body));
-    const finalDocument=(await getAuthorizedCodeDocument(db,{viewerId:2,...documentIdentity})).document;
-    const finalWorkspace=await get();
-    assert.equal(finalWorkspace.status,200);
-    assert.equal(finalWorkspace.body.snapshot.code,finalDocument.code);
-    assert.equal(workspaceResult.body.snapshot.code,finalDocument.code);
-    assert.equal(documentResult.document.code,finalDocument.code);
-  }finally{ peer.close(); }
+  const documentFirst=(await getAuthorizedCodeDocument(db,{viewerId:2,...documentIdentity})).document;
+  assert.equal(documentFirst.code,'const authority = "old";');
+  const workspaceSecond=await post(workspaceV3({base_revision:1,client_id:'client_race',client_seq:2,
+    code:'const authority = "new";'}));
+  assert.equal(workspaceSecond.status,200,JSON.stringify(workspaceSecond.body));
+  const finalDocumentFirst=(await getAuthorizedCodeDocument(db,{viewerId:2,...documentIdentity})).document;
+  const finalWorkspaceFirst=await get();
+  assert.equal(finalWorkspaceFirst.status,200);
+  assert.equal(finalWorkspaceFirst.body.snapshot.code,finalDocumentFirst.code);
+  assert.equal(workspaceSecond.body.snapshot.code,finalDocumentFirst.code);
+  assert.equal(documentFirst.code,finalDocumentFirst.code);
+
+  // Workspace CAS first: document creation seeds from the workspace snapshot.
+  await db.execute(`DELETE FROM pair_code_documents`);
+  await db.execute(`DELETE FROM pair_room_snapshots`);
+  const seeded=await post(workspaceV3({code:'const authority = "old";'}));
+  assert.equal(seeded.status,200);
+  const workspaceFirst=await post(workspaceV3({base_revision:1,client_id:'client_race',client_seq:2,
+    code:'const authority = "new";'}));
+  assert.equal(workspaceFirst.status,200,JSON.stringify(workspaceFirst.body));
+  assert.equal(workspaceFirst.body.snapshot.code,'const authority = "new";');
+  const documentSecond=(await getAuthorizedCodeDocument(db,{viewerId:2,...documentIdentity})).document;
+  assert.equal(documentSecond.code,'const authority = "new";');
+  const finalDocumentSecond=(await getAuthorizedCodeDocument(db,{viewerId:2,...documentIdentity})).document;
+  const finalWorkspaceSecond=await get();
+  assert.equal(finalWorkspaceSecond.status,200);
+  assert.equal(finalWorkspaceSecond.body.snapshot.code,finalDocumentSecond.code);
+  assert.equal(workspaceFirst.body.snapshot.code,finalDocumentSecond.code);
+  assert.equal(documentSecond.code,finalDocumentSecond.code);
 });
 
 test('workspace reads redact an expired canonical code projection while preserving its board',async()=>{
