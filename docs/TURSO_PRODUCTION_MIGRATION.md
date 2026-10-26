@@ -165,6 +165,25 @@ CLI, run only after step 2.
 2. **Restore with PITR only if needed**, using the recovery procedure below,
    to a point before migration N. The deployed code (at N) stays ready on the
    restored N-1 database, because N is additive.
+3. **After a PITR, do not rely on lifecycle paths until the stale
+   capability cache is gone.** The schema-capability cache lives in each
+   instance's memory (`api/_schema-capability.js`), not in the database, so
+   restoring the database does not clear it: a warm instance that already
+   cached migration N as present keeps reporting it present for up to
+   5 minutes (`SCHEMA_CAPABILITY_AVAILABLE_TTL_MS = 5 * 60 * 1000`), even
+   though the ledger row and the new tables are gone. Turning the flag off
+   (step 1) already protects the feature paths, because the
+   `FEEDBACK_ENABLED` gate returns 404 before the capability check is
+   reached (`schemaFeatureAvailable` itself also short-circuits when its
+   enabled flag is off) — but a path that gates only on
+   `schemaCapabilityAvailable` has no flag to protect it. Today's lifecycle
+   paths are not affected by this cache — account deletion probes the
+   ledger directly inside its transaction, and feedback retention runs
+   against the tables directly and treats `no such table` as not
+   installed. This precaution applies to any path — present or future —
+   that gates only on `schemaCapabilityAvailable`. Keep the flag
+   off and either wait out the 5-minute TTL or redeploy (a redeploy starts
+   fresh instances with an empty cache) before relying on lifecycle paths.
 
 Do not roll the code back to N-1 while the database is at N. Code is never
 ready on a database newer than itself, so readiness would fail. Leave the code
@@ -196,7 +215,8 @@ and neither does account deletion, which probes the feedback tables
 directly (`SELECT … LIMIT 0`). Release: merge with production at v21 (ready, card
 degraded), run rehearsal, status and apply 22 as soon as it is ready (owner
 decision, 2026-10-22), then turn `FEEDBACK_ENABLED` on. To roll back, turn
-`FEEDBACK_ENABLED` off; use PITR only if the tables themselves are the problem.
+`FEEDBACK_ENABLED` off; use PITR only if the tables themselves are the problem
+(see Rollback step 3 if you use PITR).
 
 ## Failure and recovery
 
