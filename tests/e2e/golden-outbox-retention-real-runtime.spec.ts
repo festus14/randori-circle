@@ -158,6 +158,7 @@ test('outbox retention: old recipient details are removed, keys and audit stay, 
     for(const light of [false,true]){
       const isLight=await owner.evaluate(()=>document.documentElement.classList.contains('light'));
       if(isLight!==light) await owner.evaluate(()=>(document.getElementById('themeToggle') as HTMLButtonElement).click());
+      await expect(owner.locator('html')).toHaveClass(light ? /light/ : /^(?!.*\blight\b).*$/);
       await waitForThemeSettled(owner,'#adminDiagnostics',light);
       const results=await new AxeBuilder({page:owner}).include('#adminDiagnostics')
         .withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']).analyze();

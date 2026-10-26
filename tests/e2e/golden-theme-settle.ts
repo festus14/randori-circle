@@ -41,8 +41,11 @@ import {Page} from '@playwright/test';
 //         palette instead, so active chips are skipped.
 //      6. The first themed container: the region itself or its first
 //         `.card` / `.catalog-suggestions` / `.catalog-list` /
-//         `.catalog-card` descendant (`--color-surface` / `--color-text`),
-//         or `.onboarding-row` (`--color-surface-raised` / `--color-text`).
+//         `.catalog-card` / `.modal` / `.rc-dialog` descendant
+//         (`--color-surface` / `--color-text`), or `.onboarding-row` /
+//         `.rc-card--raised` (`--color-surface-raised` / `--color-text`),
+//         or a current `.catalog-card[aria-current="true"]`
+//         (`--color-action-subtle` / `--color-text`).
 //         This covers regions with no control at all (progress: no input
 //         or button, only the inner `.card`; the region root itself has no
 //         background, so #390's root fallback, which assumed
@@ -74,13 +77,28 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
       return {bg,fg:toRgb(rootStyle.getPropertyValue(fgVar))};
     };
     const buttonPalette=(button:Element)=>{
-      // CSS cascade order in index.html: danger beats ghost beats secondary.
-      if(button.classList.contains('danger')) return {bgVar:'--color-danger',fgVar:'--color-on-danger'};
+      // No `danger` branch: step 3 above already picks any enabled
+      // `.btn.danger` (same `:disabled` / `aria-disabled` filters), so a
+      // danger button can never reach here as the first `button.btn`.
+      // CSS cascade order in index.html: ghost beats secondary.
       if(button.classList.contains('ghost')) return {bgVar:'transparent',fgVar:'--color-text-secondary'};
       if(button.classList.contains('secondary')) return {bgVar:'--color-surface',fgVar:'--color-text'};
       return {bgVar:'--color-action',fgVar:'--color-on-action'};
     };
     const containerPalette=(element:Element)=>{
+      // Variant palettes, checked before the generic `--color-surface` one
+      // below — otherwise a current catalog card / raised card / dialog
+      // would be checked against the wrong background and the wait would
+      // time out opaquely. Verified against index.html: the current
+      // catalog card uses `var(--color-action-subtle)`, `.rc-card--raised`
+      // uses `var(--card-2)` = `--color-surface-raised`, and
+      // `.modal` / `.rc-dialog` use `var(--card)` = `--color-surface`;
+      // all three inherit `--ink` = `--color-text` for foreground.
+      if(element.classList.contains('catalog-card')&&element.getAttribute('aria-current')==='true')
+        return {bgVar:'--color-action-subtle',fgVar:'--color-text'};
+      if(element.classList.contains('rc-card--raised')) return {bgVar:'--color-surface-raised',fgVar:'--color-text'};
+      if(element.classList.contains('modal')||element.classList.contains('rc-dialog'))
+        return {bgVar:'--color-surface',fgVar:'--color-text'};
       if(element.classList.contains('onboarding-row')) return {bgVar:'--color-surface-raised',fgVar:'--color-text'};
       if(element.classList.contains('card')||element.classList.contains('catalog-suggestions')
         ||element.classList.contains('catalog-list')||element.classList.contains('catalog-card')) {
@@ -105,7 +123,7 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
       pick(root.querySelector('.chip:not(.active):not([aria-pressed="true"])'),
         {bgVar:'--color-surface',fgVar:'--color-text-secondary'});
       if(!sentinel){
-        for(const element of [root,...root.querySelectorAll('.card, .catalog-suggestions, .catalog-list, .catalog-card, .onboarding-row')]){
+        for(const element of [root,...root.querySelectorAll('.card, .catalog-suggestions, .catalog-list, .catalog-card, .onboarding-row, .rc-card--raised, .modal, .rc-dialog')]){
           const next=containerPalette(element);
           if(next){ sentinel=element; palette=next; break; }
         }
