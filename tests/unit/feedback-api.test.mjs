@@ -525,3 +525,11 @@ test('route: an array-valued query parameter is 400',async()=>{
     query:{limit:['1','2']}});
   assert.equal(result.status,400,JSON.stringify(result.body));
 });
+
+test('route: a scalar query object parameter is honoured',async()=>{
+  enableFeedback();
+  const result=await invoke(dataHandler,{method:'GET',url:'/api/feedback/mine',auth:'member',
+    query:{limit:'2'}});
+  assert.equal(result.status,200,JSON.stringify(result.body));
+  assert.ok(result.body.items.length<=2);
+});

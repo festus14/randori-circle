@@ -695,3 +695,33 @@ test('notification handler: control-char title falls back, and the provider id f
     kind:'feedback',title:'A suggestion',template_version:1}},{}),
   {status:'delivered',providerName:'test',providerMessageId:'msg-1'});
 });
+
+test('list: a missing rows array reads as an empty page',async()=>{
+  assert.deepEqual(await listMyFeedback({execute:async()=>({})},{authorUserId:2}),{items:[],nextCursor:null});
+});
+
+test('submit: a unique-constraint failure with no row to re-read rethrows the original error',async()=>{
+  const {db}=await fixture();
+  const input=validateFeedbackInput(validInput({idempotency_key:'race-norow-12345678'})).value;
+  const racingDb={execute:async(statement,...rest)=>{
+    const sql=typeof statement==='string'?statement:statement?.sql||'';
+    if(sql.includes('FROM feedback_items WHERE author_user_id=? AND idempotency_key=?')) return {rows:[]};
+    return db.execute(statement,...rest);
+  },
+  transaction:async()=>{
+    const transaction=await db.transaction('write');
+    const realExecute=transaction.execute.bind(transaction);
+    transaction.execute=async(statement,...rest)=>{
+      const sql=typeof statement==='string'?statement:statement?.sql||'';
+      if(sql.includes('INSERT INTO feedback_items')){
+        const error=new Error('UNIQUE constraint failed: feedback_items.author_user_id, feedback_items.idempotency_key');
+        error.code='SQLITE_CONSTRAINT_UNIQUE';
+        throw error;
+      }
+      return realExecute(statement,...rest);
+    };
+    return transaction;
+  }};
+  await assert.rejects(submitFeedback(racingDb,{circleId:1,authorUserId:2,input,adminEmails:[],notify:false}),
+    /UNIQUE constraint failed/);
+});
