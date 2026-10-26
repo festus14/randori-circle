@@ -95,7 +95,7 @@ The excluded classes are:
 A future inventory table with no explicit coverage entry is excluded at
 runtime ("not yet reviewed") and `tests/unit/data-export.test.mjs`
 asserts that no coverage entry carries that fallback reason and that the
-coverage list deep-equals a hard-coded list of the 45 expected tables
+coverage list deep-equals a hard-coded list of the 48 expected tables
 (table, section, included) — so adding a table to the inventory,
 removing one, or deleting an explicit entry all fail the test until an
 explicit entry is written.
@@ -141,18 +141,39 @@ The whole serialised archive must also fit `DATA_EXPORT_MAX_BYTES`
 not chunk. 5 MB is far above a real member archive and well inside the
 serverless response budget.
 
-## Feedback (#353)
+## Feedback (#353, confirmed in #385)
 
-`#353` (product feedback: `feedback_items`, `feedback_votes`,
-`feedback_events`) is landing in parallel. The export probes for those
-tables at request time and includes the member's own items and votes when
-they exist; when they do not exist it reports
-`feedback.included: false` and skips them cleanly. Feedback events (audit)
-are never exported. Column names are discovered with `PRAGMA table_info`,
-so a feedback table whose final #353 schema names its author/voter column
-differently is skipped rather than failing the export. A follow-up issue
-(#385) tracks confirming the #353 column names and the inventory entry
-once #353 lands. (The `ai.feedback` section is unrelated: feedback on the member's
+`#353` (product feedback, migration v22) has landed, and the export
+wiring is confirmed against its real schema — see #385, addressed on
+PR #389. `DATA_EXPORT_TABLE_COVERAGE` carries explicit entries for all
+three feedback tables (48 inventory tables in total):
+
+- `feedback_items` → `feedback` section, included: the member's own
+  submissions — `id`, `circle_id`, `author_user_id`, `kind`, `title`,
+  `body`, `status`, `visibility`, `diagnostics_json` (parsed),
+  `created_at`, `updated_at`. The `idempotency_key` is a client-supplied
+  dedup token, not user content, and is not exported.
+- `feedback_votes` → `feedback` section, included: only the votes the
+  member cast (`id`, `feedback_id`, `user_id`, `value`, `created_at`).
+  A vote on another member's item exports as the member's own vote,
+  without that item's title or body; votes other members cast on the
+  member's items are not exported.
+- `feedback_events` → excluded. Deliberate: events are an append-only
+  audit trail (`feedback.created` / `feedback.status_changed`, actor,
+  detail), the same class as the other excluded audit tables
+  (`auth_identity_audit_events`, `circle_audit_events`,
+  `outbox_audit_events`). An event on the member's own item duplicates
+  that item's exported status, and an event the member is the actor of
+  can describe another member's item or an admin's triage action, so
+  exporting events would leak other members' / admins' activity.
+
+The export still probes for the tables at request time: on a pre-v22
+database without them it reports `feedback.included: false` and skips
+them cleanly. Column names are discovered with `PRAGMA table_info`
+and matched against the landed v22 names (`author_user_id` on items,
+`user_id` / `feedback_id` on votes); a table with no recognised
+author/voter/item column is skipped rather than failing the export.
+(The `ai.feedback` section is unrelated: feedback on the member's
 own AI sessions, which predates #353.)
 
 ## Privacy Policy
@@ -167,11 +188,12 @@ name only.
 ## Tests
 
 - `tests/unit/data-export.test.mjs` — the builder on a migrated database:
-  every inventory table covered (hard-coded 45-table coverage list, with
+  every inventory table covered (hard-coded 48-table coverage list, with
   the three mutation checks), partner privacy (no partner ids/emails/
   messages in the archive, including a modern partner schedule proposal),
-  received invitations and created circles, feedback skipped when its
-  tables are absent and included when they are present, the size bound,
+  received invitations and created circles, feedback included from the
+  real v22 tables (own items and own votes only, events never exported,
+  skipped when the author column is unrecognised), the size bound,
   section caps, and `truncated_sections` disclosure when a cap is hit.
 - `tests/unit/data-export-api.test.mjs` — the route: flag off 404, 401, 403
   without recent auth, rate limit 429, 413, the `vercel.json` rewrite and

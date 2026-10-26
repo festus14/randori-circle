@@ -4808,3 +4808,130 @@ not block on it.
 the endpoint answers 404, the capability disappears, and Edit profile
 never downloads the script. Nothing is stored by the export, so removal
 is fully reversible.
+
+## ID-91: Product feedback — shared platform for bug reports, feature requests and product feedback (data model + API)
+
+Status: implemented; flag `FEEDBACK_ENABLED` default off, migration v22 additive. Issue #353 (foundation; the triage UI and member form are separate follow-ups).
+
+**Context.** Members had no in-app way to report a bug, request a feature, or
+send product feedback to the people running Randori, except the public issue
+tracker (which must not receive personal data). The foundation has to land
+first: one server-side store and API for all three kinds, behind the
+zero-downtime additive release order (ID-87), with the same abuse, privacy
+and lifecycle guarantees as the invite-request intake.
+
+**Decision.**
+- **Data model (migration v22, `compatibility: 'additive'`).**
+  `feedback_items` (id uuid, circle_id, author_user_id, kind, title ≤120,
+  body ≤4000, status, visibility, diagnostics_json, idempotency_key,
+  created_at, updated_at, closed_at), `feedback_votes` (one upvote,
+  `value=1`, per member per item, unique `feedback_id, user_id`) and
+  `feedback_events` (append-only audit: `feedback.created`,
+  `feedback.status_changed`, actor, small detail object). CHECKs enforce the
+  limits, bug-only diagnostics (a JSON object ≤4096 bytes), per-author
+  idempotency-key uniqueness, and the closed/closed_at invariant (closed
+  items carry `closed_at`; open items never do). Visibility is always
+  `'private'` for now; the column exists so the triage UI can widen it
+  later without a migration. No status-change endpoint ships in this
+  change, so items stay `open` until triage lands.
+- **API, through the existing `api/data.js` function** (Vercel rewrites
+  `/api/feedback` → `endpoint=feedback`, `/api/feedback/mine` →
+  `endpoint=feedback-mine`): `POST /api/feedback` (201, or 200 on an
+  idempotent replay) and `GET /api/feedback/mine` (newest first, cursor
+  pages, the caller's items in the active circle only). Reads and writes authorize against the
+  session and the active circle (403 without a membership, 409
+  `circle_selection_required` when several circles are active and none is
+  selected). With the flag off, or while v22 is still pending, both
+  endpoints answer `404 {"error":"not found"}` and no capability is
+  advertised anywhere.
+- **Abuse limits.** 10 submissions per rolling hour and 30 per rolling day,
+  enforced separately per member and per client address (IPv6 keyed by its
+  /64) in the shared `auth_rate_limits` table with keyed hashes; the first
+  exhausted dimension stops. Invalid input never spends budget. The
+  route looks up the idempotency key before the limiter, so an exact
+  replay (or a same-key conflict) never spends budget either; two
+  simultaneous same-key POSTs that collide on the unique index re-read
+  the winner's row and replay it (or 409) instead of failing with 503.
+  A retry
+  with the same client-supplied idempotency key and the same (redacted)
+  payload replays the stored item; the same key with different content is
+  a 409. Idempotency is per author.
+- **Privacy.** Title, body and diagnostics pass through the shared
+  server-side redaction (`api/_client-log-policy.js`) before storage:
+  emails, tokens, secrets, JWTs, credentials, IPs and user agents are
+  replaced. Diagnostics keys must be plain field names — an email, IP,
+  JWT or token as a key is rejected at validation, and storage collapses
+  an unsafe key to `[redacted]` instead of storing it verbatim. No raw IP or user agent is stored in any feedback table
+  (ID-82). The admin email (below) carries only kind, redacted title and a
+  triage link — never the body.
+- **Retention.** Owner decision (2026-10-22): closed items are kept for 12
+  months, then deleted; open items are kept until they are closed. The
+  bounded sweep (500 rows per batch, at most 10 batches) runs inside the
+  weekly `/api/cron/weekly` sweep, regardless of the flag, and deletes
+  events, then votes, then items, so it never depends on foreign-key
+  enforcement on the calling connection. It never blocks pairing
+  publication.
+- **Account deletion (ID-81).** Deleting a member deletes their items,
+  the votes they cast, and the events on their items; events they acted in
+  keep the event with the actor cleared; queued `feedback.submitted`
+  notifications about their submissions are suppressed and lose their
+  title. The deletion probes the feedback tables directly
+  (`SELECT … LIMIT 0`) and treats a missing table as not installed, so
+  it works on a v21 database too. The inventory test
+  covers the new tables.
+- **Data export (#385, confirmed on PR #389).** The member data export
+  (ID-90) carries explicit coverage for all three feedback tables:
+  `feedback_items` and `feedback_votes` are exported through the
+  `feedback` section (own items; only the votes the member cast),
+  `feedback_events` is excluded as an append-only audit trail (same
+  class as the other excluded audit tables — an event can describe
+  another member's item or an admin's triage action). The landed v22
+  column names check out against the export's `PRAGMA` discovery
+  (`author_user_id` on items, `user_id` / `feedback_id` on votes), the
+  item's `idempotency_key` is not exported (dedup token, not user
+  content), and the export test seeds the real migrated tables instead
+  of hand-built ones. `privacy.html` needed no change: it already
+  says the download includes the member's own product feedback.
+- **Notifications.** Outbox event `feedback.submitted` v1, one event per
+  admin recipient (every `is_admin=1` non-demo account plus every account
+  in `ADMIN_EMAILS`), idempotency key
+  `feedback-submitted/v1/<feedback_id>/<admin_id>`. Delivery re-reads
+  state and suppresses when the item is gone, the recipient is no longer
+  an admin, or they have email notifications switched off. While the
+  flag is off the handler suppresses with `FEEDBACK_DISABLED`, so queued
+  rows drain instead of aging into a backlog alert.
+- **Release order.** Merge with production at v21 (ready, diagnostics
+  *Degraded* with "pending additive migration v22"), run the protected
+  rehearsal → status → apply v22 cutover as soon as it is ready (owner
+  decision, 2026-10-22), then turn `FEEDBACK_ENABLED` on. Roll back by
+  turning the flag off; PITR only if the tables themselves are the
+  problem.
+
+**Alternatives.** A separate serverless function for feedback (rejected:
+the Vercel Hobby function limit; the existing `api/data.js` function
+carries it). Storing the full body in the admin email (rejected: the body
+may contain personal data). A per-item triage view in this change
+(rejected: the UI issues depend on this foundation and are tracked
+separately). Votes with downvotes (rejected: the feature-request vote is
+an upvote; a richer vote is a later decision).
+
+**Tests.** On real migrated SQLite: v22 is additive, empty, indexed and
+exact after v21; code at v22 is ready on a v21 database while the feature
+capability stays off; CHECK/UNIQUE/FK constraints for votes, idempotency,
+diagnostics and closed dating; redaction of hostile input; rate limits on
+all four dimensions; replay vs conflict; `/mine` pagination and author
+isolation; retention of only old closed items; notification delivery and
+all suppression paths; route-level flag/auth/circle/rate-limit/schema-
+pending behaviour; account deletion erasing feedback rows and scrubbing
+queued notifications. The data-export tests confirm the #385 wiring
+against the real v22 tables (own items/votes, events never exported,
+48-table coverage). Coverage gate holds; the new modules are covered
+by these tests.
+
+**Rollout.** Merge with `FEEDBACK_ENABLED` off (default) and production at
+v21. The owner runs the protected cutover for v22, then turns the flag
+on. Reverting the commit restores the pre-feedback endpoints; rows
+already stored stay until retention or account deletion removes them.
+
+**Recovery.** Turn `FEEDBACK_ENABLED` off: the endpoints return 404
+again and nothing touches the new tables. No schema change is needed.

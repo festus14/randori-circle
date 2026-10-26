@@ -706,6 +706,7 @@ function apiRoute(pathname,query){
     ['/api/session-completion','session-completion'],['/api/session-controls','session-controls'],['/api/meeting-link','meeting-link'],
     ['/api/stats','stats'],['/api/schedule','schedule'],['/api/messages','messages'],
     ['/api/questions','questions'],['/api/runs','runs'],['/api/leetcode','leetcode'],
+    ['/api/feedback','feedback'],['/api/feedback/mine','feedback-mine'],
     ['/api/leetcode/sync','leetcode-sync'],['/api/execute','execute'],['/api/logs','logs'],
     ['/api/health','health'],['/api/health/live','health'],['/api/health/ready','health'],
     ['/api/healthz','health'],['/api/readyz','health'],

@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 55 application tables and 63 named indexes.
+- `db/schema-manifest.js` is the current contract: 60 application tables and 77 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -38,6 +38,14 @@ Randori has read-only schema inspection for configured databases, a transactiona
 - Migration v19 adds the exact-pair `pair_session_controls` aggregate for shared
   roles and an anchor-derived focus timer. It seeds no state and performs no
   import from browser storage. See `SESSION_CONTROLS.md`.
+- Migration v20 adds bounded, source-bound `pair_code_documents` with
+  pair-snapshot guards. Migration v21 adds bounded public `invite_requests`
+  with scrubbed decided rows.
+- Migration v22 adds product-feedback storage (`feedback_items`,
+  `feedback_votes`, `feedback_events`) for #353. It is the first
+  `additive` migration (ID-87): only new tables and indexes, so code at v22
+  stays ready on a v21 database until the protected cutover applies it. See
+  `FEEDBACK.md`.
 
 ## Commands
 

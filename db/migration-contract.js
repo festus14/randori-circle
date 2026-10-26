@@ -146,6 +146,19 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     checksum:'b68bd2fbb88e0cae3ce125a16b2f20dac48ea3f2600e179ad9dcc5a33f3f42e8',
     compatibility:'breaking',
   }),
+  Object.freeze({
+    version:22,
+    name:'feedback-platform',
+    checksum:'a4aba4b1ee643086c231a2dfa9d4733930251efc580cf7ac24fbdb3396fb47ca',
+    compatibility:'additive',
+    introduces:Object.freeze({
+      tables:Object.freeze(['feedback_items','feedback_votes','feedback_events']),
+      indexes:Object.freeze(['idx_feedback_items_author','idx_feedback_items_circle_status',
+        'idx_feedback_items_closed_retention','uq_feedback_items_author_idempotency',
+        'idx_feedback_votes_feedback','idx_feedback_votes_user','idx_feedback_events_feedback']),
+      triggers:Object.freeze([]),
+    }),
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

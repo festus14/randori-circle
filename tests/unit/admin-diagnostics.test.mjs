@@ -695,14 +695,17 @@ function ledgerDb(rows, { exists = true } = {}) {
 const ledgerRow = (contract, extra = {}) => ({ version: contract.version, name: contract.name, checksum: contract.checksum,
   applied_at: '2026-10-01 10:00:00', execution_ms: 5, disposition: 'applied', ...extra });
 
-test('the migration ledger summary reports missing, behind, ahead and invalid ledgers', async () => {
+test('the migration ledger summary reports missing, behind, pending additive, ahead and invalid ledgers', async () => {
   assert.equal((await readMigrationLedgerSummary(ledgerDb([], { exists: false }))).state, 'missing');
   const all = MIGRATION_CONTRACTS.map(contract => ledgerRow(contract));
   const current = await readMigrationLedgerSummary(ledgerDb(all));
   assert.equal(current.state, 'current');
   assert.equal(current.latest.appliedAt, '2026-10-01T10:00:00.000Z');
-  const behind = await readMigrationLedgerSummary(ledgerDb(all.slice(0, -1)));
-  assert.deepEqual([behind.state, behind.currentVersion], ['behind', LATEST_MIGRATION_VERSION - 1]);
+  const pending = await readMigrationLedgerSummary(ledgerDb(all.slice(0, -1)));
+  assert.deepEqual([pending.state, pending.currentVersion, pending.pendingVersion],
+    ['pending_additive', LATEST_MIGRATION_VERSION - 1, LATEST_MIGRATION_VERSION]);
+  const behind = await readMigrationLedgerSummary(ledgerDb(all.slice(0, -2)));
+  assert.deepEqual([behind.state, behind.currentVersion], ['behind', LATEST_MIGRATION_VERSION - 2]);
   const ahead = await readMigrationLedgerSummary(ledgerDb([...all, { ...all.at(-1), version: LATEST_MIGRATION_VERSION + 1, name: 'future' }]));
   assert.deepEqual([ahead.state, ahead.currentVersion, ahead.latest], ['ahead', LATEST_MIGRATION_VERSION + 1, null]);
   const tampered = await readMigrationLedgerSummary(ledgerDb([{ ...all[0], checksum: 'f'.repeat(64) }, ...all.slice(1)]));
@@ -711,7 +714,7 @@ test('the migration ledger summary reports missing, behind, ahead and invalid le
   assert.deepEqual([garbage.state, garbage.currentVersion], ['invalid', 0]);
 
   for (const [state, category] of [['missing', 'ledger_missing'], ['behind', 'ledger_behind']]) {
-    const rows = state === 'missing' ? [] : all.slice(0, -1);
+    const rows = state === 'missing' ? [] : all.slice(0, -2);
     const fake = {
       execute: async statement => {
         const sql = typeof statement === 'string' ? statement : statement.sql;

@@ -83,6 +83,7 @@ for (const [path, html] of Object.entries(pages)) {
     assert.match(html, /<nav aria-label="Legal">/u);
     assert.equal(html.match(/<h1\b/gu)?.length, 1);
     assert.match(html, new RegExp(`<h1>${title}</h1>`, 'u'));
+    // The two pages change independently: pin each one's own date.
     // The privacy policy was updated for the data export (issue #365, ID-90);
     // the terms keep their earlier date.
     if(path === '/privacy'){
@@ -285,6 +286,17 @@ test('the privacy policy describes self-service account deletion as available (i
   assert.match(text, /If you can no longer sign in, or would rather ask us, email festusomole14@gmail\.com or ask the owner of your circle/u);
   assert.match(text, /will respond within one month and delete your account/u);
   assert.doesNotMatch(text, /There isn’t a delete button yet|Where account deletion is switched on|If the option isn’t switched on|where that option is switched on/u);
+});
+
+test('the privacy policy describes product feedback: what is stored, who sees it, and how long it is kept (#353)', () => {
+  const text = visibleText(pages['/privacy']);
+  assert.match(text, /Feedback you send us\. If you send feedback about Randori, we store what you wrote/u);
+  assert.match(text, /Email addresses, passwords, secret links and similar details are removed from the text before it is stored\. We do not store your IP address or browser details with it\./u);
+  assert.match(text, /App admins can read the feedback you send \(its kind, title and text\) to fix problems and decide what to build\. Other members cannot see your feedback\./u);
+  assert.match(text, /a feedback notification carries only the kind of feedback and its title, never the full text/u);
+  assert.match(text, /Feedback : feedback that is still open is kept until it is closed\. Once it is closed, it is deleted after 12 months/u);
+  assert.match(text, /If you delete your account, your feedback and your votes are deleted, and admin notifications about your feedback lose their title\./u);
+  assert.match(text, /and your feedback and votes\./u);
 });
 
 test('the privacy policy no longer calls the switched-on features off', () => {

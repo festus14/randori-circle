@@ -160,11 +160,13 @@ test('readiness converts unexpected inspection errors to a schema-unavailable fa
   });
 });
 
-test('a ledger missing its latest migration row is not ready',async()=>{
+test('a ledger missing its latest two migration rows is not ready',async()=>{
+  // Missing only the latest (additive) row is the ready pending-additive
+  // state (ID-87); two rows behind stays not ready.
   await withDatabase(async db=>{
     const latest=await db.execute(`SELECT MAX(version) AS v FROM schema_migrations`);
     const wrapped=wrap(db,{execute:(sql,_statement,real)=>sql.includes('schema_migrations')&&!sql.includes('sqlite_')
-      ?real().then(result=>({...result,rows:result.rows.filter(row=>Number(row.version)!==Number(latest.rows[0].v))}))
+      ?real().then(result=>({...result,rows:result.rows.filter(row=>Number(row.version)<=Number(latest.rows[0].v)-2)}))
       :undefined});
     await rejectsCode(ensureCirclePairingReadiness(wrapped),'CIRCLE_PAIRING_SCHEMA_UNAVAILABLE');
     assert.equal(await ensureCirclePairingReadiness(db),true);

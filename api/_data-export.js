@@ -21,12 +21,24 @@
 // Meeting links are included only for pair groups the member belongs to, the
 // same visibility the room already gives them.
 //
-// Feedback (#353, `feedback_items` / `feedback_votes` / `feedback_events`)
-// is not in the inventory yet. When those tables exist, the member's own
-// feedback items and their own votes are included; when they do not exist
-// they are cleanly skipped (feedback.included=false). Feedback events are an
-// audit trail and are never exported. A follow-up issue (#385) tracks confirming
-// the #353 column names once #353 lands.
+// Feedback (#353, `feedback_items` / `feedback_votes` / `feedback_events`,
+// migration v22) is in the inventory with explicit coverage below,
+// confirmed against the landed v22 schema in #385: items are keyed by
+// `author_user_id`, votes by `feedback_id` / `user_id` (their own votes
+// only — a vote on another member's item exports as the member's own vote,
+// without that item's title or body). When the tables do not exist (a
+// pre-v22 database) they are cleanly skipped (feedback.included=false).
+// Feedback events are excluded, deliberately: they are an append-only
+// audit trail (`feedback.created` / `feedback.status_changed`, actor,
+// detail), the same class as the other excluded audit tables
+// (`auth_identity_audit_events`, `circle_audit_events`,
+// `outbox_audit_events`); an event on the member's own item duplicates
+// that item's exported status, and an event the member is the actor of
+// can describe another member's item or an admin's triage
+// action, so exporting events would leak other members' / admins'
+// activity. Nothing the member submitted is lost: their items and votes
+// are exported in full. The item's `idempotency_key` is not exported:
+// it is a client-supplied dedup token, not user content.
 //
 // Size: every section is capped (DATA_EXPORT_SECTION_LIMITS) and the
 // sections that hit their cap are listed in `truncated_sections`, so a
@@ -104,6 +116,9 @@ const EXPLICIT_TABLE_COVERAGE=Object.freeze({
   circle_audit_events:{section:null,included:false,reason:'Circle audit trail of ids and event types; not user content.'},
   circle_creation_requests:{section:null,included:false,reason:'Idempotency record holding a session hash; a credential artefact.'},
   invite_requests:{section:'invite_requests',included:true,reason:'Own pending requests to join (decided rows are scrubbed of email and cannot be attributed).'},
+  feedback_items:{section:'feedback',included:true,reason:'Own feedback submissions: kind, title, body, status, visibility and diagnostics they chose to add. The idempotency key is a dedup token, not user content, and is not exported.'},
+  feedback_votes:{section:'feedback',included:true,reason:'Votes the member cast (feedback_id, value); votes other members cast on the member\'s items are not the member\'s data and are not exported.'},
+  feedback_events:{section:null,included:false,reason:'Append-only audit trail (feedback.created / feedback.status_changed, actor, detail). Audit trails are never exported; an event can describe another member\'s item or an admin\'s triage action.'},
   pairing_cycle_availability:{section:'availability',included:true,reason:'Own availability decisions per cycle.'},
   user_notification_prefs:{section:'notification_preferences',included:true,reason:'Own email and reminder preferences.'},
   pairing_participants:{section:'pairings',included:true,reason:'Own participation rows.'},
@@ -238,16 +253,17 @@ function pickColumn(columns,candidates){
 }
 
 /**
- * The member's own product-feedback rows (#353), when those tables exist.
- * Column names are discovered with PRAGMA, so a feedback table whose final
- * #353 schema names its author/voter column differently is skipped cleanly
- * instead of failing the whole export. Feedback events (audit) are never
- * exported.
+ * The member's own product-feedback rows (#353, v22), when those tables
+ * exist. Column names are discovered with PRAGMA and matched against the
+ * landed v22 names (`author_user_id` on items, `user_id` /
+ * `feedback_id` on votes — #385); a table with no recognised
+ * author/voter/item column is skipped cleanly instead of failing the
+ * whole export. Feedback events (audit) are never exported.
  */
 async function readFeedback(db,userId){
   const empty=Object.freeze({included:false,items:[],votes:[],votes_included:false,events_included:false,
     truncated_items:false,truncated_votes:false,
-    reason:'Feedback tables are not present (issue #353 has not landed).'});
+    reason:'Feedback tables are not present (migration v22 not applied).'});
   if(!await tableExists(db,'feedback_items')) return empty;
   const itemColumns=await tableColumns(db,'feedback_items');
   const authorColumn=pickColumn(itemColumns,['author_user_id','user_id','author_id']);

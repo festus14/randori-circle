@@ -125,15 +125,16 @@ change that contract.
    tool (`db:migrate`, this workflow, the restore rehearsal) refuses to load
    one.
 3. Every code path that touches the new tables checks the schema first, with
-   `api/_schema-capability.js`. Paths that serve the feature (endpoints,
-   capability discovery, outbox events) use
+   `api/_schema-capability.js`. Paths that serve the feature (endpoints) use
    `schemaFeatureAvailable(db, {enabled: <feature flag>, version: N})`; while
    it returns `false` they behave exactly as if the feature were off: 404, no
-   capability advertised, nothing read or written. Data-lifecycle paths
-   (account deletion, retention) use
-   `schemaCapabilityAvailable(db, {version: N})` without the flag, so rows
-   already stored keep being deleted after the flag is turned off. No other
-   code may depend on the new schema.
+   capability advertised, nothing read or written. Outbox delivery handlers
+   check the flag themselves and suppress while it is off, so queued rows
+   drain instead of aging into a backlog alert. Data-lifecycle paths
+   (account deletion, retention) probe the new tables directly and treat
+   "no such table" as not installed, so rows already stored keep being
+   deleted after the flag is turned off. No other code may depend on the
+   new schema.
 4. The feature flag defaults off.
 
 Migrations 1-21 shipped under the strict order and stay `breaking`: the code
@@ -182,11 +183,17 @@ under "Failure and recovery".
 The feedback platform adds `feedback_items`, `feedback_votes` and
 `feedback_events` with their indexes as migration 22. The contract declares
 `compatibility: 'additive'` and lists those tables and indexes under
-`introduces`. The feedback endpoints, capability discovery and the
-`feedback.submitted` outbox event check `schemaFeatureAvailable(db, {enabled:
-FEEDBACK_ENABLED === 'true', version: 22})` first; the 12-month retention job
-and the account-deletion handling of feedback rows check
-`schemaCapabilityAvailable(db, {version: 22})`. Release: merge with production at v21 (ready, card
+`introduces`. Only the feedback endpoints call `schemaFeatureAvailable(db,
+{enabled: true, version: 22})` (after the `FEEDBACK_ENABLED` gate in the
+handler); no capability is advertised anywhere. The
+`feedback.submitted` outbox event does not call `schemaFeatureAvailable`:
+the delivery plan registers its handler whenever a sender exists, and the
+handler itself suppresses with `FEEDBACK_DISABLED` while the flag is off,
+so queued rows drain instead of aging into a backlog alert. The 12-month
+retention job does not call `schemaCapabilityAvailable` either — it runs
+against the tables and treats a "no such table" failure as not installed —
+and neither does account deletion, which probes the feedback tables
+directly (`SELECT … LIMIT 0`). Release: merge with production at v21 (ready, card
 degraded), run rehearsal, status and apply 22 as soon as it is ready (owner
 decision, 2026-10-22), then turn `FEEDBACK_ENABLED` on. To roll back, turn
 `FEEDBACK_ENABLED` off; use PITR only if the tables themselves are the problem.

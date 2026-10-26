@@ -258,6 +258,27 @@ const PLAN_21_OPERATIONS=Object.freeze([
   index('idx_invite_requests_decided','invite_requests',['decided_at','id'],{where:'decided_at IS NOT NULL'}),
 ]);
 
+// Product feedback from members to the people running Randori (#353).
+// Three kinds in one store: bug, feature_request, feedback. Titles and
+// bodies are stored after server-side redaction (api/_feedback.js); no raw
+// IP or user agent is stored anywhere in these tables (ID-82). Votes are
+// one upvote per member per item. Events are the append-only audit trail
+// (creation and status changes); there is no endpoint that changes status
+// yet, so rows stay 'open' until the triage UI lands. Closed items carry
+// closed_at so the 12-month retention sweep can purge them.
+const PLAN_22_OPERATIONS=Object.freeze([
+  table('feedback_items',`CREATE TABLE IF NOT EXISTS feedback_items (id TEXT PRIMARY KEY NOT NULL CHECK(length(id)=36), circle_id INTEGER NOT NULL CHECK(typeof(circle_id)='integer' AND circle_id>0), author_user_id INTEGER NOT NULL CHECK(typeof(author_user_id)='integer' AND author_user_id>0), kind TEXT NOT NULL CHECK(kind IN ('bug','feature_request','feedback')), title TEXT NOT NULL CHECK(length(title)>=1 AND length(title)<=120 AND title=trim(title)), body TEXT NOT NULL CHECK(length(body)>=1 AND length(body)<=4000 AND body=trim(body)), status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','in_progress','closed')), visibility TEXT NOT NULL DEFAULT 'private' CHECK(visibility='private'), diagnostics_json TEXT CHECK(diagnostics_json IS NULL OR (length(diagnostics_json)<=4096 AND json_valid(diagnostics_json) AND json_type(diagnostics_json)='object')), idempotency_key TEXT NOT NULL CHECK(length(idempotency_key)>=8 AND length(idempotency_key)<=128 AND idempotency_key=trim(idempotency_key)), created_at INTEGER NOT NULL CHECK(typeof(created_at)='integer' AND created_at>0), updated_at INTEGER NOT NULL CHECK(typeof(updated_at)='integer' AND updated_at>=created_at), closed_at INTEGER CHECK(closed_at IS NULL OR (typeof(closed_at)='integer' AND closed_at>=created_at)), CHECK((kind='bug' AND (diagnostics_json IS NULL OR length(diagnostics_json)<=4096)) OR (kind<>'bug' AND diagnostics_json IS NULL)), CHECK((status='closed' AND closed_at IS NOT NULL) OR (status<>'closed' AND closed_at IS NULL)), FOREIGN KEY(circle_id) REFERENCES circles(id) ON DELETE CASCADE, FOREIGN KEY(author_user_id) REFERENCES auth_accounts(id) ON DELETE RESTRICT)`),
+  table('feedback_votes',`CREATE TABLE IF NOT EXISTS feedback_votes (id INTEGER PRIMARY KEY AUTOINCREMENT, feedback_id TEXT NOT NULL CHECK(length(feedback_id)=36), user_id INTEGER NOT NULL CHECK(typeof(user_id)='integer' AND user_id>0), value INTEGER NOT NULL DEFAULT 1 CHECK(value=1), created_at INTEGER NOT NULL CHECK(typeof(created_at)='integer' AND created_at>0), UNIQUE(feedback_id,user_id), FOREIGN KEY(feedback_id) REFERENCES feedback_items(id) ON DELETE CASCADE, FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE RESTRICT)`),
+  table('feedback_events',`CREATE TABLE IF NOT EXISTS feedback_events (id INTEGER PRIMARY KEY AUTOINCREMENT, feedback_id TEXT NOT NULL CHECK(length(feedback_id)=36), event_type TEXT NOT NULL CHECK(event_type IN ('feedback.created','feedback.status_changed')), actor_user_id INTEGER CHECK(actor_user_id IS NULL OR (typeof(actor_user_id)='integer' AND actor_user_id>0)), detail_json TEXT CHECK(detail_json IS NULL OR (length(detail_json)<=2048 AND json_valid(detail_json) AND json_type(detail_json)='object')), created_at INTEGER NOT NULL CHECK(typeof(created_at)='integer' AND created_at>0), FOREIGN KEY(feedback_id) REFERENCES feedback_items(id) ON DELETE CASCADE, FOREIGN KEY(actor_user_id) REFERENCES auth_accounts(id) ON DELETE RESTRICT)`),
+  index('idx_feedback_items_author','feedback_items',['author_user_id','created_at DESC','id DESC']),
+  index('idx_feedback_items_circle_status','feedback_items',['circle_id','status','created_at DESC','id DESC']),
+  index('idx_feedback_items_closed_retention','feedback_items',['status','closed_at','id'],{where:"status='closed'"}),
+  index('uq_feedback_items_author_idempotency','feedback_items',['author_user_id','idempotency_key'],{unique:true}),
+  index('idx_feedback_votes_feedback','feedback_votes',['feedback_id','user_id']),
+  index('idx_feedback_votes_user','feedback_votes',['user_id','created_at DESC','id DESC']),
+  index('idx_feedback_events_feedback','feedback_events',['feedback_id','created_at DESC','id DESC']),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -346,6 +367,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
     version:21,
     operations:PLAN_21_OPERATIONS,
   }),
+  Object.freeze({
+    version:22,
+    operations:PLAN_22_OPERATIONS,
+  }),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -375,7 +400,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='71e2a694f50309e4caa19948534f6de2dda5e0dd885bbad7ef6fe5c6a9606489';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='b7a80cc7e60be5017245e1b135f02a8d1a207323cec93724c9b6f31800d0820a';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

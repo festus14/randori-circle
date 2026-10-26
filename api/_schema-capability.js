@@ -6,9 +6,11 @@
 // not exist. Every code path that touches them must ask this module first.
 // Paths that serve the feature use schemaFeatureAvailable (flag and schema)
 // and behave exactly as if the feature were off (404, no capability
-// advertised) while it answers false. Data-lifecycle paths such as account
-// deletion and retention use schemaCapabilityAvailable alone, so rows already
-// stored keep being deleted after the flag is turned off.
+// advertised) while it answers false. Outbox delivery handlers check the
+// flag themselves and suppress while it is off, so queued rows drain.
+// Data-lifecycle paths such as account deletion and retention probe the
+// new tables directly and treat "no such table" as not installed, so rows
+// already stored keep being deleted after the flag is turned off.
 //
 // The check is read-only: one SELECT on the ledger row for the version, which
 // must match the contract's exact name and checksum. Answers are cached per

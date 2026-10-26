@@ -127,6 +127,9 @@ account reaches nothing.
 | `circle_audit_events` | `actor_user_id`, `subject_user_id` | Keep | Audit trail of ids only. An account.deleted event with no personal data is added per circle. |
 | `circle_creation_requests` | `actor_user_id`, `initiating_session_hash` | Keep | Idempotency record for circles they created: hashes and ids only, RESTRICT-bound to the circle. |
 | `invite_requests` | `email`, `name`, `note`, `decided_by` | Anonymise | A pending request from their email is expired and scrubbed; decisions they made keep only the opaque decided_by id. |
+| `feedback_items` | `circle_id`, `author_user_id`, `kind`, `title`, `body`, `status`, `visibility`, `diagnostics_json`, `idempotency_key`, `created_at`, `updated_at`, `closed_at` | Delete | Their own feedback submissions are deleted; votes and creation events on them go with the item. |
+| `feedback_votes` | `feedback_id`, `user_id`, `value` | Delete | Votes they cast are deleted; votes on their deleted items go with the items. |
+| `feedback_events` | `feedback_id`, `event_type`, `actor_user_id`, `detail_json` | Anonymise | Events on their items are deleted with the items; events they acted in keep the event with the actor cleared. |
 | `pairing_cycle_availability` | `user_id` | Delete | Availability decisions. Publications keep their own immutable snapshot. |
 | `user_notification_prefs` | `user_id`, `phone`, `email` | Delete | Email and reminder preferences. |
 | `pairing_participants` | `user_id` | Keep | Immutable pairing snapshot that partners' completed sessions depend on (trigger-guarded). |
@@ -152,7 +155,7 @@ account reaches nothing.
 | `ai_account_monthly_reservations` | `user_id` | Delete | Per-member AI quota reservations. |
 | `custom_questions` | `author_id` | Anonymise | Shared question text stays; the author link is cleared. |
 | `app_logs` | `user_id`, `ip`, `ua`, `route`, `message`, `meta_json` | Delete | Client and server log rows linked to the account. |
-| `outbox_events` | `payload_json` | Anonymise | Mail to them is suppressed (audited, ACCOUNT_DELETED); address and envelopes are scrubbed, including emails of unusable invitations to their address. |
+| `outbox_events` | `payload_json` | Anonymise | Mail to them is suppressed (audited, ACCOUNT_DELETED); address and envelopes are scrubbed, including emails of unusable invitations to their address. Queued feedback notifications about their submissions are suppressed and lose their title. |
 | `outbox_audit_events` | `actor_ref` | Keep | Delivery audit; operator references are opaque ids. |
 | `pairing_email_outbox` | `user_id`, `recipient_email` | Anonymise | Legacy queue rows to them are cancelled and the address replaced. |
 | `users` | `name` | Keep | Legacy pre-membership roster keyed by name only; it cannot be attributed to the account without risking another member's row. |

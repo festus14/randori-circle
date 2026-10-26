@@ -11,6 +11,9 @@
 // last-owner rule checked inside it, so concurrent requests serialize and a
 // retry is a no-op. No schema change: every column reused here already exists.
 import { requireRecentAuth } from './_recent-auth.js';
+import { feedbackSchemaNotInstalled } from './_feedback-config.js';
+import { FEEDBACK_MIGRATION_VERSION } from './_feedback-config.js';
+import { MIGRATION_CONTRACTS } from '../db/migration-contract.js';
 
 export const ACCOUNT_DELETION_CONFIRMATION='DELETE';
 export const DELETED_MEMBER_NAME='Deleted member';
@@ -58,6 +61,11 @@ export const ACCOUNT_DATA_INVENTORY=Object.freeze([
   ['circle_audit_events',['actor_user_id','subject_user_id'],'keep','Audit trail of ids only. An account.deleted event with no personal data is added per circle.'],
   ['circle_creation_requests',['actor_user_id','initiating_session_hash'],'keep','Idempotency record for circles they created: hashes and ids only, RESTRICT-bound to the circle.'],
   ['invite_requests',['email','name','note','decided_by'],'anonymise','A pending request from their email is expired and scrubbed; decisions they made keep only the opaque decided_by id.'],
+  ['feedback_items',['circle_id','author_user_id','kind','title','body','status','visibility','diagnostics_json','idempotency_key','created_at','updated_at','closed_at'],'delete',
+    'Their own feedback submissions are deleted; votes and creation events on them go with the item.'],
+  ['feedback_votes',['feedback_id','user_id','value'],'delete','Votes they cast are deleted; votes on their deleted items go with the items.'],
+  ['feedback_events',['feedback_id','event_type','actor_user_id','detail_json'],'anonymise',
+    'Events on their items are deleted with the items; events they acted in keep the event with the actor cleared.'],
   ['pairing_cycle_availability',['user_id'],'delete','Availability decisions. Publications keep their own immutable snapshot.'],
   ['user_notification_prefs',['user_id','phone','email'],'delete','Email and reminder preferences.'],
   ['pairing_participants',['user_id'],'keep','Immutable pairing snapshot that partners\' completed sessions depend on (trigger-guarded).'],
@@ -173,9 +181,22 @@ const READINESS_PROBES=Object.freeze([
   `SELECT id,user_id,recipient_email,status,updated_at FROM pairing_email_outbox LIMIT 0`,
 ]);
 
+// Feedback probes (#353) run separately: while v22 is still pending the
+// tables do not exist, and deletion of everything else must still work.
+const FEEDBACK_READINESS_PROBES=Object.freeze([
+  `SELECT id,circle_id,author_user_id,kind,title,body,status,visibility,diagnostics_json,idempotency_key,created_at,updated_at,closed_at FROM feedback_items LIMIT 0`,
+  `SELECT id,feedback_id,user_id,value,created_at FROM feedback_votes LIMIT 0`,
+  `SELECT id,feedback_id,event_type,actor_user_id,detail_json,created_at FROM feedback_events LIMIT 0`,
+]);
+
 export async function ensureAccountDeletionReadiness(db){
   if(!db||typeof db.batch!=='function') throw new TypeError('database client is required');
   await db.batch(READINESS_PROBES,'read');
+  try{
+    await db.batch(FEEDBACK_READINESS_PROBES,'read');
+  }catch(error){
+    if(!feedbackSchemaNotInstalled(error)) throw error;
+  }
 }
 
 async function readAccount(executor,userId){
@@ -288,6 +309,7 @@ const OUTBOX_RECIPIENT_SQL=`(
   OR (event_type='invitation.email.requested' AND json_extract(payload_json,'$.invitation_id') IN (
     SELECT id FROM circle_invitations WHERE used_by=?
       OR (email_hash=? AND NOT ${USABLE_INVITATION_SQL})))
+  OR (event_type='feedback.submitted' AND json_extract(payload_json,'$.author_user_id')=?)
 )`;
 // Invitation emails for the unused invitations they sent; those invitations
 // are revoked below, so any queued delivery is suppressed too.
@@ -297,7 +319,7 @@ const OUTBOX_SENT_INVITATION_SQL=`(event_type='invitation.email.requested'
 const OUTBOX_ACTIONABLE="status IN ('pending','retry','dead_letter')";
 
 function outboxRecipientArgs(userId,email,emailHash,occurredAt){
-  return [userId,userId,userId,email,userId,emailHash,occurredAt];
+  return [userId,userId,userId,email,userId,emailHash,occurredAt,userId];
 }
 
 function changed(result){
@@ -310,7 +332,7 @@ function changed(result){
 // name the summary count it produces. Lookups use indexed keys (user ids,
 // invitation ids, primary keys); the outbox and app_logs predicates scan those
 // tables once, bounded by their retention.
-function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,nowSeconds}){
+function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,nowSeconds,feedback=false}){
   const recipientArgs=outboxRecipientArgs(userId,email,emailHash,occurredAt);
   const suppressWhere=`${OUTBOX_ACTIONABLE} AND (${OUTBOX_RECIPIENT_SQL} OR ${OUTBOX_SENT_INVITATION_SQL})`;
   const suppressArgs=[...recipientArgs,userId];
@@ -339,6 +361,15 @@ function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,no
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
       WHERE ${OUTBOX_RECIPIENT_SQL}`,
     args:[tombstoneEmail,tombstoneEmail,...recipientArgs]},
+    // Feedback notifications about their submissions carry the (redacted)
+    // title in the payload; drop it from every non-in-flight row. Rows
+    // addressed to them are already suppressed above.
+    ...(feedback?[{count:'outbox_feedback_scrubbed',sql:`UPDATE outbox_events
+      SET payload_json=json_remove(payload_json,'$.title'),
+        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      WHERE event_type='feedback.submitted'
+        AND json_extract(payload_json,'$.author_user_id')=? AND status<>'processing'`,
+    args:[userId]}]:[]),
     {count:'legacy_outbox',sql:`UPDATE pairing_email_outbox
       SET status=CASE WHEN status IN ('pending','failed','sending','exhausted') THEN 'cancelled' ELSE status END,
         recipient_email=?,updated_at=datetime('now')
@@ -415,6 +446,19 @@ function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,no
     {sql:`DELETE FROM ai_account_monthly_usage WHERE user_id=?`,args:[userId]},
     {sql:`DELETE FROM ai_account_monthly_reservations WHERE user_id=?`,args:[userId]},
     {sql:`UPDATE custom_questions SET author_id=NULL WHERE author_id=?`,args:[userId]},
+    // Feedback (#353): events on their items first, then the actor link on
+    // events they acted in, then their votes and their items. Skipped
+    // entirely while v22 is still pending (no feedback rows can exist).
+    ...(feedback?[
+      {count:'feedback_events_deleted',sql:`DELETE FROM feedback_events WHERE feedback_id IN (
+        SELECT id FROM feedback_items WHERE author_user_id=?)`,args:[userId]},
+      {count:'feedback_events_anonymised',sql:`UPDATE feedback_events SET actor_user_id=NULL WHERE actor_user_id=?`,
+        args:[userId]},
+      {count:'feedback_votes_deleted',sql:`DELETE FROM feedback_votes WHERE user_id=?
+        OR feedback_id IN (SELECT id FROM feedback_items WHERE author_user_id=?)`,
+      args:[userId,userId]},
+      {count:'feedback_items_deleted',sql:`DELETE FROM feedback_items WHERE author_user_id=?`,args:[userId]},
+    ]:[]),
     {count:'logs_deleted',sql:`DELETE FROM app_logs WHERE user_id=?`,args:[userId]},
     // Last: the tombstone. Exactly one row must change.
     {count:'tombstoned',sql:`UPDATE auth_accounts
@@ -462,8 +506,21 @@ export async function deleteAccount(db,{
     const eligibility=await evaluateEligibility(transaction,account,admins);
     if(!eligibility.ok) return await stop(eligibility);
     const email=String(account.email).trim().toLowerCase();
+    // Feedback rows exist only once v22 is applied (ID-87). Probe the
+    // ledger row directly inside this transaction — not the cached
+    // capability helper — so a cutover that lands mid-deletion is seen
+    // and no feedback row can survive. The flag state is irrelevant here.
+    const contract=MIGRATION_CONTRACTS[FEEDBACK_MIGRATION_VERSION-1];
+    const feedbackProbe=await transaction.execute({
+      sql:'SELECT version,name,checksum FROM schema_migrations WHERE version=? LIMIT 2',
+      args:[FEEDBACK_MIGRATION_VERSION],
+    });
+    const feedback=feedbackProbe.rows?.length===1
+      &&Number(feedbackProbe.rows[0].version)===contract.version
+      &&String(feedbackProbe.rows[0].name)===contract.name
+      &&String(feedbackProbe.rows[0].checksum)===contract.checksum;
     const plan=deletionStatements({userId:id,email,emailHash:hashInvitationEmail(email)||null,
-      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds});
+      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback});
     const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
     const summary={};
     plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });

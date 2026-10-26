@@ -3770,7 +3770,7 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
   assert.equal(outboxWorkerCalls.length,1);
   assert.deepEqual(outboxWorkerCalls[0].eventTypes,[
     'pairing.email.requested','schedule.email.requested','invitation.email.requested',
-    'reminder.email.requested',
+    'feedback.submitted','reminder.email.requested',
   ]);
   assert.equal(outboxWorkerCalls[0].maxClaims,8);
   assert.equal(outboxWorkerCalls[0].finalizationReserveMs,5_000);
