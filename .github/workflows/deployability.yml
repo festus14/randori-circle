@@ -38,5 +38,7 @@ jobs:
         run: npm run check:docs
       - name: Validate theme-toggle-axe settle guard
         run: npm run check:theme-toggle-axe
+      - name: Validate CSS/JS byte budget
+        run: npm run check:byte-budget
       - name: Test release-contract failure modes
         run: npm run test:deployability
