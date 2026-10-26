@@ -10,6 +10,7 @@ import {
   startGoldenRuntime,
   withDatabase,
 } from './golden-runtime';
+import {waitForThemeSettled} from './golden-theme-settle';
 
 // Issue #310 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 15). The real
 // loopback runtime runs with ADMIN_DIAGNOSTICS_ENABLED. A global admin opens
@@ -68,6 +69,7 @@ async function expectDiagnosticsAccessible(page:Page){
       const isLight=await page.evaluate(()=>document.documentElement.classList.contains('light'));
       if(isLight!==light) await page.evaluate(()=>(document.getElementById('themeToggle') as HTMLButtonElement).click());
       await expect(page.locator('html')).toHaveClass(light?/light/:/^(?!.*\blight\b).*$/);
+      await waitForThemeSettled(page,'#adminDiagnostics',light);
       const results=await new AxeBuilder({page}).include('#adminDiagnostics')
         .withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']).analyze();
       expect(results.violations,`diagnostics ${width}px ${light?'light':'dark'}`).toEqual([]);

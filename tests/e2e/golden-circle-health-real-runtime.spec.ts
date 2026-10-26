@@ -11,6 +11,7 @@ import {
   startGoldenRuntime,
   withDatabase,
 } from './golden-runtime';
+import {waitForThemeSettled} from './golden-theme-settle';
 
 // Issue #292 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 18). The real
 // loopback runtime runs with CIRCLE_HEALTH_ENABLED. The owner publishes the
@@ -32,6 +33,7 @@ async function expectPanelAccessible(page:Page){
       const isLight=await page.evaluate(()=>document.documentElement.classList.contains('light'));
       if(isLight!==light) await page.evaluate(()=>(document.getElementById('themeToggle') as HTMLButtonElement).click());
       await expect(page.locator('html')).toHaveClass(light?/light/:/^(?!.*\blight\b).*$/);
+      await waitForThemeSettled(page,'#circleHealthPanel',light);
       const results=await new AxeBuilder({page}).include('#circleHealthPanel')
         .withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']).analyze();
       expect(results.violations,`circle health ${width}px ${light?'light':'dark'}`).toEqual([]);
