@@ -4238,6 +4238,10 @@ is unset.
 with the 1-day backup window of Turso's Starter plan and the invitation guard
 (an envelope is never removed while its invitation can still be used).
 
+*Correction, 25 October 2026:* "Starter" is not a current Turso plan name —
+the 1-day window is the Free tier's. See ID-89 for the verified plan list
+(Free 1 day, Developer 10 days, Scaler 30 days, Pro and Enterprise 90 days).
+
 ## ID-82: Keep no raw IP address or user agent in app_logs
 
 Status: implemented; no migration, no flag (privacy hygiene with no
@@ -4562,6 +4566,137 @@ reintroduces the vulnerable 4.1.11 copy and fails `audit:prod`.
 **Recovery.** Revert the commit; the nested vulnerable copy returns and
 `audit:prod` fails again. No code, flag, migration or production change.
 
+## ID-89: State the backup retention for deleted data, and re-apply post-restore-point deletions after a restore
+
+Status: implemented; no flag, no migration. Issue #366, follow-up to #347
+and ID-81.
+
+**Context.** `docs/ACCOUNT_DELETION.md` only said backups keep "their own
+retention windows", and nothing defined what a restore does to deletions
+made after the restore point. A point-in-time restore to T brings back
+the database as of T — including personal data deleted after T — so
+without a re-application step a restore would silently resurrect it.
+Issue #366 also asked to verify the provider plan rather than assume it:
+it said "Turso Starter currently restores up to 1 day back".
+
+**Verification (retention).** Fetched the live Turso pricing page
+(`https://turso.tech/pricing`) on 2026-10-25: the plans are Free,
+Developer, Scaler, Pro and Enterprise — there is **no "Starter" plan** on
+the current page — with Point-In-Time Restore of 1 day (Free), 10 days
+(Developer), 30 days (Scaler) and 90 days (Pro, Enterprise). The earlier
+decision-log note calling the 1-day window "Starter" (ID-83's 22 October
+2026 update) was stale plan naming; the 1-day bound itself still holds
+because production is on the Free tier, per
+`docs/PRODUCTION_BOOTSTRAP_GUIDE.md` §3.4. The owner should confirm the
+organisation's tier in the Turso dashboard if that ever becomes doubtful:
+the documented bound is conditional on the tier, and a move to a paid
+tier lengthens the window (10/30/90 days) and requires a `privacy.html`
+update first. The GitHub rehearsal/monitor/watchdog artifacts (30 days)
+and migration result (90 days) were checked: they hold only counts,
+checksums and digests, never personal data, so they do not extend
+personal-data retention. Disposable restore databases have zero
+retention. `privacy.html` now says exactly this: backups hold deleted
+information for up to 1 day, and a restore re-applies deletions made
+after the backup point before the restored data goes live, where the
+source database survives. If the source database itself is destroyed,
+that re-application is not yet possible.
+
+**Decision.**
+- *Retention, stated exactly:* deleted personal data can remain in the
+  provider's point-in-time backups for up to 1 day after deletion on the
+  current plan. Documented in `docs/ACCOUNT_DELETION.md` (new "Backups
+  and restores" section), `docs/TURSO_BACKUP_RESTORE_REHEARSAL.md`,
+  `docs/PRODUCTION_BOOTSTRAP_GUIDE.md` §3.4 (now lists all five tiers)
+  and `privacy.html` (Backups bullet).
+- *Deletion ledger, outside the restored database:* one entry per
+  tombstoned account — `{account_id, deleted_at, created_at}` — and
+  nothing else. `deleted_at` is the earliest `account.deleted` audit
+  event (null when no audit row exists, always treated as due);
+  `created_at` separates "created after the restore point, correctly
+  absent" from "should be in the restored database, fail closed". The
+  ledger is built from the still-live source database and kept only in
+  an operator-held, mode-`0600` file: never committed, never uploaded
+  as an artifact, destroyed after the verified cutover.
+- *Re-application:* `reapplyAccountDeletion` in `api/_account-deletion.js`
+  runs the same scrubbing statements as a self-service deletion, keeping
+  the original deletion time as the audit instant. It deliberately
+  skips the recent-auth proof and the last-owner/last-admin gates (the
+  original deletion already passed them; the restored database holds
+  stale membership/ownership state), and it is not behind
+  `ACCOUNT_DELETION_ENABLED` (a restore must re-apply deletions made
+  while the flag was on even if it is off at restore time).
+  `verifyDeletionLedger` is the cutover gate: any due entry not
+  tombstoned blocks the cutover. `scripts/deletion-ledger.mjs` exposes
+  `export` / `reapply` / `verify` with counts-only output. The runbook
+  procedure (export from source, re-apply to the restored database with
+  the *requested* PITR timestamp as the restore point, verify, cut over,
+  destroy the ledger) is in
+  `docs/TURSO_BACKUP_RESTORE_REHEARSAL.md`.
+- *No schema migration.* Every column read already exists. Per the
+  task's constraint and the ID-87 additive-release order, a migration
+  would have needed the owner cutover; none was needed, so none was
+  built. The rehearsal needs no workflow change: the weekly rehearsal
+  deletes no real account, so re-application is covered by unit tests on
+  real migrated SQLite (a pre-deletion database standing in for the
+  restore) rather than by the live drill.
+
+**Alternatives considered and rejected.**
+- A ledger table inside the database: rolls back with the restore it is
+  meant to repair — useless.
+- Ledger entries in a GitHub artifact: keeps account ids on a 30/90-day
+  retention schedule for no benefit, and widens exposure.
+- Operator hand-written SQL for re-application: the deletion is ~35
+  statements; hand-running it under incident pressure is error-prone.
+  The tested function plus CLI is the safe form of the same procedure.
+- A durable off-database ledger written at deletion time (survives the
+  source database itself being destroyed): the correct fix for the
+  deleted-source case, but new infrastructure beyond this issue. Filed
+  as #383; until it lands, a restore from a destroyed source cannot
+  re-apply deletions, and that residual risk is documented in both the
+  deletion doc and the runbook.
+
+**Verification.**
+- `tests/unit/account-deletion-restore-reapplication.test.mjs`
+  (9 tests): ledger building (earliest audit time, null time, live
+  accounts excluded), parsing/filtering (including the at-exactly-the-
+  restore-point boundary), re-application tombstoning and scrubbing a
+  live account with the original audit time, idempotent retry,
+  skip/never-existed/missing outcomes, fail-closed demo account, the
+  last-owner bypass, verification catching a missing entry, and an
+  end-to-end real deletion → ledger → re-application onto the
+  pre-deletion database.
+- `tests/unit/deletion-ledger-cli.test.mjs` (4 tests): export
+  (versioned, mode `0600`, counts-only output), reapply + verify
+  driving a restore to cutover-ready, fail-closed stop on a missing
+  entry, and typed usage/config/file errors.
+- `test:unit`, `test:coverage` and all `check:*` scripts pass (numbers
+  in the PR description).
+
+**Rollout and recovery.** Merge only; no flag, no migration, no
+production change, no workflow change. The new code runs only when the
+operator invokes the ledger CLI during a restore. Recovery is a revert:
+the runbook procedure and `privacy.html` wording revert with it; no
+database state depends on the new code.
+
+**Follow-ups filed.** #383: a durable off-database deletion ledger written
+at deletion time, so a restore from a destroyed source database can still
+re-apply deletions. #384: owner confirmation of the organisation's Turso
+plan tier in the dashboard.
+
+*Review fixes, 25 October 2026:* the PR was merged with `origin/main`
+(#378's byte-level `tamperCursor` kept), the ledger file is now created
+exclusively with `openSync(out, 'wx', 0o600)` plus a defensive `fchmod`
+(refusing to overwrite or follow a symlink), `--out` inside the
+repository is rejected and `deletion-ledger*.json` is gitignored,
+`export` accepts `--restore-point` as minimisation only (reapply-time
+filtering remains the gate), `privacy.html` qualifies the backup bullet
+to re-application only where the source database survives, the CLI
+validates `JWT_SECRET` presence up front with a typed config error
+(`export`/`reapply`; `verify` needs none) and the runbook states it must
+be the secret in effect at deletion time, ID-83 carries a dated
+correction that "Starter" is not a current Turso plan name, and the dead
+`point` variable in `verifyDeletionLedger` is removed. #383 is not
+landed by this PR.
 ## ID-90: Let a signed-in member download their own data as one JSON archive, behind a flag
 
 Status: implemented; behind `DATA_EXPORT_ENABLED` (off by default), no migration. Issue #365.
@@ -4666,8 +4801,8 @@ not block on it.
   (golden-paths row 25). The e2e spec uses the same `expectAccessible`
   helper pattern as the account-deletion golden spec; that helper's fix
   belongs to #390, which owns it. This PR also corrects the decision-log
-  entry's ID: the original ID-89 was also claimed by #386 and #389, so
-  this entry is ID-90, the next free ID.
+  entry's ID: #386 has since merged as ID-89, and #389 also claims
+  ID-89, so this entry is ID-90, the next free ID.
 
 **Removal.** Unset `DATA_EXPORT_ENABLED` (or set `false`) and redeploy:
 the endpoint answers 404, the capability disappears, and Edit profile

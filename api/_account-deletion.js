@@ -476,3 +476,198 @@ export async function deleteAccount(db,{
     throw error;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Restore re-application (issue #366, ID-89).
+//
+// A point-in-time restore to T brings back the database as of T, including
+// personal data deleted after T. The deletion ledger is the minimal record
+// that lets the operator re-apply those deletions to the restored database
+// before cutover: one entry per tombstoned account, with the deletion time
+// and the account's creation time, and nothing else. No personal data: the
+// account id is opaque, and neither the email nor any other column is kept.
+//
+// The ledger is built from the still-live SOURCE database (PITR creates a
+// new database and never deletes the source) and lives only in an
+// operator-held file outside any database. A ledger table inside the
+// database would roll back with the restore it is meant to repair, so it
+// would be useless; a ledger in a GitHub artifact would keep account ids on
+// a 30/90-day retention schedule for no benefit. No schema change: every
+// column read here already exists.
+//
+// The deletion time is the earliest `account.deleted` audit event for the
+// account. Deletion writes one such event per membership the account held,
+// and membership rows are never deleted, so a deleted account normally has
+// at least one. An entry with `deleted_at: null` covers the residual case
+// (no audit row): it is always treated as due, and re-application on a
+// database where the account is already tombstoned is a no-op, so the
+// fail-safe direction is to re-apply rather than to skip.
+//
+// Re-application deliberately skips the recent-authentication proof and the
+// last-owner / last-admin eligibility gates. The original deletion already
+// passed both in the real timeline; the restored database holds stale,
+// pre-restore membership and ownership state, so re-checking could wrongly
+// refuse (for example, ownership transferred after the restore point) and
+// resurrect personal data. Operator authorization is the runbook's manual
+// cutover gate, not this function, and it is not behind
+// ACCOUNT_DELETION_ENABLED: a restore must re-apply deletions made while
+// the flag was on even if the flag is off at restore time.
+// ---------------------------------------------------------------------------
+
+export const DELETION_LEDGER_VERSION=1;
+
+// Canonical millisecond ISO timestamps only: lexicographic comparison is
+// then chronological, which the restore-point filter relies on.
+const ISO_TIMESTAMP=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+function ledgerTimestamp(value,label){
+  if(typeof value!=='string'||!ISO_TIMESTAMP.test(value)||Number.isNaN(Date.parse(value))){
+    throw new TypeError(`valid ${label} is required`);
+  }
+  return value;
+}
+
+// Database timestamps are not all canonical ISO: `auth_accounts.created_at`
+// defaults to SQLite `datetime('now')` (`YYYY-MM-DD HH:MM:SS`), while audit
+// rows carry `toISOString()` values. Normalise the SQLite form on the way
+// into the ledger so every ledger timestamp is canonical ISO.
+const SQLITE_TIMESTAMP=/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})$/;
+
+function normalizeDatabaseTimestamp(value,label){
+  if(typeof value==='string'&&ISO_TIMESTAMP.test(value)&&!Number.isNaN(Date.parse(value))) return value;
+  const sqlite=typeof value==='string'?SQLITE_TIMESTAMP.exec(value):null;
+  if(sqlite){
+    const normalized=`${sqlite[1]}T${sqlite[2]}.000Z`;
+    if(!Number.isNaN(Date.parse(normalized))) return normalized;
+  }
+  throw new TypeError(`valid ${label} is required`);
+}
+
+/** Validates a parsed ledger (or a single entry wrapped in an array) and returns a frozen, id-sorted copy. */
+export function parseDeletionLedger(value){
+  if(!Array.isArray(value)) throw new TypeError('deletion ledger must be an array');
+  const seen=new Set();
+  const entries=value.map(entry=>{
+    if(!entry||typeof entry!=='object'||Array.isArray(entry)) throw new TypeError('deletion ledger entry must be an object');
+    const keys=Object.keys(entry).sort();
+    if(keys.length!==3||keys[0]!=='account_id'||keys[1]!=='created_at'||keys[2]!=='deleted_at'){
+      throw new TypeError('deletion ledger entry must have exactly account_id, created_at and deleted_at');
+    }
+    const accountId=positiveId(entry.account_id);
+    if(!accountId) throw new TypeError('deletion ledger account_id must be a positive integer');
+    if(seen.has(accountId)) throw new TypeError('deletion ledger account_id must be unique');
+    seen.add(accountId);
+    return Object.freeze({
+      account_id:accountId,
+      created_at:ledgerTimestamp(entry.created_at,'created_at'),
+      deleted_at:entry.deleted_at===null?null:ledgerTimestamp(entry.deleted_at,'deleted_at'),
+    });
+  });
+  entries.sort((a,b)=>a.account_id-b.account_id);
+  return Object.freeze(entries);
+}
+
+/** Every tombstoned account in `db`, with its deletion time when an audit row records one. */
+export async function buildDeletionLedger(db){
+  if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
+  const result=await db.execute({
+    sql:`SELECT account.id AS account_id, MIN(audit.created_at) AS deleted_at, account.created_at AS created_at
+      FROM auth_accounts account
+      LEFT JOIN circle_audit_events audit
+        ON audit.subject_user_id=account.id AND audit.event_type=?
+      WHERE account.password_hash=?
+      GROUP BY account.id
+      ORDER BY account.id`,
+    args:[ACCOUNT_DELETED_AUDIT_EVENT,DELETED_ACCOUNT_PASSWORD_HASH],
+  });
+  return parseDeletionLedger((result.rows??[]).map(row=>({
+    account_id:Number(row.account_id),
+    created_at:normalizeDatabaseTimestamp(row.created_at,'created_at'),
+    deleted_at:row.deleted_at==null?null:normalizeDatabaseTimestamp(row.deleted_at,'deleted_at'),
+  })));
+}
+
+/** Entries whose deletion may postdate `restorePoint` (unknown time: always due) — the re-application set. */
+export function deletionLedgerEntriesAfter(ledger,restorePoint){
+  const entries=parseDeletionLedger(ledger);
+  const point=ledgerTimestamp(restorePoint,'restore point');
+  return Object.freeze(entries.filter(entry=>entry.deleted_at===null||entry.deleted_at>point));
+}
+
+/**
+ * Re-applies one ledger entry to a restored database: the same scrubbing
+ * statements as a self-service deletion, with the original deletion time
+ * kept as the audit instant so the rebuilt audit trail matches the real
+ * timeline. Returns `skipped_before_restore_point` for entries the restore
+ * already contains, `never_existed_in_restore` for accounts created after
+ * the restore point (correctly absent), `already_deleted` for an
+ * idempotent retry, and `missing_in_restore` — fail closed, do not cut
+ * over — for an account that should be in the restored database but is not.
+ */
+export async function reapplyAccountDeletion(db,{
+  entry,restorePoint,hashInvitationEmail,nowSeconds=Math.floor(Date.now()/1000),
+}={}){
+  const [parsed]=parseDeletionLedger([entry]);
+  const point=ledgerTimestamp(restorePoint,'restore point');
+  if(!db||typeof db.transaction!=='function'||typeof hashInvitationEmail!=='function'
+    ||!Number.isSafeInteger(nowSeconds)||nowSeconds<1){
+    throw new TypeError('valid account deletion re-application required');
+  }
+  if(parsed.deleted_at!==null&&parsed.deleted_at<=point){
+    return Object.freeze({ok:true,status:'skipped_before_restore_point'});
+  }
+  const occurredAt=parsed.deleted_at??new Date(nowSeconds*1000).toISOString();
+  const transaction=await db.transaction('write');
+  let finished=false;
+  const stop=async result=>{
+    await rollback(transaction); finished=true;
+    return Object.freeze(result);
+  };
+  try{
+    const account=await readAccount(transaction,parsed.account_id);
+    if(!account){
+      if(parsed.created_at>point) return await stop({ok:true,status:'never_existed_in_restore'});
+      return await stop({ok:false,reason:'missing_in_restore'});
+    }
+    if(isDeletedAccount(account)) return await stop({ok:true,status:'already_deleted'});
+    const email=String(account.email).trim().toLowerCase();
+    const plan=deletionStatements({userId:parsed.account_id,email,
+      emailHash:hashInvitationEmail(email)||null,
+      tombstoneEmail:deletedAccountEmail(parsed.account_id),occurredAt,nowSeconds});
+    const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
+    const summary={};
+    plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });
+    const {tombstoned,...counts}=summary;
+    if(tombstoned!==1) throw new Error('account tombstone failed');
+    await transaction.commit(); finished=true;
+    return Object.freeze({ok:true,status:'reapplied',summary:Object.freeze(counts)});
+  }catch(error){
+    if(!finished) await rollback(transaction);
+    throw error;
+  }
+}
+
+/**
+ * Read-only check that every due ledger entry is tombstoned in `db`
+ * (or correctly absent because the account was created after the restore
+ * point). Run after re-application and before cutover; any `missing` id
+ * blocks the cutover.
+ */
+export async function verifyDeletionLedger(db,{ledger,restorePoint}={}){
+  const due=deletionLedgerEntriesAfter(ledger,restorePoint);
+  if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
+  const result=await db.execute({
+    sql:`SELECT id FROM auth_accounts WHERE password_hash=?`,
+    args:[DELETED_ACCOUNT_PASSWORD_HASH],
+  });
+  const tombstoned=new Set((result.rows??[]).map(row=>Number(row.id)));
+  // restorePoint was already validated as canonical ISO by
+  // deletionLedgerEntriesAfter above, so it compares lexicographically here.
+  const missing=due.filter(entry=>!tombstoned.has(entry.account_id)&&entry.created_at<=restorePoint)
+    .map(entry=>entry.account_id);
+  return Object.freeze({
+    ok:missing.length===0,
+    checked:due.length,
+    missing:Object.freeze(missing),
+  });
+}
