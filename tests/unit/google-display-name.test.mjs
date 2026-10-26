@@ -124,6 +124,23 @@ test('#397 Google sign-in preserves a member-set display name (provider-identity
     'the session must carry the stored name, not the Google name');
 });
 
+test('#397 blank stored display_name gets the Google fallback in the session only, DB stays blank',async()=>{
+  const db=await fixture();
+  await db.execute({sql:`INSERT INTO auth_accounts
+    (id,email,password_hash,display_name,color,google_sub) VALUES (1,?,?,?,?,?)`,
+  args:['blank@example.test','!oauth:existing','','#123456','google-subject-blank']});
+  await db.execute({sql:`INSERT INTO auth_provider_identities (issuer,subject,user_id) VALUES (?,?,1)`,
+    args:['https://accounts.google.com','google-subject-blank']});
+
+  const callback=await signInWithGoogle({googleName:'Google Fallback Name',googleSub:'google-subject-blank',
+    email:'blank@example.test'});
+  assert.equal(callback.headers.location,'https://randori.example.test/?google=success');
+  assert.equal((await db.execute(`SELECT display_name FROM auth_accounts WHERE id=1`)).rows[0].display_name,
+    '','sign-in must not backfill a blank stored display_name');
+  assert.equal(await sessionName(db,callback),'Google Fallback Name',
+    'the session must carry the Google fallback when the stored name is blank');
+});
+
 test('#397 Google sign-in preserves a member-set display name (legacy google_sub path)',async()=>{
   const db=await fixture();
   await db.execute({sql:`INSERT INTO auth_accounts
