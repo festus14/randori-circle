@@ -1470,6 +1470,20 @@ export function extractLinks(path, content) {
 
 export function validateLinks({ linkSources, anchorSources, paths, directories }) {
   const errors = [];
+  // The same underlying problem must be reported once: a reference-style
+  // link contributes both a usage (`[Missing][ref1]`) and a definition
+  // (`[ref1]: NOPE.md`) pointing at the same target, and repeated links
+  // to the same target are the same defect. Key diagnostics by source
+  // file + resolved target + kind (+ fragment for anchor errors), so a
+  // different target — or a different missing anchor — still reports.
+  // The first occurrence (the usage site when it precedes the definition)
+  // is the one kept.
+  const seen = new Set();
+  const report = (key, message) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    errors.push(message);
+  };
   const anchorsByPath = new Map();
   for (const file of anchorSources ?? []) {
     if (typeof file?.content !== 'string') continue;
@@ -1492,7 +1506,8 @@ export function validateLinks({ linkSources, anchorSources, paths, directories }
       try {
         decoded = decodeURIComponent(pathPart);
       } catch {
-        errors.push(errorAt(file.path, link.line, `link ${raw} has an invalid percent-encoding`));
+        report(`encoding:${file.path}:${raw}`,
+          errorAt(file.path, link.line, `link ${raw} has an invalid percent-encoding`));
         continue;
       }
       // A leading slash is repo-root-relative; anything else is
@@ -1504,25 +1519,29 @@ export function validateLinks({ linkSources, anchorSources, paths, directories }
         : file.path;
       const targetPath = target.replace(/\/$/, '');
       if (!paths.has(targetPath) && !directories.has(targetPath)) {
-        errors.push(errorAt(file.path, link.line, `relative link ${raw} points to missing file ${targetPath}`));
+        report(`missing-file:${file.path}:${targetPath}`,
+          errorAt(file.path, link.line, `relative link ${raw} points to missing file ${targetPath}`));
         continue;
       }
       if (!fragment) continue;
       if (targetPath.endsWith('.md')) {
         const anchors = anchorsByPath.get(targetPath);
         if (anchors && !anchors.has(fragment)) {
-          errors.push(errorAt(file.path, link.line,
-            `relative link ${raw} points to missing anchor #${fragment} in ${targetPath}`));
+          report(`missing-anchor:${file.path}:${targetPath}#${fragment}`,
+            errorAt(file.path, link.line,
+              `relative link ${raw} points to missing anchor #${fragment} in ${targetPath}`));
         }
       } else if (targetPath.endsWith('.html')) {
         const anchors = anchorsByPath.get(targetPath);
         if (anchors && !anchors.has(fragment)) {
-          errors.push(errorAt(file.path, link.line,
-            `relative link ${raw} points to missing anchor #${fragment} in ${targetPath}`));
+          report(`missing-anchor:${file.path}:${targetPath}#${fragment}`,
+            errorAt(file.path, link.line,
+              `relative link ${raw} points to missing anchor #${fragment} in ${targetPath}`));
         }
       } else {
-        errors.push(errorAt(file.path, link.line,
-          `relative link ${raw} points to anchor #${fragment} on ${targetPath}, which is not a Markdown or HTML file so the anchor cannot resolve`));
+        report(`anchor-non-doc:${file.path}:${targetPath}#${fragment}`,
+          errorAt(file.path, link.line,
+            `relative link ${raw} points to anchor #${fragment} on ${targetPath}, which is not a Markdown or HTML file so the anchor cannot resolve`));
       }
     }
   }
@@ -1710,8 +1729,9 @@ export function validateDocsIndex({ docsIndex, docsFiles, archivedAllowlist, doc
     }
     if (archived.has(file)) {
       if (typeof archived.get(file) === 'string' && archived.get(file).trim()) continue;
-      // Empty reason: reported above, and the exemption does not apply.
-      errors.push(`${DOCS_INDEX_PATH}: ${file} is not indexed in docs/README.md (link it there, or move it under docs/archive/ with a reason)`);
+      // Empty reason: already reported once above for this file; the
+      // exemption does not apply, but a second "not indexed" diagnostic
+      // for the same entry would double-report the same defect.
       continue;
     }
     errors.push(`${DOCS_INDEX_PATH}: ${file} is not indexed in docs/README.md (link it there, or move it under docs/archive/ with a reason)`);

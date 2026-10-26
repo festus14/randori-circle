@@ -533,8 +533,19 @@ test('an archived doc without a reason fails, as does an allowlist entry without
     docsFiles: ['docs/README.md', 'docs/GUIDE.md', 'docs/ORPHAN.md'],
     archivedAllowlist: new Map([['docs/ORPHAN.md', '   ']]),
   });
-  assert.ok(emptyAllowlist.some((error) => error.includes('ARCHIVED_DOC_ALLOWLIST without a non-empty reason')));
-  assert.ok(emptyAllowlist.some((error) => error.includes('docs/ORPHAN.md is not indexed')));
+  assert.deepEqual(emptyAllowlist, [
+    'docs/README.md: docs/ORPHAN.md is in ARCHIVED_DOC_ALLOWLIST without a non-empty reason',
+  ]);
+  // Distinct files with empty-reason entries are each reported once.
+  const twoEmpty = validateDocsIndex({
+    docsIndex: '# Index\n\n[GUIDE.md](GUIDE.md)\n',
+    docsFiles: ['docs/README.md', 'docs/GUIDE.md', 'docs/ORPHAN.md', 'docs/OTHER.md'],
+    archivedAllowlist: new Map([['docs/ORPHAN.md', '   '], ['docs/OTHER.md', '']]),
+  });
+  assert.deepEqual(twoEmpty, [
+    'docs/README.md: docs/ORPHAN.md is in ARCHIVED_DOC_ALLOWLIST without a non-empty reason',
+    'docs/README.md: docs/OTHER.md is in ARCHIVED_DOC_ALLOWLIST without a non-empty reason',
+  ]);
 });
 
 test('missing required files and empty sections are reported, not crashed on', () => {
@@ -630,9 +641,7 @@ test('reference-style links are checked in both directions', () => {
     paths: new Set(['docs/GUIDE.md']),
     directories: new Set(['docs']),
   });
-  assert.ok(missing.some((error) => error.includes('relative link NOPE.md points to missing file docs/NOPE.md')));
-  assert.ok(missing.some((error) => error.includes('docs/GUIDE.md:3:')));
-  assert.ok(missing.some((error) => error.includes('docs/GUIDE.md:5:')));
+  assert.deepEqual(missing, ['docs/GUIDE.md:3: relative link NOPE.md points to missing file docs/NOPE.md']);
   for (const [name, content] of [
     ['full', '# G\n\n[Text][label]\n\n[label]: NOPE.md\n'],
     ['collapsed', '# G\n\n[NOPE.md][]\n\n[NOPE.md]: NOPE.md\n'],
@@ -644,7 +653,7 @@ test('reference-style links are checked in both directions', () => {
       paths: new Set(['docs/GUIDE.md']),
       directories: new Set(['docs']),
     });
-    assert.ok(errors.length > 0, `${name} reference must be checked`);
+    assert.equal(errors.length, 1, `${name} reference must be checked exactly once`);
   }
   // A shortcut reference with no definition is literal text, not a link.
   assert.deepEqual(extractLinks('docs/GUIDE.md', '# G\n\n[Not a link]\n'), []);
@@ -659,6 +668,49 @@ test('reference-style links are checked in both directions', () => {
     extractLinks('docs/GUIDE.md', '# G\n\n[Text][a]\n\n[a]: <B.md> "title"\n'),
     [{ target: 'B.md', line: 3 }, { target: 'B.md', line: 5 }],
   );
+});
+
+test('dedup keeps distinct missing-file targets and repeated links to one target', () => {
+  const distinct = validateLinks({
+    linkSources: [{
+      path: 'docs/GUIDE.md',
+      content: '# Guide\n\n[One][r1]\n\n[Two][r2]\n\n[r1]: NOPE1.md\n\n[r2]: NOPE2.md\n',
+    }],
+    anchorSources: [{ path: 'docs/GUIDE.md', content: '# Guide\n' }],
+    paths: new Set(['docs/GUIDE.md']),
+    directories: new Set(['docs']),
+  });
+  assert.deepEqual(distinct, [
+    'docs/GUIDE.md:3: relative link NOPE1.md points to missing file docs/NOPE1.md',
+    'docs/GUIDE.md:5: relative link NOPE2.md points to missing file docs/NOPE2.md',
+  ]);
+  // Two inline links to the same missing file are one diagnostic.
+  const repeated = validateLinks({
+    linkSources: [{
+      path: 'docs/GUIDE.md',
+      content: '# Guide\n\n[One](NOPE.md)\n\n[Two](NOPE.md)\n',
+    }],
+    anchorSources: [{ path: 'docs/GUIDE.md', content: '# Guide\n' }],
+    paths: new Set(['docs/GUIDE.md']),
+    directories: new Set(['docs']),
+  });
+  assert.deepEqual(repeated, ['docs/GUIDE.md:3: relative link NOPE.md points to missing file docs/NOPE.md']);
+  // Different missing anchors on the same existing file stay distinct.
+  const anchors = validateLinks({
+    linkSources: [{
+      path: 'docs/GUIDE.md',
+      content: '# Guide\n\n[One](OTHER.md#alpha)\n\n[Two](OTHER.md#beta)\n',
+    }],
+    anchorSources: [
+      { path: 'docs/GUIDE.md', content: '# Guide\n' },
+      { path: 'docs/OTHER.md', content: '# Other\n' },
+    ],
+    paths: new Set(['docs/GUIDE.md', 'docs/OTHER.md']),
+    directories: new Set(['docs']),
+  });
+  assert.equal(anchors.length, 2);
+  assert.ok(anchors.some((error) => error.includes('#alpha')));
+  assert.ok(anchors.some((error) => error.includes('#beta')));
 });
 
 test('inline links accept single-quote / paren titles and multi-line destinations', () => {
