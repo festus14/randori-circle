@@ -506,3 +506,22 @@ test('route: an insert that returns no row is 400 from the submit path',async()=
     await realDb.execute(`DELETE FROM feedback_items WHERE idempotency_key='route-submit-norow-12345678'`);
   }
 });
+
+test('route: a database client failure in the context is 503',async()=>{
+  enableFeedback();
+  clientOverride=new Error('database client down');
+  try{
+    assert.equal((await invoke(dataHandler,{method:'GET',url:'/api/feedback/mine',auth:'member'})).status,503);
+    assert.equal((await invoke(dataHandler,{method:'POST',url:'/api/feedback',auth:'member',
+      body:feedbackBody()})).status,503);
+  }finally{
+    clientOverride=null;
+  }
+});
+
+test('route: an array-valued query parameter is 400',async()=>{
+  enableFeedback();
+  const result=await invoke(dataHandler,{method:'GET',url:'/api/feedback/mine',auth:'member',
+    query:{limit:['1','2']}});
+  assert.equal(result.status,400,JSON.stringify(result.body));
+});

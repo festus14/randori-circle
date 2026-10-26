@@ -16,6 +16,7 @@ import {
   encodeFeedbackCursor,
   ensureFeedbackReadiness,
   feedbackEnabled,
+  feedbackNow,
   feedbackSchemaNotInstalled,
   validateFeedbackInput,
 } from '../../api/_feedback-config.js';
@@ -656,4 +657,41 @@ test('notification handler: provider status is read from every error shape',asyn
 test('retention: invalid arguments fail closed',async()=>{
   await assert.rejects(purgeClosedFeedback(null),TypeError);
   await assert.rejects(runFeedbackRetention(null),TypeError);
+});
+
+test('time and cursor: invalid overrides, unavailable database time, and malformed cursors fail closed',async()=>{
+  const {db}=await fixture();
+  assert.equal(await feedbackNow(db,123),123);
+  await assert.rejects(feedbackNow(db,0),TypeError);
+  await assert.rejects(feedbackNow(db,1.5),TypeError);
+  assert.ok(Number.isSafeInteger(await feedbackNow(db))&&(await feedbackNow(db))>0);
+  await assert.rejects(feedbackNow({execute:async()=>({rows:[{now_seconds:0}]})}),/database time unavailable/);
+  assert.equal(decodeFeedbackCursor(undefined),null);
+  assert.equal(decodeFeedbackCursor(''),null);
+  assert.equal(decodeFeedbackCursor('a'.repeat(129)),false);
+  assert.equal(decodeFeedbackCursor(Buffer.from('nope','utf8').toString('base64url')),false);
+  assert.equal(decodeFeedbackCursor(Buffer.from('123.not-a-uuid','utf8').toString('base64url')),false);
+  assert.equal(decodeFeedbackCursor(Buffer.from(`${'9'.repeat(17)}.00000000-0000-4000-8000-000000000001`,'utf8').toString('base64url')),false);
+  assert.deepEqual(decodeFeedbackCursor(encodeFeedbackCursor(123,'00000000-0000-4000-8000-000000000001')),
+    {createdAt:123,id:'00000000-0000-4000-8000-000000000001'});
+});
+
+test('list: stored diagnostics that parse to a non-object fail closed',async()=>{
+  const bad={execute:async()=>({rows:[{id:'00000000-0000-4000-8000-000000000001',circle_id:1,
+    author_user_id:2,kind:'feedback',title:'t',body:'b',status:'open',visibility:'private',
+    diagnostics_json:'123',created_at:100,updated_at:100,closed_at:null,vote_count:0}]})};
+  await assert.rejects(listMyFeedback(bad,{authorUserId:2}),FeedbackInputError);
+});
+
+test('notification handler: control-char title falls back, and the provider id falls back to data.id',async()=>{
+  process.env.FEEDBACK_ENABLED='true';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  const fakeDb={execute:async()=>({rows:[{item_kind:'bogus',item_title:'',
+    email:'admin@example.test',is_admin:1,email_enabled:1}]})};
+  const handler=createFeedbackSubmittedHandler({db:fakeDb,baseUrl:'https://randoricircle.com',
+    send:async(message)=>{ assert.equal(message.subject,'New feedback: New feedback'); return {providerName:'test',data:{id:'msg-1'}}; }});
+  assert.deepEqual(await handler({eventVersion:1,idempotencyKey:'k',payload:{
+    feedback_id:'00000000-0000-4000-8000-000000000001',circle_id:1,author_user_id:2,recipient_user_id:1,
+    kind:'feedback',title:'A suggestion',template_version:1}},{}),
+  {status:'delivered',providerName:'test',providerMessageId:'msg-1'});
 });

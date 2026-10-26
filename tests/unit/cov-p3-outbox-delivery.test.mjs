@@ -129,8 +129,10 @@ test('local development captures every mail type with its kind and at most four 
   await send(RESET,{});
   await send(REMINDER,{kind:'availability_cutoff'});
   await send(REMINDER,{kind:'session_soon'});
+  await send(FEEDBACK,{});
   assert.deepEqual(plan.captured.get(REMINDER).map(entry=>entry.kind),
     ['reminder-availability-cutoff','reminder-session-soon']);
+  assert.deepEqual(plan.captured.get(FEEDBACK).map(entry=>entry.kind),['feedback']);
   assert.deepEqual(plan.captured.get(PAIRING).map(entry=>entry.kind),['solo','unavailable','paired','unavailable']);
   assert.deepEqual([SCHEDULE,INVITATION,ACTIVATION,RESET].map(type=>plan.captured.get(type).map(entry=>entry.kind)),
     [['schedule'],['invitation'],['activation'],['password-reset']]);
