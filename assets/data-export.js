@@ -1,4 +1,4 @@
-// Member data export in Edit profile (issue #365, ID-89), behind
+// Member data export in Edit profile (issue #365, ID-90), behind
 // DATA_EXPORT_ENABLED. The server advertises the dataExport capability, so
 // nothing is downloaded while the flag is off.
 //
@@ -20,8 +20,9 @@ export const COPY=Object.freeze({
     'Your pairings, with partners shown by display name only.',
     'Your schedules, session completions and session controls.',
     'Messages you sent and code runs you made, solo and in pair rooms.',
-    'Questions you authored, invitations you sent or accepted, and your own invite requests.',
-    'Your AI sessions, AI feedback, AI consent and AI usage, and your own product feedback when feedback is available.',
+    'Questions you authored, invitations you sent, accepted or received, circles you created, and your own invite requests.',
+    'Your AI sessions, AI feedback, AI consent, AI usage and AI reservations, and your own product feedback when feedback is available.',
+    'If a section holds more rows than its cap, the archive lists that section under truncated_sections, so the download says what it left out.',
   ]),
   excludedTitle:'What it does not contain',
   excluded:Object.freeze([

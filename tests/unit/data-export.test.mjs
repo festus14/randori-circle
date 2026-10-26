@@ -14,6 +14,7 @@ import {
   ACCOUNT_DATA_INVENTORY,
   NO_PERSONAL_DATA_TABLES,
 } from '../../api/_account-deletion.js';
+import { hashInvitationEmail } from '../../api/_circle-membership.js';
 import {
   DATA_EXPORT_MAX_BYTES,
   DATA_EXPORT_SECTION_LIMITS,
@@ -26,6 +27,10 @@ import {
 import { createMigratedDatabase } from '../support/migrated-db.mjs';
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
 
+// hashInvitationEmail needs the JWT secret, as in production; the
+// fixture computes invitation email hashes with the same secret the
+// builder uses, so the match is exact.
+process.env.JWT_SECRET='data-export-test-secret-at-least-32-bytes';
 const resources=[];
 afterEach(async()=>{
   while(resources.length){ try{ await resources.pop()(); }catch{} }
@@ -69,7 +74,7 @@ async function fixture(){
     `INSERT INTO pairing_weeks (id,week_label,week_start,focus,is_demo) VALUES (1,'2026-W01','2026-01-05','both',0)`,
     `INSERT INTO pairing_participants (week_id,user_id,position,source) VALUES (1,2,0,'auth'),(1,3,1,'auth')`,
     `INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair,topic,topic_kind) VALUES (1,1,2,3,NULL,0,'Two Sum','dsa')`,
-    `INSERT INTO pair_schedules (id,week_id,pair_group_id,proposed_times,agreed_time) VALUES (1,1,1,'[{"instant":"${AGREED}"}]','${AGREED}')`,
+    `INSERT INTO pair_schedules (id,week_id,pair_group_id,proposed_times,agreed_time) VALUES (1,1,1,'[{"instant":"${AGREED}","proposed_by":3},{"instant":"2026-01-08T10:00:00.000Z","proposed_by":2},"2026-01-09T10:00:00.000Z"]','${AGREED}')`,
     `INSERT INTO pair_meeting_links (week_id,pair_group_id,accepted_schedule_at,meeting_url,revision,updated_by,updated_by_source,pair_user_a_id,pair_user_b_id,pair_user_c_id,created_at,updated_at)
       VALUES (1,1,'${AGREED}','https://meet.example.test/pair-room',1,2,'auth',2,3,NULL,'${AGREED}','${AGREED}')`,
     `INSERT INTO session_completion_receipts (week_id,pair_group_id,user_id,participant_source,pair_user_a_id,pair_user_b_id,pair_user_c_id,confirmed_at)
@@ -93,6 +98,20 @@ async function fixture(){
       VALUES ('22222222-2222-4222-8222-222222222222',1,'${HEX('3')}','${HEX('4')}',1,'2026-01-01T00:00:00.000Z','2026-01-08T00:00:00.000Z','2026-01-02T00:00:00.000Z',2,NULL)`,
     `INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by,revoked_at)
       VALUES ('33333333-3333-4333-8333-333333333333',1,'${HEX('5')}','${HEX('6')}',3,'2026-01-01T00:00:00.000Z','2026-01-08T00:00:00.000Z',NULL,NULL,NULL)`,
+    // Pending invitation addressed to the member (hash of their email),
+    // one addressed to the partner (must not appear in the member's
+    // export), one revoked, and one used by the member (accepted, not
+    // received).
+    `INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by,revoked_at)
+      VALUES ('66666666-6666-4666-8666-666666666666',1,'${HEX('c')}','${hashInvitationEmail('member@example.test')}',1,'2026-01-04T00:00:00.000Z','2026-01-11T00:00:00.000Z',NULL,NULL,NULL)`,
+    `INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by,revoked_at)
+      VALUES ('77777777-7777-4777-8777-777777777777',1,'${HEX('d')}','${hashInvitationEmail('partner@example.test')}',1,'2026-01-04T00:00:00.000Z','2026-01-11T00:00:00.000Z',NULL,NULL,NULL)`,
+    `INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by,revoked_at)
+      VALUES ('88888888-8888-4888-8888-888888888888',1,'${HEX('e')}','${hashInvitationEmail('member@example.test')}',1,'2026-01-04T00:00:00.000Z','2026-01-11T00:00:00.000Z',NULL,NULL,'2026-01-05T00:00:00.000Z')`,
+    `INSERT INTO circle_invitations (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at,used_at,used_by,revoked_at)
+      VALUES ('99999999-9999-4999-8999-999999999999',1,'${HEX('f')}','${hashInvitationEmail('member@example.test')}',1,'2026-01-03T00:00:00.000Z','2026-01-10T00:00:00.000Z','2026-01-03T00:00:00.000Z',2,NULL)`,
+    // A circle the member created but holds no membership for.
+    `INSERT INTO circles (id,public_id,slug,name,is_primary,created_by) VALUES (2,'circle-2','circle-2','Created Circle',0,2)`,
     `INSERT INTO invite_requests (id,circle_id,email_hash,email,name,note,status,created_at,expires_at)
       VALUES ('44444444-4444-4444-8444-444444444444',1,'${HEX('7')}','member@example.test','Member','Please let me in','pending',1700000000,1702600000)`,
     `INSERT INTO invite_requests (id,circle_id,email_hash,email,name,note,status,created_at,expires_at)
@@ -124,12 +143,74 @@ test('the flag is off unless exactly true',()=>{
   assert.equal(dataExportEnabled(),process.env.DATA_EXPORT_ENABLED==='true');
 });
 
+// The hard-coded expected coverage. This must NOT be derived from
+// ACCOUNT_DATA_INVENTORY or DATA_EXPORT_TABLE_COVERAGE: the earlier test
+// compared the coverage list against the inventory it was built from,
+// so it passed every mutation it was meant to catch — adding a table to
+// the inventory (which the fallback then "covers" with "Not yet
+// reviewed"), removing a table from the inventory, and deleting an
+// explicit entry (which also silently falls back). All three mutations
+// must fail this test: the first two change the length / table list,
+// the third changes the entry's section/included and trips the
+// "Not yet reviewed" assertion below.
+const EXPECTED_TABLE_COVERAGE=[
+  {table:'auth_accounts',section:'profile',included:true},
+  {table:'auth_sessions',section:null,included:false},
+  {table:'auth_recent_proofs',section:null,included:false},
+  {table:'auth_session_circle_contexts',section:null,included:false},
+  {table:'auth_provider_identities',section:'profile',included:true},
+  {table:'auth_provider_email_state',section:null,included:false},
+  {table:'auth_password_resets',section:null,included:false},
+  {table:'auth_email_activations',section:null,included:false},
+  {table:'auth_identity_audit_events',section:null,included:false},
+  {table:'auth_rate_limits',section:null,included:false},
+  {table:'circle_memberships',section:'memberships',included:true},
+  {table:'circles',section:'memberships',included:true},
+  {table:'circle_invitations',section:'invitations',included:true},
+  {table:'circle_audit_events',section:null,included:false},
+  {table:'circle_creation_requests',section:null,included:false},
+  {table:'invite_requests',section:'invite_requests',included:true},
+  {table:'pairing_cycle_availability',section:'availability',included:true},
+  {table:'user_notification_prefs',section:'notification_preferences',included:true},
+  {table:'pairing_participants',section:'pairings',included:true},
+  {table:'pairing_groups',section:'pairings',included:true},
+  {table:'pairing_week_runs',section:null,included:false},
+  {table:'circle_pairing_eligibility',section:'pairings',included:true},
+  {table:'circle_pairing_groups',section:'pairings',included:true},
+  {table:'circle_pair_schedules',section:'schedules',included:true},
+  {table:'circle_pair_schedule_proposals',section:'schedules',included:true},
+  {table:'pair_schedules',section:'schedules',included:true},
+  {table:'session_completion_receipts',section:'session_completions',included:true},
+  {table:'pair_session_controls',section:'session_controls',included:true},
+  {table:'pair_messages',section:'messages',included:true},
+  {table:'session_runs',section:'code_runs',included:true},
+  {table:'pair_code_documents',section:null,included:false},
+  {table:'pair_room_snapshots',section:null,included:false},
+  {table:'pair_meeting_links',section:'schedules',included:true},
+  {table:'video_signals',section:null,included:false},
+  {table:'ai_sessions',section:'ai',included:true},
+  {table:'ai_feedback',section:'ai',included:true},
+  {table:'ai_consents',section:'ai',included:true},
+  {table:'ai_account_monthly_usage',section:'ai',included:true},
+  {table:'ai_account_monthly_reservations',section:'ai',included:true},
+  {table:'custom_questions',section:'custom_questions',included:true},
+  {table:'app_logs',section:null,included:false},
+  {table:'outbox_events',section:null,included:false},
+  {table:'outbox_audit_events',section:null,included:false},
+  {table:'pairing_email_outbox',section:null,included:false},
+  {table:'users',section:null,included:false},
+];
+
 test('every inventory table has explicit export coverage',()=>{
-  const inventoryTables=ACCOUNT_DATA_INVENTORY.map(entry=>entry.table);
-  assert.deepEqual(DATA_EXPORT_TABLE_COVERAGE.map(entry=>entry.table),inventoryTables);
+  assert.equal(EXPECTED_TABLE_COVERAGE.length,45);
+  assert.equal(ACCOUNT_DATA_INVENTORY.length,45);
+  assert.deepEqual(
+    DATA_EXPORT_TABLE_COVERAGE.map(entry=>({table:entry.table,section:entry.section,included:entry.included})),
+    EXPECTED_TABLE_COVERAGE);
   for(const entry of DATA_EXPORT_TABLE_COVERAGE){
     assert.equal(typeof entry.reason,'string');
     assert.ok(entry.reason.length>10,entry.table);
+    assert.ok(!entry.reason.startsWith('Not yet reviewed'),`${entry.table} has no explicit coverage entry`);
     assert.equal(typeof entry.included,'boolean');
     if(entry.included) assert.equal(typeof entry.section,'string',entry.table);
     else assert.equal(entry.section,null,entry.table);
@@ -144,6 +225,12 @@ test('readiness stays green on a migrated database and fails closed on drift',as
   await ensureDataExportReadiness(db);
   await db.execute('DROP TABLE pair_messages');
   await assert.rejects(()=>ensureDataExportReadiness(db));
+
+  // The builder selects session_runs.code, so the readiness probe must
+  // too: dropping the column must fail readiness, not the export.
+  const other=await fixture();
+  await other.execute('ALTER TABLE session_runs DROP COLUMN code');
+  await assert.rejects(()=>ensureDataExportReadiness(other));
 });
 
 test('the export holds the member\'s own data from every exported section',async()=>{
@@ -167,6 +254,13 @@ test('the export holds the member\'s own data from every exported section',async
   assert.equal(archive.pairings.secondary_eligibility.length,1);
   assert.deepEqual(archive.schedules.primary[0].partners,['Partner']);
   assert.equal(archive.schedules.primary[0].agreed_time,AGREED);
+  // Proposed times are projected to instants + proposed_by_me: the raw
+  // numeric proposer id (3, the partner) never reaches the archive.
+  assert.deepEqual(archive.schedules.primary[0].proposed_times,[
+    {instant:AGREED,proposed_by_me:false},
+    {instant:'2026-01-08T10:00:00.000Z',proposed_by_me:true},
+    {instant:'2026-01-09T10:00:00.000Z',proposed_by_me:null},
+  ]);
   assert.deepEqual(archive.schedules.secondary[0].partners,['Partner']);
   assert.equal(archive.schedules.proposals[0].proposed_by,'Partner');
   assert.equal(archive.schedules.meeting_links[0].meeting_url,'https://meet.example.test/pair-room');
@@ -181,8 +275,19 @@ test('the export holds the member\'s own data from every exported section',async
   assert.deepEqual(archive.notification_preferences.email,'member@example.test');
   assert.deepEqual(archive.custom_questions.map(row=>row.slug),['my-question']);
   assert.equal(archive.invitations.sent.length,1);
-  assert.equal(archive.invitations.accepted.length,1);
+  assert.equal(archive.invitations.accepted.length,2);
   assert.equal(archive.invitations.accepted[0].created_by,'Owner');
+  // Only the pending invitation addressed to the member is received:
+  // the partner's, the revoked one and the already-accepted one are not.
+  assert.equal(archive.invitations.received.length,1);
+  assert.equal(archive.invitations.received[0].invitation_id,'66666666-6666-4666-8666-666666666666');
+  assert.equal(archive.invitations.received[0].created_by,'Owner');
+  assert.equal(archive.invitations.received[0].status,'pending');
+  // The circle the member created but holds no membership for is
+  // exported once, and only there — never duplicated in memberships.
+  assert.deepEqual(archive.created_circles.map(row=>row.circle_name),['Created Circle']);
+  assert.deepEqual(archive.memberships.map(row=>row.circle_name),['Circle']);
+  assert.deepEqual(archive.truncated_sections,[]);
   assert.equal(archive.invite_requests.length,1);
   assert.equal(archive.invite_requests[0].email,'member@example.test');
   assert.equal(archive.ai.sessions.length,1);
@@ -195,6 +300,8 @@ test('the export holds the member\'s own data from every exported section',async
   assert.deepEqual(archive.feedback.items,[]);
   assert.ok(archive.excluded_tables.some(row=>row.table==='auth_sessions'));
   assert.ok(archive.excluded_tables.some(row=>row.table==='pair_code_documents'));
+  assert.equal(archive.counts.invitations_received,1);
+  assert.equal(archive.counts.created_circles,1);
   assert.equal(archive.counts.messages,1);
   assert.equal(archive.counts.code_runs,2);
   assert.equal(archive.counts.feedback_items,0);
@@ -212,6 +319,10 @@ test('no other member\'s private data and no secret appears anywhere in the arch
   ]) assert.ok(!text.includes(secret),secret);
   // Partner ids must not appear as an id field; the partner's display name is the only trace.
   assert.ok(!/\"(?:user_id|partner_id|sender_id|author_id|created_by|used_by|invited_by|proposed_by|updated_by|candidate_user_id|voter_user_id)\":3/.test(text));
+  // The modern schedule proposal is from the partner (id 3): its raw
+  // proposed_by must not appear anywhere in the archive, in any form.
+  assert.ok(!text.includes('"proposed_by":3'),'"proposed_by":3 leaked');
+  assert.ok(!text.includes('"proposed_by":"3"'),'"proposed_by":"3" leaked');
   assert.ok(!text.includes('"google_sub"'));
   assert.ok(!text.includes('token_hash'));
   assert.ok(!text.includes('email_hash'));
@@ -260,7 +371,7 @@ test('feedback is included when its tables exist, and skipped when the author co
   assert.match(skipped.feedback.reason,/no recognised author column/);
 });
 
-test('the size bound refuses an archive over 5 MiB',async()=>{
+test('the size bound refuses an archive over 5 MB',async()=>{
   const db=await fixture();
   const big='x'.repeat(300_000);
   const statements=Array.from({length:20},(_,index)=>({sql:
@@ -282,4 +393,23 @@ test('per-section caps bound the archive: only the newest 1,000 code runs are ke
   assert.equal(archive.code_runs.length,DATA_EXPORT_SECTION_LIMITS.codeRuns);
   assert.equal(archive.code_runs[0].code,'code-1004');
   assert.equal(archive.counts.code_runs,DATA_EXPORT_SECTION_LIMITS.codeRuns);
+  // The cap is disclosed, not silent: only code_runs hit its cap.
+  assert.deepEqual(archive.truncated_sections,['code_runs']);
+});
+
+test('a capped feedback section is disclosed in truncated_sections',async()=>{
+  const db=await fixture();
+  const statements=[
+    {sql:`CREATE TABLE feedback_items (id INTEGER PRIMARY KEY, circle_id INTEGER, author_user_id INTEGER, kind TEXT, title TEXT, body TEXT, status TEXT, visibility TEXT, diagnostics_json TEXT, created_at TEXT, updated_at TEXT)`},
+    ...Array.from({length:DATA_EXPORT_SECTION_LIMITS.feedbackItems+1},(_,index)=>({sql:
+      `INSERT INTO feedback_items (id,author_user_id,kind,title,body,status,visibility,created_at) VALUES (?,2,'bug',?,'body','open','public','2026-01-02T00:00:00.000Z')`,
+      args:[index+1,`Bug ${index+1}`]})),
+  ];
+  await db.batch(statements,'write');
+  const archive=await buildDataExport(db,{userId:2});
+  assert.equal(archive.feedback.included,true);
+  assert.equal(archive.feedback.items.length,DATA_EXPORT_SECTION_LIMITS.feedbackItems);
+  assert.equal(archive.feedback.truncated_items,true);
+  assert.equal(archive.feedback.truncated_votes,false);
+  assert.ok(archive.truncated_sections.includes('feedback_items'));
 });
