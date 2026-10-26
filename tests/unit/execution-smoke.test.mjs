@@ -55,17 +55,26 @@ async function rows(event){
 // a live durationMs per language (and checkedAt), and each row carries an
 // auto-increment id, a numeric claim-id message, and a meta_json holding
 // durations: a duration/id of exactly 402 — or containing it, e.g. 1402/4020 —
-// tripped the old bare `402` substring match. Those numeric fields are
-// stripped first (meta_json is parsed, stripped, and re-stringified).
+// tripped the old bare `402` substring match. Those fields are stripped
+// first, but only when typed as expected: durationMs/ageSeconds/
+// claimAgeSeconds only when numeric, checkedAt only when an ISO timestamp,
+// a row id only when numeric. A string under one of those keys (e.g. a
+// leaked token) is NOT stripped — it flows through to the leak regex.
+// (meta_json is parsed, stripped, and re-stringified.)
 // Boundary-aware `402` alone is NOT enough: `"durationMs":402`, `"id":402`
 // and `"message":"402"` are themselves standalone tokens. A genuine leak (a
 // standalone 402 from the provider-error cause, a provider URL/token/secret,
-// or provider output in any other field) still fails.
+// or provider output in any other field) still fails. `402.` (sentence-final
+// period) still fails: the lookahead excludes only `402.5`-style decimals
+// (`(?!\.\d)`), not a bare `.`.
 function stripExecutionSmokeNumbers(value){
   if(Array.isArray(value)) return value.map(stripExecutionSmokeNumbers);
   if(value&&typeof value==='object'){
     return Object.fromEntries(Object.entries(value)
-      .filter(([key])=>!['checkedAt','durationMs','ageSeconds','claimAgeSeconds'].includes(key))
+      .filter(([key,entry])=>!((['durationMs','ageSeconds','claimAgeSeconds'].includes(key)
+          &&typeof entry==='number')
+        ||(key==='checkedAt'&&typeof entry==='string'
+          &&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(entry))))
       .map(([key,entry])=>[key,stripExecutionSmokeNumbers(entry)]));
   }
   return value;
@@ -73,8 +82,8 @@ function stripExecutionSmokeNumbers(value){
 
 function sanitizedExecutionSmokeRows(savedRows){
   return (savedRows||[]).map(row=>{
-    const {id:_id,...rest}=row||{};
-    const out={...rest};
+    const out={...(row||{})};
+    if(typeof out.id==='number') delete out.id;
     if(typeof out.message==='string'&&/^\d+$/.test(out.message)) delete out.message;
     if(typeof out.meta_json==='string'){
       try{ out.meta_json=JSON.stringify(stripExecutionSmokeNumbers(JSON.parse(out.meta_json))); }catch{ /* Keep raw: it is checked below. */ }
@@ -86,7 +95,7 @@ function sanitizedExecutionSmokeRows(savedRows){
 function assertNoExecutionSmokeLeak(body,savedRows){
   const serialized=JSON.stringify(stripExecutionSmokeNumbers(body))
     +JSON.stringify(sanitizedExecutionSmokeRows(savedRows));
-  assert.doesNotMatch(serialized,/vercel\.com|piston|token|secret|Traceback|Sandbox|(?<![\d.])402(?![\d.])/i);
+  assert.doesNotMatch(serialized,/vercel\.com|piston|token|secret|Traceback|Sandbox|(?<![\d.])402(?!\.\d)(?!\d)/i);
 }
 
 async function insertLog({source='runner',event='execution_smoke_claim',message='schedule',age='-1 minutes',
@@ -508,9 +517,43 @@ test('execution smoke no-leak check ignores a 402 duration / row id but still ca
     [{...cleanBody,detail:'leaked secret-output'},cleanRows],
     [{...cleanBody,status:402},cleanRows],
     [cleanBody,[{...cleanRows[0],message:'claim 402 failed'}]],
+    // Sentence-final period: the old `(?![\d.])` lookahead missed this.
+    [cleanBody,[{...cleanRows[0],message:'claim 402.'}]],
     [cleanBody,[{...cleanRows[0],meta_json:JSON.stringify({javascript:{status:'provider_error',
       durationMs:1,detail:'token=private'}})}]],
   ]) assert.throws(()=>assertNoExecutionSmokeLeak(body,savedRows),assert.AssertionError);
+});
+
+test('execution smoke no-leak check does not strip string values under numeric/timestamp/id keys',()=>{
+  const cleanBody={ok:false,checkedAt:'2026-10-26T11:00:00Z',
+    languages:{javascript:{status:'provider_error',durationMs:402},
+      python:{status:'provider_error',durationMs:1402}}};
+  const cleanRows=[{id:402,level:'warn',source:'execution-smoke',event:'execution_smoke_result',
+    message:'402',meta_json:JSON.stringify({javascript:{status:'provider_error',durationMs:4020}}),
+    user_id:null,route:null,ua:null,ip:null}];
+  // Numeric durations / ISO checkedAt / numeric row id are still stripped.
+  assertNoExecutionSmokeLeak(cleanBody,cleanRows);
+  assertNoExecutionSmokeLeak({...cleanBody,checkedAt:'2026-10-26T11:00:00.000Z'},cleanRows);
+  // Body helper (stripExecutionSmokeNumbers): a string under a stripped key
+  // is NOT stripped — it flows through to the leak regex.
+  for(const leakyBody of [
+    {...cleanBody,languages:{javascript:{status:'provider_error',durationMs:'piston token leaked'},
+      python:{status:'provider_error',durationMs:1}}},
+    {...cleanBody,languages:{javascript:{status:'provider_error',durationMs:'claim 402.'},
+      python:{status:'provider_error',durationMs:1}}},
+    {...cleanBody,checkedAt:'token=secret'},
+    {...cleanBody,checkedAt:'claim 402.'},
+    {...cleanBody,ageSeconds:'piston token leaked'},
+  ]) assert.throws(()=>assertNoExecutionSmokeLeak(leakyBody,cleanRows),assert.AssertionError);
+  // Row helper (sanitizedExecutionSmokeRows): a string row id is NOT
+  // stripped, nor is a string duration inside meta_json.
+  for(const leakyRows of [
+    [{...cleanRows[0],id:'token=secret'}],
+    [{...cleanRows[0],id:'claim 402.'}],
+    [{...cleanRows[0],meta_json:JSON.stringify({javascript:{status:'provider_error',
+      durationMs:'piston token leaked'}})}],
+    [{...cleanRows[0],meta_json:JSON.stringify({checkedAt:'token=secret'})}],
+  ]) assert.throws(()=>assertNoExecutionSmokeLeak(cleanBody,leakyRows),assert.AssertionError);
 });
 
 test('a hung provider call is cut off at the deadline and reported as timeout',async()=>{
