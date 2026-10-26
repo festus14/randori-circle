@@ -110,7 +110,15 @@ async function insertAudit(eventId,{action='dead_lettered',reasonCode,toStatus='
 // 403 must then appear as a standalone token (e.g. the raw provider reason
 // `403:validation_error:...`, a `"403"` key, or `"status":403`), not as a
 // substring of a timestamp (`.403`) or a larger number (`1403`, `403000`).
+// Limitation: `403` glued to `.`/digits is treated as a number fragment, not a status (e.g. `detail:'error 403.5'` misses; `403.5:validation_error:` still trips via validation_error).
 function assertNoOutboxHealthLeak(body){
+  // Guard the strip: the discarded values must be ISO timestamps or null, so
+  // a future repurposing of those fields can't silently blind the check.
+  // Prod emits ISO-or-null here (api/_outbox-health.js: toISOString()/null).
+  for(const value of [body.checkedAt,body.lastDeliveredAt]){
+    assert.ok(value==null || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value),
+      `stripped timestamp must be ISO-shaped or null, got ${JSON.stringify(value)}`);
+  }
   const {checkedAt: _checkedAt,lastDeliveredAt: _lastDeliveredAt,...withoutTimestamps}=body;
   assert.doesNotMatch(JSON.stringify(withoutTimestamps),
     /example\.test|health-key|validation_error|(?<![\d.])403(?![\d.])/);
@@ -302,6 +310,8 @@ test('outbox health no-leak check ignores a .403 timestamp but still catches a g
     processingStaleCount:0,oldestStaleLeaseAgeMs:null,deadLetterCount:14,
     deadLetterWindowMs:86400000,recentRejectReasons:{testing_recipient_restricted:2,domain_not_verified:9,other:1}};
   assertNoOutboxHealthLeak(clean);
+  assertNoOutboxHealthLeak({detail:'count 1403'});
+  assertNoOutboxHealthLeak({detail:'2026-10-26T08:36:25.403Z'});
   // Each of these must still fail the check: a raw provider reason code, the
   // raw `validation_error` segment, a standalone 403, or a leaked address/key.
   for(const leaky of [
