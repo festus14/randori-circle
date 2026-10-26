@@ -8,6 +8,7 @@ import {
   startGoldenRuntime,
   withDatabase,
 } from './golden-runtime';
+import {waitForThemeSettled} from './golden-theme-settle';
 
 // Issue #341 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 23, ID-83). The
 // real loopback runtime runs with OUTBOX_PII_RETENTION_ENABLED and
@@ -157,6 +158,8 @@ test('outbox retention: old recipient details are removed, keys and audit stay, 
     for(const light of [false,true]){
       const isLight=await owner.evaluate(()=>document.documentElement.classList.contains('light'));
       if(isLight!==light) await owner.evaluate(()=>(document.getElementById('themeToggle') as HTMLButtonElement).click());
+      await expect(owner.locator('html')).toHaveClass(light ? /light/ : /^(?!.*\blight\b).*$/);
+      await waitForThemeSettled(owner,'#adminDiagnostics',light);
       const results=await new AxeBuilder({page:owner}).include('#adminDiagnostics')
         .withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']).analyze();
       expect(results.violations,`diagnostics ${light?'light':'dark'}`).toEqual([]);

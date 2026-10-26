@@ -13,6 +13,7 @@ import {
   startGoldenRuntime,
   withDatabase,
 } from './golden-runtime';
+import {waitForThemeSettled} from './golden-theme-settle';
 
 // Issue #293 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 16). The real
 // loopback runtime runs with PROGRESS_DASHBOARD_ENABLED. Setup (a verified
@@ -49,6 +50,7 @@ async function expectProgressAccessible(page:Page){
       const isLight=await page.evaluate(()=>document.documentElement.classList.contains('light'));
       if(isLight!==light) await page.evaluate(()=>(document.getElementById('themeToggle') as HTMLButtonElement).click());
       await expect(page.locator('html')).toHaveClass(light?/light/:/^(?!.*\blight\b).*$/);
+      await waitForThemeSettled(page,'#historyProgress',light);
       const results=await new AxeBuilder({page}).include('#historyProgress')
         .withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']).analyze();
       expect(results.violations,`progress ${width}px ${light?'light':'dark'}`).toEqual([]);

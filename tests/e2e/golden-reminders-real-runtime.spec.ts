@@ -10,6 +10,7 @@ import {
   startGoldenRuntime,
   withDatabase,
 } from './golden-runtime';
+import {waitForThemeSettled} from './golden-theme-settle';
 
 // Issue #287 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 14). The real
 // loopback runtime runs with REMINDERS_ENABLED; reminders are queued by the
@@ -60,6 +61,7 @@ async function expectReminderRowAccessible(page:Page){
       const isLight=await page.evaluate(()=>document.documentElement.classList.contains('light'));
       if(isLight!==light) await page.evaluate(()=>(document.getElementById('themeToggle') as HTMLButtonElement).click());
       await expect(page.locator('html')).toHaveClass(light?/light/:/^(?!.*\blight\b).*$/);
+      await waitForThemeSettled(page,'#psRemindRow',light);
       const results=await new AxeBuilder({page}).include('#psRemindRow')
         .withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']).analyze();
       expect(results.violations,`reminder row ${width}px ${light?'light':'dark'}`).toEqual([]);
