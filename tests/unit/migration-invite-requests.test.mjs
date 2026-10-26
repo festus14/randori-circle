@@ -43,13 +43,13 @@ test('v21 is additive, empty, indexed, and exact after v20, and only then passes
   const item=fixture();
   try{
     await apply(item.db,EXECUTABLE_MIGRATIONS.slice(0,20));
-    const before=await inspectMigrationState(item.db);
+    const before=await inspectMigrationState(item.db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,21)});
     assert.equal(before.currentVersion,20);
     await assert.rejects(ensureInviteRequestReadiness(item.db),error=>inviteRequestSchemaNotInstalled(error),
       'request paths fail closed on the pre-v21 schema without creating it');
     assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM sqlite_master WHERE name='invite_requests'`)).rows[0].c,0,
       'the readiness probe never runs DDL');
-    const result=await applyMigrations(item.db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
+    const result=await applyMigrations(item.db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,21),expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
     assert.deepEqual(result.applied.map(entry=>entry.version),[21]);
     assert.equal(V21.name,'public-invite-requests');
     assert.equal(MIGRATION_CONTRACTS[20].checksum,V21.checksum);

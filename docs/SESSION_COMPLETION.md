@@ -28,7 +28,7 @@ Receipts are retained with pairing history so completion metrics remain explaina
 
 ## Read models
 
-History and recap add the same aggregate completion projection and completion badge. Public `total_sessions` and authenticated `your_sessions` count only unanimous receipt sets in non-demo pairings. `total_pairs` and `your_pairings` remain separate assignment counts. Secondary coordination-only pairings do not receive a workspace or completion capability.
+History and recap add the same aggregate completion projection and completion badge. `/api/stats` `total_sessions` (signed-in members only since ID-86) and `your_sessions` count only unanimous receipt sets in non-demo pairings. `total_pairs` and `your_pairings` remain separate assignment counts. Secondary coordination-only pairings do not receive a workspace or completion capability.
 
 Browser responses are fenced by request generation, authenticated account, canonical room, active circle public ID and context version, and the current room/cycle token. Sign-out, room change, circle change, workspace deactivation, or a delayed older response cannot update the wrap-up control.
 

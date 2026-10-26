@@ -50,6 +50,7 @@ import {
   readExerciseSuggestions,
 } from './_exercise-suggestions.js';
 import { ensureProgressReadiness, parseProgressQuery, progressDashboardEnabled, readMemberProgress } from './_progress.js';
+import { handleFeedbackRoute } from './_feedback-api.js';
 import { DELETED_ACCOUNT_PASSWORD_HASH, LIVE_ACCOUNT_SQL } from './_account-deletion.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import {
@@ -183,6 +184,11 @@ function resolveDataRoute(req,endpoint){
   if(endpoint==='health'||endpoint==='healthz'||path.includes('/health')) return 'health';
   if(endpoint==='logs'||endpoint==='applogs'||endpoint==='app_logs'||path.includes('/logs')) return 'logs';
   if(endpoint==='questions'||endpoint==='question'||path.includes('/questions')) return 'questions';
+  // Product feedback (#353): POST /api/feedback and GET /api/feedback/mine
+  // rewrite to endpoint=feedback / feedback-mine. The handler itself
+  // answers 404 while FEEDBACK_ENABLED is off or v22 is still pending.
+  if(endpoint==='feedback'||endpoint==='feedback-mine'||endpoint==='feedback/mine'
+    ||path.includes('/feedback')) return 'feedback';
   return null;
 }
 
@@ -2353,13 +2359,23 @@ async function handleRuns(req,res){
 
 async function handleStats(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
+  res.setHeader('Cache-Control','private, no-store');
+  // Issue #333 (ID-86): circle-wide totals are for signed-in members only.
+  // Polling total_sessions would otherwise show anyone when sessions are
+  // confirmed. The public landing never calls this route (UI redesign WP-L1).
+  // A request with no validly signed session is refused before the database
+  // is opened. A signed but revoked or expired session is refused after the
+  // session lookup in verifyRequestAuth. Neither reads any stats table.
+  const payload=await getAuthPayload(req);
+  if(!payload) return res.status(401).json({error:'authentication required'});
+  const userId=authenticatedUserId(payload);
+  if(!userId) return res.status(401).json({error:'authentication required'});
   let db;
   try{
     db=getClient();
     await ensureDataStatsReadiness(db);
   }
   catch{ return res.status(503).json({error:'stats unavailable'}); }
-  const payload = await getAuthPayload(req); // optional
   let total_users=0, total_weeks=0, total_pairs=0;
   try{
     const u = await db.execute(`SELECT COUNT(*) as c FROM auth_accounts WHERE COALESCE(is_demo,0)=0`);
@@ -2407,42 +2423,39 @@ async function handleStats(req,res){
   }catch{ return res.status(503).json({error:'stats unavailable'}); }
   // Pairing counts and genuinely completed session counts are separate facts.
   const out = { ok:true, total_users, total_weeks, total_pairs, total_sessions, generated_at: new Date().toISOString() };
-  if (payload){
-    const userId = payload.id || payload.uid;
-    try{
-      const my = await db.execute({ sql:`SELECT COUNT(*) as c FROM pairing_groups
-        JOIN pairing_participants viewer
-          ON viewer.week_id=pairing_groups.week_id AND viewer.user_id=? AND viewer.source='auth'
-        WHERE user_a_id=? OR user_b_id=? OR user_c_id=?`, args:[userId,userId,userId,userId] });
-      out.your_pairings = my.rows[0]?.c ?? 0;
-    }catch{}
-    try{
-      const completed=await db.execute({sql:`${completedGroupsSql}
-        SELECT COUNT(*) AS c FROM completion_counts counts
-        JOIN pairing_groups pg ON pg.id=counts.id AND pg.week_id=counts.week_id
-        JOIN pairing_participants viewer
-          ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
-        WHERE (pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?)
-          AND counts.required_count>0 AND counts.confirmed_count=counts.required_count
-          AND counts.receipt_count=counts.confirmed_count`,args:[userId,userId,userId,userId]});
-      out.your_sessions=Number(completed.rows[0]?.c??0);
-      if(!Number.isSafeInteger(out.your_sessions)||out.your_sessions<0) throw new Error('invalid completion count');
-    }catch{ return res.status(503).json({error:'stats unavailable'}); }
-    try{
-      const last = await db.execute({ sql:`SELECT pg.id as pg_id, pg.week_id, pw.week_label, pw.week_start, pg.is_ai_pair FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id
-        JOIN pairing_participants viewer ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
-        WHERE (pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?) AND COALESCE(pw.is_demo,0)=0
-        ORDER BY pw.week_start DESC,pg.id DESC LIMIT 1`, args:[userId,userId,userId,userId] });
-      if (last.rows.length) out.your_last = last.rows[0];
-    }catch{}
-    try{
-      const yWeeks = await db.execute({ sql:`SELECT COUNT(DISTINCT pairing_groups.week_id) as c FROM pairing_groups
-        JOIN pairing_participants viewer
-          ON viewer.week_id=pairing_groups.week_id AND viewer.user_id=? AND viewer.source='auth'
-        WHERE user_a_id=? OR user_b_id=? OR user_c_id=?`, args:[userId,userId,userId,userId] });
-      out.your_weeks = yWeeks.rows[0]?.c ?? 0;
-    }catch{}
-  }
+  try{
+    const my = await db.execute({ sql:`SELECT COUNT(*) as c FROM pairing_groups
+      JOIN pairing_participants viewer
+        ON viewer.week_id=pairing_groups.week_id AND viewer.user_id=? AND viewer.source='auth'
+      WHERE user_a_id=? OR user_b_id=? OR user_c_id=?`, args:[userId,userId,userId,userId] });
+    out.your_pairings = my.rows[0]?.c ?? 0;
+  }catch{}
+  try{
+    const completed=await db.execute({sql:`${completedGroupsSql}
+      SELECT COUNT(*) AS c FROM completion_counts counts
+      JOIN pairing_groups pg ON pg.id=counts.id AND pg.week_id=counts.week_id
+      JOIN pairing_participants viewer
+        ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
+      WHERE (pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?)
+        AND counts.required_count>0 AND counts.confirmed_count=counts.required_count
+        AND counts.receipt_count=counts.confirmed_count`,args:[userId,userId,userId,userId]});
+    out.your_sessions=Number(completed.rows[0]?.c??0);
+    if(!Number.isSafeInteger(out.your_sessions)||out.your_sessions<0) throw new Error('invalid completion count');
+  }catch{ return res.status(503).json({error:'stats unavailable'}); }
+  try{
+    const last = await db.execute({ sql:`SELECT pg.id as pg_id, pg.week_id, pw.week_label, pw.week_start, pg.is_ai_pair FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id
+      JOIN pairing_participants viewer ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
+      WHERE (pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?) AND COALESCE(pw.is_demo,0)=0
+      ORDER BY pw.week_start DESC,pg.id DESC LIMIT 1`, args:[userId,userId,userId,userId] });
+    if (last.rows.length) out.your_last = last.rows[0];
+  }catch{}
+  try{
+    const yWeeks = await db.execute({ sql:`SELECT COUNT(DISTINCT pairing_groups.week_id) as c FROM pairing_groups
+      JOIN pairing_participants viewer
+        ON viewer.week_id=pairing_groups.week_id AND viewer.user_id=? AND viewer.source='auth'
+      WHERE user_a_id=? OR user_b_id=? OR user_c_id=?`, args:[userId,userId,userId,userId] });
+    out.your_weeks = yWeeks.rows[0]?.c ?? 0;
+  }catch{}
   // The shared cycle resolver keeps this boundary correct across GMT/BST.
   try{
     const nextCycle=resolvePairingCycle({state:'upcoming'});
@@ -2880,6 +2893,7 @@ export default async function handler(req,res){
   if(route==='health') return await handleHealth(req,res);
   if(route==='logs') return await handleLogs(req,res);
   if(route==='questions') return await handleQuestions(req,res);
+  if(route==='feedback') return await handleFeedbackRoute(req,res);
   return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','pair-recap',...(exerciseSuggestionsEnabled()?['exercise-suggestions']:[]),'session-completion','session-controls','meeting-link','schedule','messages','questions'] });
   }catch(e){
     const failedEndpoint=getEndpoint(req);

@@ -10,7 +10,7 @@ const DEPLOYABILITY_PATH='.github/workflows/deployability.yml';
 const WORKFLOW_DIGESTS=Object.freeze({
   rehearsal:'b2b9d31604a0e0ae19f2251212c23b4326e22226a887b972b38553dd0f8f34c1',
   watchdog:'87ae424278d3fd58d12c7a02071549e63a3b2757e5c379659ff6fb8684e888d7',
-  deployability:'be850fb1f41452d17b0b8ae1069fd50da61448e24e1ab1f938d3648edb2c3858',
+  deployability:'febb9edb81aded923f00f1829fec72515cae0a3b81873499dd4146fa9dc5ecfd',
 });
 // Reviewed watchdog schedule policy (#324). GitHub starts scheduled workflows on
 // a best-effort basis and has started the Monday 03:17 UTC rehearsal about 5h40m
@@ -552,6 +552,7 @@ function validateCi(raw){
     'uses:actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
     'name:Validate repository release contract',
     'name:Validate secret-free backup controls',
+    'name:Validate documentation drift',
     'name:Test release-contract failure modes',
   ]),'backup-control CI steps must match the reviewed secret-free sequence');
   add(errors,/^\s{8}run:\s*npm run check:backup-controls\s*$/m.test(source),

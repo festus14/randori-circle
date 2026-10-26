@@ -9,6 +9,10 @@
     "resend": "^4.0.0",
     "yjs": "13.6.27"
   },
+  "overrides": {
+    "dompurify": "^3.4.17",
+    "zod": "^4.6.6"
+  },
   "name": "randori-circle",
   "private": true,
   "type": "module",
@@ -30,6 +34,7 @@
     "db:status": "node scripts/db-inspect.mjs status",
     "check:deployability": "node scripts/check-deployability.mjs",
     "check:backup-controls": "node scripts/check-backup-controls.mjs",
+    "check:docs": "node scripts/check-docs.mjs",
     "check:runtime-ddl": "node scripts/check-runtime-ddl.mjs",
     "check:syntax": "node tests/static/check-syntax.mjs",
     "check:turso-sql": "node scripts/check-turso-remote-sql.mjs",

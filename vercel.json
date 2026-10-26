@@ -27,7 +27,7 @@
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Content-Security-Policy", "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self' https://accounts.google.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js-de.sentry-cdn.com https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net; font-src 'self' data: https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' https://*.sentry.io https://*.ingest.sentry.io https://in.logtail.com; upgrade-insecure-requests" },
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self' https://accounts.google.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js-de.sentry-cdn.com https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net; font-src 'self' data: https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' https://*.sentry.io https://*.ingest.sentry.io; upgrade-insecure-requests" },
         { "key": "Referrer-Policy", "value": "no-referrer" },
         { "key": "Permissions-Policy", "value": "camera=(self), microphone=(self), geolocation=()" },
         { "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains" },
@@ -93,6 +93,10 @@
     {
       "source": "/api/auth/account/delete",
       "destination": "/api/auth?endpoint=account-delete"
+    },
+    {
+      "source": "/api/auth/account/export",
+      "destination": "/api/auth?endpoint=account-export"
     },
     {
       "source": "/api/auth/logout",
@@ -197,6 +201,14 @@
     {
       "source": "/api/messages",
       "destination": "/api/data?endpoint=messages"
+    },
+    {
+      "source": "/api/feedback/mine",
+      "destination": "/api/data?endpoint=feedback-mine"
+    },
+    {
+      "source": "/api/feedback",
+      "destination": "/api/data?endpoint=feedback"
     },
     {
       "source": "/api/questions",

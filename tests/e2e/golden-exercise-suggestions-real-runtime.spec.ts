@@ -13,6 +13,7 @@ import {
   startGoldenRuntime,
   waitForWorkspace,
 } from './golden-runtime';
+import {waitForThemeSettled} from './golden-theme-settle';
 
 // Issue #296 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 17). The real
 // loopback runtime runs with EXERCISE_SUGGESTIONS_ENABLED. Markers and
@@ -56,6 +57,7 @@ async function expectSuggestionsAccessible(page:Page){
       const isLight=await page.evaluate(()=>document.documentElement.classList.contains('light'));
       if(isLight!==light) await page.evaluate(()=>(document.getElementById('themeToggle') as HTMLButtonElement).click());
       await expect(page.locator('html')).toHaveClass(light?/light/:/^(?!.*\blight\b).*$/);
+      await waitForThemeSettled(page,['#exerciseSuggestions','#catalogList'],light);
       const results=await new AxeBuilder({page}).include('#exerciseSuggestions').include('#catalogList')
         .withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']).analyze();
       expect(results.violations,`suggestions ${width}px ${light?'light':'dark'}`).toEqual([]);

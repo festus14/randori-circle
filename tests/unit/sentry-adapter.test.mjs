@@ -260,6 +260,10 @@ test('beforeSend removes sensitive request, identity, and payload fields', async
     },
   });
 
+  // Left as-is (#418): cannot trip — every input here is a fixed literal (no
+  // live/random/timestamp values); the phone redaction removes the whole
+  // '+44 7700 900123' number, and the fixed event_id/trace contain neither
+  // numeric fragment.
   assert.doesNotMatch(JSON.stringify(sanitized), /person@example\.test|private code|private words|private metadata|Bearer private|7700|900123|token=private|session=private|"42"/);
   assert.deepEqual(sanitized.request, {
     method: 'POST',

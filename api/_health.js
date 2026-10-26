@@ -7,13 +7,8 @@ import {
   inspectCompletedMembershipRollout,
   inspectMembershipRolloutReadiness,
 } from '../db/membership-readiness.js';
-import { LATEST_MIGRATION_VERSION, MIGRATION_CONTRACTS } from '../db/migration-contract.js';
-import {
-  assertMigrationLedgerContract,
-  migrationLedgerExists,
-  readMigrationLedger,
-  validateMigrationLedger,
-} from '../db/migration-ledger-readiness.js';
+import { MIGRATION_CONTRACTS } from '../db/migration-contract.js';
+import { inspectLedgerReadiness, readinessManifestForLedger } from '../db/migration-compatibility.js';
 import { inspectSchema, readOnlyDatabase } from '../db/schema-inspector.js';
 import { READINESS_SCHEMA_MANIFEST } from '../db/schema-readiness-manifest.js';
 import { inspectCredentialKeyControlReadiness } from '../db/credential-key-control.js';
@@ -85,20 +80,24 @@ export function resolveHealthProbe(req){
   return 'ready';
 }
 
-export async function inspectDatabaseReadiness(database,{membershipRequired=false}={}){
+// Ready means the ledger is at the code's latest version, or one version
+// behind when that latest migration is additive (ID-87), and the schema
+// matches the version actually applied exactly. `contracts` and `manifest`
+// exist so tests can model code one migration ahead; production callers use
+// the checked-in defaults.
+export async function inspectDatabaseReadiness(database,{
+  membershipRequired=false,
+  contracts=MIGRATION_CONTRACTS,
+  manifest=READINESS_SCHEMA_MANIFEST,
+}={}){
   const db=readOnlyDatabase(database);
+  const ledger=await inspectLedgerReadiness(db,{contracts});
+  if(!ledger.ready) return false;
   const schema=await inspectSchema(db,{
-    manifest:READINESS_SCHEMA_MANIFEST,
+    manifest:readinessManifestForLedger(manifest,ledger,{contracts}),
     maxSchemaObjects:MAX_READINESS_SCHEMA_OBJECTS,
   });
   if(!schema.ok||schema.warnings.length!==0) return false;
-  if(!await migrationLedgerExists(db)) return false;
-  await assertMigrationLedgerContract(db);
-  const ledger=validateMigrationLedger(await readMigrationLedger(db,{
-    limit:MIGRATION_CONTRACTS.length+1,
-  }),MIGRATION_CONTRACTS);
-  if(ledger.currentVersion!==LATEST_MIGRATION_VERSION
-    ||ledger.rows.length!==MIGRATION_CONTRACTS.length) return false;
   const keyControl=await inspectCredentialKeyControlReadiness(db);
   if(!keyControl.ok) return false;
   const membership=membershipRequired

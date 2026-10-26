@@ -60,9 +60,11 @@ export const OUTBOX_PII_EVENT_TYPES=Object.freeze([
   'invitation.email.requested', // credential_envelope seals {email, token}; email_hash, token_hash
   'auth.emailverification.requested', // recipient_email, token_envelope
   'auth.passwordreset.requested', // recipient_email, token_envelope
+  'feedback.submitted', // title is the author's own (redacted) words
 ]);
 export const OUTBOX_PII_FIELDS=Object.freeze([
   'recipient_email','credential_envelope','token_envelope','email_hash','token_hash',
+  'title', // Only feedback.submitted carries one; other PII payloads have no title field.
 ]);
 // Delivered types whose payloads carry no contact data or credential: internal
 // ids, schedule instants or opaque fingerprints only. Handlers read the

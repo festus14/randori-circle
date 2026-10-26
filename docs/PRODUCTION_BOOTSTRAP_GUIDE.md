@@ -219,8 +219,9 @@ curl -s -H "Authorization: Bearer $TURSO_PLATFORM_TOKEN" \
 ```
 
 PITR on the Free plan: Turso's [pricing page](https://turso.tech/pricing) lists
-Point-In-Time Restore **1 day** on Free, 10 days on Developer, and 30 days on
-Scaler. Each restore temporarily uses one database slot and storage quota. The
+Point-In-Time Restore **1 day** on Free, 10 days on Developer, 30 days on
+Scaler, and 90 days on Pro and Enterprise (verified 2026-10-25; see ID-89).
+Each restore temporarily uses one database slot and storage quota. The
 rehearsal needs a snapshot no older than 30 minutes, so the 1-day window is
 sufficient on paper. No real Free-plan rehearsal has been run yet, so treat
 Free-plan support as unverified until the first rehearsal succeeds.

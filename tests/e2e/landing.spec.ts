@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { mockApi, resetClientState } from './helpers';
+import { waitForThemeSettled } from './golden-theme-settle';
 
 // UI redesign WP-L1: public landing, request-an-invite form and recovery
 // pages. POST /api/invite-requests is mocked here until the WP-L2 backend
@@ -137,6 +138,7 @@ test('anonymous visitor requests an invite and sees the generic confirmation', a
 
   await page.locator('#themeToggle').click();
   await expect(page.locator('html')).toHaveClass(/light/);
+  await waitForThemeSettled(page, '#view-landing', true);
   await expectWcagClean(page, testInfo, 'landing-request-success-light', '#view-landing');
 });
 

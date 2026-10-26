@@ -9,3 +9,7 @@ test-results/
 .local/
 data/.randori-catalog-provenance.lock
 data/.randori-catalog-provenance.lock.stale-*
+# Deletion ledgers hold opaque account ids: never commit one (ID-89).
+# The CLI also refuses --out paths inside the repository.
+deletion-ledger*.json
+*deletion-ledger*.json

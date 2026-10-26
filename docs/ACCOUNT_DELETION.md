@@ -127,6 +127,9 @@ account reaches nothing.
 | `circle_audit_events` | `actor_user_id`, `subject_user_id` | Keep | Audit trail of ids only. An account.deleted event with no personal data is added per circle. |
 | `circle_creation_requests` | `actor_user_id`, `initiating_session_hash` | Keep | Idempotency record for circles they created: hashes and ids only, RESTRICT-bound to the circle. |
 | `invite_requests` | `email`, `name`, `note`, `decided_by` | Anonymise | A pending request from their email is expired and scrubbed; decisions they made keep only the opaque decided_by id. |
+| `feedback_items` | `circle_id`, `author_user_id`, `kind`, `title`, `body`, `status`, `visibility`, `diagnostics_json`, `idempotency_key`, `created_at`, `updated_at`, `closed_at` | Delete | Their own feedback submissions are deleted; votes and creation events on them go with the item. |
+| `feedback_votes` | `feedback_id`, `user_id`, `value` | Delete | Votes they cast are deleted; votes on their deleted items go with the items. |
+| `feedback_events` | `feedback_id`, `event_type`, `actor_user_id`, `detail_json` | Anonymise | Events on their items are deleted with the items; events they acted in keep the event with the actor cleared. |
 | `pairing_cycle_availability` | `user_id` | Delete | Availability decisions. Publications keep their own immutable snapshot. |
 | `user_notification_prefs` | `user_id`, `phone`, `email` | Delete | Email and reminder preferences. |
 | `pairing_participants` | `user_id` | Keep | Immutable pairing snapshot that partners' completed sessions depend on (trigger-guarded). |
@@ -152,7 +155,7 @@ account reaches nothing.
 | `ai_account_monthly_reservations` | `user_id` | Delete | Per-member AI quota reservations. |
 | `custom_questions` | `author_id` | Anonymise | Shared question text stays; the author link is cleared. |
 | `app_logs` | `user_id`, `ip`, `ua`, `route`, `message`, `meta_json` | Delete | Client and server log rows linked to the account. |
-| `outbox_events` | `payload_json` | Anonymise | Mail to them is suppressed (audited, ACCOUNT_DELETED); address and envelopes are scrubbed, including emails of unusable invitations to their address. |
+| `outbox_events` | `payload_json` | Anonymise | Mail to them is suppressed (audited, ACCOUNT_DELETED); address and envelopes are scrubbed, including emails of unusable invitations to their address. Queued feedback notifications about their submissions are suppressed and lose their title. |
 | `outbox_audit_events` | `actor_ref` | Keep | Delivery audit; operator references are opaque ids. |
 | `pairing_email_outbox` | `user_id`, `recipient_email` | Anonymise | Legacy queue rows to them are cancelled and the address replaced. |
 | `users` | `name` | Keep | Legacy pre-membership roster keyed by name only; it cannot be attributed to the account without risking another member's row. |
@@ -199,6 +202,48 @@ column on a migrated database.
   the dialog says it couldn't confirm and asks the member to refresh, because
   the server may have finished.
 
+## Backups and restores (issue #366, ID-89)
+
+**Retention.** Deleted personal data can stay in the provider's
+point-in-time backups until the plan's backup window expires: up to **1 day**
+after deletion on the current plan (Turso's Free tier — verified against
+[turso.tech/pricing](https://turso.tech/pricing) on 2026-10-25, where the
+plans are Free 1 day, Developer 10 days, Scaler 30 days, Pro and Enterprise
+90 days; "Starter" is not a current Turso plan name, and the earlier note
+calling the 1-day window "Starter" was corrected). If the organisation ever
+moves to a paid tier, the window becomes that tier's — update
+`privacy.html` before relying on the longer window. The GitHub rehearsal,
+monitor, watchdog and migration artifacts are retained 30 days (migration
+result: 90 days) but hold only counts, checksums and digests, never personal
+data, so they do not extend personal-data retention. Disposable restore
+databases have zero retention: they are deleted in the same run. Sentry
+keeps its own retention window and receives no account data by design.
+
+**Restores.** A point-in-time restore to T brings back the database as of T,
+including personal data deleted after T. Before any cutover, the operator
+re-applies every deletion newer than the restore point, using the deletion
+ledger: one entry per tombstoned account — the opaque account id, the
+deletion time (the earliest `account.deleted` audit event, or null when no
+audit row exists), and the account's creation time. The ledger is built
+from the still-live source database (PITR never deletes the source) and
+kept only in an operator-held file outside any database: a ledger table
+inside the database would roll back with the restore it is meant to repair.
+The full step-by-step procedure, including the executable CLI
+(`scripts/deletion-ledger.mjs`: `export`, `reapply`, `verify`) and the
+verification gate that blocks the cutover, is in
+[`docs/TURSO_BACKUP_RESTORE_REHEARSAL.md`](TURSO_BACKUP_RESTORE_REHEARSAL.md)
+("Re-applying account deletions after a restore"). The same code also
+re-runs the deletion's scrubbing statements with the original deletion
+time kept as the audit instant, and skips the recent-auth and
+last-owner/last-admin gates for the reasons documented in
+`api/_account-deletion.js` (the original deletion already passed them; the
+restored database holds stale state).
+
+**Residual risk.** If the source database itself is destroyed, the ledger
+cannot be built from it — there is no durable off-database ledger yet.
+That follow-up is #383. Owner confirmation of the production Turso plan
+tier is #384.
+
 ## Limits and follow-ups
 
 - An email a worker is sending at that instant still completes; its row keeps
@@ -207,7 +252,6 @@ column on a migrated database.
 - The legacy `users` table (pre-membership, name only) cannot be attributed to
   an account and is left alone.
 - AI sessions a partner started keep their transcript (AI is off in production).
-- Database backups and Sentry keep their own retention windows.
 - A log line written by a request that was already running when the deletion
   committed can still carry the opaque account id (no name or email).
 - Follow-up: a member an owner removed (or who left every circle) can no longer

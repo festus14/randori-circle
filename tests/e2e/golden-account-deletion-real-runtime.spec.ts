@@ -13,6 +13,7 @@ import {
   startGoldenRuntime,
   withDatabase,
 } from './golden-runtime';
+import {waitForThemeSettled} from './golden-theme-settle';
 
 // Issue #339 golden path (docs/testing/E2E_GOLDEN_PATHS.md row 21). The real
 // loopback runtime runs with ACCOUNT_DELETION_ENABLED. A paired member deletes
@@ -42,6 +43,7 @@ async function expectAccessible(page:Page,selector:string,label:string){
       const isLight=await page.evaluate(()=>document.documentElement.classList.contains('light'));
       if(isLight!==light) await page.evaluate(()=>(document.getElementById('themeToggle') as HTMLButtonElement).click());
       await expect(page.locator('html')).toHaveClass(light?/light/:/^(?!.*\blight\b).*$/);
+      await waitForThemeSettled(page,selector,light);
       const results=await new AxeBuilder({page}).include(selector)
         .withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']).analyze();
       expect(results.violations,`${label} ${width}px ${light?'light':'dark'}`).toEqual([]);

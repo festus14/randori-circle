@@ -79,6 +79,36 @@ function pistonReply({stdout='randori-smoke-42\n',status=200}={}){
     {status,headers:{'content-type':'application/json'}});
 }
 
+// No-leak check for the execution-smoke body. checkedAt is a second-precision
+// ISO timestamp, and each language reports a live durationMs (plus ageSeconds
+// on throttled bodies): a duration of exactly 502 — or containing it, e.g.
+// 1502/5023 — tripped the old bare `502` substring match. Those fields are
+// stripped first, but only when typed as expected: durationMs/ageSeconds/
+// claimAgeSeconds only when numeric, checkedAt only when an ISO timestamp.
+// A string under one of those keys (e.g. a leaked token) is NOT stripped —
+// it flows through to the leak regex. Boundary-aware `502` alone is NOT
+// enough: `"durationMs":502` is itself a standalone token. A genuine leak
+// (a standalone 502, the Piston URL/token, or provider output in any other
+// field) still fails. `502.` (sentence-final period) still fails: the
+// lookahead excludes only `502.5`-style decimals (`(?!\.\d)`), not a bare `.`.
+function stripExecutionSmokeNumbers(value){
+  if(Array.isArray(value)) return value.map(stripExecutionSmokeNumbers);
+  if(value&&typeof value==='object'){
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key,entry])=>!((['durationMs','ageSeconds','claimAgeSeconds'].includes(key)
+          &&typeof entry==='number')
+        ||(key==='checkedAt'&&typeof entry==='string'
+          &&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(entry))))
+      .map(([key,entry])=>[key,stripExecutionSmokeNumbers(entry)]));
+  }
+  return value;
+}
+
+function assertNoExecutionSmokeLeak(body){
+  assert.doesNotMatch(JSON.stringify(stripExecutionSmokeNumbers(body)),
+    /piston|token|unexpected|(?<![\d.])502(?!\.\d)(?!\d)|example\.test/i);
+}
+
 before(async()=>{
   await prepareMigrationConnection(realDb);
   const state=await inspectMigrationState(realDb);
@@ -174,13 +204,62 @@ test('provider failures map to bounded statuses without leaking URLs, tokens or 
   assert.equal(failed.status,200);
   assert.deepEqual({ok:failed.body.ok,javascript:failed.body.languages.javascript.status,
     python:failed.body.languages.python.status},{ok:false,javascript:'provider_error',python:'provider_error'});
-  assert.doesNotMatch(JSON.stringify(failed.body),/piston|token|unexpected|502|example\.test/i);
+  assertNoExecutionSmokeLeak(failed.body);
 
   await realDb.execute('DELETE FROM app_logs');
   provider=async()=>{ const error=new Error('aborted'); error.name='AbortError'; throw error; };
   const timedOut=await invoke();
   assert.equal(timedOut.body.languages.javascript.status,'timeout');
   assert.equal(timedOut.body.languages.python.status,'timeout');
+});
+
+test('execution smoke no-leak check ignores a 502 duration but still catches a genuine 502 leak',()=>{
+  const clean={ok:false,checkedAt:'2026-10-26T11:00:00Z',
+    languages:{javascript:{status:'provider_error',durationMs:502},
+      python:{status:'provider_error',durationMs:1502}}};
+  const cleanContained={ok:false,checkedAt:'2026-10-26T11:00:00Z',ageSeconds:502,
+    languages:{javascript:{status:'provider_error',durationMs:5023},
+      python:{status:'provider_error',durationMs:7}}};
+  // The old bare-`502` assertion fails on both clean bodies: that was the flake.
+  for(const body of [clean,cleanContained])
+    assert.throws(()=>assert.doesNotMatch(JSON.stringify(body),
+      /piston|token|unexpected|502|example\.test/i),assert.AssertionError);
+  assertNoExecutionSmokeLeak(clean);
+  assertNoExecutionSmokeLeak(cleanContained);
+  // Each of these must still fail the check: a standalone 502, the provider
+  // URL/token, provider output, or a leaked address in any other field.
+  for(const leaky of [
+    {...clean,detail:'provider returned 502'},
+    // Sentence-final period: the old `(?![\d.])` lookahead missed this.
+    {...clean,detail:'provider returned 502.'},
+    {...clean,detail:'https://piston.example.test/api/v2/execute'},
+    {...clean,detail:`leaked ${PISTON_TOKEN}`},
+    {...clean,languages:{javascript:{status:'provider_error',durationMs:1,output:'unexpected output'},
+      python:{status:'provider_error',durationMs:1}}},
+    {...clean,detail:'person@example.test'},
+    {...clean,status:502},
+    {...clean,detail:'"502"'},
+  ]) assert.throws(()=>assertNoExecutionSmokeLeak(leaky),assert.AssertionError);
+});
+
+test('execution smoke no-leak check does not strip string values under numeric/timestamp keys',()=>{
+  const clean={ok:false,checkedAt:'2026-10-26T11:00:00Z',
+    languages:{javascript:{status:'provider_error',durationMs:502},
+      python:{status:'provider_error',durationMs:1502}}};
+  // A numeric duration / ISO checkedAt is still stripped (clean passes).
+  assertNoExecutionSmokeLeak(clean);
+  assertNoExecutionSmokeLeak({...clean,checkedAt:'2026-10-26T11:00:00.000Z'});
+  // A string under a stripped key is NOT stripped: it flows through to the
+  // leak regex, so a leaked token / sentence-final 502 hidden there fails.
+  for(const leaky of [
+    {...clean,languages:{javascript:{status:'provider_error',durationMs:'piston token leaked'},
+      python:{status:'provider_error',durationMs:1}}},
+    {...clean,languages:{javascript:{status:'provider_error',durationMs:'provider returned 502.'},
+      python:{status:'provider_error',durationMs:1}}},
+    {...clean,checkedAt:'token=secret'},
+    {...clean,checkedAt:'provider returned 502.'},
+    {...clean,ageSeconds:'piston token leaked'},
+  ]) assert.throws(()=>assertNoExecutionSmokeLeak(leaky),assert.AssertionError);
 });
 
 test('misconfiguration is reported without a claim, and a missing database fails closed',async()=>{

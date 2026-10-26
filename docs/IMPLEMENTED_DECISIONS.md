@@ -2,7 +2,7 @@
 
 Status: accepted through the current rolling release
 
-Last reviewed: 2026-10-20
+Last reviewed: 2026-10-26
 
 Scope: current rolling release and independently reviewed candidate increments
 
@@ -13,6 +13,145 @@ runtime. Detailed database procedures remain in
 [database schema operations](DATABASE_SCHEMA_OPERATIONS.md), the
 [backup/restore rehearsal](TURSO_BACKUP_RESTORE_REHEARSAL.md), and the
 [production migration runbook](TURSO_PRODUCTION_MIGRATION.md).
+
+## Index
+
+Every entry appears exactly once, in numeric order. The index is the checklist for the log: a new entry must add its row here, and an entry move must keep its row in place.
+
+**Status.** `Active` means the decision stands as written. `Amended` means the entry changed after it first landed — an addendum, a dated in-entry update, or a later entry changing its rule — and the amendment is marked at the top of the amended entry and, where a separate entry amends it, at the top of that entry too. No entry is marked `Superseded`: no decision in this log has been withdrawn. Cross-references inside an entry body ("see ID-NN") are pointers, not amendments.
+
+**Dates.** Entries do not carry a landing date, so the index does not invent one. Dated material inside entries (for example ID-83's dated correction) is part of that entry's as-landed history and stays where it is.
+
+**Order.** Entries are ordered numerically, not chronologically. ID-82–ID-84 landed out of order (ID-84, then ID-83, then ID-82) and were moved into numeric position in this change; their dated content was not rewritten, so a date inside an entry does not imply anything about its neighbours' dates.
+
+| ID | Title | Area | Status |
+| --- | --- | --- | --- |
+| [ID-01](#id-01-ship-the-useful-weekly-loop-before-a-platform-rewrite) | Ship the useful weekly loop before a platform rewrite | Strategy | Active |
+| [ID-02](#id-02-separate-production-and-local-identity-adapters) | Separate production and local identity adapters | Auth & Identity | Active |
+| [ID-03](#id-03-make-availability-and-pairing-cycle-scoped-and-immutable) | Make availability and pairing cycle-scoped and immutable | Pairing & Scheduling | Active |
+| [ID-04](#id-04-dispatch-notifications-through-a-provider-neutral-outbox) | Dispatch notifications through a provider-neutral outbox | Email & Notifications | Active |
+| [ID-05](#id-05-keep-sqliteturso-now-with-migration-discipline) | Keep SQLite/Turso now, with migration discipline | Data, Schema & Migrations | Active |
+| [ID-06](#id-06-use-linux-playwright-as-the-authoritative-browser-gate) | Use Linux Playwright as the authoritative browser gate | Quality, CI & Testing | Active |
+| [ID-07](#id-07-decouple-merge-safety-from-vercel-preview-quota) | Decouple merge safety from Vercel preview quota | Quality, CI & Testing | Active |
+| [ID-08](#id-08-disable-unapproved-leetcode-ingestion) | Disable unapproved LeetCode ingestion | Content & Catalogue | Active |
+| [ID-09](#id-09-keep-quality-gates-measurable-and-independent) | Keep quality gates measurable and independent | Quality, CI & Testing | Active |
+| [ID-10](#id-10-verify-invitation-bound-password-activation-before-account-creation) | Verify invitation-bound password activation before account creation | Auth & Identity | Active |
+| [ID-11](#id-11-recover-password-accounts-without-turning-email-into-implicit-provider-linking) | Recover password accounts without turning email into implicit provider linking | Auth & Identity | Active |
+| [ID-12](#id-12-keep-member-lifecycle-authority-in-transactional-membership-state) | Keep member lifecycle authority in transactional membership state | Auth & Identity | Active |
+| [ID-13](#id-13-make-provider-linking-explicit-and-account-preserving) | Make provider linking explicit and account-preserving | Auth & Identity | Active |
+| [ID-14](#id-14-step-up-only-the-ownership-changing-lifecycle-boundary) | Step up only the ownership-changing lifecycle boundary | Auth & Identity | Active |
+| [ID-15](#id-15-use-one-fair-delivery-budget-for-every-production-email-type) | Use one fair delivery budget for every production email type | Email & Notifications | Active |
+| [ID-16](#id-16-monitor-a-recurring-isolated-backup-restore-not-production-mutation) | Monitor a recurring isolated backup restore, not production mutation | Backup & Recovery | Amended by [ID-75](#id-75-give-the-backup-watchdog-an-eight-hour-grace-for-late-github-schedules) |
+| [ID-17](#id-17-page-owner-rosters-by-an-immutable-encrypted-cursor) | Page owner rosters by an immutable, encrypted cursor | Product & UI | Active |
+| [ID-18](#id-18-keep-chat-indexes-in-the-append-only-migration-manifest) | Keep chat indexes in the append-only migration manifest | Data, Schema & Migrations | Active |
+| [ID-19](#id-19-rotate-each-credential-purpose-through-a-bounded-versioned-key-ring) | Rotate each credential purpose through a bounded versioned key ring | Security, Secrets & Privacy | Active |
+| [ID-20](#id-20-purge-chat-only-through-mapped-fenced-evidence-gated-room-jobs) | Purge chat only through mapped, fenced, evidence-gated room jobs | Security, Secrets & Privacy | Active |
+| [ID-21](#id-21-bind-active-circle-authority-to-the-live-session-and-fail-closed-elsewhere) | Bind active-circle authority to the live session and fail closed elsewhere | Auth & Identity | Active |
+| [ID-22](#id-22-make-provenance-a-versioned-fail-closed-catalogue-dependency) | Make provenance a versioned fail-closed catalogue dependency | Content & Catalogue | Active |
+| [ID-23](#id-23-evolve-the-current-shell-without-replacing-product-behavior) | Evolve the current shell without replacing product behavior | Product & UI | Active |
+| [ID-24](#id-24-open-only-dated-availability-at-the-active-circle-boundary) | Open only dated availability at the active-circle boundary | Pairing & Scheduling | Active |
+| [ID-25](#id-25-gate-invitation-delivery-explicitly-and-authorize-the-events-exact-circle) | Gate invitation delivery explicitly and authorize the event's exact circle | Email & Notifications | Active |
+| [ID-26](#id-26-separate-secondary-circle-coordination-from-workspace-authority) | Separate secondary-circle coordination from workspace authority | Product & UI | Active |
+| [ID-27](#id-27-export-one-accepted-session-locally-with-a-stable-private-identity) | Export one accepted session locally with a stable private identity | Product & UI | Active |
+| [ID-28](#id-28-advance-production-schema-by-one-explicitly-approved-version) | Advance production schema by one explicitly approved version | Data, Schema & Migrations | Active |
+| [ID-29](#id-29-create-and-select-a-secondary-circle-as-one-idempotent-operation) | Create and select a secondary circle as one idempotent operation | Pairing & Scheduling | Active |
+| [ID-30](#id-30-treat-legacy-credential-counts-as-a-key-retirement-blocker) | Treat legacy credential counts as a key-retirement blocker | Security, Secrets & Privacy | Active |
+| [ID-31](#id-31-persist-monotonic-acceptance-independently-for-each-credential-purpose) | Persist monotonic acceptance independently for each credential purpose | Security, Secrets & Privacy | Active |
+| [ID-32](#id-32-reuse-pairing-email-v2-for-secondary-dashboard-notifications) | Reuse pairing-email v2 for secondary dashboard notifications | Email & Notifications | Active |
+| [ID-33](#id-33-schedule-a-secondary-pair-without-creating-a-workspace-capability) | Schedule a secondary pair without creating a workspace capability | Pairing & Scheduling | Active |
+| [ID-34](#id-34-reuse-schedule-email-v2-for-secondary-dashboard-notifications) | Reuse schedule-email v2 for secondary dashboard notifications | Email & Notifications | Active |
+| [ID-35](#id-35-retire-request-path-authentication-schema-bootstrap) | Retire request-path authentication schema bootstrap | Auth & Identity | Active |
+| [ID-36](#id-36-enforce-the-recovery-control-contract-in-secret-free-ci) | Enforce the recovery-control contract in secret-free CI | Quality, CI & Testing | Active |
+| [ID-37](#id-37-make-legacy-data-route-readiness-read-only-and-route-scoped) | Make legacy data-route readiness read-only and route-scoped | Observability & Ops | Active |
+| [ID-38](#id-38-archive-a-target-explicit-secondary-circle-as-a-soft-authorization-boundary) | Archive a target-explicit secondary circle as a soft authorization boundary | Product & UI | Active |
+| [ID-39](#id-39-make-admin-initialization-data-only-and-atomic) | Make admin initialization data-only and atomic | Data, Schema & Migrations | Active |
+| [ID-40](#id-40-make-notification-preference-readiness-read-only) | Make notification-preference readiness read-only | Observability & Ops | Active |
+| [ID-41](#id-41-make-ai-readiness-read-only-and-route-scoped) | Make AI readiness read-only and route-scoped | Observability & Ops | Active |
+| [ID-42](#id-42-forbid-runtime-ddl-and-make-admin-operations-readiness-route-scoped) | Forbid runtime DDL and make admin operations readiness route-scoped | Observability & Ops | Active |
+| [ID-43](#id-43-treat-only-scheduled-outbox-runs-as-freshness-evidence) | Treat only scheduled outbox runs as freshness evidence | Observability & Ops | Active |
+| [ID-44](#id-44-bind-invitation-authority-to-one-prepared-generation-and-explicit-oauth-intent) | Bind invitation authority to one prepared generation and explicit OAuth intent | Auth & Identity | Active |
+| [ID-45](#id-45-bind-account-creation-ui-to-one-live-prepared-invitation) | Bind account-creation UI to one live prepared invitation | Auth & Identity | Active |
+| [ID-46](#id-46-quiesce-bootstrap-identity-refreshes-before-the-circle-switch-race) | Quiesce bootstrap identity refreshes before the circle-switch race | Auth & Identity | Active |
+| [ID-47](#id-47-evolve-the-existing-shell-through-semantic-observable-ui-states) | Evolve the existing shell through semantic, observable UI states | Product & UI | Active |
+| [ID-48](#id-48-separate-routine-availability-fixtures-from-the-production-cutoff-clock) | Separate routine availability fixtures from the production cutoff clock | Quality, CI & Testing | Active |
+| [ID-49](#id-49-retain-only-an-existing-prepared-binding-across-rate-limiting) | Retain only an existing prepared binding across rate limiting | Auth & Identity | Active |
+| [ID-50](#id-50-make-weekly-publication-total-and-explicitly-sunday-bounded) | Make weekly publication total and explicitly Sunday-bounded | Pairing & Scheduling | Active |
+| [ID-51](#id-51-recover-overdue-weekly-publication-from-authoritative-server-state) | Recover overdue weekly publication from authoritative server state | Pairing & Scheduling | Active |
+| [ID-52](#id-52-derive-first-run-progress-from-authenticated-product-state) | Derive first-run progress from authenticated product state | Product & UI | Active |
+| [ID-53](#id-53-make-actionable-schedules-strictly-future-by-database-time) | Make actionable schedules strictly future by database time | Pairing & Scheduling | Active |
+| [ID-54](#id-54-activate-the-backup-watchdog-at-a-reviewed-rehearsal-slot) | Activate the backup watchdog at a reviewed rehearsal slot | Backup & Recovery | Active |
+| [ID-55](#id-55-derive-completed-sessions-from-unanimous-participant-receipts) | Derive completed sessions from unanimous participant receipts | Pairing & Scheduling | Active |
+| [ID-56](#id-56-separate-inherited-availability-from-an-explicit-cycle-decision) | Separate inherited availability from an explicit cycle decision | Pairing & Scheduling | Active |
+| [ID-57](#id-57-bridge-reliable-sessions-with-a-private-schedule-bound-https-link) | Bridge reliable sessions with a private schedule-bound HTTPS link | Pairing & Scheduling | Active |
+| [ID-58](#id-58-persist-pair-roles-and-focus-time-as-one-database-clock-aggregate) | Persist pair roles and focus time as one database-clock aggregate | Pairing & Scheduling | Active |
+| [ID-59](#id-59-keep-session-control-reconciliation-non-blocking-after-hydration) | Keep session-control reconciliation non-blocking after hydration | Product & UI | Active |
+| [ID-60](#id-60-broaden-the-executable-catalogue-with-a-bounded-original-pack) | Broaden the executable catalogue with a bounded original pack | Content & Catalogue | Active |
+| [ID-61](#id-61-treat-tursos-disallowed-check-constraint-pragma-as-enforced) | Treat Turso's disallowed CHECK-constraint pragma as enforced | Data, Schema & Migrations | Active |
+| [ID-62](#id-62-execute-catalogue-runs-in-an-isolated-configurable-provider) | Execute catalogue runs in an isolated, configurable provider | Content & Catalogue | Active |
+| [ID-63](#id-63-link-google-with-randori-recent-auth-not-a-fresh-google-auth_time) | Link Google with Randori recent auth, not a fresh Google `auth_time` | Auth & Identity | Active |
+| [ID-64](#id-64-deliver-auth-and-invitation-email-immediately-after-commit) | Deliver auth and invitation email immediately after commit | Email & Notifications | Active |
+| [ID-65](#id-65-make-pair-code-conflict-free-and-execute-only-acknowledged-state) | Make pair code conflict-free and execute only acknowledged state | Pairing & Scheduling | Active |
+| [ID-66](#id-66-accept-public-invite-requests-without-enumeration) | Accept public invite requests without enumeration | Email & Notifications | Active |
+| [ID-67](#id-67-run-an-external-outbox-scheduler-beside-github-and-alert-on-delivery-health) | Run an external outbox scheduler beside GitHub and alert on delivery health | Email & Notifications | Active |
+| [ID-68](#id-68-invite-several-people-at-once-with-one-shared-email-validator) | Invite several people at once with one shared email validator | Email & Notifications | Active |
+| [ID-69](#id-69-add-co-owners-and-app-admin-grants-without-a-schema-change) | Add co-owners and app admin grants without a schema change | Auth & Identity | Active |
+| [ID-70](#id-70-retire-the-legacy-admin-promote-record-non-pii-email-provider-reject-reasons) | Retire the legacy admin promote; record non-PII email provider reject reasons | Security, Secrets & Privacy | Active |
+| [ID-71](#id-71-send-reminders-from-the-outbox-cron-behind-a-flag-without-a-migration) | Send reminders from the outbox cron behind a flag, without a migration | Email & Notifications | Active |
+| [ID-72](#id-72-turn-on-production-client-error-logging-warnerror-signed-in-with-app_logs-retention) | Turn on production client error logging (warn/error, signed-in) with app_logs retention | Observability & Ops | Amended by addendum (PR #337, post-merge review of PR #326); [ID-82](#id-82-keep-no-raw-ip-address-or-user-agent-in-app_logs) replaces the addendum's `ua` cut-and-redact |
+| [ID-73](#id-73-admin-diagnostics-in-the-circle-view-read-only-and-behind-a-flag) | Admin Diagnostics in the Circle view, read-only and behind a flag | Observability & Ops | Amended by addendum (PR #348; issue #343) |
+| [ID-74](#id-74-check-the-live-execution-provider-after-each-deploy-and-daily-within-a-fixed-sandbox-budget) | Check the live execution provider after each deploy and daily, within a fixed sandbox budget | Observability & Ops | Amended by addendum (PR #348; issue #342) |
+| [ID-75](#id-75-give-the-backup-watchdog-an-eight-hour-grace-for-late-github-schedules) | Give the backup watchdog an eight-hour grace for late GitHub schedules | Backup & Recovery | Active |
+| [ID-76](#id-76-compute-each-members-progress-on-request-from-their-own-records-behind-a-flag) | Compute each member's progress on request from their own records, behind a flag | Product & UI | Active |
+| [ID-77](#id-77-suggest-next-exercises-from-verified-history-without-a-migration) | Suggest next exercises from verified history, without a migration | Product & UI | Active |
+| [ID-78](#id-78-show-owners-aggregate-circle-health-from-existing-tables-behind-a-flag) | Show owners aggregate circle health from existing tables behind a flag | Product & UI | Active |
+| [ID-79](#id-79-serve-the-privacy-policy-and-terms-as-static-script-free-public-pages) | Serve the privacy policy and terms as static, script-free public pages | Product & UI | Amended by dated update, 22 Oct 2026 |
+| [ID-80](#id-80-make-randoricirclecom-the-canonical-origin-keep-the-old-vercel-alias-for-the-api) | Make randoricircle.com the canonical origin; keep the old Vercel alias for the API | Product & UI | Active |
+| [ID-81](#id-81-let-members-delete-their-own-account-by-tombstoning-it-in-one-transaction-behind-a-flag) | Let members delete their own account by tombstoning it in one transaction, behind a flag | Security, Secrets & Privacy | Active |
+| [ID-82](#id-82-keep-no-raw-ip-address-or-user-agent-in-app_logs) | Keep no raw IP address or user agent in app_logs | Security, Secrets & Privacy | Active |
+| [ID-83](#id-83-expire-recipient-data-in-the-email-outbox-after-delivery-behind-a-flag) | Expire recipient data in the email outbox after delivery, behind a flag | Security, Secrets & Privacy | Amended by dated update, 22 Oct 2026, and dated correction, 25 Oct 2026 (see [ID-89](#id-89-state-the-backup-retention-for-deleted-data-and-re-apply-post-restore-point-deletions-after-a-restore)) |
+| [ID-84](#id-84-readiness-accepts-invitation-acceptance-via-email-activation) | Readiness accepts invitation acceptance via email activation | Observability & Ops | Active |
+| [ID-85](#id-85-judge-a-managed-database-by-steady-state-membership-readiness-in-migrations-and-the-backup-rehearsal) | Judge a managed database by steady-state membership readiness in migrations and the backup rehearsal | Data, Schema & Migrations | Active |
+| [ID-86](#id-86-serve-apistats-to-signed-in-members-only) | Serve `/api/stats` to signed-in members only | Security, Secrets & Privacy | Active |
+| [ID-87](#id-87-release-additive-migrations-with-no-downtime-expand-migrate-use) | Release additive migrations with no downtime (expand, migrate, use) | Data, Schema & Migrations | Active |
+| [ID-88](#id-88-force-zod-to-466-via-npm-overrides-to-fix-ghsa-mrhx-c7xc-m3w5) | Force zod to `^4.6.6` via npm overrides to fix GHSA-mrhx-c7xc-m3w5 | Dependencies | Active |
+| [ID-89](#id-89-state-the-backup-retention-for-deleted-data-and-re-apply-post-restore-point-deletions-after-a-restore) | State the backup retention for deleted data, and re-apply post-restore-point deletions after a restore | Backup & Recovery | Active |
+| [ID-90](#id-90-let-a-signed-in-member-download-their-own-data-as-one-json-archive-behind-a-flag) | Let a signed-in member download their own data as one JSON archive, behind a flag | Security, Secrets & Privacy | Active |
+| [ID-91](#id-91-product-feedback--shared-platform-for-bug-reports-feature-requests-and-product-feedback-data-model--api) | Product feedback — shared platform for bug reports, feature requests and product feedback (data model + API) | Product & UI | Active |
+| [ID-92](#id-92-force-dompurify-to-3417-via-npm-overrides-to-clear-the-dev-only-audit-findings-382) | Force dompurify to `^3.4.17` via npm overrides to clear the dev-only audit findings (#382) | Dependencies | Active |
+## How to add a decision
+
+New decisions go at the end of the log, in numeric order, with a row in the
+[Index](#index) above. Do not rewrite an existing entry's dated content to
+match later knowledge: if a later decision changes an earlier one, record
+the change as an addendum to the earlier entry or as a new entry, and mark
+it both ways — an `**Amended by ID-NN:**` line at the top of the earlier
+entry and an `**Amends ID-NN:**` line at the top of the new one. If a
+decision is ever withdrawn, mark it `Superseded by ID-NN` at the top of the
+old entry (and say so in the new one) instead of deleting it; the log is
+history, not just current state.
+
+1. **Pick the next free ID.** The next ID is the highest ID in the Index
+   plus one (currently ID-93). Never reuse a number, even if an entry is
+   superseded, and do not mint an ID for a docs-only correction or
+   reordering — those change no decision.
+2. **Check for collisions before you claim it.** Parallel PRs are the
+   usual collision: two branches can both pick the same next ID. Before
+   opening the PR, fetch `origin/main`, re-check the highest ID, and
+   search open PRs touching this file for the ID you picked.
+3. **Re-check at rebase / merge time.** If `main` gained the ID you
+   picked while your PR was open, renumber your entry to the new next
+   free ID and update its Index row and any cross-references to it (there
+   is precedent: the feedback entry was renumbered ID-90 to ID-91 when a
+   parallel PR landed first). The second PR to merge renumbers, not the
+   first.
+4. **Write the entry.** Start with the heading (`## ID-NN: <title>`),
+   then a `Status:` line, then `**Context.**`, `**Decision.**`, and the
+   sections the decision needs (`**Alternatives.**`, `**Rollout and
+   recovery.**`, and so on). Keep each entry self-contained: a reader
+   landing from the Index should not need another entry to understand it.
+5. **Update the Index.** Add the row in numeric position with the entry's
+   area and status, and keep the Index and the entries in agreement — one
+   row per entry, one entry per row.
 
 ## Delivery and migration order
 
@@ -238,6 +377,7 @@ but can hide untested branches and functions. Requiring every external review or
 preview service increases assurance when available but lets third-party quota or
 outages stop delivery. Manual-only testing is too difficult to reproduce and is
 rejected.
+
 ## ID-10: Verify invitation-bound password activation before account creation
 
 Status: implemented as the schema-v7 increment, stacked on the durable outbox.
@@ -568,6 +708,8 @@ issue #50 and is not required to ship this email path.
 Status: implemented as an operations increment rebased after the recent-auth
 lifecycle boundary; it adds no schema migration and preserves the v8/v9 order.
 
+**Amended by ID-75:** the two-hour watchdog grace is now eight hours and the absolute deadline is 12:47 UTC (see ID-75). The two-hour / 06:47 UTC figures below are the as-landed text, kept for history.
+
 **Decision.** The protected backup/restore workflow runs every Monday at 03:17
 UTC and remains manually dispatchable with the explicit disposable-only phrase.
 It restores a current Turso PITR point into a uniquely named database, validates
@@ -709,6 +851,7 @@ reapplied. Do not edit or delete the v10 ledger row. If the incident involves
 data or broader schema integrity, stop and use the rehearsed PITR process rather
 than this index-only procedure. The exact commands, checks, and forward rollout
 are recorded in `docs/CHAT_INDEX_MIGRATION.md`.
+
 ## ID-19: Rotate each credential purpose through a bounded versioned key ring
 
 Status: implemented as a compatibility-first runtime increment with no schema
@@ -3057,6 +3200,8 @@ without a migration); this is documented rather than throttled.
 Status: implemented; no migration, no flag. Owner-approved follow-up to the
 finding in PR #323.
 
+**Amended by:** the addendum below (post-merge review of PR #326), and by ID-82, which replaces the addendum's cut-and-redact of the client `ua` field.
+
 **Context.** The client logger in `index.html` (`window._randori_log`) never
 installed in production. The Sentry config created a placeholder
 `window._randori_log={_lastEvent:''}` on the production origin, and the logger
@@ -3257,6 +3402,8 @@ Status: implemented behind `ADMIN_DIAGNOSTICS_ENABLED` (default off); no
 migration. Issue #310 (post-MVP roadmap #312). The visual design is
 provisional (`needs-design`).
 
+**Amended by:** the addendum below (PR #348; issue #343).
+
 **Context.** Operational health was spread across GitHub Actions runs (outbox
 and backup watchdogs), Sentry, `/api/health/ready` and the admin logs widget on
 Home. The maintainer had to check several places to answer "is email going out,
@@ -3359,6 +3506,8 @@ The deferred #249 seam is replaced by `execution.smoke`, still behind
 
 Status: implemented. Ops-only: no feature flag, no migration, no new secret.
 Issue #249. This produces the live evidence that #248 and #9 need.
+
+**Amended by:** the addendum below (PR #348; issue #342).
 
 **Context.** End-to-end tests mock the code-execution provider. When the public
 Piston API retired, production Run broke while every check stayed green
@@ -3512,6 +3661,8 @@ check. Run 39731099057's environment deployment started a real
 
 Status: implemented as an operations change. No feature flag, migration,
 secret, permission, or provider change. Issue #324, follow-up from #51.
+
+**Amends ID-16:** widens the watchdog slot grace from two to eight hours and the absolute slot deadline from 06:47 UTC to 12:47 UTC.
 
 **Context.** GitHub started the Monday 03:17 UTC Turso backup-restore rehearsal
 about 5h40m late. The hourly watchdog (ID-16, ID-54) required a current-slot run
@@ -4070,49 +4221,111 @@ owner sets `ACCOUNT_DELETION_ENABLED=true` in Vercel Production and redeploys;
 unsetting it hides the endpoint and UI. Deletions are irreversible by design.
 Contract and inventory: [`ACCOUNT_DELETION.md`](ACCOUNT_DELETION.md).
 
-## ID-84: Readiness accepts invitation acceptance via email activation
+## ID-82: Keep no raw IP address or user agent in app_logs
 
-Status: implemented (production hotfix); no migration, no flag.
+Status: implemented; no migration, no flag (privacy hygiene with no
+user-visible change). Issue #340, split out of #338.
 
-**Context.** On 2026-10-22 the first invitee joined through password sign-up
-and email activation (`verifyEmailActivation` in `api/_email-activation.js`).
-That path consumes the invitation and the activation, inserts the active
-membership and records `activation.verified` with
-`dedupe_key='activation-verified:'||<activation id>`. Membership readiness
-(`db/membership-readiness.js`) accepted only `membership.backfilled` and
-`invitation.accepted` provenance, so the new account counted as
-`invalidAccountProvenance`. `/api/health/ready` returned 503 and pairing
-readiness (`requireClosedMembership`) failed.
+**Amends ID-72:** replaces the ID-72 addendum's cut-and-redact of the client log `ua` field with the reduced browser/OS-family form below.
 
-**Decision.**
-- Both `inspectCompletedMembershipRollout` and
-  `inspectMembershipAdoptionReadiness` accept a third account provenance: an
-  invitation in the primary circle used by the account (used, not revoked),
-  its consumed activation in the same circle, and an `activation.verified`
-  event in that circle whose actor and subject are the account, whose
-  invitation is that invitation, and whose dedupe key is
-  `activation-verified:<activation id>`.
-- A new `malformedActivationAudits` count, a `closed_rollout_account_audit_invalid`
-  blocker in both evaluators, rejects any `activation.verified` event whose
-  invitation, activation, account, actor, circle or dedupe key do not line up.
-  `verifyEmailActivation` is the only writer, it runs in one transaction, and
-  it only creates new accounts (sign-up refuses an existing email and the
-  account insert must return a row), so no legitimate activation audit exists
-  without an accepted membership.
-- The activation table arrived in schema v7 and the migration runner inspects
-  adoption from v2. Each evaluator first checks `sqlite_schema` for
-  `auth_email_activations` (read-only, DDL-free). Without it, every
-  `activation.verified` event counts as malformed.
-- The migration runner's adoption evidence fingerprint is unchanged. Its
-  readiness result already comes from the updated evaluator, so a future
-  cutover no longer refuses these accounts. Any activation join changes the
-  fingerprinted accounts, memberships and used invitations, and any change
-  that breaks an activation audit changes the readiness counts that
-  `stateFingerprint` also covers. Leaving it unchanged keeps fingerprints taken
-  before this deploy valid.
+**Context.** Every `app_logs` writer copied the first `X-Forwarded-For` entry
+into `ip` and the full `User-Agent` header into `ua`, and kept both for the
+30-day retention (ID-72): client rows from `POST /api/logs`, server rows from
+`api/data.js`, `api/ai.js` and `api/ops.js`, and the runner lease and quota
+rows. Nothing read either column except the admin logs API. Rate limits never
+used them: `auth_rate_limits` keys are already keyed hashes (SHA-256 with the
+JWT secret per 15-minute bucket for auth, HMAC for invitation prepare and
+invite requests), and the runner quota counts by `user_id`. No other table
+stores an address or user agent: `auth_sessions`, `auth_identity_audit_events`,
+`circle_audit_events`, `invite_requests`, `outbox_events` and
+`outbox_audit_events` have no such columns or payload fields. The one other
+place an address reaches the database is WebRTC signalling: offers, answers
+and ICE candidates in `video_signals.payload` can carry network addresses.
+They are needed to connect a call, readable only by the pair, and deleted
+once older than an hour by the clean-up that runs on signalling requests (so
+while no call is in progress, the last call's rows wait for the next one).
+This change leaves them as they are.
 
-**Recovery.** Revert the commit. Readiness then fails again for every account
-that joined by activation.
+**Decision.** `api/_log-privacy.js` reduces both values for every writer
+(`appLogClientFields`); the columns stay.
+- `ip` is NULL on every row with a `user_id`: client rows from
+  `POST /api/logs`, runner rows, and server rows logged for a signed-in
+  member. The account already says who it was, so the address adds nothing.
+- On rows without a user (server and cron events, failures before the user is
+  known), `ip` is `h1:` plus the first 16 hex characters of
+  HMAC-SHA256(key, `randori-log-address-v1` NUL UTC day NUL network). The key
+  is `LOG_ADDRESS_SECRET`, or `JWT_SECRET` when that is unset, so either can
+  rotate without the other; the label keeps the hash domain-separated when
+  the JWT secret is shared. The network is the IPv4 address (IPv4-mapped IPv6
+  collapses to it) or the IPv6 /64 (`clientNetwork` in
+  `api/_client-address.js`, shared with the rate-limit identity). Rows from
+  one source on one UTC day share a value, so a burst can be traced.
+- The hash is pseudonymous, not anonymous. Anyone holding the key can
+  enumerate every IPv4 address for a day (2^32 HMACs, roughly an hour of one
+  core), so they can reverse a value and link it across days. Without the key,
+  values can't be reversed, and the day salt stops them being linked across
+  days. A value that is not an IP literal, or a missing key, stores NULL.
+  Writers never pass a stored hash through: only the admin read path shows an
+  existing `h1:` value as it is.
+- `ua` is a coarse family from a fixed vocabulary: browser and major version
+  plus OS, with the OS major where the user agent has one (`Chrome 131 on
+  Windows 10/11`, `Safari 17 on iOS 17`, `Chrome 131 on Android 14`); `bot`
+  for crawlers (a product named like `Googlebot/2.1`, not a device such as
+  `CUBOT X30`); `other` for anything unrecognised; NULL when absent. No text
+  from the header is ever copied, so device models, build strings and
+  anything a client puts in the header are dropped. A client log entry's own
+  `ua` field is reduced the same way; this replaces the ID-72 addendum's
+  cut-and-redact of that field.
+- The client log redaction (`api/_client-log-policy.js` and the browser
+  logger in `index.html`, kept identical by the shared corpus) now also drops
+  copies a client puts in the entry itself:
+  - IPv4 and IPv6 literals in message, event, route and meta become `[ip]`,
+    keeping an IPv4 `:port`. Loopback addresses, stack-frame `:line:col`,
+    clock times, three-part versions and product versions
+    (`Chrome/131.0.0.0`, `v1.2.3.4`) stay readable.
+  - A bare browser user agent (`Mozilla/5.0 (…) …`) becomes `[user agent]`.
+  - The names `ua`, `ip`, `xff`, `user-agent`/`userAgent`/`user_agent` and
+    `x-forwarded-for` are treated like the secret names: `name=value` pairs,
+    quoted JSON keys and object keys (plus `ipAddress` and `x-real-ip`) lose
+    their value, and `User-Agent:` / `X-Forwarded-For:` lose the rest of the
+    line.
+- A /24 or /48 prefix was not chosen: it links one network across days for
+  anyone who reads the row and says where the client is.
+- The admin logs API (`GET /api/data?endpoint=logs`, the `#logsArea` panel)
+  returns the same fields. Rows written before this change are reduced on the
+  way out (`presentAppLogClient`): NULL for rows with a user, otherwise hashed
+  with their own `created_at` day. Admins see only reduced values either way.
+  Admin Diagnostics never read either column.
+- The salt day comes from the server clock and `created_at` from the database
+  clock; within a moment of UTC midnight they can differ by a day, so anyone
+  checking an address should try both days.
+- The in-memory per-IP limiter for `POST /api/logs` (60 requests a minute per
+  instance) still uses the raw address in process memory only; it is never
+  written anywhere.
+
+**Existing rows.** No backfill. Rows that still hold raw values age out under
+the 30-day `app_logs` retention (ID-72), so 30 days after deploy (plus the
+hourly retention run) none are left in the live database. Turso backups and
+point-in-time history keep them until those age out on their own schedule.
+
+**Sentry.** Server events have `sendDefaultPii:false` and `beforeSend`
+removes `user` (including `ip_address`) and every request header, so no
+address or user agent is sent from the server. The browser SDK is also set to
+`sendDefaultPii:false`, but Sentry sees the browser's address when it receives
+an event, and whether it stores it depends on the loader's SDK version and the
+project's "Prevent Storing of IP Addresses" setting. That setting is outside
+this repository and is left to the owner.
+
+**Privacy Policy.** `privacy.html` (ID-79) now says the error logs keep the
+browser and OS family, no address on entries linked to an account, and a
+daily pseudonymous code (reversible by us, since we hold the key) on the few
+entries without one; admins see those reduced values; and older entries age
+out on the same 30-day schedule. `tests/unit/public-pages.test.mjs` pins the
+wording.
+
+**Rollout and recovery.** Merging changes only what new rows hold and what the
+admin API returns; no schema, flag or production setting changes. Reverting
+the commit restores the previous writers; nothing needs to be cleaned up.
 
 ## ID-83: Expire recipient data in the email outbox after delivery, behind a flag
 
@@ -4238,109 +4451,53 @@ is unset.
 with the 1-day backup window of Turso's Starter plan and the invitation guard
 (an envelope is never removed while its invitation can still be used).
 
-## ID-82: Keep no raw IP address or user agent in app_logs
+*Correction, 25 October 2026:* "Starter" is not a current Turso plan name —
+the 1-day window is the Free tier's. See ID-89 for the verified plan list
+(Free 1 day, Developer 10 days, Scaler 30 days, Pro and Enterprise 90 days).
 
-Status: implemented; no migration, no flag (privacy hygiene with no
-user-visible change). Issue #340, split out of #338.
+## ID-84: Readiness accepts invitation acceptance via email activation
 
-**Context.** Every `app_logs` writer copied the first `X-Forwarded-For` entry
-into `ip` and the full `User-Agent` header into `ua`, and kept both for the
-30-day retention (ID-72): client rows from `POST /api/logs`, server rows from
-`api/data.js`, `api/ai.js` and `api/ops.js`, and the runner lease and quota
-rows. Nothing read either column except the admin logs API. Rate limits never
-used them: `auth_rate_limits` keys are already keyed hashes (SHA-256 with the
-JWT secret per 15-minute bucket for auth, HMAC for invitation prepare and
-invite requests), and the runner quota counts by `user_id`. No other table
-stores an address or user agent: `auth_sessions`, `auth_identity_audit_events`,
-`circle_audit_events`, `invite_requests`, `outbox_events` and
-`outbox_audit_events` have no such columns or payload fields. The one other
-place an address reaches the database is WebRTC signalling: offers, answers
-and ICE candidates in `video_signals.payload` can carry network addresses.
-They are needed to connect a call, readable only by the pair, and deleted
-once older than an hour by the clean-up that runs on signalling requests (so
-while no call is in progress, the last call's rows wait for the next one).
-This change leaves them as they are.
+Status: implemented (production hotfix); no migration, no flag.
 
-**Decision.** `api/_log-privacy.js` reduces both values for every writer
-(`appLogClientFields`); the columns stay.
-- `ip` is NULL on every row with a `user_id`: client rows from
-  `POST /api/logs`, runner rows, and server rows logged for a signed-in
-  member. The account already says who it was, so the address adds nothing.
-- On rows without a user (server and cron events, failures before the user is
-  known), `ip` is `h1:` plus the first 16 hex characters of
-  HMAC-SHA256(key, `randori-log-address-v1` NUL UTC day NUL network). The key
-  is `LOG_ADDRESS_SECRET`, or `JWT_SECRET` when that is unset, so either can
-  rotate without the other; the label keeps the hash domain-separated when
-  the JWT secret is shared. The network is the IPv4 address (IPv4-mapped IPv6
-  collapses to it) or the IPv6 /64 (`clientNetwork` in
-  `api/_client-address.js`, shared with the rate-limit identity). Rows from
-  one source on one UTC day share a value, so a burst can be traced.
-- The hash is pseudonymous, not anonymous. Anyone holding the key can
-  enumerate every IPv4 address for a day (2^32 HMACs, roughly an hour of one
-  core), so they can reverse a value and link it across days. Without the key,
-  values can't be reversed, and the day salt stops them being linked across
-  days. A value that is not an IP literal, or a missing key, stores NULL.
-  Writers never pass a stored hash through: only the admin read path shows an
-  existing `h1:` value as it is.
-- `ua` is a coarse family from a fixed vocabulary: browser and major version
-  plus OS, with the OS major where the user agent has one (`Chrome 131 on
-  Windows 10/11`, `Safari 17 on iOS 17`, `Chrome 131 on Android 14`); `bot`
-  for crawlers (a product named like `Googlebot/2.1`, not a device such as
-  `CUBOT X30`); `other` for anything unrecognised; NULL when absent. No text
-  from the header is ever copied, so device models, build strings and
-  anything a client puts in the header are dropped. A client log entry's own
-  `ua` field is reduced the same way; this replaces the ID-72 addendum's
-  cut-and-redact of that field.
-- The client log redaction (`api/_client-log-policy.js` and the browser
-  logger in `index.html`, kept identical by the shared corpus) now also drops
-  copies a client puts in the entry itself:
-  - IPv4 and IPv6 literals in message, event, route and meta become `[ip]`,
-    keeping an IPv4 `:port`. Loopback addresses, stack-frame `:line:col`,
-    clock times, three-part versions and product versions
-    (`Chrome/131.0.0.0`, `v1.2.3.4`) stay readable.
-  - A bare browser user agent (`Mozilla/5.0 (…) …`) becomes `[user agent]`.
-  - The names `ua`, `ip`, `xff`, `user-agent`/`userAgent`/`user_agent` and
-    `x-forwarded-for` are treated like the secret names: `name=value` pairs,
-    quoted JSON keys and object keys (plus `ipAddress` and `x-real-ip`) lose
-    their value, and `User-Agent:` / `X-Forwarded-For:` lose the rest of the
-    line.
-- A /24 or /48 prefix was not chosen: it links one network across days for
-  anyone who reads the row and says where the client is.
-- The admin logs API (`GET /api/data?endpoint=logs`, the `#logsArea` panel)
-  returns the same fields. Rows written before this change are reduced on the
-  way out (`presentAppLogClient`): NULL for rows with a user, otherwise hashed
-  with their own `created_at` day. Admins see only reduced values either way.
-  Admin Diagnostics never read either column.
-- The salt day comes from the server clock and `created_at` from the database
-  clock; within a moment of UTC midnight they can differ by a day, so anyone
-  checking an address should try both days.
-- The in-memory per-IP limiter for `POST /api/logs` (60 requests a minute per
-  instance) still uses the raw address in process memory only; it is never
-  written anywhere.
+**Context.** On 2026-10-22 the first invitee joined through password sign-up
+and email activation (`verifyEmailActivation` in `api/_email-activation.js`).
+That path consumes the invitation and the activation, inserts the active
+membership and records `activation.verified` with
+`dedupe_key='activation-verified:'||<activation id>`. Membership readiness
+(`db/membership-readiness.js`) accepted only `membership.backfilled` and
+`invitation.accepted` provenance, so the new account counted as
+`invalidAccountProvenance`. `/api/health/ready` returned 503 and pairing
+readiness (`requireClosedMembership`) failed.
 
-**Existing rows.** No backfill. Rows that still hold raw values age out under
-the 30-day `app_logs` retention (ID-72), so 30 days after deploy (plus the
-hourly retention run) none are left in the live database. Turso backups and
-point-in-time history keep them until those age out on their own schedule.
+**Decision.**
+- Both `inspectCompletedMembershipRollout` and
+  `inspectMembershipAdoptionReadiness` accept a third account provenance: an
+  invitation in the primary circle used by the account (used, not revoked),
+  its consumed activation in the same circle, and an `activation.verified`
+  event in that circle whose actor and subject are the account, whose
+  invitation is that invitation, and whose dedupe key is
+  `activation-verified:<activation id>`.
+- A new `malformedActivationAudits` count, a `closed_rollout_account_audit_invalid`
+  blocker in both evaluators, rejects any `activation.verified` event whose
+  invitation, activation, account, actor, circle or dedupe key do not line up.
+  `verifyEmailActivation` is the only writer, it runs in one transaction, and
+  it only creates new accounts (sign-up refuses an existing email and the
+  account insert must return a row), so no legitimate activation audit exists
+  without an accepted membership.
+- The activation table arrived in schema v7 and the migration runner inspects
+  adoption from v2. Each evaluator first checks `sqlite_schema` for
+  `auth_email_activations` (read-only, DDL-free). Without it, every
+  `activation.verified` event counts as malformed.
+- The migration runner's adoption evidence fingerprint is unchanged. Its
+  readiness result already comes from the updated evaluator, so a future
+  cutover no longer refuses these accounts. Any activation join changes the
+  fingerprinted accounts, memberships and used invitations, and any change
+  that breaks an activation audit changes the readiness counts that
+  `stateFingerprint` also covers. Leaving it unchanged keeps fingerprints taken
+  before this deploy valid.
 
-**Sentry.** Server events have `sendDefaultPii:false` and `beforeSend`
-removes `user` (including `ip_address`) and every request header, so no
-address or user agent is sent from the server. The browser SDK is also set to
-`sendDefaultPii:false`, but Sentry sees the browser's address when it receives
-an event, and whether it stores it depends on the loader's SDK version and the
-project's "Prevent Storing of IP Addresses" setting. That setting is outside
-this repository and is left to the owner.
-
-**Privacy Policy.** `privacy.html` (ID-79) now says the error logs keep the
-browser and OS family, no address on entries linked to an account, and a
-daily pseudonymous code (reversible by us, since we hold the key) on the few
-entries without one; admins see those reduced values; and older entries age
-out on the same 30-day schedule. `tests/unit/public-pages.test.mjs` pins the
-wording.
-
-**Rollout and recovery.** Merging changes only what new rows hold and what the
-admin API returns; no schema, flag or production setting changes. Reverting
-the commit restores the previous writers; nothing needs to be cleaned up.
+**Recovery.** Revert the commit. Readiness then fails again for every account
+that joined by activation.
 
 ## ID-85: Judge a managed database by steady-state membership readiness in migrations and the backup rehearsal
 
@@ -4381,3 +4538,637 @@ Reactivating removed members before migrating (destroys an owner's decision).
 
 **Rollout.** Takes effect on merge for `db:migrate`, the production migration
 workflow and the rehearsal. No workflow file or digest pin changes.
+
+## ID-86: Serve `/api/stats` to signed-in members only
+
+Status: implemented; no flag, no migration. Fixes #333 (a live privacy
+exposure found while reviewing #331).
+
+**Context.** `GET /api/stats` (`handleStats` in `api/data.js`) returned the
+circle-wide `total_users`, `total_weeks`, `total_pairs` and `total_sessions` to
+anyone, signed in or not. Polling `total_sessions` showed a signed-out visitor
+when sessions were confirmed complete, which bypasses the small-cell rules
+planned for circle health (#292, ID-78). The public landing has not called
+`/api/stats` since UI redesign WP-L1 (`index.html` `bootHome` returns early for
+anonymous visitors), so no signed-out page reads these numbers.
+
+**Decision.**
+- Signed-out visitors do not need any of these numbers. `handleStats` checks
+  the session first and returns `401 {"error":"authentication required"}`.
+  A request with no validly signed session is refused before the database is
+  opened. A signed but revoked or expired session is refused after the session
+  lookup in `verifyRequestAuth`. Neither reads any stats table. A session
+  whose subject is not a positive integer id is refused the same way
+  (`authenticatedUserId`, as `/api/weeks` does).
+- A signed-in member's response is unchanged: the same totals, `your_*` counts
+  and `next_cycle`. The viewer's own counts are now always computed, since
+  every caller has a session.
+- The response is `Cache-Control: private, no-store` (Vercel already sends
+  `no-store` for `/api/*`).
+- No flag: the route's only caller is the signed-in dashboard, so nothing a
+  member or visitor sees changes, and a flag would leave the exposure live.
+
+**Remaining exposure.** A signed-in member can still poll the all-time,
+unsuppressed `total_sessions`. That is recorded for the circle health
+threshold review in `docs/CIRCLE_HEALTH.md` ("`/api/stats` outside these
+rules").
+
+**Alternatives.** Rounding or caching the public totals per day (still
+discloses activity, and no signed-out page shows them). Dropping only
+`total_sessions` (the other totals have no signed-out reader either).
+
+**Recovery.** Revert the commit; the totals become public again.
+
+## ID-87: Release additive migrations with no downtime (expand, migrate, use)
+
+Status: implemented; no flag, no migration. Issue #371, the prerequisite for
+#353, #372, #374 and every later schema change.
+
+**Context.** Health, `/api/init`, circle-pairing and schedule readiness
+required the ledger to equal the code's latest version exactly. The protected
+cutover has to run from a `main` commit that already contains the migration,
+so every migration merge deployed code at N against a database at N-1:
+readiness failed and pairing endpoints returned 503 for the 20-40 minutes of
+rehearsal, status and apply.
+
+**Decision.**
+- Each contract in `db/migration-contract.js` declares
+  `compatibility: 'additive' | 'breaking'`. An additive contract also lists
+  the tables, indexes and triggers it `introduces`. Migrations 1-21 stay
+  `breaking`: the code that shipped with them assumes their schema, so this
+  change widens readiness for no shipped version and changes nothing on merge.
+  Contract fields are not part of any checksum; every existing checksum is
+  unchanged.
+- Readiness (`db/migration-compatibility.js`): code at N is ready when the
+  ledger is at N, or at N-1 when migration N is additive. In the second case
+  the schema must match N-1 exactly: the code's manifest minus what N
+  introduces, so a half-created new table is drift. Two versions behind, a
+  breaking migration still to apply, and a ledger newer than the code stay
+  not ready. Every other rule is unchanged (each applied row's checksum and
+  metadata, key control, membership). Health readiness, `/api/init`,
+  circle-pairing and schedule readiness use it; readiness now reads the
+  ledger before inspecting the schema, since the version picks the manifest.
+  The owned-scope probes (circle-pairing, schedule) additionally reject when
+  any artifact the pending migration introduces already exists in
+  `sqlite_schema` (#379): their inspector manifest is scoped to owned tables,
+  so it is blind to a half-created introduced table and to introduced indexes
+  or triggers on tables outside the scope, while the full-manifest health
+  probe already caught those as unexpected artifacts.
+  The secondary-schedule probe retains a clean success only when the
+  ledger was CURRENT when probed (#395). A `pending_additive` success is
+  coalesced while in flight, then evicted on settle, so the next call
+  re-probes and a half-created artifact appearing later is rejected on the
+  same process/client instead of being masked by the earlier clean verdict.
+  A TTL was rejected: it would still mask the artifact for the whole TTL,
+  and there is no schema-change signal to subscribe to (migrations run out
+  of process). The cache keeps its existing URL scoping (per
+  TURSO_DATABASE_URL, else per client). A retained `current` success still
+  assumes the schema is stable once no migration is in flight; drift
+  outside a pending migration is not re-checked, as with the other
+  readiness caches.
+  Pairing publication readiness checks only the v6 core contract, already
+  accepted any later ledger prefix, and cannot be changed by an additive
+  migration.
+- Admin diagnostics reports `pending_additive`: the readiness card is
+  *Degraded* with "pending additive migration vN" while the app stays ready.
+- The migration check (`db/migration-compatibility-check.js`) proves an
+  additive migration is additive: only new tables; new indexes on new tables,
+  or non-unique ones on existing tables; triggers and seed rows on new tables
+  only; `introduces` exactly matching. It refuses DROP, ALTER, RENAME, UPDATE,
+  DELETE, REPLACE and PRAGMA statements, table redefinition, a unique index or
+  trigger on an existing table, triggers writing existing tables, and unknown
+  operations, after stripping comments and literals. `ALTER TABLE ... ADD
+  COLUMN` has no runner operation yet and is refused. The executable
+  migrations assert it when they load, so no migration tool can apply a
+  mislabelled migration, and `npm run check:deployability` reports it.
+- Feature gating (`api/_schema-capability.js`): code that uses an additive
+  migration's tables checks the exact ledger row for N, cached per database
+  (30 s while pending, 5 min once present, errors uncached).
+  `schemaFeatureAvailable` adds the feature flag for request paths; account
+  deletion and retention use the schema check alone so stored rows are still
+  deleted with the flag off.
+- Release order and rollback are in the production migration runbook: merge
+  (ready on N-1), rehearsal, status and apply N (ready on N), then flag on.
+  Roll back by turning the flag off, then PITR only if needed; never roll code
+  back below the database. Breaking migrations keep the strict behaviour.
+
+**Alternatives.** Merging migrations without the code that uses them and
+shipping that code in a later PR (two reviews and two deploys per change, and
+nothing stops the code from merging first). Tolerating any lag (code could run
+against a schema several changes old). Marking v21 additive, since its SQL is
+(the code that shipped with it does not check for its table). Inferring
+compatibility from SQL alone (the declaration is the author's promise that the
+code gates the new tables; the check only proves the SQL half).
+
+**Tests.** On real migrated SQLite: code at N with N additive stays ready on
+every surface while the database moves from N-1 to N; a breaking N is not
+ready at N-1; code at N-1 is not ready at N; two versions behind is not ready;
+drift and tampered ledger rows still block at N-1. The owned-scope probes
+also reject a half-created introduced table, index or trigger on a
+non-owned table while the migration is pending (#379). Mutation tests load copies
+of the readiness module with the tolerance widened (to N-2, to breaking
+migrations, to an older additive migration, or with the schema checks
+dropped) and require every copy to fail the policy. The check rejects
+destructive SQL in many forms, and a mislabelled real migration (v20) stops
+the migration tooling from loading.
+
+**Rollout.** Takes effect on merge and changes nothing until the first
+additive migration (#353's v22) lands. No workflow file, digest pin or
+production setting changes.
+
+## ID-88: Force zod to `^4.6.6` via npm overrides to fix GHSA-mrhx-c7xc-m3w5
+
+Status: implemented; no flag, no migration. Security fix unblocking CI
+(`audit:prod` is an early step in `e2e` and `ubuntu-26-canary`).
+
+**Context.** `npm run audit:prod` failed with 5 high-severity findings, all
+the one advisory: `zod <4.6.6` can exhaust memory while validating oversized
+constrained collections
+([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)).
+The vulnerable copy was transitive and nested:
+`@vercel/sandbox@3.8.0` -> `@vercel/oidc@4.0.0` -> `@vercel/cli-config@0.3.1`
+-> `zod 4.1.11` (an exact pin in `cli-config`). The hoisted top-level `zod`
+was already 4.6.7, resolved from `@vercel/sandbox`'s own `zod ^4.1.1`, so
+only the `cli-config` copy was vulnerable.
+
+**Decision.**
+- `package.json` gains `"overrides": { "zod": "^4.6.6" }`. The lockfile
+  drops the nested `node_modules/@vercel/cli-config/node_modules/zod`
+  entry; a clean `npm ci` installs exactly one `zod` copy, 4.6.7, shared by
+  the sandbox chain and the rest of the tree. `npm run audit:prod` reports
+  `found 0 vulnerabilities`.
+- The audit itself is not weakened: no audit-level change, no `--force`
+  bypass, no ignored advisory.
+- The range (rather than the exact `4.6.7`) lets a future `4.x` release be
+  picked up without another override edit; the lockfile pins 4.6.7 today.
+  Every zod consumer in the tree is 4.x (`^4.1.1`, the `4.1.11` pin), so the
+  override moves all of them within the same major line.
+
+**Alternatives considered and rejected.**
+- Bumping `@vercel/sandbox` 3.8.0 -> 3.9.0 (latest): 3.9.0 still depends on
+  `zod ^4.1.1` and `@vercel/oidc 4.0.0`, and `@vercel/oidc@4.0.3` ->
+  `@vercel/cli-config@0.3.3` still pins `zod 4.1.11` exactly (checked with
+  `npm view`), so the nested vulnerable copy would remain. An unrelated
+  minor bump that does not fix the advisory.
+- Bumping `@vercel/cli-config` / `@vercel/oidc` alone: same exact pin at
+  their latest versions (0.3.3 / 4.0.3), so no fix.
+- `npm audit fix --force`: would downgrade `@vercel/functions` to 3.6.1, a
+  breaking change, to work around the advisory.
+
+**Verification.**
+- Clean `npm ci` reproduces one `zod` copy at 4.6.7; `audit:prod` passes.
+  The full `npm audit` still reports 2 pre-existing dev-only findings
+  (`dompurify` via `monaco-editor`); they are out of scope here and do not
+  affect `audit:prod`.
+- `test:unit`: 2696 pass, 0 fail. `test:coverage`: lines 98.27%,
+  branches 94%, functions 99.48% (thresholds 97/92/99). All `check:*`
+  scripts and `validate:catalog` pass.
+- Runtime: `@vercel/sandbox` and `@vercel/cli-config` load on zod 4.6.7;
+  `cli-config`'s `parseGlobalConfig` / `parseAuthConfig` accept valid
+  configs and reject an invalid one, and a constrained-collection schema
+  still rejects oversized input. The live execution smoke was not run: it
+  needs a `VERCEL_OIDC_TOKEN` and creates real sandboxes that count against
+  the plan allowance (it never runs in CI); the execution unit tests
+  (28 tests) pass.
+
+**Removal.** Drop the override once an upstream `@vercel/cli-config`
+release requires `zod >=4.6.6`, then re-run `npm install` and confirm the
+nested copy does not return. Until then, removing the override
+reintroduces the vulnerable 4.1.11 copy and fails `audit:prod`.
+
+**Recovery.** Revert the commit; the nested vulnerable copy returns and
+`audit:prod` fails again. No code, flag, migration or production change.
+
+## ID-89: State the backup retention for deleted data, and re-apply post-restore-point deletions after a restore
+
+Status: implemented; no flag, no migration. Issue #366, follow-up to #347
+and ID-81.
+
+**Context.** `docs/ACCOUNT_DELETION.md` only said backups keep "their own
+retention windows", and nothing defined what a restore does to deletions
+made after the restore point. A point-in-time restore to T brings back
+the database as of T — including personal data deleted after T — so
+without a re-application step a restore would silently resurrect it.
+Issue #366 also asked to verify the provider plan rather than assume it:
+it said "Turso Starter currently restores up to 1 day back".
+
+**Verification (retention).** Fetched the live Turso pricing page
+(`https://turso.tech/pricing`) on 2026-10-25: the plans are Free,
+Developer, Scaler, Pro and Enterprise — there is **no "Starter" plan** on
+the current page — with Point-In-Time Restore of 1 day (Free), 10 days
+(Developer), 30 days (Scaler) and 90 days (Pro, Enterprise). The earlier
+decision-log note calling the 1-day window "Starter" (ID-83's 22 October
+2026 update) was stale plan naming; the 1-day bound itself still holds
+because production is on the Free tier, per
+`docs/PRODUCTION_BOOTSTRAP_GUIDE.md` §3.4. The owner should confirm the
+organisation's tier in the Turso dashboard if that ever becomes doubtful:
+the documented bound is conditional on the tier, and a move to a paid
+tier lengthens the window (10/30/90 days) and requires a `privacy.html`
+update first. The GitHub rehearsal/monitor/watchdog artifacts (30 days)
+and migration result (90 days) were checked: they hold only counts,
+checksums and digests, never personal data, so they do not extend
+personal-data retention. Disposable restore databases have zero
+retention. `privacy.html` now says exactly this: backups hold deleted
+information for up to 1 day, and a restore re-applies deletions made
+after the backup point before the restored data goes live, where the
+source database survives. If the source database itself is destroyed,
+that re-application is not yet possible.
+
+**Decision.**
+- *Retention, stated exactly:* deleted personal data can remain in the
+  provider's point-in-time backups for up to 1 day after deletion on the
+  current plan. Documented in `docs/ACCOUNT_DELETION.md` (new "Backups
+  and restores" section), `docs/TURSO_BACKUP_RESTORE_REHEARSAL.md`,
+  `docs/PRODUCTION_BOOTSTRAP_GUIDE.md` §3.4 (now lists all five tiers)
+  and `privacy.html` (Backups bullet).
+- *Deletion ledger, outside the restored database:* one entry per
+  tombstoned account — `{account_id, deleted_at, created_at}` — and
+  nothing else. `deleted_at` is the earliest `account.deleted` audit
+  event (null when no audit row exists, always treated as due);
+  `created_at` separates "created after the restore point, correctly
+  absent" from "should be in the restored database, fail closed". The
+  ledger is built from the still-live source database and kept only in
+  an operator-held, mode-`0600` file: never committed, never uploaded
+  as an artifact, destroyed after the verified cutover.
+- *Re-application:* `reapplyAccountDeletion` in `api/_account-deletion.js`
+  runs the same scrubbing statements as a self-service deletion, keeping
+  the original deletion time as the audit instant. It deliberately
+  skips the recent-auth proof and the last-owner/last-admin gates (the
+  original deletion already passed them; the restored database holds
+  stale membership/ownership state), and it is not behind
+  `ACCOUNT_DELETION_ENABLED` (a restore must re-apply deletions made
+  while the flag was on even if it is off at restore time).
+  `verifyDeletionLedger` is the cutover gate: any due entry not
+  tombstoned blocks the cutover. `scripts/deletion-ledger.mjs` exposes
+  `export` / `reapply` / `verify` with counts-only output. The runbook
+  procedure (export from source, re-apply to the restored database with
+  the *requested* PITR timestamp as the restore point, verify, cut over,
+  destroy the ledger) is in
+  `docs/TURSO_BACKUP_RESTORE_REHEARSAL.md`.
+- *No schema migration.* Every column read already exists. Per the
+  task's constraint and the ID-87 additive-release order, a migration
+  would have needed the owner cutover; none was needed, so none was
+  built. The rehearsal needs no workflow change: the weekly rehearsal
+  deletes no real account, so re-application is covered by unit tests on
+  real migrated SQLite (a pre-deletion database standing in for the
+  restore) rather than by the live drill.
+
+**Alternatives considered and rejected.**
+- A ledger table inside the database: rolls back with the restore it is
+  meant to repair — useless.
+- Ledger entries in a GitHub artifact: keeps account ids on a 30/90-day
+  retention schedule for no benefit, and widens exposure.
+- Operator hand-written SQL for re-application: the deletion is ~35
+  statements; hand-running it under incident pressure is error-prone.
+  The tested function plus CLI is the safe form of the same procedure.
+- A durable off-database ledger written at deletion time (survives the
+  source database itself being destroyed): the correct fix for the
+  deleted-source case, but new infrastructure beyond this issue. Filed
+  as #383; until it lands, a restore from a destroyed source cannot
+  re-apply deletions, and that residual risk is documented in both the
+  deletion doc and the runbook.
+
+**Verification.**
+- `tests/unit/account-deletion-restore-reapplication.test.mjs`
+  (9 tests): ledger building (earliest audit time, null time, live
+  accounts excluded), parsing/filtering (including the at-exactly-the-
+  restore-point boundary), re-application tombstoning and scrubbing a
+  live account with the original audit time, idempotent retry,
+  skip/never-existed/missing outcomes, fail-closed demo account, the
+  last-owner bypass, verification catching a missing entry, and an
+  end-to-end real deletion → ledger → re-application onto the
+  pre-deletion database.
+- `tests/unit/deletion-ledger-cli.test.mjs` (4 tests): export
+  (versioned, mode `0600`, counts-only output), reapply + verify
+  driving a restore to cutover-ready, fail-closed stop on a missing
+  entry, and typed usage/config/file errors.
+- `test:unit`, `test:coverage` and all `check:*` scripts pass (numbers
+  in the PR description).
+
+**Rollout and recovery.** Merge only; no flag, no migration, no
+production change, no workflow change. The new code runs only when the
+operator invokes the ledger CLI during a restore. Recovery is a revert:
+the runbook procedure and `privacy.html` wording revert with it; no
+database state depends on the new code.
+
+**Follow-ups filed.** #383: a durable off-database deletion ledger written
+at deletion time, so a restore from a destroyed source database can still
+re-apply deletions. #384: owner confirmation of the organisation's Turso
+plan tier in the dashboard.
+
+*Review fixes, 25 October 2026:* the PR was merged with `origin/main`
+(#378's byte-level `tamperCursor` kept), the ledger file is now created
+exclusively with `openSync(out, 'wx', 0o600)` plus a defensive `fchmod`
+(refusing to overwrite or follow a symlink), `--out` inside the
+repository is rejected and `deletion-ledger*.json` is gitignored,
+`export` accepts `--restore-point` as minimisation only (reapply-time
+filtering remains the gate), `privacy.html` qualifies the backup bullet
+to re-application only where the source database survives, the CLI
+validates `JWT_SECRET` presence up front with a typed config error
+(`export`/`reapply`; `verify` needs none) and the runbook states it must
+be the secret in effect at deletion time, ID-83 carries a dated
+correction that "Starter" is not a current Turso plan name, and the dead
+`point` variable in `verifyDeletionLedger` is removed. #383 is not
+landed by this PR.
+
+## ID-90: Let a signed-in member download their own data as one JSON archive, behind a flag
+
+Status: implemented; behind `DATA_EXPORT_ENABLED` (off by default), no migration. Issue #365.
+
+**Context.** Account deletion shipped (#347, ID-81) with an inventory of
+every table holding a member's personal data
+(`ACCOUNT_DATA_INVENTORY` in `api/_account-deletion.js`), but members had
+no way to get a copy of their own data. The issue requires a
+machine-readable (JSON) export of the member's own data, recent
+re-authentication, rate limits, a size bound, partner privacy, its own
+feature flag, and a Privacy Policy description. Product feedback (#353)
+is being implemented in parallel and has not landed, so the export must
+not block on it.
+
+**Decision.**
+- `GET /api/auth/account/export` in the existing `api/auth.js` function
+  (via a `vercel.json` rewrite), so no new serverless function is added.
+  It returns one JSON archive (`randori-circle-data-export.json`,
+  `version: 1`) of the requesting member's own data: profile, memberships,
+  circles the member created but holds no membership for, availability,
+  pairings, schedules, session completions and controls, the member's own
+  messages and code runs, notification preferences, authored custom
+  questions, sent/accepted/received invitations, the member's own invite
+  requests, AI sessions/feedback/consent/usage/reservations, and the
+  member's own product feedback. `excluded_tables` lists every inventory
+  table that is not exported, with the reason, `counts` gives per-section
+  exported row counts, and `truncated_sections` names every section that
+  hit its per-section cap, so a capped archive discloses what it left out.
+- Partner privacy: partners appear by display name only (the history-view
+  rule) — no partner ids, emails, phones, hashes or tokens anywhere in the
+  archive. Stored schedule proposals are projected to
+  `{instant, proposed_by_me}` so the raw numeric proposer id never reaches
+  the archive. Only the member's own messages are exported, never a partner's.
+  Shared pair workspaces (`pair_code_documents`, `pair_room_snapshots`)
+  are not exported, because they hold the partner's contributions too.
+  Secrets (password/token hashes, Google subjects, sealed outbox envelopes,
+  session hashes), ephemeral records, audit trails and operational logs are
+  not exported.
+- Every account-deletion inventory table is accounted for in
+  `DATA_EXPORT_TABLE_COVERAGE` (`api/_data-export.js`). A future inventory
+  table with no explicit entry is excluded at runtime ("not yet reviewed"),
+  and `tests/unit/data-export.test.mjs` asserts no entry carries that
+  fallback reason and that the coverage list deep-equals a hard-coded list
+  of the 45 expected tables, so adding a table to the inventory, removing
+  one, or deleting an explicit entry all fail the test until an explicit
+  entry is written, and a new inventory table can never leak through the
+  export.
+- Recent authentication (a sign-in from the last 10 minutes) is required
+  and is checked before the rate limit, so a stale proof does not burn
+  export quota. Rate limit: 5 exports per account and 20 per IP per
+  15 minutes (429 over the limit). In the UI the member confirms through
+  Account security (or signs out and signs in again) and retries; this
+  module does not duplicate the identity-confirm dialog.
+- Size bound: per-section caps (`DATA_EXPORT_SECTION_LIMITS`, 100–2,000
+  rows by section: memberships, invite requests and created circles 100,
+  AI usage 120, AI sessions 200, messages 2,000, code runs 1,000, most
+  others 500–1,000;
+  see `docs/DATA_EXPORT.md` for the full list) and a 5 MB whole-archive
+  bound (`DATA_EXPORT_MAX_BYTES` = 5,000,000 bytes). A section that hits
+  its cap is listed in `truncated_sections`, so capping is disclosed, not
+  silent. Over the whole-archive bound the endpoint answers 413
+  `export_too_large` instead of a partial or oversized response; it does
+  not chunk.
+- Feedback (#353): at request time the export probes for `feedback_items`
+  / `feedback_votes` (and their author/voter columns, via `PRAGMA
+  table_info`) and includes the member's own rows when they exist;
+  otherwise it reports `feedback.included: false` and skips them cleanly.
+  Feedback events (audit) are never exported. A follow-up issue (#385) tracks
+  confirming the #353 column names and inventory entry once #353 lands.
+- `privacy.html` describes the download: what it contains (including
+  session controls, notification preferences, AI feedback/usage/
+  reservations, received invitations and created circles), what it leaves
+  out, the recent-sign-in requirement, the 5-per-15-minutes limit, the
+  5 MB bound, and the per-section caps with `truncated_sections`
+  disclosure. See `docs/DATA_EXPORT.md`.
+
+**Alternatives considered and rejected.**
+- A new serverless function for the export: the Hobby function limit is
+  the reason #353 routes through an existing function, and `api/auth.js`
+  already owns the session, recent-auth and rate-limit helpers the export
+  needs.
+- Exporting the partner's messages / the joint pair workspace so the
+  archive matches the room transcript: those contain the partner's data,
+  and the issue scopes the export to the member's own messages.
+- Truncating an oversized archive silently, or chunking it: a silent
+  truncation would hand the member an incomplete copy without saying so,
+  and chunking adds pagination state for a 5 MB bound no real archive
+  approaches. Per-section caps are disclosed via `truncated_sections`
+  instead, and 413 with a contact path is explicit and fail-closed for
+  the whole-archive bound.
+
+**Verification.**
+- `tests/unit/data-export.test.mjs` (builder on a migrated database:
+  inventory coverage against a hard-coded 45-table list, partner privacy
+  including a modern partner schedule proposal, received invitations and
+  created circles, feedback absent/present, size bound, section caps,
+  `truncated_sections` disclosure), `tests/unit/data-export-api.test.mjs` (route:
+  flag off 404, 401, 403 without recent auth, rate-limit 429, 413, the
+  `vercel.json` rewrite, the capability),
+  `tests/unit/data-export-ui.test.mjs` (Edit-profile section), and the
+  golden-path e2e `tests/e2e/golden-data-export-real-runtime.spec.ts`
+  (golden-paths row 25). The e2e spec uses the same `expectAccessible`
+  helper pattern as the account-deletion golden spec; that helper's fix
+  belongs to #390, which owns it. This PR also corrects the decision-log
+  entry's ID: #386 has since merged as ID-89, and #389 also claims
+  ID-89, so this entry is ID-90, the next free ID.
+
+**Removal.** Unset `DATA_EXPORT_ENABLED` (or set `false`) and redeploy:
+the endpoint answers 404, the capability disappears, and Edit profile
+never downloads the script. Nothing is stored by the export, so removal
+is fully reversible.
+
+## ID-91: Product feedback — shared platform for bug reports, feature requests and product feedback (data model + API)
+
+Status: implemented; flag `FEEDBACK_ENABLED` default off, migration v22 additive. Issue #353 (foundation; the triage UI and member form are separate follow-ups).
+
+**Context.** Members had no in-app way to report a bug, request a feature, or
+send product feedback to the people running Randori, except the public issue
+tracker (which must not receive personal data). The foundation has to land
+first: one server-side store and API for all three kinds, behind the
+zero-downtime additive release order (ID-87), with the same abuse, privacy
+and lifecycle guarantees as the invite-request intake.
+
+**Decision.**
+- **Data model (migration v22, `compatibility: 'additive'`).**
+  `feedback_items` (id uuid, circle_id, author_user_id, kind, title ≤120,
+  body ≤4000, status, visibility, diagnostics_json, idempotency_key,
+  created_at, updated_at, closed_at), `feedback_votes` (one upvote,
+  `value=1`, per member per item, unique `feedback_id, user_id`) and
+  `feedback_events` (append-only audit: `feedback.created`,
+  `feedback.status_changed`, actor, small detail object). CHECKs enforce the
+  limits, bug-only diagnostics (a JSON object ≤4096 bytes), per-author
+  idempotency-key uniqueness, and the closed/closed_at invariant (closed
+  items carry `closed_at`; open items never do). Visibility is always
+  `'private'` for now; the column exists so the triage UI can widen it
+  later without a migration. No status-change endpoint ships in this
+  change, so items stay `open` until triage lands.
+- **API, through the existing `api/data.js` function** (Vercel rewrites
+  `/api/feedback` → `endpoint=feedback`, `/api/feedback/mine` →
+  `endpoint=feedback-mine`): `POST /api/feedback` (201, or 200 on an
+  idempotent replay) and `GET /api/feedback/mine` (newest first, cursor
+  pages, the caller's items in the active circle only). Reads and writes authorize against the
+  session and the active circle (403 without a membership, 409
+  `circle_selection_required` when several circles are active and none is
+  selected). With the flag off, or while v22 is still pending, both
+  endpoints answer `404 {"error":"not found"}` and no capability is
+  advertised anywhere.
+- **Abuse limits.** 10 submissions per rolling hour and 30 per rolling day,
+  enforced separately per member and per client address (IPv6 keyed by its
+  /64) in the shared `auth_rate_limits` table with keyed hashes; the first
+  exhausted dimension stops. Invalid input never spends budget. The
+  route looks up the idempotency key before the limiter, so an exact
+  replay (or a same-key conflict) never spends budget either; two
+  simultaneous same-key POSTs that collide on the unique index re-read
+  the winner's row and replay it (or 409) instead of failing with 503.
+  A retry
+  with the same client-supplied idempotency key and the same (redacted)
+  payload replays the stored item; the same key with different content is
+  a 409. Idempotency is per author.
+- **Privacy.** Title, body and diagnostics pass through the shared
+  server-side redaction (`api/_client-log-policy.js`) before storage:
+  emails, tokens, secrets, JWTs, credentials, IPs and user agents are
+  replaced. Diagnostics keys must be plain field names — an email, IP,
+  JWT or token as a key is rejected at validation, and storage collapses
+  an unsafe key to `[redacted]` instead of storing it verbatim. No raw IP or user agent is stored in any feedback table
+  (ID-82). The admin email (below) carries only kind, redacted title and a
+  triage link — never the body.
+- **Retention.** Owner decision (2026-10-22): closed items are kept for 12
+  months, then deleted; open items are kept until they are closed. The
+  bounded sweep (500 rows per batch, at most 10 batches) runs inside the
+  weekly `/api/cron/weekly` sweep, regardless of the flag, and deletes
+  events, then votes, then items, so it never depends on foreign-key
+  enforcement on the calling connection. It never blocks pairing
+  publication.
+- **Account deletion (ID-81).** Deleting a member deletes their items,
+  the votes they cast, and the events on their items; events they acted in
+  keep the event with the actor cleared; queued `feedback.submitted`
+  notifications about their submissions are suppressed and lose their
+  title. The deletion probes the feedback tables directly
+  (`SELECT … LIMIT 0`) and treats a missing table as not installed, so
+  it works on a v21 database too. The inventory test
+  covers the new tables.
+- **Data export (#385, confirmed on PR #389).** The member data export
+  (ID-90) carries explicit coverage for all three feedback tables:
+  `feedback_items` and `feedback_votes` are exported through the
+  `feedback` section (own items; only the votes the member cast),
+  `feedback_events` is excluded as an append-only audit trail (same
+  class as the other excluded audit tables — an event can describe
+  another member's item or an admin's triage action). The landed v22
+  column names check out against the export's `PRAGMA` discovery
+  (`author_user_id` on items, `user_id` / `feedback_id` on votes), the
+  item's `idempotency_key` is not exported (dedup token, not user
+  content), and the export test seeds the real migrated tables instead
+  of hand-built ones. `privacy.html` needed no change: it already
+  says the download includes the member's own product feedback.
+- **Notifications.** Outbox event `feedback.submitted` v1, one event per
+  admin recipient (every `is_admin=1` non-demo account plus every account
+  in `ADMIN_EMAILS`), idempotency key
+  `feedback-submitted/v1/<feedback_id>/<admin_id>`. Delivery re-reads
+  state and suppresses when the item is gone, the recipient is no longer
+  an admin, or they have email notifications switched off. While the
+  flag is off the handler suppresses with `FEEDBACK_DISABLED`, so queued
+  rows drain instead of aging into a backlog alert.
+- **Release order.** Merge with production at v21 (ready, diagnostics
+  *Degraded* with "pending additive migration v22"), run the protected
+  rehearsal → status → apply v22 cutover as soon as it is ready (owner
+  decision, 2026-10-22), then turn `FEEDBACK_ENABLED` on. Roll back by
+  turning the flag off; PITR only if the tables themselves are the
+  problem.
+
+**Alternatives.** A separate serverless function for feedback (rejected:
+the Vercel Hobby function limit; the existing `api/data.js` function
+carries it). Storing the full body in the admin email (rejected: the body
+may contain personal data). A per-item triage view in this change
+(rejected: the UI issues depend on this foundation and are tracked
+separately). Votes with downvotes (rejected: the feature-request vote is
+an upvote; a richer vote is a later decision).
+
+**Tests.** On real migrated SQLite: v22 is additive, empty, indexed and
+exact after v21; code at v22 is ready on a v21 database while the feature
+capability stays off; CHECK/UNIQUE/FK constraints for votes, idempotency,
+diagnostics and closed dating; redaction of hostile input; rate limits on
+all four dimensions; replay vs conflict; `/mine` pagination and author
+isolation; retention of only old closed items; notification delivery and
+all suppression paths; route-level flag/auth/circle/rate-limit/schema-
+pending behaviour; account deletion erasing feedback rows and scrubbing
+queued notifications. The data-export tests confirm the #385 wiring
+against the real v22 tables (own items/votes, events never exported,
+48-table coverage). Coverage gate holds; the new modules are covered
+by these tests.
+
+**Rollout.** Merge with `FEEDBACK_ENABLED` off (default) and production at
+v21. The owner runs the protected cutover for v22, then turns the flag
+on. Reverting the commit restores the pre-feedback endpoints; rows
+already stored stay until retention or account deletion removes them.
+
+**Recovery.** Turn `FEEDBACK_ENABLED` off: the endpoints return 404
+again and nothing touches the new tables. No schema change is needed.
+
+## ID-92: Force dompurify to `^3.4.17` via npm overrides to clear the dev-only audit findings (#382)
+
+**Context.** A fresh full `npm audit` (dev included) showed 2 findings, both
+for `dompurify` via `monaco-editor`: `dompurify` critical (8 advisories,
+worst GHSA-cg2g-xh64-v4q7, range `<=3.4.16`) and `monaco-editor` moderate
+(range `0.54.0-dev-20250909 - 0.56.0`). The chain is
+`y-monaco@0.1.6` -> peer `monaco-editor@0.56.0` -> `dompurify@3.4.8`
+(exact pin). `npm run audit:prod` was already clean (0 vulnerabilities)
+and stays clean.
+
+**Decision.**
+- `package.json` gains `"overrides": { "dompurify": "^3.4.17" }` alongside
+  the existing zod override (ID-88). A clean `npm ci` now installs exactly
+  one `dompurify` copy, 3.4.17, and the full `npm audit` reports
+  `found 0 vulnerabilities`.
+- The override is not scoped to dev — npm overrides cannot be — but its
+  effective scope is dev-only: `dompurify` appears nowhere in the
+  production tree. The only consumer is dev-only `monaco-editor`
+  (a `y-monaco` peer dependency), and no production dependency depends on
+  `dompurify` (`npm ls dompurify` shows only the
+  `y-monaco -> monaco-editor -> dompurify` chain).
+- The audit itself is not weakened: no audit-level change, no `--force`
+  bypass, no ignored advisory, no downgrade.
+- The finding was never exploitable in this repo even before the fix:
+  the installed `monaco-editor` package is never bundled or executed.
+  Runtime Monaco loads from CDN 0.45.0 in `index.html`; the build aliases
+  the one imported `monaco-editor` entry point to
+  `assets/monaco-api-shim.js` (`check:crdt` verifies the bundle), and the
+  checked-in `assets/crdt-editor.js` contains zero `dompurify` references.
+  The installed copy existed only to satisfy `y-monaco`'s peer dependency
+  at bundle time.
+
+**Alternatives considered and rejected.**
+- Bumping `y-monaco`: 0.1.6 is still the latest release, so there is
+  nothing to bump to.
+- Bumping `monaco-editor` 0.56.0 -> 0.57.0 (latest): 0.57.0 still pins
+  `dompurify 3.4.15` (checked with `npm view`), which is still in the
+  vulnerable `<=3.4.16` range — an unrelated bump that does not fix the
+  advisory, so it was not taken.
+- Adding `dompurify` as a direct devDependency: the direct copy would
+  satisfy the top level, but npm would still install the nested
+  `monaco-editor`-pinned 3.4.8 copy, leaving the audit finding in place.
+  Only the override forces the single pinned copy up.
+
+**Verification.**
+- Fresh `npm audit` before: 2 findings (1 critical, 1 moderate).
+  After a clean `npm ci`: 0 findings; `audit:prod` still 0.
+- `test:unit`: 2838 pass, 0 fail (includes `crdt-bundle` and
+  `crdt-editor-hydration-lock`). `test:coverage`: lines 98.32%,
+  branches 93.72%, functions 99.51% (thresholds 97/92/99). All `check:*`
+  scripts and `validate:catalog` pass; `check:crdt` confirms the bundle
+  is unchanged by the override.
+
+**Removal.** Drop the override once an upstream `monaco-editor` release
+requires `dompurify >=3.4.17`, then re-run `npm install` and confirm the
+3.4.8 pin does not return. Until then, removing the override
+reintroduces the vulnerable 3.4.8 copy and fails the full audit.
+
+**Recovery.** Revert the commit; the vulnerable copy returns and the full
+audit reports 2 findings again. No code, flag, migration or production
+change.
+

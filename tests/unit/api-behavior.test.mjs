@@ -245,6 +245,8 @@ function authPayload(req) {
   if (identity === 'admin') return { id: 1, email: 'admin@example.test', name: 'Admin', is_admin: true, sessionHash };
   if (identity === 'demo') return { id: 3, email: 'demo@randori.demo', name: 'Demo', is_demo: true, sessionHash };
   if (identity === 'user') return { id: 2, email: 'user@example.test', name: 'User', sessionHash };
+  // A verified session whose subject is not a positive integer id.
+  if (identity === 'malformed-id') return { id: 0, email: 'malformed@example.test', name: 'Malformed', sessionHash };
   return null;
 }
 
@@ -630,7 +632,7 @@ test('ordinary legacy data routes fail closed before writes when readiness is un
     {endpoint:'profile',url:'/api/profile',headers:{'x-test-auth':'user'},error:'profile unavailable'},
     {endpoint:'circle',url:'/api/circle',headers:{'x-test-auth':'user'},error:'circle unavailable'},
     {endpoint:'history',url:'/api/history',headers:{'x-test-auth':'user'},error:'history unavailable'},
-    {endpoint:'stats',url:'/api/stats',headers:{},error:'stats unavailable'},
+    {endpoint:'stats',url:'/api/stats',headers:{'x-test-auth':'user'},error:'stats unavailable'},
     {endpoint:'logs',url:'/api/logs',method:'POST',headers:{'x-test-auth':'user'},body:{message:'test'},error:'logging unavailable'},
     {endpoint:'init',url:'/api/init',method:'POST',headers:{'x-test-auth':'admin'},error:'data unavailable'},
   ];
@@ -1231,7 +1233,7 @@ test('stats derives the next run label from the configured cycle timezone',async
   const now='2026-09-19T12:00:00.000Z';
   const expected=resolvePairingCycle({now,timeZone:'Pacific/Auckland',state:'upcoming'});
   const result=await withFixedNow(now,()=>invoke(dataHandler,{
-    url:'/api/stats',query:{endpoint:'stats'},
+    url:'/api/stats',query:{endpoint:'stats'},headers:{'x-test-auth':'user'},
   }));
   assert.equal(result.status,200);
   assert.deepEqual(result.body.next_cycle,expected);
@@ -1239,6 +1241,39 @@ test('stats derives the next run label from the configured cycle timezone',async
   assert.match(result.body.next_shuffle_label,/Pacific\/Auckland$/);
   assert.doesNotMatch(result.body.next_shuffle_label,/London|BST/);
   assert.equal('next_shuffle_bst' in result.body,false);
+});
+
+test('stats refuses signed-out visitors before any database read and serves circle totals only to members (#333)',async()=>{
+  executeHandler=sql=>{
+    if(sql.includes('COUNT(*) as c FROM auth_accounts')) return rows([{c:4}]);
+    if(sql.includes('WITH completion_counts AS')) return rows([{c:3}]);
+    return rows();
+  };
+  for(const request of [
+    {url:'/api/stats',query:{endpoint:'stats'},headers:{}},
+    {url:'/api/stats?_=1234',query:{},headers:{}},
+    {url:'/api/data?endpoint=stats',query:{endpoint:'stats'},headers:{'x-test-auth':'malformed-id'}},
+  ]){
+    getClientCalls=0;
+    executed.length=0;
+    const refused=await invoke(dataHandler,request);
+    assert.equal(refused.status,401,request.url);
+    assert.deepEqual(refused.body,{error:'authentication required'},request.url);
+    assert.equal(refused.headers['cache-control'],'private, no-store',request.url);
+    assert.equal(getClientCalls,0,`${request.url} must not open the database`);
+    assert.equal(executed.length,0,`${request.url} must not read any table`);
+  }
+
+  const member=await invoke(dataHandler,{url:'/api/stats',query:{endpoint:'stats'},headers:{'x-test-auth':'user'}});
+  assert.equal(member.status,200);
+  assert.equal(member.headers['cache-control'],'private, no-store');
+  assert.equal(member.body.total_users,4);
+  assert.equal(member.body.total_sessions,3);
+  assert.equal(member.body.your_sessions,3);
+  assert.equal(member.body.your_pairings,0);
+
+  const post=await invoke(dataHandler,{method:'POST',url:'/api/stats',query:{endpoint:'stats'},headers:{}});
+  assert.equal(post.status,405);
 });
 
 test('database readiness failures are generic, private, and never logged through mutating health paths',async()=>{
@@ -2041,8 +2076,13 @@ test('current pairing reads reject revoked members and incomplete publications w
       url:`/api/${endpoint}`,query:{endpoint},headers:{'x-test-auth':'user'},
     });
     assert.equal(result.status,503);
-    assert.equal(result.body.error,'pairing unavailable');
-    assert.doesNotMatch(JSON.stringify(result.body),/99/);
+    // Exact shape, not a bare-`99` substring match: the fixtures above plant
+    // user_id 99 outside the circle, and any leak of that user (or any other
+    // extra field, e.g. a future numeric field containing 99) fails this.
+    // The two endpoints differ: weeks wraps the error with ok:false.
+    assert.deepEqual(result.body,endpoint==='weeks'
+      ?{ok:false,error:'pairing unavailable'}
+      :{error:'pairing unavailable'});
   }
 });
 
@@ -3735,7 +3775,7 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
   assert.equal(outboxWorkerCalls.length,1);
   assert.deepEqual(outboxWorkerCalls[0].eventTypes,[
     'pairing.email.requested','schedule.email.requested','invitation.email.requested',
-    'reminder.email.requested',
+    'feedback.submitted','reminder.email.requested',
   ]);
   assert.equal(outboxWorkerCalls[0].maxClaims,8);
   assert.equal(outboxWorkerCalls[0].finalizationReserveMs,5_000);
