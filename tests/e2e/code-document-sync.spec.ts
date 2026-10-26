@@ -238,6 +238,7 @@ test('Run waits for acknowledgement and a stale document race reconciles without
     // Capture A's acknowledged version, advance the server through B, then
     // force A's next execute request to carry the stale token.
     const staleVersion=await pages[0].evaluate(()=>window._randori_crdt?.documentVersion);
+    expect(staleVersion).toMatch(/^[a-f0-9]{64}$/);
     // B must have converged on A's acknowledged edit before typing at the end:
     // typing at a stale offset while ' queued' arrives interleaves the two
     // concurrent inserts (valid CRDT merge, but ' peer' is then not contiguous).
@@ -245,7 +246,21 @@ test('Run waits for acknowledgement and a stale document race reconciles without
     await expect.poll(()=>editorValue(pages[1]),{timeout:12_000}).toBe(store.code());
     await insertAt(pages[1],(await editorValue(pages[1])).length,' peer');
     await expect.poll(()=>store.code(),{timeout:12_000}).toContain('peer');
-    await pages[0].route('**/api/code-document?**',route=>route.abort());
+    // Wait for A to settle on the post-peer document before forcing the
+    // stale token: A's next poll converges its editor and its version, so
+    // the captured token is provably stale, and Run is enabled because the
+    // document is synced — not because a poll was suppressed.
+    await expect.poll(()=>editorValue(pages[0]),{timeout:12_000}).toBe(store.code());
+    await expect(pages[0].locator('#codeSyncStatus')).toHaveText('synced',{timeout:12_000});
+    const currentVersion=await pages[0].evaluate(()=>window._randori_crdt?.documentVersion);
+    expect(currentVersion).toMatch(/^[a-f0-9]{64}$/);
+    expect(currentVersion).not.toBe(staleVersion);
+    // Force the stale token by stubbing flush/documentVersion only. Do NOT
+    // abort the /api/code-document route: that also aborts A's background
+    // poll GETs, and a failed poll flips the sync status to retry, which
+    // disables #runBtn (isAcknowledged requires status 'synced') — so a
+    // poll tick landing between the abort and the click made the click
+    // time out. Background sync must keep succeeding, as in production.
     await pages[0].evaluate(version=>{
       const crdt=window._randori_crdt;
       if(!crdt) throw new Error('CRDT API unavailable');
