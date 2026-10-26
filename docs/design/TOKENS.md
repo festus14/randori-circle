@@ -293,11 +293,11 @@ proposals, adopted as-is.
 
 | Slice | Threshold | At #400 landing |
 | --- | ---: | ---: |
-| `index.html` | ≤ 1,000,000 | 977,009 |
+| `index.html` | ≤ 1,000,000 | 977,018 |
 | CSS initial (inline `<style>` + stylesheets `index.html` links) | ≤ 130,000 | 127,647 |
 | CSS total (inline + all `assets/*.css`) | ≤ 135,000 | 133,836 |
-| JS initial (inline `<script>` + `<script src>` assets) | ≤ 1,000,000 | 964,897 |
-| JS total (inline + all `assets/*.js`) | ≤ 1,450,000 | 1,409,397 |
+| JS initial (inline `<script>` + `<script src>` assets) | ≤ 1,000,000 | 964,906 |
+| JS total (inline + all `assets/*.js`) | ≤ 1,450,000 | 1,409,406 |
 
 CSS total is the tightest slice (1,164 bytes of headroom at
 landing): the alias migration itself added bytes, because
