@@ -14328,9 +14328,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return origFetch.apply(this, arguments);
   };
 
-  // Sentry / Better Stack integration note
+  // Sentry integration note
   // To add Sentry: set <script> with DSN env via window.SENTRY_DSN, then Sentry.init({dsn: SENTRY_DSN, beforeSend(event){ _randori_log && _randori_log.error('sentry', event.message) }})
-  // To add Better Stack (Logtail): set window.LOGTAIL_TOKEN, then POST to https://in.logtail.com in _randori_log.flush
 
 })();
 </script>
