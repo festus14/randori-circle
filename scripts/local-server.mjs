@@ -676,6 +676,7 @@ function apiRoute(pathname,query){
     ['/api/auth/identities/google','identity-google-unlink'],
     ['/api/auth/me','me'],['/api/auth/logout-all','logout-all'],['/api/auth/logout','logout'],
     ['/api/auth/account/delete','account-delete'],
+    ['/api/auth/account/export','account-export'],
     ['/api/auth/google/start','google-start'],['/api/auth/google/reauth/start','google-reauth-start'],
     ['/api/auth/google/link/start','google-link-start'],
     ['/api/auth/google/callback','google-callback'],
