@@ -449,3 +449,60 @@ test('route: feedback readiness failure is 503',async()=>{
     clientOverride=null;
   }
 });
+
+test('route: a conflicting row appearing after the replay lookup is still 409 from the submit path',async()=>{
+  enableFeedback();
+  let planted=false;
+  const racing={execute:async(statement,...rest)=>{
+    const sql=typeof statement==='string'?statement:statement?.sql||'';
+    if(sql.includes('INSERT INTO auth_rate_limits')&&!planted){
+      planted=true;
+      const now=Math.floor(Date.now()/1000);
+      await realDb.execute({sql:`INSERT INTO feedback_items
+          (id,circle_id,author_user_id,kind,title,body,status,visibility,diagnostics_json,
+           idempotency_key,created_at,updated_at,closed_at)
+          VALUES (?,?,?,?,?,?,'open','private',NULL,?,?,?,NULL)`,
+        args:['44444444-4444-4444-8444-444444444444',1,2,'feedback','Already stored','Planted by a concurrent request.','route-submit-race-12345678',now,now]});
+    }
+    return realDb.execute(statement,...rest);
+  },
+  batch:(...args)=>realDb.batch(...args),
+  transaction:(...args)=>realDb.transaction(...args)};
+  clientOverride=racing;
+  try{
+    const result=await invoke(dataHandler,{method:'POST',url:'/api/feedback',auth:'member',
+      body:feedbackBody({idempotency_key:'route-submit-race-12345678'})});
+    assert.equal(result.status,409,JSON.stringify(result.body));
+    assert.equal(result.body.code,'feedback_idempotency_conflict');
+  }finally{
+    clientOverride=null;
+    await realDb.execute(`DELETE FROM feedback_items WHERE idempotency_key='route-submit-race-12345678'`);
+    await realDb.execute(`DELETE FROM auth_rate_limits`);
+  }
+});
+
+test('route: an insert that returns no row is 400 from the submit path',async()=>{
+  enableFeedback();
+  const failing={execute:(...args)=>realDb.execute(...args),
+    batch:(...args)=>realDb.batch(...args),
+    transaction:async(...args)=>{
+      const transaction=await realDb.transaction(...args);
+      const realExecute=transaction.execute.bind(transaction);
+      transaction.execute=async(statement,...rest)=>{
+        const sql=typeof statement==='string'?statement:statement?.sql||'';
+        if(sql.includes('INSERT INTO feedback_items')) return {rows:[]};
+        return realExecute(statement,...rest);
+      };
+      return transaction;
+    }};
+  clientOverride=failing;
+  try{
+    const result=await invoke(dataHandler,{method:'POST',url:'/api/feedback',auth:'member',
+      body:feedbackBody({idempotency_key:'route-submit-norow-12345678'})});
+    assert.equal(result.status,400,JSON.stringify(result.body));
+  }finally{
+    clientOverride=null;
+    await realDb.execute(`DELETE FROM auth_rate_limits`);
+    await realDb.execute(`DELETE FROM feedback_items WHERE idempotency_key='route-submit-norow-12345678'`);
+  }
+});

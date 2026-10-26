@@ -551,3 +551,109 @@ test('rate limits: an invalid counter state fails closed',async()=>{
   const db={execute:async()=>({rows:[{attempts:0}]})};
   await assert.rejects(consumeFeedbackRateLimits(db,{userId:2}),/invalid rate limit state/);
 });
+
+test('validation: non-string title/body, and a 65-char diagnostics key are rejected',()=>{
+  for(const [body,field] of [
+    [validInput({title:1}),'title'],
+    [validInput({body:1}),'body'],
+    [validInput({kind:'bug',diagnostics:{['a'.repeat(65)]:'x'}}),'diagnostics'],
+    [validInput({kind:'bug',diagnostics:{'a.b_c-d':'x'}}),'ok'],
+  ]){
+    const result=validateFeedbackInput(body);
+    if(field==='ok') assert.equal(result.ok,true,JSON.stringify(body));
+    else{ assert.equal(result.ok,false,JSON.stringify(body)); assert.ok(result.fields[field]); }
+  }
+});
+
+test('readiness: the cached probe is reused',async()=>{
+  const {db}=await fixture();
+  assert.equal(await ensureFeedbackReadiness(db),true);
+  assert.equal(await ensureFeedbackReadiness(db),true);
+});
+
+test('submit and replay lookup: invalid arguments fail closed',async()=>{
+  const {db}=await fixture();
+  const input=validateFeedbackInput(validInput()).value;
+  await assert.rejects(lookupFeedbackReplay(db,{circleId:0,authorUserId:2,input}),TypeError);
+  await assert.rejects(lookupFeedbackReplay(db,{circleId:1,authorUserId:2,input:null}),TypeError);
+  await assert.rejects(submitFeedback(db,{circleId:0,authorUserId:2,input}),TypeError);
+  await assert.rejects(submitFeedback(db,{circleId:1,authorUserId:2,input:null}),TypeError);
+});
+
+test('notification: configuration origins and handler construction guards',()=>{
+  assert.throws(()=>createFeedbackSubmittedHandler({}),TypeError);
+  assert.throws(()=>createFeedbackSubmittedHandler({db:{execute:async()=>({})},baseUrl:'https://randoricircle.com',
+    send:null}),TypeError);
+  assert.throws(()=>createFeedbackSubmittedHandler({db:{execute:async()=>({})},baseUrl:'not a url',
+    send:async()=>({})}),TypeError);
+  assert.throws(()=>createFeedbackSubmittedHandler({db:{execute:async()=>({})},baseUrl:'http://randoricircle.com',
+    send:async()=>({})}),TypeError);
+  assert.deepEqual(feedbackNotificationConfiguration({env:{FEEDBACK_ENABLED:'true',
+    CIRCLE_MEMBERSHIP_ENABLED:'true',NODE_ENV:'production',APP_URL:'https://randoricircle.com/',
+    RESEND_API_KEY:'re_x',RESEND_FROM:'Randori <noreply@example.test>'}}),
+  {origin:'https://randoricircle.com',localRuntime:false});
+  assert.equal(feedbackNotificationConfiguration({env:{FEEDBACK_ENABLED:'true',
+    CIRCLE_MEMBERSHIP_ENABLED:'true',NODE_ENV:'production',APP_URL:'http://randoricircle.com/',
+    RESEND_API_KEY:'re_x',RESEND_FROM:'Randori <noreply@example.test>'}}),null);
+  assert.equal(feedbackNotificationConfiguration({localRuntime:true,env:{FEEDBACK_ENABLED:'true',
+    CIRCLE_MEMBERSHIP_ENABLED:'true',NODE_ENV:'production',APP_URL:'http://localhost:3000/',
+    RESEND_API_KEY:'re_x',RESEND_FROM:'Randori <noreply@example.test>'}}),null);
+});
+
+test('notification handler: invalid payloads and an invalid recipient email fail closed',async()=>{
+  const {db}=await fixture();
+  process.env.FEEDBACK_ENABLED='true';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  const submitted=await submitFeedback(db,{circleId:1,authorUserId:2,
+    input:validateFeedbackInput(validInput({idempotency_key:'payload-key-12345678'})).value,
+    adminEmails:[],notify:false});
+  const base={feedback_id:submitted.item.id,circle_id:1,author_user_id:2,recipient_user_id:1,
+    kind:'feedback',title:'A suggestion',template_version:1};
+  const handler=createFeedbackSubmittedHandler({db,baseUrl:'https://randoricircle.com',
+    send:async()=>({providerName:'test'})});
+  const variants=[
+    {...base,feedback_id:'nope'},
+    {...base,circle_id:0},
+    {...base,author_user_id:0},
+    {...base,recipient_user_id:0},
+    {...base,kind:'idea'},
+    {...base,title:''},
+    {...base,title:'x'.repeat(121)},
+    {...base,template_version:2},
+    (({title,...rest})=>rest)(base),
+    {...base,extra:1},
+  ];
+  for(const payload of variants){
+    await assert.rejects(handler({eventVersion:1,idempotencyKey:'k',payload},{}),/Outbox delivery failed/);
+  }
+  await db.execute(`UPDATE auth_accounts SET email='not-an-email' WHERE id=1`);
+  assert.deepEqual(await handler({eventVersion:1,idempotencyKey:'k',payload:base},{}),
+    {status:'suppressed',reasonCode:'RECIPIENT_EMAIL_INVALID'});
+});
+
+test('notification handler: provider status is read from every error shape',async()=>{
+  const {db}=await fixture();
+  process.env.FEEDBACK_ENABLED='true';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  const submitted=await submitFeedback(db,{circleId:1,authorUserId:2,
+    input:validateFeedbackInput(validInput({idempotency_key:'status-shape-12345678'})).value,
+    adminEmails:[],notify:false});
+  const event={eventVersion:1,idempotencyKey:'k',payload:{
+    feedback_id:submitted.item.id,circle_id:1,author_user_id:2,recipient_user_id:1,
+    kind:'feedback',title:'A suggestion',template_version:1}};
+  const cases=[
+    [Object.assign(new Error('x'),{status:429}),'PROVIDER_RATE_LIMITED',true],
+    [Object.assign(new Error('x'),{response:{status:503}}),'PROVIDER_FAILED',true],
+    [Object.assign(new Error('x'),{error:{statusCode:400}}),'PROVIDER_REJECTED',false],
+  ];
+  for(const [thrown,code,retryable] of cases){
+    const handler=createFeedbackSubmittedHandler({db,baseUrl:'https://randoricircle.com',
+      send:async()=>{ throw thrown; }});
+    await assert.rejects(handler(event,{}),error=>error.code===code&&error.retryable===retryable);
+  }
+});
+
+test('retention: invalid arguments fail closed',async()=>{
+  await assert.rejects(purgeClosedFeedback(null),TypeError);
+  await assert.rejects(runFeedbackRetention(null),TypeError);
+});
