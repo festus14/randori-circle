@@ -48,9 +48,9 @@ Never run `npm run db:migrate` against production.
 
 ## Tell the families apart
 
-| Family | Evidence | Blocker names in code |
+| Family | Evidence | Blocker names / diagnostic signal |
 | --- | --- | --- |
-| Schema / ledger | Diagnostics ledger is `behind`, `missing`, `invalid`, or `ahead`; or a migration just merged and has not been applied yet | Ledger not complete / schema does not match the readiness manifest |
+| Schema / ledger | Diagnostics ledger is `behind`, `missing`, `invalid`, or `ahead`; or a migration just merged and has not been applied yet | Diagnostics readiness-card `category`: `ledger_behind`, `ledger_missing`, `ledger_invalid`, or `ledger_ahead` |
 | Key control | Ledger is `current`, a key-ring or key-control change just happened, and only one purpose lost its capability (e.g. Google sign-in, activation, reset, invitation mail) | Key-control readiness fails for that purpose |
 | Membership provenance | Ledger is `current`, no key change happened, and a membership event just happened — a member joined, left, was removed, or was deactivated | `closed_rollout_account_audit_invalid`, `closed_rollout_backfill_audit_invalid`, `closed_rollout_has_no_owner`, `closed_rollout_has_orphan_memberships` |
 

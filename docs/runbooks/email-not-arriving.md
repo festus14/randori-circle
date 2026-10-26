@@ -55,6 +55,7 @@ PII-free):
 | `quota_exceeded` / `rate_limited` | Resend quota or rate limit | Wait, then replay; check the Resend dashboard |
 | `invalid_from_address` | `RESEND_FROM` is malformed or not on a verified domain | Fix `RESEND_FROM` in Vercel and redeploy |
 | `invalid_recipient` | The recipient address is malformed or rejected | Confirm the address with the member; do not retry blindly |
+| `missing_required_field` | A required field was missing from the send request | Check the Resend dashboard logs for the missing field; do not replay blindly — the send request itself was malformed |
 | `idempotency_conflict` / `other` | Provider-side conflict or unclassified refusal | Check the Resend dashboard logs |
 
 Also check, in order:

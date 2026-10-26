@@ -17,8 +17,12 @@ layer is [SYSTEM_DESIGN.md](../SYSTEM_DESIGN.md) §5.5 and §9.4.
 - The independent backup watchdog runs hourly at minute 47. Its
   activation epoch is 2026-09-21 03:17 UTC, with an 8-hour scheduling
   grace (a slot is tolerated until 11:17 UTC) and a 12:47 UTC absolute
-  deadline. A current-slot run that is missing, failed, or unfinished
-  at the deadline alerts the same Monday.
+  deadline. The three alert timings differ: a current-slot run still
+  absent alerts at the first tick after grace (11:47 UTC,
+  `run_missing`); a current-slot run that fails alerts at the next
+  tick, even inside grace (`run_failed`); any current-slot run still
+  unfinished alerts at the 12:47 UTC tick. A missing, failed, or
+  unfinished drill therefore alerts the same Monday.
 - Disposable databases have zero retention: deletion and provider
   confirmation happen in the same run. **Never delete an unknown
   database by prefix alone.**
@@ -86,8 +90,9 @@ operations during it.
    endpoint and credentials.
 
 If the source database itself is destroyed, the deletion ledger
-cannot be built from it — that residual gap is follow-up work in the
-ID-89 decision entry, not something to improvise during an incident.
+cannot be built from it — that residual gap is follow-up work tracked
+in #383 (durable off-database deletion ledger, filed from the ID-89
+decision entry), not something to improvise during an incident.
 
 ## Verify
 

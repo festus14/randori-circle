@@ -31,8 +31,9 @@ flag, or a schema migration? The answer decides the rollback.
 
 1. **Turn the suspect flag off first.** This is the fastest
    rollback that needs no deploy: unset the flag (or set `false`) in
-   Vercel Production and redeploy. Feature endpoints return 404 and
-   nothing touches the new tables. This is enough for almost every
+   Vercel Production and redeploy. Feature endpoints hide/refuse
+   (404 or 503 per the flag's ENVIRONMENT.md row); writes for that
+   feature stop. This is enough for almost every
    incident. See [feature flags](feature-flags.md).
 2. **Environment variable change:** set the variable back in Vercel
    Production and redeploy. Changing an env var requires a redeploy
