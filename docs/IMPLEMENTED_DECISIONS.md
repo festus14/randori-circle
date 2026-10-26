@@ -4879,6 +4879,19 @@ and lifecycle guarantees as the invite-request intake.
   (`SELECT … LIMIT 0`) and treats a missing table as not installed, so
   it works on a v21 database too. The inventory test
   covers the new tables.
+- **Data export (#385, confirmed on PR #389).** The member data export
+  (ID-90) carries explicit coverage for all three feedback tables:
+  `feedback_items` and `feedback_votes` are exported through the
+  `feedback` section (own items; only the votes the member cast),
+  `feedback_events` is excluded as an append-only audit trail (same
+  class as the other excluded audit tables — an event can describe
+  another member's item or an admin's triage action). The landed v22
+  column names check out against the export's `PRAGMA` discovery
+  (`author_user_id` on items, `user_id` / `feedback_id` on votes), the
+  item's `idempotency_key` is not exported (dedup token, not user
+  content), and the export test seeds the real migrated tables instead
+  of hand-built ones. `privacy.html` needed no change: it already
+  says the download includes the member's own product feedback.
 - **Notifications.** Outbox event `feedback.submitted` v1, one event per
   admin recipient (every `is_admin=1` non-demo account plus every account
   in `ADMIN_EMAILS`), idempotency key
@@ -4910,7 +4923,9 @@ all four dimensions; replay vs conflict; `/mine` pagination and author
 isolation; retention of only old closed items; notification delivery and
 all suppression paths; route-level flag/auth/circle/rate-limit/schema-
 pending behaviour; account deletion erasing feedback rows and scrubbing
-queued notifications. Coverage gate holds; the new modules are covered
+queued notifications. The data-export tests confirm the #385 wiring
+against the real v22 tables (own items/votes, events never exported,
+48-table coverage). Coverage gate holds; the new modules are covered
 by these tests.
 
 **Rollout.** Merge with `FEEDBACK_ENABLED` off (default) and production at

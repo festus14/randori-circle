@@ -175,6 +175,9 @@ const EXPECTED_TABLE_COVERAGE=[
   {table:'circle_audit_events',section:null,included:false},
   {table:'circle_creation_requests',section:null,included:false},
   {table:'invite_requests',section:'invite_requests',included:true},
+  {table:'feedback_items',section:'feedback',included:true},
+  {table:'feedback_votes',section:'feedback',included:true},
+  {table:'feedback_events',section:null,included:false},
   {table:'pairing_cycle_availability',section:'availability',included:true},
   {table:'user_notification_prefs',section:'notification_preferences',included:true},
   {table:'pairing_participants',section:'pairings',included:true},
@@ -207,8 +210,8 @@ const EXPECTED_TABLE_COVERAGE=[
 ];
 
 test('every inventory table has explicit export coverage',()=>{
-  assert.equal(EXPECTED_TABLE_COVERAGE.length,45);
-  assert.equal(ACCOUNT_DATA_INVENTORY.length,45);
+  assert.equal(EXPECTED_TABLE_COVERAGE.length,48);
+  assert.equal(ACCOUNT_DATA_INVENTORY.length,48);
   assert.deepEqual(
     DATA_EXPORT_TABLE_COVERAGE.map(entry=>({table:entry.table,section:entry.section,included:entry.included})),
     EXPECTED_TABLE_COVERAGE);
@@ -302,8 +305,12 @@ test('the export holds the member\'s own data from every exported section',async
   assert.equal(archive.ai.consents.policy_version,'v1');
   assert.equal(archive.ai.usage.length,1);
   assert.equal(archive.ai.reservations.length,1);
-  assert.equal(archive.feedback.included,false);
+  // The migrated database has the v22 feedback tables, empty: the
+  // feedback section is present (included) with no rows, not skipped.
+  assert.equal(archive.feedback.included,true);
   assert.deepEqual(archive.feedback.items,[]);
+  assert.deepEqual(archive.feedback.votes,[]);
+  assert.equal(archive.feedback.events_included,false);
   assert.ok(archive.excluded_tables.some(row=>row.table==='auth_sessions'));
   assert.ok(archive.excluded_tables.some(row=>row.table==='pair_code_documents'));
   assert.equal(archive.counts.invitations_received,1);
@@ -379,26 +386,58 @@ test('unknown accounts and bad input are refused',async()=>{
 
 test('feedback is included when its tables exist, and skipped when the author column is unrecognised',async()=>{
   const db=await fixture();
+  // The v22 feedback tables already exist in the migrated database, so
+  // seed them with the landed schema — never CREATE them here (that
+  // collides with the real tables). Ids are UUIDs, timestamps are epoch
+  // seconds, votes key on feedback_id/user_id, events carry a marker
+  // detail that must never reach the archive.
   const statements=[
-    `CREATE TABLE feedback_items (id INTEGER PRIMARY KEY, circle_id INTEGER, author_user_id INTEGER, kind TEXT, title TEXT, body TEXT, status TEXT, visibility TEXT, diagnostics_json TEXT, created_at TEXT, updated_at TEXT)`,
-    `INSERT INTO feedback_items (id,circle_id,author_user_id,kind,title,body,status,visibility,created_at) VALUES (1,1,2,'bug','My bug','my body','open','public','2026-01-02T00:00:00.000Z'),(2,1,3,'bug','Partner bug','partner body','open','public','2026-01-02T00:00:00.000Z')`,
-    `CREATE TABLE feedback_votes (id INTEGER PRIMARY KEY, feedback_item_id INTEGER, voter_user_id INTEGER, value INTEGER, created_at TEXT, updated_at TEXT)`,
-    `INSERT INTO feedback_votes (id,feedback_item_id,voter_user_id,value,created_at) VALUES (1,2,2,1,'2026-01-03T00:00:00.000Z'),(2,1,3,1,'2026-01-03T00:00:00.000Z')`,
-    `CREATE TABLE feedback_events (id INTEGER PRIMARY KEY, feedback_item_id INTEGER, actor_user_id INTEGER, event_type TEXT, created_at TEXT)`,
+    `INSERT INTO feedback_items (id,circle_id,author_user_id,kind,title,body,status,visibility,diagnostics_json,idempotency_key,created_at,updated_at,closed_at) VALUES
+      ('11111111-1111-4111-8111-111111111111',1,2,'bug','My bug','my body','open','private','{"browser":"TestBrowser"}','feedback-mine-12345678',1700000000,1700000000,NULL),
+      ('22222222-2222-4222-8222-222222222222',1,3,'feature_request','Partner bug','partner body','open','private',NULL,'feedback-partner-12345678',1700000001,1700000001,NULL)`,
+    `INSERT INTO feedback_votes (feedback_id,user_id,value,created_at) VALUES
+      ('22222222-2222-4222-8222-222222222222',2,1,1700000002),
+      ('11111111-1111-4111-8111-111111111111',3,1,1700000002)`,
+    `INSERT INTO feedback_events (feedback_id,event_type,actor_user_id,detail_json,created_at) VALUES
+      ('11111111-1111-4111-8111-111111111111','feedback.created',2,'{"audit_marker":"feedback-event-must-not-export"}',1700000000),
+      ('22222222-2222-4222-8222-222222222222','feedback.status_changed',2,'{"from_status":"open","to_status":"in_progress"}',1700000003)`,
   ];
   await db.batch(statements,'write');
   const archive=await buildDataExport(db,{userId:2});
   assert.equal(archive.feedback.included,true);
   assert.deepEqual(archive.feedback.items.map(row=>row.title),['My bug']);
+  assert.deepEqual(archive.feedback.items[0],{
+    id:'11111111-1111-4111-8111-111111111111',circle_id:1,author_user_id:2,
+    kind:'bug',title:'My bug',body:'my body',status:'open',visibility:'private',
+    diagnostics_json:{browser:'TestBrowser'},created_at:1700000000,updated_at:1700000000,
+  });
+  // Only the vote the member cast (on the partner's item) is exported;
+  // the partner's vote on the member's item is not the member's data.
   assert.equal(archive.feedback.votes.length,1);
-  assert.equal(archive.feedback.votes[0].feedback_item_id,2);
+  assert.equal(archive.feedback.votes[0].feedback_id,'22222222-2222-4222-8222-222222222222');
+  assert.equal(archive.feedback.votes[0].user_id,2);
+  assert.equal(archive.feedback.votes[0].value,1);
   assert.equal(archive.feedback.events_included,false);
   assert.equal(archive.counts.feedback_items,1);
   assert.equal(archive.counts.feedback_votes,1);
-  assert.ok(!JSON.stringify(archive).includes('partner body'));
+  const text=JSON.stringify(archive);
+  assert.ok(!text.includes('partner body'));
+  // Events are never exported, even for the member's own item / actor.
+  assert.ok(!text.includes('feedback-event-must-not-export'));
+  assert.ok(!text.includes('audit_marker'));
+  // The item's idempotency key is a dedup token, not user content.
+  assert.ok(!text.includes('feedback-mine-12345678'));
 
+  // A feedback_items table with no recognised author column is skipped
+  // cleanly. The real table is dropped (children first, FKs are on) and
+  // replaced with a stub in this disposable test database only.
   const other=await fixture();
-  await other.execute(`CREATE TABLE feedback_items (id INTEGER PRIMARY KEY, creator_id INTEGER, title TEXT)`);
+  await other.batch([
+    `DROP TABLE feedback_events`,
+    `DROP TABLE feedback_votes`,
+    `DROP TABLE feedback_items`,
+    `CREATE TABLE feedback_items (id INTEGER PRIMARY KEY, creator_id INTEGER, title TEXT)`,
+  ],'write');
   const skipped=await buildDataExport(other,{userId:2});
   assert.equal(skipped.feedback.included,false);
   assert.match(skipped.feedback.reason,/no recognised author column/);
@@ -432,16 +471,17 @@ test('per-section caps bound the archive: only the newest 1,000 code runs are ke
 
 test('a capped feedback section is disclosed in truncated_sections',async()=>{
   const db=await fixture();
-  const statements=[
-    {sql:`CREATE TABLE feedback_items (id INTEGER PRIMARY KEY, circle_id INTEGER, author_user_id INTEGER, kind TEXT, title TEXT, body TEXT, status TEXT, visibility TEXT, diagnostics_json TEXT, created_at TEXT, updated_at TEXT)`},
-    ...Array.from({length:DATA_EXPORT_SECTION_LIMITS.feedbackItems+1},(_,index)=>({sql:
-      `INSERT INTO feedback_items (id,author_user_id,kind,title,body,status,visibility,created_at) VALUES (?,2,'bug',?,'body','open','public','2026-01-02T00:00:00.000Z')`,
-      args:[index+1,`Bug ${index+1}`]})),
-  ];
+  // The v22 feedback_items table already exists: insert into it with the
+  // landed schema (UUID id, epoch timestamps, per-author idempotency
+  // key). Distinct created_at values make newest-first order exact.
+  const statements=Array.from({length:DATA_EXPORT_SECTION_LIMITS.feedbackItems+1},(_,index)=>({sql:
+    `INSERT INTO feedback_items (id,circle_id,author_user_id,kind,title,body,status,visibility,idempotency_key,created_at,updated_at,closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)`,
+    args:[`00000000-0000-4000-8000-${String(index).padStart(12,'0')}`,1,2,'bug',`Bug ${index+1}`,'body','open','private',`feedback-cap-${index}-12345678`,1700000000+index,1700000000+index]}));
   await db.batch(statements,'write');
   const archive=await buildDataExport(db,{userId:2});
   assert.equal(archive.feedback.included,true);
   assert.equal(archive.feedback.items.length,DATA_EXPORT_SECTION_LIMITS.feedbackItems);
+  assert.equal(archive.feedback.items[0].title,`Bug ${DATA_EXPORT_SECTION_LIMITS.feedbackItems+1}`);
   assert.equal(archive.feedback.truncated_items,true);
   assert.equal(archive.feedback.truncated_votes,false);
   assert.ok(archive.truncated_sections.includes('feedback_items'));
