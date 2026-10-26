@@ -3,7 +3,7 @@ import {join} from 'node:path';
 
 import {expect,test} from '@playwright/test';
 
-import {newGoldenPage,repositoryRoot,startGoldenRuntime} from './golden-runtime';
+import {newGoldenPage,repositoryRoot,startGoldenRuntime,waitForAppFetchesSettled} from './golden-runtime';
 
 // Golden path 12: every client route serves the single-page app and boots into
 // its own landing state, on the real loopback runtime and on the static
@@ -43,6 +43,7 @@ test('every client route serves the app shell and boots its landing state on the
     for(const route of CLIENT_ROUTES){
       await page.goto(`${golden.url}${route.path}`,{waitUntil:'domcontentloaded'});
       await expect(page.locator(route.ready),route.path).toBeVisible();
+      await waitForAppFetchesSettled(page);
     }
     // A signed-out room link keeps its URL and asks for sign-in.
     await expect(page).toHaveURL(`${golden.url}/join/week_1_pair_1`);

@@ -157,9 +157,9 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
         const style=getComputedStyle(sentinel);
         const target=expected(palette.bgVar,palette.fgVar);
         if(style.backgroundColor!==target.bg)
-          return diag(`sentinel ${sentinel.tagName.toLowerCase()}#${sentinel.id}.${[...sentinel.classList].join('.')} background ${style.backgroundColor} != ${target.bg} (fg ${style.color} vs ${target.fg})`);
+          return diag(`sentinel ${sentinel.tagName.toLowerCase()}#${sentinel.id}.${[...sentinel.classList].join('.')} background ${style.backgroundColor} != ${target.bg} (fg ${style.color} vs ${target.fg}) bodyColor=${getComputedStyle(document.body).color} htmlColor=${getComputedStyle(document.documentElement).color} parentColor=${sentinel.parentElement?getComputedStyle(sentinel.parentElement).color:'none'}`);
         if(style.color!==target.fg)
-          return diag(`sentinel ${sentinel.tagName.toLowerCase()}#${sentinel.id}.${[...sentinel.classList].join('.')} color ${style.color} != ${target.fg} (bg ${style.backgroundColor} vs ${target.bg})`);
+          return diag(`sentinel ${sentinel.tagName.toLowerCase()}#${sentinel.id}.${[...sentinel.classList].join('.')} color ${style.color} != ${target.fg} (bg ${style.backgroundColor} vs ${target.bg}) bodyColor=${getComputedStyle(document.body).color} htmlColor=${getComputedStyle(document.documentElement).color} parentColor=${sentinel.parentElement?getComputedStyle(sentinel.parentElement).color:'none'} transition=${getComputedStyle(sentinel).transitionProperty}/${getComputedStyle(sentinel).transitionDuration}`);
       }
       // An element is rendered if it owns a layout box, or an ancestor of
       // one that does (display:contents renders through its descendants).
@@ -174,8 +174,13 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
       for(const element of [root,...root.querySelectorAll('*')]){
         if(!rendered.has(element)) continue;
         for(const animation of element.getAnimations()){
-          if(animation.playState==='running')
-            return diag(`running ${(animation as any).type||'animation'} ${'propertyName' in animation?(animation as any).propertyName:''} on ${element.tagName.toLowerCase()}#${element.id}.${[...element.classList].join('.')} rects=${element.getClientRects().length} playState=${animation.playState}`);
+          if(animation.playState==='running'){
+            const chain: string[]=[];
+            for(let node:Element|null=element;node&&chain.length<4;node=node.parentElement)
+              chain.push(`${node.tagName.toLowerCase()}#${node.id}.${[...node.classList].join('.')}`);
+            const computed=getComputedStyle(element);
+            return diag(`running animationName=${(animation as any).animationName??''} transitionProperty=${(animation as any).transitionProperty??''} currentTime=${animation.currentTime} on ${element.tagName.toLowerCase()}#${element.id}.${[...element.classList].join('.')} chain=${chain.join(' < ')} rects=${element.getClientRects().length} playState=${animation.playState} transition=${computed.transitionProperty}/${computed.transitionDuration} animation=${computed.animationName}/${computed.animationDuration}/${computed.animationIterationCount}`);
+          }
         }
       }
     }

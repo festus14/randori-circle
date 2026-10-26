@@ -106,6 +106,24 @@ export async function newGoldenPage(browser:Browser,golden:GoldenRuntime,options
   return {context,page};
 }
 
+/**
+ * Let an app page's boot fetches settle before navigating away from it.
+ * WebKit reports a pageerror when a navigation aborts an in-flight fetch —
+ * even though the app catches the failure — so a test that navigates
+ * rapidly between app pages (golden-routes, golden-public-pages) must wait
+ * for the identity check and the (anonymous, 401) catalogue request to
+ * finish first. The same wait would be dead time in Chromium/Firefox, where
+ * no pageerror is emitted, but it is a few hundred ms and keeps the tests
+ * engine-agnostic.
+ */
+export async function waitForAppFetchesSettled(page:Page){
+  await expect.poll(()=>page.evaluate(()=>(window as any)._randori_auth?.identitySettled===true)).toBe(true);
+  await expect.poll(()=>page.evaluate(()=>{
+    const state=(window as any)._randori_questions?.state;
+    return state==='failed'||state==='loaded';
+  })).toBe(true);
+}
+
 export async function json(page:Page,path:string,method='GET',body?:unknown){
   return page.evaluate(async input=>{
     const response=await fetch(input.path,{method:input.method,credentials:'same-origin',cache:'no-store',
