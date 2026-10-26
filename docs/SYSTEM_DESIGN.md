@@ -327,7 +327,8 @@ complete definition.
   `inspectCompletedMembershipRollout`). The activation provenance
   covers password sign-up through email activation (ID-84 / #349):
   a used, unrevoked invitation, its consumed
-  `auth_email_activations` row in the same circle, and dedupe key
+  `auth_email_activations` row in the same circle, with the event's
+  actor and subject both the account, and dedupe key
   `activation-verified:<activation id>`; see the
   [readiness-503 runbook](runbooks/readiness-503.md) for the
   activation-provenance case. Steady-state readiness is
