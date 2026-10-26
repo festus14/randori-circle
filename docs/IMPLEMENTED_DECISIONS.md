@@ -4455,6 +4455,12 @@ rehearsal, status and apply.
   metadata, key control, membership). Health readiness, `/api/init`,
   circle-pairing and schedule readiness use it; readiness now reads the
   ledger before inspecting the schema, since the version picks the manifest.
+  The owned-scope probes (circle-pairing, schedule) additionally reject when
+  any artifact the pending migration introduces already exists in
+  `sqlite_schema` (#379): their inspector manifest is scoped to owned tables,
+  so it is blind to a half-created introduced table and to introduced indexes
+  or triggers on tables outside the scope, while the full-manifest health
+  probe already caught those as unexpected artifacts.
   Pairing publication readiness checks only the v6 core contract, already
   accepted any later ledger prefix, and cannot be changed by an additive
   migration.
@@ -4492,7 +4498,9 @@ code gates the new tables; the check only proves the SQL half).
 **Tests.** On real migrated SQLite: code at N with N additive stays ready on
 every surface while the database moves from N-1 to N; a breaking N is not
 ready at N-1; code at N-1 is not ready at N; two versions behind is not ready;
-drift and tampered ledger rows still block at N-1. Mutation tests load copies
+drift and tampered ledger rows still block at N-1. The owned-scope probes
+also reject a half-created introduced table, index or trigger on a
+non-owned table while the migration is pending (#379). Mutation tests load copies
 of the readiness module with the tolerance widened (to N-2, to breaking
 migrations, to an older additive migration, or with the schema checks
 dropped) and require every copy to fail the policy. The check rejects

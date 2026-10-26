@@ -8,9 +8,10 @@
 // readiness rule (checksums and metadata of every applied row, exact schema
 // for the version actually applied, key control, membership) is unchanged.
 //
-// This module contains no executable SQL. The proof that a migration marked
+// This module contains no executable DDL. The proof that a migration marked
 // additive really is additive lives in the migration-only
-// db/migration-compatibility-check.js.
+// db/migration-compatibility-check.js. The one query here is a read-only
+// SELECT against sqlite_schema, used by the owned-scope probes below.
 import {
   INTRODUCED_ARTIFACT_KINDS,
   MIGRATION_COMPATIBILITY,
@@ -99,6 +100,52 @@ export function readinessManifestForLedger(manifest,readiness,{contracts=MIGRATI
     previous.triggers=manifest.triggers.filter(item=>!introduced.triggers.has(item.name));
   }
   return Object.freeze(previous);
+}
+
+/**
+ * The artifacts the pending additive migration introduces that already exist
+ * in sqlite_schema. Owned-scope probes need this explicitly (#379): their
+ * inspector manifest is scoped to owned tables, so it reports no warning for
+ * a half-created introduced table, or for an introduced index or trigger on
+ * a table outside the owned scope, while the full-manifest health probe
+ * catches those as unexpected artifacts. A pending artifact present means
+ * the migration started but did not finish (or ran outside the runner's
+ * single transaction), so the database is not the clean N-1 schema readiness
+ * at N-1 requires, and the caller must treat it as not ready.
+ *
+ * Returns [] when nothing is pending. `db` must be a read-only client (see
+ * readOnlyDatabase in db/schema-inspector.js). A pending ledger that does
+ * not match the contracts throws, so callers fail closed instead of
+ * treating an inconsistent ledger as clean.
+ */
+export async function findPendingIntroducedArtifacts(db,readiness,{contracts=MIGRATION_CONTRACTS}={}){
+  if(readiness?.state!==LEDGER_READINESS_STATES.PENDING_ADDITIVE) return Object.freeze([]);
+  const pending=pendingAdditiveContract(contracts);
+  if(pending?.version!==readiness.pendingVersion){
+    throw new TypeError('ledger readiness does not match the migration contracts');
+  }
+  if(!pending.introduces||typeof pending.introduces!=='object'||Array.isArray(pending.introduces)
+    ||!INTRODUCED_ARTIFACT_KINDS.every(kind=>Array.isArray(pending.introduces[kind]))){
+    throw new TypeError('pending additive migration contract must list introduced artifacts');
+  }
+  const clauses=[];
+  const args=[];
+  for(const [kind,type] of [['tables','table'],['indexes','index'],['triggers','trigger']]){
+    const names=pending.introduces[kind];
+    if(names.length===0) continue;
+    clauses.push(`(type='${type}' AND name IN (${names.map(()=>'?').join(',')}))`);
+    args.push(...names);
+  }
+  if(clauses.length===0) return Object.freeze([]);
+  if(!db||typeof db.execute!=='function') throw new TypeError('a database client is required');
+  const result=await db.execute({
+    sql:`SELECT type,name FROM sqlite_schema WHERE ${clauses.join(' OR ')} ORDER BY type,name`,
+    args,
+  });
+  return Object.freeze((result.rows||[]).map(row=>Object.freeze({
+    type:String(row.type),
+    name:String(row.name),
+  })));
 }
 
 /**
