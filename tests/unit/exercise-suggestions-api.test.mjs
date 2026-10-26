@@ -295,6 +295,9 @@ test('a pair room adds only "attempted by your partner" and never the partner\'s
     assert.deepEqual(Object.keys(suggestion.reason).sort(),['code','difficulty_step','text']);
   }
   const serialized=JSON.stringify(response.body);
+  // Left as-is (#418): cannot trip — the key-shape assertions above pin a
+  // response with no date-bearing field; titles come from the fixed catalog
+  // (no title contains '2026-') and reason texts are generated without dates.
   assert.doesNotMatch(serialized,/2026-|passed|total_count|function solve|Partner Name|partner@|"user|_id":\d/);
 
   // The partner sees the mirror image from the same room.

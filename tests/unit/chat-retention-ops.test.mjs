@@ -58,6 +58,9 @@ test('the status command emits one sanitized document without scope, content, UR
     assert.equal(payload.ok,true);
     assert.equal(payload.metrics.anomalies.unmappedCount,1);
     assert.equal(payload.metrics.anomalies.invalidTimestampCount,1);
+    // Left as-is (#418): cannot trip — the status payload is aggregate counts
+    // only (one fixture message; anomaly counts capped at 1001), never the row
+    // ids/content, so the 5-digit sentinels cannot appear in stdout.
     assert.doesNotMatch(result.stdout,/highly-private-content|81234|92345|63412|retention\.sqlite|SELECT|pair_messages/);
   }finally{
     db.close();

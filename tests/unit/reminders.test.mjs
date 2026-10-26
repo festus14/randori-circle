@@ -213,6 +213,10 @@ test('availability cutoff reminders open exactly 24 hours before the Sunday cuto
   assert.deepEqual(rows.map(row=>row.key),[`reminder-email/v1/availability-cutoff/1/${key}/1`]);
   assert.deepEqual(rows[0].payload,{kind:'availability_cutoff',circle_id:1,cycle_key:key,recipient_user_id:1,
     template_version:1});
+  // Left as-is (#418): cannot trip — the payload shape is pinned by the
+  // deepEqual above; cycle_key is a deterministic sha256 hex digest of the
+  // fixed 2098 cycle inputs (this passing test proves it contains no '2098'),
+  // and the payload has no name/email/date field.
   assert.doesNotMatch(JSON.stringify(rows[0].payload),/@|Alice|2098/);
   // The per-kind bound is clamped; an invalid bound falls back to the default.
   await db.execute(`DELETE FROM pairing_cycle_availability WHERE user_id=2`);

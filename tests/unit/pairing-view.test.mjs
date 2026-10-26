@@ -166,6 +166,10 @@ test('a saved choice is a dated, explicit decision with a cutoff countdown', () 
   assert.deepEqual(model.available, { disabled: false, pressed: true, text: "I'm in" });
   assert.deepEqual(model.skip, { disabled: false, pressed: false, text: 'Skip this cycle' });
   assert.equal(model.note, null, 'no leftover banner for a saved choice');
+  // Left as-is (#418): cannot trip — the view emits formatted strings only
+  // (week label, Intl day/moment, countdown), never raw ISO/week forms, and
+  // the pinned cycleText/cutoffText assertions above fix those formatted
+  // outputs for these fixtures.
   assert.doesNotMatch(JSON.stringify(model), /2026-W39|T17:00/);
 });
 
