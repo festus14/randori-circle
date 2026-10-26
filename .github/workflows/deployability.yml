@@ -29,5 +29,7 @@ jobs:
         run: npm run check:deployability
       - name: Validate secret-free backup controls
         run: npm run check:backup-controls
+      - name: Validate documentation drift
+        run: npm run check:docs
       - name: Test release-contract failure modes
         run: npm run test:deployability

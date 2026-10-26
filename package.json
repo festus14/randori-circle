@@ -34,6 +34,7 @@
     "db:status": "node scripts/db-inspect.mjs status",
     "check:deployability": "node scripts/check-deployability.mjs",
     "check:backup-controls": "node scripts/check-backup-controls.mjs",
+    "check:docs": "node scripts/check-docs.mjs",
     "check:runtime-ddl": "node scripts/check-runtime-ddl.mjs",
     "check:syntax": "node tests/static/check-syntax.mjs",
     "check:turso-sql": "node scripts/check-turso-remote-sql.mjs",
