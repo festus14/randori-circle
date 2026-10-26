@@ -4809,7 +4809,7 @@ the endpoint answers 404, the capability disappears, and Edit profile
 never downloads the script. Nothing is stored by the export, so removal
 is fully reversible.
 
-## ID-90: Product feedback — shared platform for bug reports, feature requests and product feedback (data model + API)
+## ID-91: Product feedback — shared platform for bug reports, feature requests and product feedback (data model + API)
 
 Status: implemented; flag `FEEDBACK_ENABLED` default off, migration v22 additive. Issue #353 (foundation; the triage UI and member form are separate follow-ups).
 
