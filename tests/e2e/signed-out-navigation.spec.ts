@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
-import { mockApi, resetClientState } from './helpers';
+import { blockTelemetry, mockApi, resetClientState } from './helpers';
 
 // Final UX pass: the app navigation (tabs, and the phone bottom bar) is for
 // members only. Visitors see the logo, the theme toggle and Sign in, on every
@@ -46,7 +46,8 @@ for (const viewport of [
   test.describe(`visitors on a ${viewport.name}`, () => {
     test.use({ viewport: { width: viewport.width, height: viewport.height } });
 
-    test('see no app navigation on the landing, recovery, join and unknown routes', async ({ page }) => {
+    test('see no app navigation on the landing, recovery, join and unknown routes', { tag: '@smoke' }, async ({ page }) => {
+      await blockTelemetry(page);
       await mockApi(page, { '/api/auth/capabilities': capabilities });
       await resetClientState(page);
       for (const path of ['/', '/reset-password#token=not-a-real-token', '/invite', '/verify', '/reset-password', '/join/not-a-room']) {
@@ -94,7 +95,8 @@ for (const viewport of [
   });
 }
 
-test('a member deep link asks a visitor to sign in, then opens that view', async ({ page }) => {
+test('a member deep link asks a visitor to sign in, then opens that view', { tag: '@smoke' }, async ({ page }) => {
+  await blockTelemetry(page);
   let signedIn = false;
   await mockApi(page, {
     '/api/auth/capabilities': capabilities,
@@ -161,7 +163,8 @@ test('a visitor sees the landing page and no member tabs while the identity chec
   await expectVisitorChrome(page);
 });
 
-test('members keep the navigation, and it disappears as soon as they sign out', async ({ page }) => {
+test('members keep the navigation, and it disappears as soon as they sign out', { tag: '@smoke' }, async ({ page }) => {
+  await blockTelemetry(page);
   let signedIn = true;
   await mockApi(page, {
     '/api/auth/me': () => signedIn ? { ok: true, user: member } : { _status: 401, ok: false, error: 'authentication required' },

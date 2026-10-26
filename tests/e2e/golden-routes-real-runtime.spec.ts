@@ -19,7 +19,7 @@ const CLIENT_ROUTES=[
   {path:'/join/week_1_pair_1',ready:'#authOverlay'},
 ] as const;
 
-test('every client route serves the app shell and boots its landing state on the real runtime',async({browser})=>{
+test('every client route serves the app shell and boots its landing state on the real runtime',{tag:'@smoke'},async({browser})=>{
   test.setTimeout(90_000);
   const golden=await startGoldenRuntime('randori-golden-routes-');
   try{
@@ -54,7 +54,7 @@ test('every client route serves the app shell and boots its landing state on the
   }
 });
 
-test('the static checkout server and the Vercel config route every client path to the app',async({request})=>{
+test('the static checkout server and the Vercel config route every client path to the app',{tag:'@smoke'},async({request})=>{
   for(const route of CLIENT_ROUTES){
     const response=await request.get(route.path);
     expect(response.status(),route.path).toBe(200);

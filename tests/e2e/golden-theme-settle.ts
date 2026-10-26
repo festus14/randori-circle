@@ -52,8 +52,23 @@ import {Page} from '@playwright/test';
 //         `--color-surface`, would time out there).
 //    If no sentinel can be identified at all, only the class + animation
 //    checks below apply, rather than timing out on a guessed palette.
-//  - no CSS transition/animation is still running on any element inside any
-//    scanned region (`getAnimations()`).
+//  - no CSS transition/animation is still running on any rendered element
+//    inside any scanned region (`getAnimations()`). Animations on
+//    non-rendered elements are ignored: Firefox leaves the transitions of
+//    elements in a `display:none` subtree (e.g. the hidden invite form on
+//    the landing page after a successful request) reporting
+//    `playState: 'running'` indefinitely — in the instrumented Firefox
+//    failure the sentinel colours already matched the settled palette, but
+//    transitions on elements inside `#view-landing` never finished, so the
+//    wait timed out at 10 s. Those elements paint nothing (no layout box
+//    anywhere in their subtree, and `[hidden]{display:none!important}` in
+//    index.html is what hides them), so they cannot affect the axe run the
+//    wait gates. An element counts as rendered if it owns a layout box
+//    itself or has a descendant that does, so a `display:contents` ancestor
+//    — box-less, but rendering through descendants whose inherited colours
+//    its own transition would still animate — is NOT skipped. Visible
+//    transitions still block: under `reducedMotion: 'reduce'` they are
+//    0.01 ms, and the sentinel-colour check still gates on them.
 // This is a poll on the settled state, not a fixed timeout, so it cannot
 // pass by luck on a slow runner; if the theme never settles it times out
 // instead of running axe mid-transition.
@@ -134,7 +149,18 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
         if(style.backgroundColor!==target.bg) return false;
         if(style.color!==target.fg) return false;
       }
+      // An element is rendered if it owns a layout box, or an ancestor of
+      // one that does (display:contents renders through its descendants).
+      // Mark ancestors of every box-owning element, stopping at the first
+      // already-marked ancestor: marking is transitive, so its ancestors
+      // were marked when it was.
+      const rendered=new Set<Element>();
       for(const element of [root,...root.querySelectorAll('*')]){
+        if(element.getClientRects().length===0) continue;
+        for(let node:Element|null=element;node&&!rendered.has(node);node=node.parentElement) rendered.add(node);
+      }
+      for(const element of [root,...root.querySelectorAll('*')]){
+        if(!rendered.has(element)) continue;
         for(const animation of element.getAnimations()){
           if(animation.playState==='running') return false;
         }

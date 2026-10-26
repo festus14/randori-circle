@@ -1,7 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
-import { mockApi, resetClientState } from './helpers';
+import { blockTelemetry, mockApi, resetClientState } from './helpers';
 
-test('the checked-out app boots without JavaScript exceptions and its tabs navigate', async ({ page }) => {
+test('the checked-out app boots without JavaScript exceptions and its tabs navigate', { tag: '@smoke' }, async ({ page }) => {
+  await blockTelemetry(page);
   const pageErrors: string[] = [];
   let authChecks = 0;
   await page.clock.install();
@@ -58,7 +59,8 @@ test('the checked-out app boots without JavaScript exceptions and its tabs navig
   expect(pageErrors, pageErrors.join('\n')).toEqual([]);
 });
 
-test('the browser suite is pinned to the local checkout', async ({ page }) => {
+test('the browser suite is pinned to the local checkout', { tag: '@smoke' }, async ({ page }) => {
+  await blockTelemetry(page);
   const response = await page.goto('/', { waitUntil: 'domcontentloaded' });
   expect(response?.url()).toMatch(/^http:\/\/127\.0\.0\.1:/);
   expect(new URL(page.url()).hostname).toBe('127.0.0.1');
@@ -70,7 +72,13 @@ test('the browser suite is pinned to the local checkout', async ({ page }) => {
   });
 });
 
-test('browser tests never load the production telemetry SDK', async ({ page }) => {
+test('browser tests never load the production telemetry SDK (Chromium host-resolver mechanism)', async ({ page }, testInfo) => {
+  // Chromium-only: this proves the --host-resolver-rules mechanism, whose
+  // failure mode (net::ERR_NAME_NOT_RESOLVED) exists in no other engine.
+  // It must NOT call blockTelemetry — route interception would mask the
+  // host-resolver failure this test guards. Untouched by @smoke, so the
+  // smoke projects never run it; the cross-engine version below covers them.
+  test.skip(testInfo.project.name !== 'chromium', 'host-resolver rules are Chromium-only');
   // The Sentry SDK's iframe-based timer probing races Playwright's fake clock
   // and would report CI sessions to production. playwright.config.js makes its
   // hosts unresolvable; this guards that contract on networked runners.
@@ -94,6 +102,35 @@ test('browser tests never load the production telemetry SDK', async ({ page }) =
   });
   // The loader is requested once the page is idle (after load), not while it parses.
   await expect.poll(() => telemetryFailures).toEqual(['net::ERR_NAME_NOT_RESOLVED']);
+});
+
+test('telemetry SDK never initialises under route interception', { tag: '@smoke' }, async ({ page }) => {
+  // Cross-engine version of the Chromium host-resolver test above (#399):
+  // the loader is aborted at the route layer in every engine, so Sentry
+  // never initialises and no telemetry request can succeed. The failure
+  // mode is net::ERR_BLOCKED_BY_CLIENT, distinct from the host-resolver
+  // failure, by design.
+  const telemetryFailures: string[] = [];
+  page.on('requestfailed', request => {
+    if (/sentry-cdn\.com|sentry\.io/.test(new URL(request.url()).hostname)) {
+      telemetryFailures.push(request.failure()?.errorText || '');
+    }
+  });
+  await blockTelemetry(page);
+  await mockApi(page);
+  await resetClientState(page);
+  await page.goto('/', { waitUntil: 'load' });
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { _sentryReady?: boolean })._sentryReady)).toBe(false);
+  expect(await page.evaluate(() => typeof (window as typeof window & { Sentry?: unknown }).Sentry)).toBe('undefined');
+  // Even if the loader resolved, the environment-scoped config (#252) keeps
+  // non-production origins and automated browsers disabled.
+  expect(await page.evaluate(() => (window as typeof window & { __randoriSentry?: unknown }).__randoriSentry)).toEqual({
+    environment: 'development',
+    enabled: false,
+    productionOrigin: 'https://randoricircle.com',
+  });
+  // The loader is requested once the page is idle (after load), not while it parses.
+  await expect.poll(() => telemetryFailures).toEqual(['net::ERR_BLOCKED_BY_CLIENT']);
 });
 
 // ID-72: the client logger installs everywhere, including production. This

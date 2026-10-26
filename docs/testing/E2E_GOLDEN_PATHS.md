@@ -99,9 +99,81 @@ Playwright worker process and never through a test-only runtime flag:
 - Failures keep a trace and screenshot (`retain-on-failure`); the `e2e`
   workflow uploads `playwright-report` and `test-results` on every run.
 
+## Cross-browser smoke (Firefox / WebKit, issue #399)
+
+The full suite stays Chromium-only. A 24-test `@smoke` subset (10 spec
+files) additionally runs on Firefox and WebKit, in the parallel
+`cross-browser-smoke` matrix job in `.github/workflows/e2e.yml`
+(non-required at first; promote to required after ~2 weeks of green runs).
+Bare `npm run test:e2e` runs all three projects; the full-suite CI jobs
+pin `--project=chromium`.
+
+Projects (`playwright.config.js`): `chromium` (full suite, Desktop
+Chrome, `--host-resolver-rules` for the telemetry block), `firefox-smoke`
+(`grep: /@smoke/`, Desktop Firefox), `webkit-smoke` (`grep: /@smoke/`,
+Desktop Safari). The smoke projects get **no** host-resolver args: that
+flag breaks WebKit launch deterministically and Firefox silently ignores
+it.
+
+Smoke subset (24 test instances; `@smoke` tags are per-test, because some
+files hold Chromium-only tests next to smoke tests):
+
+| Spec | Smoke tests |
+|---|---|
+| `app-smoke.spec.ts` | boots + tabs navigate; suite pinned to checkout; telemetry SDK never initialises under route interception |
+| `landing.spec.ts` | invite-only landing; valid-invitation continuation; recovery pages; anonymous invite request |
+| `signed-out-navigation.spec.ts` | phone + desktop navigation, member deep link, sign-out removes nav (4) |
+| `auth-dialogs.spec.ts` | sign-in validation, forgot password, confirmation dialogs, axe dark + light (5) |
+| `golden-routes-real-runtime.spec.ts` | every client route serves the app shell (2, incl. static/Vercel routing) |
+| `golden-auth-real-runtime.spec.ts` | two-device sign-in + generic wrong-password; expired/replaced reset links (2) |
+| `golden-circle-catalogue-real-runtime.spec.ts` | solo practice: browse/filter/search/open/run (1) |
+| `golden-progress-real-runtime.spec.ts` | progress + axe, both themes (1) |
+| `golden-public-pages-real-runtime.spec.ts` | Privacy/Terms + axe, both colour schemes (1) |
+| `golden-pair-room-real-runtime.spec.ts` | pairing-email link → room + chat with recoverable failed send (1 of its 3 tests) |
+
+### Sentry-interception contract
+
+- Mocked smoke tests call `blockTelemetry(page)` (in
+  `tests/e2e/helpers.ts`) before the first navigation: route interception
+  aborts the Sentry loader (`*.sentry-cdn.com`) and any ingest
+  (`*.sentry.io`) with `net::ERR_BLOCKED_BY_CLIENT`, identically in every
+  engine. Re-register after any `page.unrouteAll()`.
+- Golden smoke tests need no explicit call: the local runtime strips the
+  Sentry loader from the client it serves, and `newGoldenPage` aborts
+  every off-origin request.
+- `app-smoke.spec.ts` holds both sides of the split: the
+  Chromium-host-resolver test (`net::ERR_NAME_NOT_RESOLVED`, no tag, no
+  interception — interception would mask the mechanism it guards) and the
+  `@smoke` interception test (`net::ERR_BLOCKED_BY_CLIENT`).
+- `--host-resolver-rules` stays Chromium-only (defence in depth for the
+  full suite), never in the shared `use` block.
+
+### Chromium-only (never in smoke)
+
+- The host-resolver telemetry test above.
+- Fake-clock-heavy specs (`auth-ui` invite-expiry, `member-lifecycle`,
+  `pairing-cycle-ui`, `schedule-sync`, …): the Sentry + fake-clock hazard
+  in Firefox/WebKit is unproven, and interception removes the source but
+  repeated clock-heavy runs under it were never done.
+- Everything not tagged `@smoke`, including the rest of each golden file.
+- No full-suite ×3, no nightly golden run, no Safari-on-macOS (Playwright
+  WebKit on Linux is the CI engine).
+
+### Settle-helper note
+
+`waitForThemeSettled` (`tests/e2e/golden-theme-settle.ts`) ignores
+animations on non-rendered elements: an element counts as rendered if it
+owns a layout box itself or has a descendant that does
+(`display:contents` ancestors are not skipped). Firefox left transitions
+in the hidden (`display:none`) invite-form subtree reporting `running`
+indefinitely, which timed the landing invite test out at 10 s; the guard
+still blocks on any visible transition.
+
 ## Running
 
 ```bash
 npx playwright test tests/e2e/golden-        # the golden-path journeys
 npm run test:e2e                             # the full suite (Linux CI is authoritative)
+npm run test:e2e -- --project=firefox-smoke  # the @smoke subset on Firefox
+npm run test:e2e -- --project=webkit-smoke   # the @smoke subset on WebKit
 ```

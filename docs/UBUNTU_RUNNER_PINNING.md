@@ -29,6 +29,7 @@ and `scripts/check-backup-controls.mjs` were updated to match the new bytes.
 |---|---|---|
 | `deployability.yml` | Required release check (`deployability`) | `ubuntu-24.04` |
 | `e2e.yml` | Required release check (`e2e`) | `ubuntu-24.04` |
+| `e2e.yml` (`cross-browser-smoke` job, issue #399) | Non-required cross-browser smoke (Firefox + WebKit, `@smoke` subset only; not in branch protection until promoted after ~2 weeks green) | `ubuntu-24.04` |
 | `outbox-dispatch.yml` | Scheduler, production secret | `ubuntu-24.04` |
 | `outbox-dispatch-watchdog.yml` | Watchdog, read-only | `ubuntu-24.04` |
 | `turso-backup-restore-rehearsal.yml` | Scheduled rehearsal, protected environment | `ubuntu-24.04` |
@@ -38,6 +39,18 @@ and `scripts/check-backup-controls.mjs` were updated to match the new bytes.
 | `chat-retention.yml` | Manual protected operation | `ubuntu-24.04` |
 | `ubuntu-26-canary.yml` | Optional compatibility canary | `ubuntu-26.04` |
 | `ui-screenshots.yml` | Manual design-review capture, read-only, no secrets | `ubuntu-24.04` |
+
+## Cross-browser smoke installs (issue #399)
+
+The `cross-browser-smoke` job in `e2e.yml` installs one browser per
+matrix leg with `npx playwright install --with-deps <firefox|webkit>`:
+Firefox ~54 s / 281 MB, WebKit ~38 s / 278 MB (~560 MB + ffmpeg combined;
+WebKit's system deps add ~178 dpkg entries). The runner stays
+`ubuntu-24.04`.
+
+Footgun: never pass Chromium launch args (e.g. `--host-resolver-rules`)
+to WebKit — it breaks WebKit launch deterministically — or to Firefox,
+which silently ignores them.
 
 ## Canary
 

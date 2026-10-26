@@ -112,6 +112,22 @@ const defaultApiResponses: Record<string, ApiResponse> = {
   '/api/video/signal': { ok: true, signals: [], after: 0, count: 0 },
 };
 
+// Shared Sentry block for the `@smoke` tests (issue #399). The engine-agnostic
+// replacement for the Chromium-only --host-resolver-rules flag: abort the
+// loader (`*.sentry-cdn.com`) and any ingest (`*.sentry.io`) request at the
+// route layer, which works identically in Chromium, Firefox and WebKit. The
+// failure is `net::ERR_BLOCKED_BY_CLIENT`, deliberately distinct from the
+// Chromium host-resolver failure (`net::ERR_NAME_NOT_RESOLVED`) so the
+// Chromium-only telemetry test in app-smoke.spec.ts keeps proving the
+// host-resolver mechanism on its own — call this only from tests that are
+// meant to run under interception, never from that test. Golden specs do
+// not call this: the local runtime strips the Sentry loader from the client
+// it serves, and newGoldenPage aborts every off-origin request anyway.
+// Register before the first goto; re-register after any page.unrouteAll().
+export async function blockTelemetry(page: Page) {
+  await page.route(/sentry-cdn\.com|sentry\.io/, route => route.abort('blockedbyclient'));
+}
+
 export async function mockApi(
   page: Page,
   overrides: Record<string, ApiResponse> = {},

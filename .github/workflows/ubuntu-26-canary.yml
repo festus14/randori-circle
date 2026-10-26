@@ -64,7 +64,10 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
       - name: Run browser tests against checkout
-        run: npm run test:e2e
+        # Full suite, Chromium-only (see e2e.yml): bare test:e2e would also
+        # run the firefox-smoke / webkit-smoke projects, whose browsers
+        # this job does not install.
+        run: npm run test:e2e -- --project=chromium
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

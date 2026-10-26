@@ -68,7 +68,7 @@ async function expectAccessible(page:Page,label:string){
   await page.emulateMedia({colorScheme:null});
 }
 
-test('a signed-out visitor opens the Privacy Policy and Terms from the landing page, and a member reaches them from the account menu',async({browser})=>{
+test('a signed-out visitor opens the Privacy Policy and Terms from the landing page, and a member reaches them from the account menu',{tag:'@smoke'},async({browser})=>{
   test.setTimeout(120_000);
   const golden=await startGoldenRuntime('randori-golden-public-pages-');
   try{

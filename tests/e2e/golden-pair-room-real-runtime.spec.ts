@@ -67,7 +67,7 @@ async function boardShapes(page:Page){
   return page.evaluate(()=>JSON.parse(JSON.stringify((window as any)._randori_board?.shapes||[]))) as Promise<Array<{type:string}>>;
 }
 
-test('the pairing email link opens the room after sign-in and partners chat with a recoverable failed send',async({browser})=>{
+test('the pairing email link opens the room after sign-in and partners chat with a recoverable failed send',{tag:'@smoke'},async({browser})=>{
   test.setTimeout(150_000);
   const golden=await startGoldenRuntime('randori-golden-join-chat-');
   try{

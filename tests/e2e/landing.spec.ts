@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
-import { mockApi, resetClientState } from './helpers';
+import { blockTelemetry, mockApi, resetClientState } from './helpers';
 import { waitForThemeSettled } from './golden-theme-settle';
 
 // UI redesign WP-L1: public landing, request-an-invite form and recovery
@@ -54,7 +54,8 @@ async function expectDocumentFitsViewport(page: Page) {
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.innerWidth);
 }
 
-test('without the capability the landing explains invite-only access and offers sign in', async ({ page }, testInfo) => {
+test('without the capability the landing explains invite-only access and offers sign in', { tag: '@smoke' }, async ({ page }, testInfo) => {
+  await blockTelemetry(page);
   let inviteRequestPosts = 0;
   await mockApi(page, {
     '/api/auth/capabilities': capabilities(false),
@@ -86,7 +87,8 @@ test('without the capability the landing explains invite-only access and offers 
   expect(inviteRequestPosts).toBe(0);
 });
 
-test('anonymous visitor requests an invite and sees the generic confirmation', async ({ page }, testInfo) => {
+test('anonymous visitor requests an invite and sees the generic confirmation', { tag: '@smoke' }, async ({ page }, testInfo) => {
+  await blockTelemetry(page);
   const posts: unknown[] = [];
   await mockApi(page, {
     '/api/auth/capabilities': capabilities(true),
@@ -184,7 +186,8 @@ test('request errors keep the draft and show field, rate-limit, outage and netwo
   await expect(page.getByTestId('request-invite-done')).toBeHidden();
 });
 
-test('a valid invitation link still continues to account creation', async ({ page }) => {
+test('a valid invitation link still continues to account creation', { tag: '@smoke' }, async ({ page }) => {
+  await blockTelemetry(page);
   await mockApi(page, {
     '/api/auth/capabilities': verifiedInviteCapabilities,
     '/api/invitations/prepare': { ok: true, binding: 'I'.repeat(43), expires_in_seconds: 600 },
@@ -201,7 +204,8 @@ test('a valid invitation link still continues to account creation', async ({ pag
   await expect(page.getByRole('dialog', { name: 'Join Randori Circle' })).toBeVisible();
 });
 
-test('recovery pages without a token show next steps instead of dead ends', async ({ page }, testInfo) => {
+test('recovery pages without a token show next steps instead of dead ends', { tag: '@smoke' }, async ({ page }, testInfo) => {
+  await blockTelemetry(page);
   await mockApi(page, { '/api/auth/capabilities': capabilities(true, { passwordReset: true }) });
   await resetClientState(page);
 
