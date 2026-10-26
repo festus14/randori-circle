@@ -70,8 +70,8 @@ Which feature is on in production, and what each flag needs, is in the
 | Read-only production smoke check | Daily 07:17 UTC and after each production deploy | GitHub Actions |
 
 The design decisions behind all of this are in the
-[decision log](docs/IMPLEMENTED_DECISIONS.md). A current system design document
-is being written in [#359](https://github.com/festus14/randori-circle/issues/359).
+[decision log](docs/IMPLEMENTED_DECISIONS.md). The current system design is
+in [docs/SYSTEM_DESIGN.md](docs/SYSTEM_DESIGN.md).
 
 ## Quickstart
 
