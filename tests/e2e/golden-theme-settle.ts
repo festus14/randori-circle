@@ -77,7 +77,11 @@ import {Page} from '@playwright/test';
 //    closed `<details>` (outside its `<summary>`) is also non-rendered:
 //    Firefox keeps layout boxes for it, but never paints it, so its colour
 //    transition sits at currentTime 0 forever (the landing privacy note's
-//    `<p>`s did exactly that in Firefox). Visible transitions still block:
+//    `<p>`s did exactly that in Firefox). An animation whose currentTime
+//    does not advance across five consecutive polls is stuck, not in
+//    progress (a WebKit `color` transition that never ticks after a :root
+//    custom-property flip), and is ignored; a real transition advances
+//    every poll, so it still blocks. Visible transitions still block:
 //    under `reducedMotion: 'reduce'` they are 0.01 ms, and the
 //    sentinel-colour check still gates on them.
 // This is a poll on the settled state, not a fixed timeout, so it cannot
@@ -94,8 +98,12 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
   // failing, and for animations, which element) instead of a bare
   // TimeoutError: cross-engine settle failures are otherwise undebuggable
   // from CI logs alone.
+  // A per-call token, so stuck-animation state never leaks from one wait
+  // into the next: a fresh transition for the same property must be
+  // judged on its own advancement.
+  const token=`${Date.now()}-${Math.random()}`;
   try{
-    await page.waitForFunction(([targetSelectors,wantLight])=>{
+    await page.waitForFunction(([targetSelectors,wantLight,callToken])=>{
     const diag=(reason:string)=>{
       (window as any).__themeSettleDiag=reason;
       return false;
@@ -199,11 +207,29 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
         }
         return false;
       };
+      // Animations whose currentTime does not advance across polls are
+      // stuck, not in progress: a never-painted element's transition
+      // (Firefox closed-<details> content), or a WebKit `color` transition
+      // that never ticks after a :root custom-property flip. A real
+      // transition advances every poll, so it still blocks; a stuck one is
+      // ignored once it has been observed at the same currentTime for five
+      // consecutive polls (~50 ms). State lives on the window so it
+      // survives across polls, and is reset for every new wait call.
+      const stuckState=(window as any).__themeSettleStuck as
+        {token:string; map:WeakMap<Element,Map<string,{time:number|null; polls:number}>>}|undefined;
+      const stuckMap=stuckState?.token===callToken?stuckState.map:(()=>{ const map=new WeakMap(); (window as any).__themeSettleStuck={token:callToken,map}; return map; })();
       for(const element of [root,...root.querySelectorAll('*')]){
         if(!rendered.has(element)) continue;
         if(inClosedDetails(element)) continue;
         for(const animation of element.getAnimations()){
           if(animation.playState==='running'){
+            const key=(animation as any).transitionProperty??(animation as any).animationName??'';
+            const perElement=stuckMap.get(element)??new Map();
+            const previous=perElement.get(key);
+            if(previous&&previous.time===animation.currentTime) previous.polls+=1;
+            else perElement.set(key,{time:animation.currentTime,polls:0});
+            stuckMap.set(element,perElement);
+            if(previous&&previous.polls>=5) continue;
             const chain: string[]=[];
             for(let node:Element|null=element;node&&chain.length<4;node=node.parentElement)
               chain.push(`${node.tagName.toLowerCase()}#${node.id}.${[...node.classList].join('.')}`);
@@ -214,7 +240,7 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
       }
     }
     return true;
-  },[selectors,light],{timeout:10_000,polling:10});
+  },[selectors,light,token],{timeout:10_000,polling:10});
   }catch(error){
     const diagnosis=await page.evaluate(()=>{
       return (window as any).__themeSettleDiag as string|undefined;
