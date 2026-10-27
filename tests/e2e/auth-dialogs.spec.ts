@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, Page, test, TestInfo } from '@playwright/test';
-import { mockApi, resetClientState } from './helpers';
+import { blockTelemetry, mockApi, resetClientState } from './helpers';
 
 // Golden paths for the WP-A sign-in and account dialogs. Selectors are the
 // stable ids and data-testids the dialogs keep across redesigns.
@@ -30,7 +30,8 @@ async function expectWcagClean(page: Page, testInfo: TestInfo, name: string, sco
   expect(results.violations, `${name} WCAG violations`).toEqual([]);
 }
 
-test('email sign-in validates inline, reveals the password, blocks double submit, and recovers from failures', async ({ page }) => {
+test('email sign-in validates inline, reveals the password, blocks double submit, and recovers from failures', { tag: '@smoke' }, async ({ page }) => {
+  await blockTelemetry(page);
   let signedIn = false;
   let loginCalls = 0;
   let releaseFirst: (() => void) | undefined;
@@ -121,7 +122,8 @@ test('a network failure during sign-in reads as a connection problem, not a raw 
   await expect(page.locator('#authErr')).toHaveText("We couldn't reach Randori. Check your connection and try again.");
 });
 
-test('forgot password keeps the email, sends an enumeration-safe request and explains rate limits', async ({ page }) => {
+test('forgot password keeps the email, sends an enumeration-safe request and explains rate limits', { tag: '@smoke' }, async ({ page }) => {
+  await blockTelemetry(page);
   let requests = 0;
   await mockApi(page, {
     '/api/auth/capabilities': memberCapabilities,
@@ -335,7 +337,8 @@ test('account security explains disabled actions and asks for a recent sign-in b
   expect(confirmCalls).toBe(3);
 });
 
-test('confirmation dialogs trap focus, start on Cancel and return focus on Escape', async ({ page }) => {
+test('confirmation dialogs trap focus, start on Cancel and return focus on Escape', { tag: '@smoke' }, async ({ page }) => {
+  await blockTelemetry(page);
   await mockApi(page, { '/api/auth/capabilities': memberCapabilities });
   await resetClientState(page);
   await page.addInitScript(() => {
@@ -372,7 +375,8 @@ test('confirmation dialogs trap focus, start on Cancel and return focus on Escap
 });
 
 for (const theme of ['dark', 'light'] as const) {
-  test(`sign-in sheet and account security pass WCAG 2.2 AA on mobile in ${theme} mode`, async ({ page }, testInfo) => {
+  test(`sign-in sheet and account security pass WCAG 2.2 AA on mobile in ${theme} mode`, { tag: '@smoke' }, async ({ page }, testInfo) => {
+    await blockTelemetry(page);
     await page.setViewportSize({ width: 393, height: 852 });
     await mockApi(page, {
       '/api/auth/capabilities': memberCapabilities,
@@ -398,6 +402,7 @@ for (const theme of ['dark', 'light'] as const) {
     await page.keyboard.press('Escape');
 
     await page.unrouteAll({ behavior: 'ignoreErrors' });
+    await blockTelemetry(page);
     await mockApi(page, {
       '/api/auth/capabilities': memberCapabilities,
       '/api/auth/me': { ok: true, user: { id: 1, email: 'e2e@example.test', name: 'E2E Tester', is_admin: false } },

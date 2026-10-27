@@ -99,9 +99,108 @@ Playwright worker process and never through a test-only runtime flag:
 - Failures keep a trace and screenshot (`retain-on-failure`); the `e2e`
   workflow uploads `playwright-report` and `test-results` on every run.
 
+## Cross-browser smoke (Firefox / WebKit, issue #399)
+
+The full suite stays Chromium-only. A 24-test `@smoke` subset (10 spec
+files) additionally runs on Firefox and WebKit, in the parallel
+`cross-browser-smoke` matrix job in `.github/workflows/e2e.yml`
+(non-required at first; promote to required after ~2 weeks of green runs).
+Bare `npm run test:e2e` runs all three projects; the full-suite CI jobs
+pin `--project=chromium`.
+
+Projects (`playwright.config.js`): `chromium` (full suite, Desktop
+Chrome, `--host-resolver-rules` for the telemetry block), `firefox-smoke`
+(`grep: /@smoke/`, Desktop Firefox), `webkit-smoke` (`grep: /@smoke/`,
+Desktop Safari). The smoke projects get **no** host-resolver args: that
+flag breaks WebKit launch deterministically and Firefox silently ignores
+it.
+
+Smoke subset (24 test instances; `@smoke` tags are per-test, because some
+files hold Chromium-only tests next to smoke tests):
+
+| Spec | Smoke tests |
+|---|---|
+| `app-smoke.spec.ts` | boots + tabs navigate; suite pinned to checkout; telemetry SDK never initialises under route interception |
+| `landing.spec.ts` | invite-only landing; valid-invitation continuation; recovery pages; anonymous invite request |
+| `signed-out-navigation.spec.ts` | phone + desktop navigation, member deep link, sign-out removes nav (4) |
+| `auth-dialogs.spec.ts` | sign-in validation, forgot password, confirmation dialogs, axe dark + light (5) |
+| `golden-routes-real-runtime.spec.ts` | every client route serves the app shell (2, incl. static/Vercel routing) |
+| `golden-auth-real-runtime.spec.ts` | two-device sign-in + generic wrong-password; expired/replaced reset links (2) |
+| `golden-circle-catalogue-real-runtime.spec.ts` | solo practice: browse/filter/search/open/run (1) |
+| `golden-progress-real-runtime.spec.ts` | progress + axe, both themes (1) |
+| `golden-public-pages-real-runtime.spec.ts` | Privacy/Terms + axe, both colour schemes (1) |
+| `golden-pair-room-real-runtime.spec.ts` | pairing-email link → room + chat with recoverable failed send (1 of its 3 tests) |
+
+### Sentry-interception contract
+
+- Mocked smoke tests call `blockTelemetry(page)` (in
+  `tests/e2e/helpers.ts`) before the first navigation: route interception
+  aborts the Sentry loader (`*.sentry-cdn.com`) and any ingest
+  (`*.sentry.io`) at the route layer in every engine. The failure text is
+  engine-specific (Chromium `net::ERR_BLOCKED_BY_CLIENT.Inspector`,
+  Firefox `NS_ERROR_FAILURE`, WebKit `Blocked by Web Inspector`).
+  Re-register after any `page.unrouteAll()`.
+- Golden smoke tests need no explicit call: the local runtime strips the
+  Sentry loader from the client it serves, and `newGoldenPage` aborts
+  every off-origin request.
+- `app-smoke.spec.ts` holds both sides of the split: the
+  Chromium-host-resolver test (`net::ERR_NAME_NOT_RESOLVED`, no tag, no
+  interception — interception would mask the mechanism it guards) and the
+  `@smoke` interception test (exactly one failed telemetry request; the
+  failure text is engine-specific, see above).
+- `--host-resolver-rules` stays Chromium-only (defence in depth for the
+  full suite), never in the shared `use` block.
+
+### Chromium-only (never in smoke)
+
+- The host-resolver telemetry test above.
+- Fake-clock-heavy specs (`auth-ui` invite-expiry, `member-lifecycle`,
+  `pairing-cycle-ui`, `schedule-sync`, …): the Sentry + fake-clock hazard
+  in Firefox/WebKit is unproven, and interception removes the source but
+  repeated clock-heavy runs under it were never done.
+- Everything not tagged `@smoke`, including the rest of each golden file.
+- No full-suite ×3, no nightly golden run, no Safari-on-macOS (Playwright
+  WebKit on Linux is the CI engine).
+
+### Settle-helper note
+
+`waitForThemeSettled` (`tests/e2e/golden-theme-settle.ts`) ignores
+animations on non-rendered elements: an element counts as rendered if it
+owns a layout box itself or has a descendant that does
+(`display:contents` ancestors are not skipped), and content of a closed
+`<details>` (outside its `<summary>`) is non-rendered — Firefox keeps
+layout boxes for it but never paints it, so its colour transition sits
+at `currentTime` 0 forever. Container sentinels check background only:
+their foreground is inherited, not container-controlled.
+
+The stuck-animation rule above exists because a transition created
+by a theme flip can stick at `currentTime` 0 (Playwright's
+reduced-motion emulation gives Firefox/WebKit elements
+`transition: all` at 0.01 ms). Finishing it snaps the property to its
+end value. But the deeper WebKit failure is stale inherited colour:
+after a `:root` custom-property flip, elements whose colour is only
+inherited keep the previous theme's colour (topic names and table
+cells at contrast 1.13 in light mode), even though every directly
+coloured element on the page updates — and a direct colour on a
+container does not refresh its descendants. In the progress view,
+the two rule-less text elements — topic names and table cells —
+needed their own direct `color` rule (see the
+`.progress-coverage-head b` / `.progress-table td` rules in
+`assets/circle-history.css`); other themed views pass the WebKit
+smoke run with inherited colours. A stylesheet rebuild on toggle and a
+direct colour on `.card` were both tried and did not refresh
+descendants.
+
 ## Running
 
 ```bash
-npx playwright test tests/e2e/golden-        # the golden-path journeys
-npm run test:e2e                             # the full suite (Linux CI is authoritative)
+npx playwright test tests/e2e/golden- --project=chromium  # the golden-path journeys (Chromium-only)
+npm run test:e2e -- --project=chromium                    # the full suite, Chromium-only (Linux CI is authoritative)
+npm run test:e2e -- --project=firefox-smoke               # the @smoke subset on Firefox
+npm run test:e2e -- --project=webkit-smoke                # the @smoke subset on WebKit
 ```
+
+Bare `npm run test:e2e` (or `npx playwright test`) runs all three
+projects — 403 test instances (355 Chromium + 24 Firefox + 24
+WebKit) — and needs all three browsers installed, so it fails
+locally unless Firefox and WebKit are installed.

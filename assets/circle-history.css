@@ -302,6 +302,7 @@
 }
 .progress-details > summary:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 .progress-table { margin-top: var(--space-2); }
+.progress-table td { color: var(--color-text); } /* direct colour: see the note above */
 .progress-table th[scope="row"] { font-weight: var(--weight-emphasis); color: var(--color-text); background: transparent; }
 .progress-section { display: grid; gap: var(--space-2); min-width: 0; }
 .progress-section > p { margin: 0; }
@@ -315,7 +316,12 @@
 }
 .progress-coverage-row[data-state="untouched"] { background: transparent; }
 .progress-coverage-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-2); }
-.progress-coverage-head b { font-size: var(--text-sm); overflow-wrap: anywhere; }
+/* Direct colour, not inherited: WebKit does not reliably re-resolve
+   inherited `color` when a :root custom property flips (theme toggle
+   left these at the previous theme's colour, contrast 1.13 in light
+   mode). Every text element in this view needs its own direct colour;
+   a direct colour on a container does not refresh its descendants. */
+.progress-coverage-head b { font-size: var(--text-sm); overflow-wrap: anywhere; color: var(--color-text); }
 .progress-meter { width: 100%; height: 6px; accent-color: var(--color-success); }
 @media (forced-colors: active) {
   .progress-week, .progress-bar, .progress-role, .progress-swatch { forced-color-adjust: auto; }

@@ -50,10 +50,41 @@ import {Page} from '@playwright/test';
 //         or button, only the inner `.card`; the region root itself has no
 //         background, so #390's root fallback, which assumed
 //         `--color-surface`, would time out there).
+//    Container sentinels (step 6) are checked on background only: their
+//    foreground is inherited, not set by the container's own rule, and
+//    WebKit reports the inherited colour stale after a theme flip (body
+//    already light, the progress card's parent still dark) even though
+//    the painted text colours resolve from direct var() rules on the
+//    text elements. Control sentinels (steps 1-5) set both colours
+//    directly, so both are checked.
 //    If no sentinel can be identified at all, only the class + animation
 //    checks below apply, rather than timing out on a guessed palette.
-//  - no CSS transition/animation is still running on any element inside any
-//    scanned region (`getAnimations()`).
+//  - no CSS transition/animation is still running on any rendered element
+//    inside any scanned region (`getAnimations()`). Animations on
+//    non-rendered elements are ignored: Firefox leaves the transitions of
+//    elements in a `display:none` subtree (e.g. the hidden invite form on
+//    the landing page after a successful request) reporting
+//    `playState: 'running'` indefinitely — in the instrumented Firefox
+//    failure the sentinel colours already matched the settled palette, but
+//    transitions on elements inside `#view-landing` never finished, so the
+//    wait timed out at 10 s. Those elements paint nothing (no layout box
+//    anywhere in their subtree, and `[hidden]{display:none!important}` in
+//    index.html is what hides them), so they cannot affect the axe run the
+//    wait gates. An element counts as rendered if it owns a layout box
+//    itself or has a descendant that does, so a `display:contents` ancestor
+//    — box-less, but rendering through descendants whose inherited colours
+//    its own transition would still animate — is NOT skipped. Content of a
+//    closed `<details>` (outside its `<summary>`) is also non-rendered:
+//    Firefox keeps layout boxes for it, but never paints it, so its colour
+//    transition sits at currentTime 0 forever (the landing privacy note's
+//    `<p>`s did exactly that in Firefox). An animation whose currentTime
+//    does not advance across five consecutive polls is stuck, not in
+//    progress (a WebKit `color` transition that never ticks after a :root
+//    custom-property flip); it is finished, snapping the property to its
+//    end value, instead of being left frozen at its pre-toggle value. A
+//    real transition advances every poll, so it still blocks. Visible
+//    transitions still block: under `reducedMotion: 'reduce'` they are
+//    0.01 ms, and the sentinel-colour check still gates on them.
 // This is a poll on the settled state, not a fixed timeout, so it cannot
 // pass by luck on a slow runner; if the theme never settles it times out
 // instead of running axe mid-transition.
@@ -64,8 +95,22 @@ import {Page} from '@playwright/test';
 
 export async function waitForThemeSettled(page:Page,selector:string|string[],light:boolean){
   const selectors=Array.isArray(selector)?selector:[selector];
-  await page.waitForFunction(([targetSelectors,wantLight])=>{
-    if(document.documentElement.classList.contains('light')!==wantLight) return false;
+  // On timeout, surface the last recorded diagnosis (which check was still
+  // failing, and for animations, which element) instead of a bare
+  // TimeoutError: cross-engine settle failures are otherwise undebuggable
+  // from CI logs alone.
+  // A per-call token, so stuck-animation state never leaks from one wait
+  // into the next: a fresh transition for the same property must be
+  // judged on its own advancement.
+  const token=`${Date.now()}-${Math.random()}`;
+  try{
+    await page.waitForFunction(([targetSelectors,wantLight,callToken])=>{
+    const diag=(reason:string)=>{
+      (window as any).__themeSettleDiag=reason;
+      return false;
+    };
+    if(document.documentElement.classList.contains('light')!==wantLight)
+      return diag(`html class light=${document.documentElement.classList.contains('light')} wantLight=${wantLight}`);
     const rootStyle=getComputedStyle(document.documentElement);
     const toRgb=(hex:string)=>{
       const value=hex.trim().replace(/^#/,'');
@@ -108,9 +153,11 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
     };
     for(const targetSelector of targetSelectors){
       const root=document.querySelector(targetSelector);
-      if(!root) return false;
+      if(!root) return diag(`missing root ${targetSelector}`);
       let sentinel:Element|null=null;
       let palette:{bgVar:string;fgVar:string}|null=null;
+      // Container sentinels (step 6) check background only; see the header.
+      let checkSentinelFg=true;
       const pick=(candidate:Element|null,next:{bgVar:string;fgVar:string})=>{
         if(candidate&&!sentinel){ sentinel=candidate; palette=next; }
       };
@@ -125,21 +172,92 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
       if(!sentinel){
         for(const element of [root,...root.querySelectorAll('.card, .catalog-suggestions, .catalog-list, .catalog-card, .onboarding-row, .rc-card--raised, .modal, .rc-dialog')]){
           const next=containerPalette(element);
-          if(next){ sentinel=element; palette=next; break; }
+          if(next){ sentinel=element; palette=next; checkSentinelFg=false; break; }
         }
       }
       if(sentinel&&palette){
         const style=getComputedStyle(sentinel);
         const target=expected(palette.bgVar,palette.fgVar);
-        if(style.backgroundColor!==target.bg) return false;
-        if(style.color!==target.fg) return false;
+        if(style.backgroundColor!==target.bg)
+          return diag(`sentinel ${sentinel.tagName.toLowerCase()}#${sentinel.id}.${[...sentinel.classList].join('.')} background ${style.backgroundColor} != ${target.bg} (fg ${style.color} vs ${target.fg}) bodyColor=${getComputedStyle(document.body).color} htmlColor=${getComputedStyle(document.documentElement).color} parentColor=${sentinel.parentElement?getComputedStyle(sentinel.parentElement).color:'none'}`);
+        if(checkSentinelFg&&style.color!==target.fg)
+          return diag(`sentinel ${sentinel.tagName.toLowerCase()}#${sentinel.id}.${[...sentinel.classList].join('.')} color ${style.color} != ${target.fg} (bg ${style.backgroundColor} vs ${target.bg}) bodyColor=${getComputedStyle(document.body).color} htmlColor=${getComputedStyle(document.documentElement).color} parentColor=${sentinel.parentElement?getComputedStyle(sentinel.parentElement).color:'none'} transition=${getComputedStyle(sentinel).transitionProperty}/${getComputedStyle(sentinel).transitionDuration}`);
       }
+      // An element is rendered if it owns a layout box, or an ancestor of
+      // one that does (display:contents renders through its descendants).
+      // Mark ancestors of every box-owning element, stopping at the first
+      // already-marked ancestor: marking is transitive, so its ancestors
+      // were marked when it was.
+      const rendered=new Set<Element>();
       for(const element of [root,...root.querySelectorAll('*')]){
+        if(element.getClientRects().length===0) continue;
+        for(let node:Element|null=element;node&&!rendered.has(node);node=node.parentElement) rendered.add(node);
+      }
+      // Content of a closed <details> is never painted, even though Firefox
+      // keeps layout boxes for it — its transitions never advance. The
+      // <summary> of a closed details IS painted, so content inside a
+      // summary is not hidden by its details; walk outward past summaries.
+      const inClosedDetails=(el:Element)=>{
+        for(let node=el.parentElement;node;node=node.parentElement){
+          if(node.tagName!=='DETAILS') continue;
+          if((node as HTMLDetailsElement).open) continue;
+          for(const child of node.children){
+            if(child.tagName==='SUMMARY'&&(child===el||child.contains(el))) return false;
+          }
+          return true;
+        }
+        return false;
+      };
+      // Animations whose currentTime does not advance across polls are
+      // stuck, not in progress. Playwright's reduced-motion emulation
+      // gives Firefox/WebKit elements `transition: all` (0.01 ms), and a
+      // transition created by a theme flip can stick at currentTime 0
+      // (never-painted element, or a WebKit transition that never ticks
+      // after a :root custom-property flip) — freezing the property at
+      // its pre-toggle value, so axe would sample the wrong theme. A real
+      // transition advances every poll, so it still blocks; a stuck one
+      // is finished once it has been observed at the same currentTime for
+      // five consecutive polls (~50 ms), snapping the property to its end
+      // value. State lives on the window so it survives across polls, and
+      // is reset for every new wait call.
+      const stuckState=(window as any).__themeSettleStuck as
+        {token:string; map:WeakMap<Element,Map<string,{time:number|null; polls:number}>>}|undefined;
+      const stuckMap=stuckState?.token===callToken?stuckState.map:(()=>{ const map=new WeakMap(); (window as any).__themeSettleStuck={token:callToken,map}; return map; })();
+      for(const element of [root,...root.querySelectorAll('*')]){
+        if(!rendered.has(element)) continue;
+        if(inClosedDetails(element)) continue;
         for(const animation of element.getAnimations()){
-          if(animation.playState==='running') return false;
+          if(animation.playState==='running'){
+            const key=(animation as any).transitionProperty??(animation as any).animationName??'';
+            const perElement=stuckMap.get(element)??new Map();
+            const previous=perElement.get(key);
+            if(previous&&previous.time===animation.currentTime) previous.polls+=1;
+            else perElement.set(key,{time:animation.currentTime,polls:0});
+            stuckMap.set(element,perElement);
+            if(previous&&previous.polls>=5){
+              // Snap a stuck transition to its end value (and out of the
+              // running list); a real transition never reaches this branch.
+              try{ animation.finish(); }catch{}
+              continue;
+            }
+            const chain: string[]=[];
+            for(let node:Element|null=element;node&&chain.length<4;node=node.parentElement)
+              chain.push(`${node.tagName.toLowerCase()}#${node.id}.${[...node.classList].join('.')}`);
+            const computed=getComputedStyle(element);
+            return diag(`running animationName=${(animation as any).animationName??''} transitionProperty=${(animation as any).transitionProperty??''} currentTime=${animation.currentTime} on ${element.tagName.toLowerCase()}#${element.id}.${[...element.classList].join('.')} chain=${chain.join(' < ')} rects=${element.getClientRects().length} playState=${animation.playState} transition=${computed.transitionProperty}/${computed.transitionDuration} animation=${computed.animationName}/${computed.animationDuration}/${computed.animationIterationCount}`);
+          }
         }
       }
     }
     return true;
-  },[selectors,light],{timeout:10_000,polling:10});
+  },[selectors,light,token],{timeout:10_000,polling:10});
+  }catch(error){
+    const diagnosis=await page.evaluate(()=>{
+      return (window as any).__themeSettleDiag as string|undefined;
+    }).catch(()=>undefined);
+    throw new Error(
+      `waitForThemeSettled(${JSON.stringify(selectors)}, light=${light}) timed out: ${diagnosis??'no diagnosis recorded'}`,
+      {cause:error},
+    );
+  }
 }

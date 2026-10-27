@@ -44,12 +44,60 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
       - name: Run browser tests against checkout
-        run: npm run test:e2e
+        # Full suite, Chromium-only: test:e2e is bare `playwright test`,
+        # which would otherwise also run the firefox-smoke / webkit-smoke
+        # projects. Pin to chromium here (and in ubuntu-26-canary.yml).
+        run: npm run test:e2e -- --project=chromium
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-report-${{ github.run_attempt }}
+          path: |
+            playwright-report
+            test-results
+          retention-days: 7
+          if-no-files-found: ignore
+  # Cross-browser smoke (issue #399): the @smoke subset only, on Firefox
+  # and WebKit, in parallel with the full-suite `e2e` job. Non-required at
+  # first (not in branch protection): promote to required after ~2 weeks
+  # of green runs. Each matrix leg installs only its own browser; the
+  # smoke run itself is ~1 min of test time per engine.
+  cross-browser-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - browser: firefox
+            project: firefox-smoke
+          - browser: webkit
+            project: webkit-smoke
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Install Playwright browser
+        # install --with-deps intermittently stalls on apt (two 20-minute
+        # hangs on this job). Give each attempt its own timeout so a hung
+        # attempt is killed and the retry actually runs, instead of the
+        # step timeout killing the whole step mid-retry.
+        timeout-minutes: 12
+        run: timeout 330 npx playwright install --with-deps ${{ matrix.browser }} || timeout 330 npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Run cross-browser smoke tests
+        run: npm run test:e2e -- --project=${{ matrix.project }}
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report-${{ matrix.browser }}-${{ github.run_attempt }}
           path: |
             playwright-report
             test-results

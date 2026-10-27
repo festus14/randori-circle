@@ -1,7 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import {BrowserContext,expect,Page,test} from '@playwright/test';
 
-import {newGoldenPage,openSignin,signInOwner,startGoldenRuntime,type GoldenRuntime} from './golden-runtime';
+import {newGoldenPage,openSignin,signInOwner,startGoldenRuntime,waitForAppFetchesSettled,type GoldenRuntime} from './golden-runtime';
 
 // Golden path 19 (ID-79): the public Privacy Policy and Terms of Service that
 // Google's OAuth branding page links to. A signed-out visitor finds both from
@@ -68,7 +68,7 @@ async function expectAccessible(page:Page,label:string){
   await page.emulateMedia({colorScheme:null});
 }
 
-test('a signed-out visitor opens the Privacy Policy and Terms from the landing page, and a member reaches them from the account menu',async({browser})=>{
+test('a signed-out visitor opens the Privacy Policy and Terms from the landing page, and a member reaches them from the account menu',{tag:'@smoke'},async({browser})=>{
   test.setTimeout(120_000);
   const golden=await startGoldenRuntime('randori-golden-public-pages-');
   try{
@@ -92,6 +92,10 @@ test('a signed-out visitor opens the Privacy Policy and Terms from the landing p
     for(const item of PAGES){
       await page.goto(`${golden.url}/`,{waitUntil:'domcontentloaded'});
       await expect(page.locator('#view-landing')).toBeVisible();
+      // Let the boot fetches settle before navigating away (see
+      // waitForAppFetchesSettled): WebKit reports a pageerror for a fetch
+      // aborted by navigation, even though the app catches it.
+      await waitForAppFetchesSettled(page);
       const link=page.getByTestId(item.landingLink);
       await expect(link).toBeVisible();
       await expect(link).toHaveAttribute('href',item.path);
@@ -105,6 +109,9 @@ test('a signed-out visitor opens the Privacy Policy and Terms from the landing p
       await page.getByTestId('public-page-back').click();
       await expect(page).toHaveURL(`${golden.url}/`);
       await expect(page.locator('#view-landing')).toBeVisible();
+      // Let the boot fetches settle before the next navigation (see
+      // waitForAppFetchesSettled).
+      await waitForAppFetchesSettled(page);
     }
 
     // The in-page privacy note links the full policy too.

@@ -26,7 +26,7 @@ import {
 // password-auth-journey-real-runtime.spec.ts; this file covers the remaining
 // session-revocation and terminal reset-link states without API mocks.
 
-test('a member signs in on two devices, a wrong password stays generic, and sign out everywhere revokes both',async({browser})=>{
+test('a member signs in on two devices, a wrong password stays generic, and sign out everywhere revokes both',{tag:'@smoke'},async({browser})=>{
   test.setTimeout(90_000);
   const golden=await startGoldenRuntime('randori-golden-logout-all-');
   try{
@@ -72,7 +72,7 @@ test('a member signs in on two devices, a wrong password stays generic, and sign
   }
 });
 
-test('expired and replaced reset links explain why and offer a new link that still works',async({browser})=>{
+test('expired and replaced reset links explain why and offer a new link that still works',{tag:'@smoke'},async({browser})=>{
   test.setTimeout(90_000);
   const golden=await startGoldenRuntime('randori-golden-reset-terminal-');
   const {page}=await newGoldenPage(browser,golden);

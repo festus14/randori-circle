@@ -59,7 +59,7 @@ async function expectProgressAccessible(page:Page){
   await page.setViewportSize({width:1280,height:900});
 }
 
-test('progress: a member sees only their own sessions, streak, coverage and role, and the numbers match History',async({browser})=>{
+test('progress: a member sees only their own sessions, streak, coverage and role, and the numbers match History',{tag:'@smoke'},async({browser})=>{
   test.setTimeout(180_000);
   const original=process.env[FLAG];
   process.env[FLAG]='true';

@@ -84,7 +84,7 @@ test('the owner revokes an invitation, sees a new member join the roster, and re
   }
 });
 
-test('solo practice browses, filters and searches the catalogue, opens an exercise, and runs it',async({browser})=>{
+test('solo practice browses, filters and searches the catalogue, opens an exercise, and runs it',{tag:'@smoke'},async({browser})=>{
   test.setTimeout(90_000);
   const golden=await startGoldenRuntime('randori-golden-catalogue-');
   const transport=installDeterministicExecutionTransport(()=>golden.origin);

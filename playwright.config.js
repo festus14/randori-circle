@@ -8,9 +8,14 @@ const baseURL = `http://127.0.0.1:${port}`;
 // native-timer probing races Playwright's fake clock injection: in roughly
 // one run in ten, page.clock.fastForward() stops reaching the clock that owns
 // the app's timers, so fake-clock tests (e.g. invite expiry) wait on real
-// time and fail. Make the telemetry hosts unresolvable for every context.
+// time and fail. For Chromium, make the telemetry hosts unresolvable for
+// every context via --host-resolver-rules (Chromium-only: the flag breaks
+// WebKit launch deterministically and Firefox silently ignores it, so it
+// lives on the `chromium` project only, never in the shared `use` block).
 // page.route() still intercepts first, so tests that substitute the loader
-// with a probe keep working.
+// with a probe keep working. The smoke projects block the same hosts with
+// route interception instead (blockTelemetry in tests/e2e/helpers.ts),
+// which works identically in every engine.
 const telemetryHostResolverRules = [
   'MAP js-de.sentry-cdn.com ~NOTFOUND',
   'MAP browser.sentry-cdn.com ~NOTFOUND',
@@ -31,13 +36,11 @@ export default defineConfig({
     : [['list'], ['html', { open: 'never' }]],
   use: {
     baseURL,
-    ...devices['Desktop Chrome'],
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'off',
     actionTimeout: 12000,
     navigationTimeout: 20000,
-    launchOptions: { args: [`--host-resolver-rules=${telemetryHostResolverRules}`] },
     // index.html sets `html{scroll-behavior:smooth}` (off under reduced
     // motion), so focusing an off-screen field (fill) starts an animated
     // scroll. On a busy page the animation can begin after Playwright's
@@ -48,6 +51,33 @@ export default defineConfig({
     // ~0 ms for all contexts, including browser.newContext().
     reducedMotion: 'reduce',
   },
+  // Three projects, one config. `chromium` is the full suite exactly as
+  // before (Desktop Chrome, host-resolver rules). The smoke
+  // projects run only the `@smoke`-tagged tests, on Desktop Firefox /
+  // Desktop Safari, with NO host-resolver args: that flag breaks WebKit
+  // launch and Firefox ignores it, so the smoke projects rely on route
+  // interception (blockTelemetry) for the Sentry block instead. Bare
+  // `playwright test` / `npm run test:e2e` runs all three projects; the
+  // full-suite CI jobs pin `--project=chromium` so they stay Chromium-only.
+  projects: [
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: { args: [`--host-resolver-rules=${telemetryHostResolverRules}`] },
+      },
+    },
+    {
+      name: 'firefox-smoke',
+      grep: /@smoke/,
+      use: { ...devices['Desktop Firefox'] },
+    },
+    {
+      name: 'webkit-smoke',
+      grep: /@smoke/,
+      use: { ...devices['Desktop Safari'] },
+    },
+  ],
   webServer: {
     command: 'npm run start:test',
     url: baseURL,
