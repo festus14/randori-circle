@@ -129,9 +129,12 @@ These are containment actions, not the target architecture.
 
 ## Recommended architecture
 
-![Randori Circle recommended production architecture](./randori-production-architecture.png)
-
-Browser-viewable version: [SVG architecture diagram](./randori-production-architecture.svg). Editable source: [Excalidraw file](./randori-production-architecture.excalidraw).
+Architecture diagrams: the current diagrams are the Mermaid diagrams in
+[SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) — the flowchart in
+[§1 Overview](SYSTEM_DESIGN.md#1-overview) and the ERD in
+[§4.1](SYSTEM_DESIGN.md#41-erd-main-tables). The legacy Excalidraw/SVG/PNG
+diagram for this proposed target was deleted (#430); this plan's text is
+retained as the historical record.
 
 ```text
 Users

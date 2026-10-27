@@ -862,20 +862,15 @@ sequenceDiagram
   Mermaid, so the source and the rendering cannot drift apart.
 - **Sequence diagrams:** §5.1, §5.4, §11.1, §11.2, §11.4, §11.6.
 - **Historical proposal:**
-  `docs/randori-production-architecture.{excalidraw,svg,png}` still
-  depict the proposed Next.js / Supabase / Liveblocks / LiveKit
-  target from `PRODUCTION_ARCHITECTURE_PLAN.md`. They were **not**
-  edited to look current, deliberately: the `.excalidraw` file is
-  hand-positioned JSON, and the `.svg`/`.png` are rendered exports
-  of it. The repo has no checked-in renderer or export pipeline
-  for Excalidraw, so hand-editing the JSON (and then hand-editing
-  the SVG and PNG to match) would produce three artefacts that
-  disagree with each other and with the code, with no way for a
-  reviewer to verify the result. The honest update is this
-  document's Mermaid diagrams plus the historical banner on the
-  plan (see below). If a future issue adds an Excalidraw export
-  pipeline, that issue can regenerate the overview from a
-  verified source.
+  `PRODUCTION_ARCHITECTURE_PLAN.md` describes the proposed
+  Next.js / Supabase / Liveblocks / LiveKit target. Its accompanying
+  Excalidraw/SVG/PNG diagram files were deleted (#430): they depicted
+  that superseded target, and the repo has no checked-in Excalidraw
+  export pipeline, so they
+  could not be regenerated verifiably from this document's Mermaid
+  diagrams. The plan itself is kept as the historical record, with
+  its historical banner; the honest update is this document's
+  Mermaid diagrams plus that banner.
 
 ## Appendix — migration versions (v1–v22)
 
