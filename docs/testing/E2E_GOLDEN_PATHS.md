@@ -167,10 +167,20 @@ files hold Chromium-only tests next to smoke tests):
 `waitForThemeSettled` (`tests/e2e/golden-theme-settle.ts`) ignores
 animations on non-rendered elements: an element counts as rendered if it
 owns a layout box itself or has a descendant that does
-(`display:contents` ancestors are not skipped). Firefox left transitions
-in the hidden (`display:none`) invite-form subtree reporting `running`
-indefinitely, which timed the landing invite test out at 10 s; the guard
-still blocks on any visible transition.
+(`display:contents` ancestors are not skipped), and content of a closed
+`<details>` (outside its `<summary>`) is non-rendered — Firefox keeps
+layout boxes for it but never paints it, so its colour transition sits
+at `currentTime` 0 forever. Container sentinels check background only:
+their foreground is inherited, not container-controlled.
+
+WebKit needs one more thing from the app itself: inherited `color` in
+dynamically-created subtrees does not reliably re-resolve when a `:root`
+custom property flips (theme toggle left card text at the previous
+theme's colour, contrast 1.13 in light mode, while backgrounds updated).
+`.card`/`.rc-card` and `.modal`/`.rc-dialog` therefore set
+`color: var(--color-text)` directly in `index.html` — identical to the
+inherited value where inheritance works, and a recalculation root for
+their subtrees in WebKit.
 
 ## Running
 
