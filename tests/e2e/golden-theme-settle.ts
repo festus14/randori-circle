@@ -50,6 +50,13 @@ import {Page} from '@playwright/test';
 //         or button, only the inner `.card`; the region root itself has no
 //         background, so #390's root fallback, which assumed
 //         `--color-surface`, would time out there).
+//    Container sentinels (step 6) are checked on background only: their
+//    foreground is inherited, not set by the container's own rule, and
+//    WebKit reports the inherited colour stale after a theme flip (body
+//    already light, the progress card's parent still dark) even though
+//    the painted text colours resolve from direct var() rules on the
+//    text elements. Control sentinels (steps 1-5) set both colours
+//    directly, so both are checked.
 //    If no sentinel can be identified at all, only the class + animation
 //    checks below apply, rather than timing out on a guessed palette.
 //  - no CSS transition/animation is still running on any rendered element
@@ -66,9 +73,13 @@ import {Page} from '@playwright/test';
 //    wait gates. An element counts as rendered if it owns a layout box
 //    itself or has a descendant that does, so a `display:contents` ancestor
 //    — box-less, but rendering through descendants whose inherited colours
-//    its own transition would still animate — is NOT skipped. Visible
-//    transitions still block: under `reducedMotion: 'reduce'` they are
-//    0.01 ms, and the sentinel-colour check still gates on them.
+//    its own transition would still animate — is NOT skipped. Content of a
+//    closed `<details>` (outside its `<summary>`) is also non-rendered:
+//    Firefox keeps layout boxes for it, but never paints it, so its colour
+//    transition sits at currentTime 0 forever (the landing privacy note's
+//    `<p>`s did exactly that in Firefox). Visible transitions still block:
+//    under `reducedMotion: 'reduce'` they are 0.01 ms, and the
+//    sentinel-colour check still gates on them.
 // This is a poll on the settled state, not a fixed timeout, so it cannot
 // pass by luck on a slow runner; if the theme never settles it times out
 // instead of running axe mid-transition.
@@ -136,6 +147,8 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
       if(!root) return diag(`missing root ${targetSelector}`);
       let sentinel:Element|null=null;
       let palette:{bgVar:string;fgVar:string}|null=null;
+      // Container sentinels (step 6) check background only; see the header.
+      let checkSentinelFg=true;
       const pick=(candidate:Element|null,next:{bgVar:string;fgVar:string})=>{
         if(candidate&&!sentinel){ sentinel=candidate; palette=next; }
       };
@@ -150,7 +163,7 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
       if(!sentinel){
         for(const element of [root,...root.querySelectorAll('.card, .catalog-suggestions, .catalog-list, .catalog-card, .onboarding-row, .rc-card--raised, .modal, .rc-dialog')]){
           const next=containerPalette(element);
-          if(next){ sentinel=element; palette=next; break; }
+          if(next){ sentinel=element; palette=next; checkSentinelFg=false; break; }
         }
       }
       if(sentinel&&palette){
@@ -158,7 +171,7 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
         const target=expected(palette.bgVar,palette.fgVar);
         if(style.backgroundColor!==target.bg)
           return diag(`sentinel ${sentinel.tagName.toLowerCase()}#${sentinel.id}.${[...sentinel.classList].join('.')} background ${style.backgroundColor} != ${target.bg} (fg ${style.color} vs ${target.fg}) bodyColor=${getComputedStyle(document.body).color} htmlColor=${getComputedStyle(document.documentElement).color} parentColor=${sentinel.parentElement?getComputedStyle(sentinel.parentElement).color:'none'}`);
-        if(style.color!==target.fg)
+        if(checkSentinelFg&&style.color!==target.fg)
           return diag(`sentinel ${sentinel.tagName.toLowerCase()}#${sentinel.id}.${[...sentinel.classList].join('.')} color ${style.color} != ${target.fg} (bg ${style.backgroundColor} vs ${target.bg}) bodyColor=${getComputedStyle(document.body).color} htmlColor=${getComputedStyle(document.documentElement).color} parentColor=${sentinel.parentElement?getComputedStyle(sentinel.parentElement).color:'none'} transition=${getComputedStyle(sentinel).transitionProperty}/${getComputedStyle(sentinel).transitionDuration}`);
       }
       // An element is rendered if it owns a layout box, or an ancestor of
@@ -171,8 +184,24 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
         if(element.getClientRects().length===0) continue;
         for(let node:Element|null=element;node&&!rendered.has(node);node=node.parentElement) rendered.add(node);
       }
+      // Content of a closed <details> is never painted, even though Firefox
+      // keeps layout boxes for it — its transitions never advance. The
+      // <summary> of a closed details IS painted, so content inside a
+      // summary is not hidden by its details; walk outward past summaries.
+      const inClosedDetails=(el:Element)=>{
+        for(let node=el.parentElement;node;node=node.parentElement){
+          if(node.tagName!=='DETAILS') continue;
+          if((node as HTMLDetailsElement).open) continue;
+          for(const child of node.children){
+            if(child.tagName==='SUMMARY'&&(child===el||child.contains(el))) return false;
+          }
+          return true;
+        }
+        return false;
+      };
       for(const element of [root,...root.querySelectorAll('*')]){
         if(!rendered.has(element)) continue;
+        if(inClosedDetails(element)) continue;
         for(const animation of element.getAnimations()){
           if(animation.playState==='running'){
             const chain: string[]=[];
