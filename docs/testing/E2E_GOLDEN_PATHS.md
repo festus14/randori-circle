@@ -173,15 +173,18 @@ layout boxes for it but never paints it, so its colour transition sits
 at `currentTime` 0 forever. Container sentinels check background only:
 their foreground is inherited, not container-controlled.
 
-The stuck-animation rule above exists because Playwright's
+The stuck-animation rule above exists because a transition created
+by a theme flip can stick at `currentTime` 0 (Playwright's
 reduced-motion emulation gives Firefox/WebKit elements
-`transition: all` (0.01 ms), and a transition created by a theme flip
-can stick at `currentTime` 0 — freezing the property at its pre-toggle
-value, so axe would sample the wrong theme (card text at contrast 1.13
-in light mode in WebKit). Finishing the stuck transition snaps the
-property to its end value. Real Safari has no such injected transition,
-so this is a test-environment artefact, not an app bug: no app CSS
-change is needed for it.
+`transition: all` at 0.01 ms). Finishing it snaps the property to its
+end value. But the deeper WebKit failure is stale computed styles:
+after a `:root` custom-property flip, dynamically-created subtrees
+keep the previous theme's text colours (card text at contrast 1.13 in
+light mode) even with no transition holding them. `applyTheme` in
+`index.html` therefore replaces the app stylesheet on an actual theme
+change, forcing a full style rebuild with the current variables — a
+real Safari fix, not a test workaround, and it runs only when the
+theme changes.
 
 ## Running
 
