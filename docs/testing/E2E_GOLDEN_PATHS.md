@@ -173,14 +173,15 @@ layout boxes for it but never paints it, so its colour transition sits
 at `currentTime` 0 forever. Container sentinels check background only:
 their foreground is inherited, not container-controlled.
 
-WebKit needs one more thing from the app itself: inherited `color` in
-dynamically-created subtrees does not reliably re-resolve when a `:root`
-custom property flips (theme toggle left card text at the previous
-theme's colour, contrast 1.13 in light mode, while backgrounds updated).
-`.card`/`.rc-card` and `.modal`/`.rc-dialog` therefore set
-`color: var(--color-text)` directly in `index.html` — identical to the
-inherited value where inheritance works, and a recalculation root for
-their subtrees in WebKit.
+The stuck-animation rule above exists because Playwright's
+reduced-motion emulation gives Firefox/WebKit elements
+`transition: all` (0.01 ms), and a transition created by a theme flip
+can stick at `currentTime` 0 — freezing the property at its pre-toggle
+value, so axe would sample the wrong theme (card text at contrast 1.13
+in light mode in WebKit). Finishing the stuck transition snaps the
+property to its end value. Real Safari has no such injected transition,
+so this is a test-environment artefact, not an app bug: no app CSS
+change is needed for it.
 
 ## Running
 

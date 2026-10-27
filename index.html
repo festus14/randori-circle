@@ -574,14 +574,6 @@ a.account-menu-item--legal{padding-left:calc(var(--space-3) * 2 + 20px)} /* text
 .card,.rc-card{
   background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-lg);
   box-shadow:var(--shadow-1); overflow:hidden;
-  /* Direct text colour, not inherited: WebKit does not reliably
-     re-resolve inherited `color` in dynamically-created subtrees when a
-     :root custom property flips (theme toggle leaves card text at the
-     previous theme's colour, contrast 1.13 in light mode). A direct var()
-     reference makes the card a recalculation root, so its descendants
-     inherit the fresh value. Identical to the inherited value in
-     browsers where inheritance re-resolves. */
-  color:var(--color-text);
 }
 .rc-card--raised{background:var(--color-surface-raised); box-shadow:var(--shadow-2)}
 .card-h{padding:var(--space-4) var(--space-5) var(--space-3); display:flex; align-items:center; justify-content:space-between; gap:var(--space-3); border-bottom:1px solid var(--color-border)}
@@ -998,7 +990,7 @@ a.account-menu-item--legal{padding-left:calc(var(--space-3) * 2 + 20px)} /* text
 .overlay.show{display:flex}
 /* Keep the historical stacking order of the overlays that carry inline z-index values. */
 #identityOverlay{z-index:calc(var(--z-modal) + 10)!important}
-.modal,.rc-dialog{background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-lg); padding:var(--space-6); width:100%; max-width:420px; box-shadow:var(--shadow-3); display:grid; gap:var(--space-4); color:var(--color-text)} /* direct colour: same WebKit recalculation reason as .card */
+.modal,.rc-dialog{background:var(--color-surface); border:1px solid var(--color-border); border-radius:var(--radius-lg); padding:var(--space-6); width:100%; max-width:420px; box-shadow:var(--shadow-3); display:grid; gap:var(--space-4)}
 .overlay.show .modal{animation:rc-dialog-in var(--dur-2) var(--ease-out)}
 @keyframes rc-dialog-in{from{transform:translateY(8px) scale(.98)} to{transform:none}}
 .modal h3{font-size:var(--text-lg); line-height:var(--leading-lg); font-weight:var(--weight-heading); letter-spacing:var(--tracking-tight)}

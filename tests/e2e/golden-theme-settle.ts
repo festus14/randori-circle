@@ -80,10 +80,11 @@ import {Page} from '@playwright/test';
 //    `<p>`s did exactly that in Firefox). An animation whose currentTime
 //    does not advance across five consecutive polls is stuck, not in
 //    progress (a WebKit `color` transition that never ticks after a :root
-//    custom-property flip), and is ignored; a real transition advances
-//    every poll, so it still blocks. Visible transitions still block:
-//    under `reducedMotion: 'reduce'` they are 0.01 ms, and the
-//    sentinel-colour check still gates on them.
+//    custom-property flip); it is finished, snapping the property to its
+//    end value, instead of being left frozen at its pre-toggle value. A
+//    real transition advances every poll, so it still blocks. Visible
+//    transitions still block: under `reducedMotion: 'reduce'` they are
+//    0.01 ms, and the sentinel-colour check still gates on them.
 // This is a poll on the settled state, not a fixed timeout, so it cannot
 // pass by luck on a slow runner; if the theme never settles it times out
 // instead of running axe mid-transition.
@@ -208,13 +209,17 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
         return false;
       };
       // Animations whose currentTime does not advance across polls are
-      // stuck, not in progress: a never-painted element's transition
-      // (Firefox closed-<details> content), or a WebKit `color` transition
-      // that never ticks after a :root custom-property flip. A real
-      // transition advances every poll, so it still blocks; a stuck one is
-      // ignored once it has been observed at the same currentTime for five
-      // consecutive polls (~50 ms). State lives on the window so it
-      // survives across polls, and is reset for every new wait call.
+      // stuck, not in progress. Playwright's reduced-motion emulation
+      // gives Firefox/WebKit elements `transition: all` (0.01 ms), and a
+      // transition created by a theme flip can stick at currentTime 0
+      // (never-painted element, or a WebKit transition that never ticks
+      // after a :root custom-property flip) — freezing the property at
+      // its pre-toggle value, so axe would sample the wrong theme. A real
+      // transition advances every poll, so it still blocks; a stuck one
+      // is finished once it has been observed at the same currentTime for
+      // five consecutive polls (~50 ms), snapping the property to its end
+      // value. State lives on the window so it survives across polls, and
+      // is reset for every new wait call.
       const stuckState=(window as any).__themeSettleStuck as
         {token:string; map:WeakMap<Element,Map<string,{time:number|null; polls:number}>>}|undefined;
       const stuckMap=stuckState?.token===callToken?stuckState.map:(()=>{ const map=new WeakMap(); (window as any).__themeSettleStuck={token:callToken,map}; return map; })();
@@ -229,7 +234,12 @@ export async function waitForThemeSettled(page:Page,selector:string|string[],lig
             if(previous&&previous.time===animation.currentTime) previous.polls+=1;
             else perElement.set(key,{time:animation.currentTime,polls:0});
             stuckMap.set(element,perElement);
-            if(previous&&previous.polls>=5) continue;
+            if(previous&&previous.polls>=5){
+              // Snap a stuck transition to its end value (and out of the
+              // running list); a real transition never reaches this branch.
+              try{ animation.finish(); }catch{}
+              continue;
+            }
             const chain: string[]=[];
             for(let node:Element|null=element;node&&chain.length<4;node=node.parentElement)
               chain.push(`${node.tagName.toLowerCase()}#${node.id}.${[...node.classList].join('.')}`);
