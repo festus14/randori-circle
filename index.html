@@ -268,7 +268,7 @@ try{
 })();
 </script>
 
-<style id="randoriAppStyles">
+<style>
 /* Brand fonts: Geist Sans (SIL OFL 1.1, assets/fonts/OFL.txt), variable 400-700,
    subset to Latin + Latin-1 + common punctuation. Code uses the system mono stack. */
 @font-face{
@@ -5680,19 +5680,7 @@ async function refreshMe(){
   const THEME_KEY='randori-theme';
   let theme = localStorage.getItem(THEME_KEY) || 'dark';
   function applyTheme(t){
-    const wasLight=document.documentElement.classList.contains('light');
     document.documentElement.classList.toggle('light',t==='light');
-    if(wasLight!==(t==='light')){
-      // WebKit does not reliably re-resolve styles in dynamically-created
-      // subtrees when a :root custom property flips: text stays at the
-      // previous theme's colours (axe: contrast 1.13 in light mode) and
-      // transitions created by the flip stick at currentTime 0. Replacing
-      // the app stylesheet forces a full style rebuild with the current
-      // variables. Only on an actual theme change, so boot in the stored
-      // theme and unrelated renders pay nothing.
-      const styles=document.getElementById('randoriAppStyles');
-      if(styles) styles.replaceWith(styles.cloneNode(true));
-    }
     localStorage.setItem(THEME_KEY,t);
     document.getElementById('themeLabel').textContent=t;
     const toggle=document.getElementById('themeToggle');

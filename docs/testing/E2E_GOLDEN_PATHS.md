@@ -177,14 +177,17 @@ The stuck-animation rule above exists because a transition created
 by a theme flip can stick at `currentTime` 0 (Playwright's
 reduced-motion emulation gives Firefox/WebKit elements
 `transition: all` at 0.01 ms). Finishing it snaps the property to its
-end value. But the deeper WebKit failure is stale computed styles:
-after a `:root` custom-property flip, dynamically-created subtrees
-keep the previous theme's text colours (card text at contrast 1.13 in
-light mode) even with no transition holding them. `applyTheme` in
-`index.html` therefore replaces the app stylesheet on an actual theme
-change, forcing a full style rebuild with the current variables — a
-real Safari fix, not a test workaround, and it runs only when the
-theme changes.
+end value. But the deeper WebKit failure is stale inherited colour:
+after a `:root` custom-property flip, elements whose colour is only
+inherited keep the previous theme's colour (topic names and table
+cells at contrast 1.13 in light mode), even though every directly
+coloured element on the page updates — and a direct colour on a
+container does not refresh its descendants. Every text element in a
+themed view therefore needs its own direct `color` rule (see the
+`.progress-coverage-head b` / `.progress-table td` rules in
+`assets/circle-history.css`). A stylesheet rebuild on toggle and a
+direct colour on `.card` were both tried and did not refresh
+descendants.
 
 ## Running
 
