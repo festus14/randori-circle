@@ -182,18 +182,25 @@ after a `:root` custom-property flip, elements whose colour is only
 inherited keep the previous theme's colour (topic names and table
 cells at contrast 1.13 in light mode), even though every directly
 coloured element on the page updates — and a direct colour on a
-container does not refresh its descendants. Every text element in a
-themed view therefore needs its own direct `color` rule (see the
+container does not refresh its descendants. In the progress view,
+the two rule-less text elements — topic names and table cells —
+needed their own direct `color` rule (see the
 `.progress-coverage-head b` / `.progress-table td` rules in
-`assets/circle-history.css`). A stylesheet rebuild on toggle and a
+`assets/circle-history.css`); other themed views pass the WebKit
+smoke run with inherited colours. A stylesheet rebuild on toggle and a
 direct colour on `.card` were both tried and did not refresh
 descendants.
 
 ## Running
 
 ```bash
-npx playwright test tests/e2e/golden-        # the golden-path journeys
-npm run test:e2e                             # the full suite (Linux CI is authoritative)
-npm run test:e2e -- --project=firefox-smoke  # the @smoke subset on Firefox
-npm run test:e2e -- --project=webkit-smoke   # the @smoke subset on WebKit
+npx playwright test tests/e2e/golden- --project=chromium  # the golden-path journeys (Chromium-only)
+npm run test:e2e -- --project=chromium                    # the full suite, Chromium-only (Linux CI is authoritative)
+npm run test:e2e -- --project=firefox-smoke               # the @smoke subset on Firefox
+npm run test:e2e -- --project=webkit-smoke                # the @smoke subset on WebKit
 ```
+
+Bare `npm run test:e2e` (or `npx playwright test`) runs all three
+projects — 403 test instances (355 Chromium + 24 Firefox + 24
+WebKit) — and needs all three browsers installed, so it fails
+locally unless Firefox and WebKit are installed.
