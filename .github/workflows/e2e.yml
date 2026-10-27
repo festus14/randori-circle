@@ -85,7 +85,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Install Playwright browser
-        run: npx playwright install --with-deps ${{ matrix.browser }}
+        # install --with-deps webkit intermittently stalls on apt (two
+        # 20-minute hangs on this job). Bound the step and retry once
+        # in-command so a stalled install fails fast instead of hanging
+        # to the job timeout.
+        timeout-minutes: 8
+        run: npx playwright install --with-deps ${{ matrix.browser }} || npx playwright install --with-deps ${{ matrix.browser }}
       - name: Run cross-browser smoke tests
         run: npm run test:e2e -- --project=${{ matrix.project }}
       - name: Upload report
