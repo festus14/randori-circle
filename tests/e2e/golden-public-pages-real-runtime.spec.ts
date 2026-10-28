@@ -12,9 +12,9 @@ import {newGoldenPage,openSignin,signInOwner,startGoldenRuntime,waitForAppFetche
 // files through cleanUrls (pinned by tests/unit/vercel-routing-contract.test.mjs).
 
 const PAGES=[
-  // The privacy policy was updated for the data export (issue #365, ID-90);
-  // the terms keep their earlier date.
-  {path:'/privacy',heading:'Privacy Policy',landingLink:'landing-privacy-policy-link',menuItem:'Privacy Policy',updated:'25 October 2026'},
+  // The privacy policy was updated for the durable deletion ledger
+  // (issue #383); the terms keep their earlier date.
+  {path:'/privacy',heading:'Privacy Policy',landingLink:'landing-privacy-policy-link',menuItem:'Privacy Policy',updated:'28 October 2026'},
   {path:'/terms',heading:'Terms of Service',landingLink:'landing-terms-link',menuItem:'Terms of Service',updated:'22 October 2026'},
 ] as const;
 // Everything a public page may load: itself, its stylesheet, the self-hosted

@@ -162,8 +162,10 @@ and verified there. The weekly rehearsal never does this against
 production: it deletes no real account. Re-application is covered by unit
 tests on real migrated SQLite
 (`tests/unit/account-deletion-restore-reapplication.test.mjs`, which
-simulates the restore with a pre-deletion database, and
-`tests/unit/deletion-ledger-cli.test.mjs` for the operator CLI), and the
+simulates the restore with a pre-deletion database,
+`tests/unit/deletion-ledger-cli.test.mjs` for the operator CLI, and
+`tests/unit/deletion-ledger-destroyed-source.test.mjs`, which deletes
+the source database and re-applies from the ledger database), and the
 operator performs it manually at restore time with the procedure below.
 
 ### The deletion ledger
@@ -184,16 +186,43 @@ One entry per tombstoned account, and nothing else:
   restored database: created after the restore point (correctly absent,
   nothing to re-apply) versus created before it (inconsistent — fail
   closed, do not cut over).
-- The ledger is built from the still-live **source** database — PITR
-  creates a new database and never deletes the source. A ledger table
-  inside the database would roll back with the restore it is meant to
-  repair. The ledger file lives only on the operator's machine, outside
-  any database: never commit it, never upload it as a GitHub artifact, and
-  destroy it once the cutover is verified. It holds only opaque account
-  ids and timestamps, but it is still deleted after use.
+- The ledger is obtained in one of two ways. **Source survives:** it
+  is built from the still-live **source** database — PITR creates a new
+  database and never deletes the source — and the ledger file lives only
+  on the operator's machine, outside any database: never commit it,
+  never upload it as a GitHub artifact, and destroy it once the cutover
+  is verified. **Source destroyed:** it comes from the **durable
+  ledger database** (issue #383, owner decision 2026-10-27), a separate
+  Turso database that every deletion execution writes to at deletion
+  time, so it survives the source database itself being destroyed. A
+  ledger table inside the app database would roll back with the restore
+  it is meant to repair. The ledger holds only opaque account ids and
+  timestamps, but a ledger file is still deleted after use.
+- The durable ledger database has its own schema (one table, the
+  minimal entry shape; `scripts/deletion-ledger.mjs init` creates it,
+  once per ledger database) and its own credentials
+  (`DELETION_LEDGER_DATABASE_URL`, `DELETION_LEDGER_AUTH_TOKEN`; see
+  [ENVIRONMENT.md](ENVIRONMENT.md)). No app-DB migration is involved.
+  Production wiring is owner-only: the second production Turso
+  database is provisioned in #440 and the credentials wired in #444;
+  until then the writer is inactive in production and the
+  destroyed-source branch below is not yet available for a real
+  production restore.
+- Retention: entries deleted before (now − the provider backup
+  window) are purged (`purge --before <cutoff>`); entries with an
+  unknown deletion time are never purged by time. `destroy` deletes
+  every entry, for a verified cutover past the backup window or for
+  retiring the ledger database.
 
 ### Procedure
 
+0. **Decide which ledger source to use.** If the source database
+   survives, follow step 1 (export from the source). If the source
+   database itself is destroyed, skip step 1: there is no source to
+   export from. Read the ledger directly from the durable ledger
+   database with `--from ledger-db` in steps 2–3 below (no ledger
+   file involved), and use `export --from ledger-db` only if you
+   need a file copy for the record.
 1. **Export, from the source database**, before cutover (never against the
    restored database, which has no post-restore-point deletions to list):
    ```bash
@@ -221,10 +250,20 @@ One entry per tombstoned account, and nothing else:
    exactly as the deletion did, so a different secret produces different
    hashes and the scrub will not match the original deletion's hashes.
    The CLI validates `JWT_SECRET` presence up front (typed config error)
-   for `export` and `reapply`; `verify` needs no secret.
+   for `export` from the source and `reapply`; `verify` and
+   `export --from ledger-db` need no secret.
    ```bash
    TURSO_DATABASE_URL=<restored url> TURSO_AUTH_TOKEN=<restored token> JWT_SECRET=<server secret> \
      node scripts/deletion-ledger.mjs reapply --ledger /operator/path/deletion-ledger-<restore-point>.json \
+       --restore-point <requested-PITR-instant-ISO>
+   ```
+   Destroyed source (step 0): read the ledger from the durable
+   ledger database instead of a file — same target, same restore
+   point, no `--ledger`:
+   ```bash
+   TURSO_DATABASE_URL=<restored url> TURSO_AUTH_TOKEN=<restored token> JWT_SECRET=<server secret> \
+     DELETION_LEDGER_DATABASE_URL=<ledger url> DELETION_LEDGER_AUTH_TOKEN=<ledger token> \
+     node scripts/deletion-ledger.mjs reapply --from ledger-db \
        --restore-point <requested-PITR-instant-ISO>
    ```
    Re-application runs the same scrubbing statements as a self-service
@@ -241,6 +280,13 @@ One entry per tombstoned account, and nothing else:
      node scripts/deletion-ledger.mjs verify --ledger /operator/path/deletion-ledger-<restore-point>.json \
        --restore-point <requested-PITR-instant-ISO>
    ```
+   Destroyed source: the same check against the ledger database:
+   ```bash
+   TURSO_DATABASE_URL=<restored url> TURSO_AUTH_TOKEN=<restored token> \
+     DELETION_LEDGER_DATABASE_URL=<ledger url> DELETION_LEDGER_AUTH_TOKEN=<ledger token> \
+     node scripts/deletion-ledger.mjs verify --from ledger-db \
+       --restore-point <requested-PITR-instant-ISO>
+   ```
    Exit 0 with `missing: 0` is required. Any missing id blocks the
    cutover: investigate, re-run `reapply` for that entry, and do not cut
    over with a missing id. An empty ledger verifies trivially — still run
@@ -249,10 +295,21 @@ One entry per tombstoned account, and nothing else:
    ledger file** once the cutover is verified. If the cutover is rolled
    back to the pre-restore database, the ledger is moot (that database
    already contains the deletions); destroy the file either way.
-5. **If the source database itself is destroyed**, this procedure cannot
-   run: the ledger is built from the source. That residual gap — a
-   durable off-database ledger written at deletion time — is follow-up
-   work (see the ID-89 decision entry), not part of this runbook.
+   Do **not** destroy the ledger database's entries at cutover: they
+   stay until the purge in step 5, so a second restore to an earlier
+   point can still re-apply them.
+5. **Retention / destruction of the durable ledger.** Once the cutover
+   is verified and the provider backup window has passed, purge the
+   entries that can no longer be needed:
+   ```bash
+   DELETION_LEDGER_DATABASE_URL=<ledger url> DELETION_LEDGER_AUTH_TOKEN=<ledger token> \
+     node scripts/deletion-ledger.mjs purge --before <now-minus-backup-window-ISO>
+   ```
+   On the current plan the window is 1 day, so `--before` is (now −
+   1 day). Only after the verified cutover and the purge, when the
+   ledger database itself is being retired, run
+   `destroy --confirm DESTROY_DELETION_LEDGER` to delete every
+   remaining entry.
 
 ## Promotion gate
 

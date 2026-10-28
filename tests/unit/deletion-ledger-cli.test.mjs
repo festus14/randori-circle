@@ -16,7 +16,13 @@ import {
 } from '../../api/_account-deletion.js';
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { createMigratedDatabase } from '../support/migrated-db.mjs';
-import { main, publicCliError, writeLedgerFileExclusive } from '../../scripts/deletion-ledger.mjs';
+import {
+  deletionLedgerEntriesAfterOrUsage,
+  main,
+  publicCliError,
+  purgeDeletionLedgerOrUsage,
+  writeLedgerFileExclusive,
+} from '../../scripts/deletion-ledger.mjs';
 
 const JWT_SECRET='deletion-ledger-cli-test-secret-at-least-32-bytes';
 const RESTORE_POINT='2026-10-20T09:00:00.000Z';
@@ -246,6 +252,32 @@ test('CLI reapply and verify map a malformed --restore-point to DELETION_LEDGER_
       ok:false,error:'DELETION_LEDGER_USAGE',message:'valid --restore-point is required',
     });
   }
+});
+
+test('CLI purge / restore-point wrappers map ONLY the malformed-cutoff TypeError to usage',async()=>{
+  // Malformed --before is still a usage error, and the client is never touched.
+  await assert.rejects(
+    purgeDeletionLedgerOrUsage({execute:async()=>{ throw new Error('must not run'); }},{before:'not-a-date'}),
+    error=>{ assert.equal(error.code,'DELETION_LEDGER_USAGE'); return /valid --before/.test(error.message); });
+  // A database failure (e.g. purging a ledger DB whose table was never
+  // created) is rethrown unchanged — not misreported as a usage error.
+  const dbError=new Error('no such table: deletion_ledger');
+  await assert.rejects(
+    purgeDeletionLedgerOrUsage({execute:async()=>{ throw dbError; }},{before:'2026-10-27T00:00:00.000Z'}),
+    error=>{ assert.equal(error,dbError); assert.notEqual(error.code,'DELETION_LEDGER_USAGE'); return true; });
+  assert.deepEqual(publicCliError(dbError),{
+    ok:false,error:'DELETION_LEDGER_FAILED',message:'deletion ledger operation failed',
+  });
+  // Malformed --restore-point is still a usage error.
+  assert.throws(()=>deletionLedgerEntriesAfterOrUsage([],'not-a-date'),
+    error=>{ assert.equal(error.code,'DELETION_LEDGER_USAGE'); return /valid --restore-point/.test(error.message); });
+  // A corrupt ledger entry is rethrown unchanged — not misreported as a
+  // bad --restore-point.
+  assert.throws(()=>deletionLedgerEntriesAfterOrUsage([
+    {account_id:2,created_at:'2026-01-01T00:00:00.000Z',deleted_at:'not-a-date'},
+  ],RESTORE_POINT),
+  error=>{ assert.ok(error instanceof TypeError); assert.match(error.message,/valid deleted_at/);
+    assert.notEqual(error.code,'DELETION_LEDGER_USAGE'); return true; });
 });
 
 test('CLI export --restore-point writes only entries after the restore point, keeping null deleted_at',async()=>{
