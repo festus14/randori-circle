@@ -2,6 +2,7 @@ import { escapeHtml } from './_pairing.js';
 import { createOutboxEventStatement, OutboxDeliveryError } from './_outbox.js';
 import { emailProviderReason } from './_email-provider-reason.js';
 import { getAdminEmails } from './_db.js';
+import { isDeletionPending } from './_account-deletion-grace.js';
 import {
   FEEDBACK_KINDS,
   feedbackEnabled,
@@ -158,6 +159,12 @@ export function createFeedbackSubmittedHandler({db,baseUrl,send,localRuntime=fal
     const recipient=String(row.email||'').trim().toLowerCase();
     if(!recipient||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)){
       return {status:'suppressed',reasonCode:'RECIPIENT_EMAIL_INVALID'};
+    }
+    // Locked accounts (#372) get no admin notifications while pending.
+    // Checked after the flag check and recipient query so flag-off drains
+    // without a database read.
+    if(await isDeletionPending(db,metadata.recipientUserId)){
+      return {status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'};
     }
     const kind=String(row.item_kind||metadata.kind);
     const title=String(row.item_title||metadata.title).replace(/[\u0000-\u001f\u007f]+/gu,' ').trim().slice(0,120)

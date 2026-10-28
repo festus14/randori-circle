@@ -3,6 +3,7 @@ import { revokeAccountSessions } from './_db.js';
 import { validateActiveCircleMutationContext } from './_active-circle.js';
 import { requireRecentAuth } from './_recent-auth.js';
 import { DELETED_ACCOUNT_PASSWORD_HASH } from './_account-deletion.js';
+import { graceSchemaAvailable } from './_account-deletion-grace.js';
 
 export const MEMBER_PAGE_DEFAULT=50;
 export const MEMBER_PAGE_MAX=100;
@@ -75,6 +76,9 @@ function publicMember(row){
     is_admin:Number(row?.is_admin)===1,
     joined_at:String(row?.joined_at||''),
     updated_at:String(row?.updated_at||''),
+    // Owners see a locked account as leaving (#372); only present when true
+    // so existing roster consumers see no shape change for other members.
+    ...(row?.deletion_pending===true?{deletion_pending:true}:{}),
   });
 }
 
@@ -224,9 +228,25 @@ export async function listCircleMembersForOwner(db,{actorUserId,circleId,cursor=
   if(!result.rows?.length) return Object.freeze({ok:false,reason:'owner_required'});
   const rawCandidates=result.rows.filter(row=>positiveInteger(Number(row?.user_id)));
   const candidateRows=rawCandidates.slice(0,MEMBER_SCAN_LIMIT);
+  // "Leaving" (#372): annotate roster rows whose account has an active
+  // deletion request, once migration v23 is present.
+  let leavingIds=new Set();
+  if(await graceSchemaAvailable(db)){
+    const ids=candidateRows.map(row=>Number(row?.user_id)).filter(id=>Number.isSafeInteger(id)&&id>0);
+    if(ids.length){
+      const placeholders=ids.map(()=>'?').join(',');
+      const leaving=await db.execute({
+        sql:`SELECT user_id FROM account_deletion_requests
+          WHERE user_id IN (${placeholders}) AND cancelled_at IS NULL AND executed_at IS NULL`,
+        args:ids,
+      });
+      leavingIds=new Set((leaving.rows||[]).map(row=>Number(row.user_id)));
+    }
+  }
   const candidates=candidateRows
     .filter(row=>positiveInteger(Number(row?.account_id))&&Number(row?.is_demo)===0)
-    .map(publicMember).filter(Boolean);
+    .map(row=>publicMember({...row,deletion_pending:leavingIds.has(Number(row?.user_id))}))
+    .filter(Boolean);
   const matching=effectiveSearch
     ?candidates.filter(member=>normalizeMemberSearch(member.display_name).includes(effectiveSearch))
     :candidates;

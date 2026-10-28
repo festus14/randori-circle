@@ -10,11 +10,12 @@
 // artifacts. The fix is an explicit pending-artifact absence check in the
 // two owned-scope probes (findPendingIntroducedArtifacts).
 //
-// On current main the pending additive migration is v22 (feedback_*), so
-// the table case uses that; the issue's v21/invite_requests scenario is the
-// same shape one version down. The index/trigger cases use synthetic
-// contracts (real contracts 1..21 plus a v22 that introduces one
-// non-unique index / one trigger on the non-owned `circles` table). The
+// On current main the pending additive migration is v23
+// (account_deletion_requests), so the table case uses that; the issue's
+// v21/invite_requests scenario is the same shape two versions down. The
+// index/trigger cases use synthetic contracts (real contracts 1..22 plus a
+// v23 that introduces one non-unique index / one trigger on the non-owned
+// `circles` table). The
 // non-unique index is allowed on an existing table by the additive check;
 // the trigger case is hypothetical / defence-in-depth, since that check
 // refuses triggers on existing tables, and the owned-scope inspector is
@@ -55,7 +56,7 @@ delete process.env.TURSO_DATABASE_URL;
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const N=MIGRATION_CONTRACTS.length;
-const V22_PLAN=MIGRATION_PLANS[N-1];
+const V23_PLAN=MIGRATION_PLANS[N-1];
 const resources=[];
 
 afterEach(async()=>{
@@ -112,15 +113,15 @@ test('clean DB at N-1 with an additive N pending is ready on both owned-scope pr
 
 test('half-created introduced table is not ready on either owned-scope probe',async()=>{
   const db=await databaseAt(N-1);
-  // Only the first v22 operation: the feedback_items table, none of its
-  // indexes. The ledger is still at N-1, so this is a half-created table.
-  const create=V22_PLAN.operations.find(operation=>operation.operation==='ensure-table').sql;
+  // Only the first v23 operation: the account_deletion_requests table, none
+  // of its indexes. The ledger is still at N-1, so this is a half-created table.
+  const create=V23_PLAN.operations.find(operation=>operation.operation==='ensure-table').sql;
   await db.execute(create);
   assert.equal(await inspectDatabaseReadiness(db),false);
   const ledger=await inspectLedgerReadiness(readOnlyDatabase(db));
   assert.deepEqual(
     await findPendingIntroducedArtifacts(readOnlyDatabase(db),ledger),
-    [{type:'table',name:'feedback_items'}],
+    [{type:'table',name:'account_deletion_requests'}],
   );
   await assertOwnedScopeNotReady(db);
 });
@@ -155,7 +156,7 @@ test('introduced artifacts present at the current version are not pending artifa
   assert.equal(await ensureSecondaryScheduleReadiness(db),true);
   const ledger=await inspectLedgerReadiness(readOnlyDatabase(db));
   assert.equal(ledger.state,'current');
-  // feedback_items legitimately exists now; with no pending migration the
+  // account_deletion_requests legitimately exists now; with no pending migration the
   // absence check must stay silent instead of rejecting the live schema.
   assert.deepEqual(await findPendingIntroducedArtifacts(readOnlyDatabase(db),ledger),[]);
 });

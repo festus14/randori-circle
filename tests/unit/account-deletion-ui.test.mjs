@@ -188,7 +188,24 @@ test('the section explains what is deleted and what stays, then enables the acti
   ui.controller.sync();
   await flush();
   assert.deepEqual(ui.calls,['GET /api/auth/account/delete'],'a repeat sync for the same member does not refetch');
-  assert.deepEqual(ui.controller.state.eligibility,{eligible:true,code:undefined,circles:undefined});
+  assert.deepEqual(ui.controller.state.eligibility,{eligible:true,code:undefined,circles:undefined,grace:false});
+  assert.equal(ui.find('accountDeletionGraceNote').hidden,true);
+});
+
+test('with the grace period on, the section shows the 14-day note and the final step uses the grace copy',async()=>{
+  const ui=harness({routes:{'GET /api/auth/account/delete':{ok:true,eligible:true,grace:true}}});
+  ui.controller.sync();
+  await flush();
+  assert.equal(ui.find('accountDeletionGraceNote').hidden,false);
+  assert.equal(ui.find('accountDeletionGraceNote').textContent,COPY.graceNote);
+  ui.controller.open({step:'type'});
+  await flush();
+  assert.equal(ui.find('accountDeletionDialogTitle').textContent,COPY.typeTitle);
+  ui.find('accountDeletionConfirm').value='DELETE';
+  ui.find('accountDeletionConfirm').fire('input');
+  ui.find('accountDeletionContinue').click();
+  assert.equal(ui.find('accountDeletionDialogTitle').textContent,COPY.finalTitle);
+  assert.equal(ui.find('accountDeletionDialogText').textContent,COPY.finalTextGrace);
 });
 
 test('a blocked owner sees the guidance and a way to the Circle page',async()=>{

@@ -159,6 +159,18 @@ export const MIGRATION_CONTRACTS=Object.freeze([
       triggers:Object.freeze([]),
     }),
   }),
+  Object.freeze({
+    version:23,
+    name:'account-deletion-grace-period',
+    checksum:'fe1c46fec65b780c2f99b7ce9100952fa35b43722f53539ccd4233b69969cca6',
+    compatibility:'additive',
+    introduces:Object.freeze({
+      tables:Object.freeze(['account_deletion_requests']),
+      indexes:Object.freeze(['uq_account_deletion_requests_active_user',
+        'idx_account_deletion_requests_due']),
+      triggers:Object.freeze([]),
+    }),
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

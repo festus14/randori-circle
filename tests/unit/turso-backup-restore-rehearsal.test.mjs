@@ -338,7 +338,7 @@ test('managed prefix rehearsal blocks writes, verifies PITR, migrates only the r
       ['source','bigint'],['restore','bigint'],
     ]);
     assert.equal((await databaseState(item.sourcePath,EXECUTABLE_MIGRATIONS.slice(0,2))).currentVersion,2);
-    assert.equal((await databaseState(item.restorePath)).currentVersion,22);
+    assert.equal((await databaseState(item.restorePath)).currentVersion,23);
 
     const serialized=JSON.stringify(result);
     for(const secret of [
@@ -702,7 +702,7 @@ test('exact unmanaged prefix is adopted and advanced only on the disposable rest
     assert.equal(result.ok,true);
     assert.equal(result.payload.migration.sourceClassification,'unmanaged');
     assert.equal(result.payload.migration.adoptedOnRestore,true);
-    assert.deepEqual(result.payload.migration.appliedVersions,[3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22]);
+    assert.deepEqual(result.payload.migration.appliedVersions,[3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]);
     const source=await databaseState(item.sourcePath,EXECUTABLE_MIGRATIONS.slice(0,2));
     assert.equal(source.classification,'unmanaged');
     assert.equal(source.ledgerPresent,false);
@@ -725,7 +725,7 @@ for(const classification of ['managed','unmanaged']){
       assert.equal(result.payload.migration.sourceVersion,1);
       assert.equal(result.payload.migration.sourceClassification,classification);
       assert.equal(result.payload.migration.adoptedOnRestore,classification==='unmanaged');
-      assert.deepEqual(result.payload.migration.appliedVersions,[2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22]);
+      assert.deepEqual(result.payload.migration.appliedVersions,[2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]);
       const restored=createClient({url:`file:${item.restorePath}`,intMode:'bigint'});
       try{
         const singleton=await restored.execute('SELECT id,registrations_closed FROM circle_membership_rollout');
@@ -1085,6 +1085,7 @@ test('post-migration preservation rejects missing or modified prior tables, seed
       {name:'feedback_items',count:0,digest:'a'.repeat(64)},
       {name:'feedback_votes',count:0,digest:'b'.repeat(64)},
       {name:'feedback_events',count:0,digest:'c'.repeat(64)},
+      {name:'account_deletion_requests',count:0,digest:'0123456789abcdef'.repeat(4)},
     ],
     storage:{...before.storage},
   };

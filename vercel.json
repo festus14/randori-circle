@@ -91,6 +91,10 @@
       "destination": "/api/auth?endpoint=logout-all"
     },
     {
+      "source": "/api/auth/account/delete/cancel",
+      "destination": "/api/auth?endpoint=account-delete-cancel"
+    },
+    {
       "source": "/api/auth/account/delete",
       "destination": "/api/auth?endpoint=account-delete"
     },

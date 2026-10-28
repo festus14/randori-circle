@@ -243,6 +243,10 @@
     const name = boundedText(member?.display_name, 80) || 'Member';
     const isSelf = Number.isSafeInteger(actorId) && id === actorId;
     const isAdmin = member?.is_admin === true;
+    // A locked account (#372) still shows its active membership, but as
+    // Leaving: it will not be paired or emailed, and its deletion runs on
+    // schedule unless the member cancels.
+    const leaving = member?.deletion_pending === true;
     const joinedAt = parseInstant(member?.joined_at);
     let actions = [];
     if (!isSelf) actions = status === 'inactive' ? ['reactivate'] : (role === 'member' ? ['transfer', 'deactivate'] : ['deactivate']);
@@ -264,8 +268,9 @@
       isAdmin,
       roleActions: Object.freeze(roleActions),
       roleLabel: role === 'owner' ? 'Owner' : 'Member',
-      statusLabel: status === 'active' ? 'Active' : 'Inactive',
-      statusTone: status === 'active' ? 'success' : 'warning',
+      statusLabel: leaving ? 'Leaving' : (status === 'active' ? 'Active' : 'Inactive'),
+      statusTone: leaving ? 'warning' : (status === 'active' ? 'success' : 'warning'),
+      leaving,
       isSelf,
       joined: joinedAt === null ? null : `Joined ${relativeTime(joinedAt, now, locale)}`,
       actions,

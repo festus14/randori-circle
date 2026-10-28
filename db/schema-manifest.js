@@ -258,7 +258,6 @@ const PLAN_21_OPERATIONS=Object.freeze([
   index('idx_invite_requests_decided','invite_requests',['decided_at','id'],{where:'decided_at IS NOT NULL'}),
 ]);
 
-// Product feedback from members to the people running Randori (#353).
 // Three kinds in one store: bug, feature_request, feedback. Titles and
 // bodies are stored after server-side redaction (api/_feedback.js); no raw
 // IP or user agent is stored anywhere in these tables (ID-82). Votes are
@@ -277,6 +276,18 @@ const PLAN_22_OPERATIONS=Object.freeze([
   index('idx_feedback_votes_feedback','feedback_votes',['feedback_id','user_id']),
   index('idx_feedback_votes_user','feedback_votes',['user_id','created_at DESC','id DESC']),
   index('idx_feedback_events_feedback','feedback_events',['feedback_id','created_at DESC','id DESC']),
+]);
+
+// Account-deletion grace period (#372, ID-93): one row per deletion
+// request. A request is active while cancelled_at and executed_at are both
+// NULL; the partial unique index enforces at most one active request per
+// account while keeping cancelled and executed rows as history. Cancelling
+// sets cancelled_at; execution sets executed_at inside the deletion
+// transaction. Timestamps are unix seconds, like the feedback tables.
+const PLAN_23_OPERATIONS=Object.freeze([
+  table('account_deletion_requests',`CREATE TABLE IF NOT EXISTS account_deletion_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL CHECK(typeof(user_id)='integer' AND user_id>0), requested_at INTEGER NOT NULL CHECK(typeof(requested_at)='integer' AND requested_at>0), scheduled_for INTEGER NOT NULL CHECK(typeof(scheduled_for)='integer' AND scheduled_for>requested_at), cancelled_at INTEGER CHECK(cancelled_at IS NULL OR (typeof(cancelled_at)='integer' AND cancelled_at>=requested_at)), executed_at INTEGER CHECK(executed_at IS NULL OR (typeof(executed_at)='integer' AND executed_at>=requested_at)), CHECK((cancelled_at IS NULL) OR (executed_at IS NULL)), FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE RESTRICT)`),
+  index('uq_account_deletion_requests_active_user','account_deletion_requests',['user_id'],{unique:true,where:'cancelled_at IS NULL AND executed_at IS NULL'}),
+  index('idx_account_deletion_requests_due','account_deletion_requests',['scheduled_for','id'],{where:'cancelled_at IS NULL AND executed_at IS NULL'}),
 ]);
 
 export const SCHEMA_OPERATION_SETS=Object.freeze([
@@ -371,6 +382,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
     version:22,
     operations:PLAN_22_OPERATIONS,
   }),
+  Object.freeze({
+    version:23,
+    operations:PLAN_23_OPERATIONS,
+  }),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -400,7 +415,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='b7a80cc7e60be5017245e1b135f02a8d1a207323cec93724c9b6f31800d0820a';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='84e2c7e3e18da41760a584363e24a94ac3ea0ce84ee5e844d76e7e312cd08f05';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

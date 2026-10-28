@@ -359,6 +359,9 @@ mock.module('../../api/_outbox.js',{
   exports:{
     OutboxDeliveryError:class OutboxDeliveryError extends Error{},
     createOutboxEventStatement:event=>({sql:'INSERT INTO outbox_events VALUES (?)',args:[event]}),
+    // Imported by api/_account-deletion-grace.js (issue #372); the grace
+    // request path is not exercised here, so identities are null.
+    outboxStatementIdentity:()=>null,
     readOutboxMetrics:async(_db,options)=>{
       if(outboxMetricsDelayMs>0){
         await new Promise(resolve=>setTimeout(resolve,outboxMetricsDelayMs));
@@ -3776,8 +3779,9 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
   assert.deepEqual(outboxWorkerCalls[0].eventTypes,[
     'pairing.email.requested','schedule.email.requested','invitation.email.requested',
     'feedback.submitted','reminder.email.requested',
+    'account.deletion.confirmation','account.deletion.reminder','account.deletion.blocked',
   ]);
-  assert.equal(outboxWorkerCalls[0].maxClaims,8);
+  assert.equal(outboxWorkerCalls[0].maxClaims,11);
   assert.equal(outboxWorkerCalls[0].finalizationReserveMs,5_000);
   assert.equal(drained.body.outbox.claimed,2);
   assert.deepEqual(drained.body.outbox.types['pairing.email.requested'],{

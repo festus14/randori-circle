@@ -12,6 +12,9 @@ const ACTIVATION='auth.emailverification.requested';
 const RESET='auth.passwordreset.requested';
 const FEEDBACK='feedback.submitted';
 const REMINDER='reminder.email.requested';
+const DELETION_CONFIRMATION='account.deletion.confirmation';
+const DELETION_REMINDER='account.deletion.reminder';
+const DELETION_BLOCKED='account.deletion.blocked';
 
 const state={};
 function resetState(){
@@ -49,6 +52,16 @@ mock.module('../../api/_reminders.js',{exports:{
 }});
 mock.module('../../api/_feedback-notification.js',{exports:{
   FEEDBACK_SUBMITTED_EVENT_TYPE:FEEDBACK,createFeedbackSubmittedHandler:factory('feedback'),
+}});
+mock.module('../../api/_account-deletion-grace.js',{exports:{
+  ACCOUNT_DELETION_CONFIRMATION_EVENT_TYPE:DELETION_CONFIRMATION,
+  ACCOUNT_DELETION_REMINDER_EVENT_TYPE:DELETION_REMINDER,
+  ACCOUNT_DELETION_BLOCKED_EVENT_TYPE:DELETION_BLOCKED,
+  createAccountDeletionEmailHandler:factory('account-deletion'),
+  // Imported by the real invite-request notification handler, which the
+  // delivery registry loads. The mocked registry never delivers, so the
+  // lock is always off here.
+  isDeletionPending:async()=>false,
 }});
 mock.module('../../api/_local-runtime.js',{exports:{
   localIdentityAdapterEnabled:()=>state.local,
@@ -106,7 +119,8 @@ test('local development captures every mail type with its kind and at most four 
   state.local=true;
   const plan=await outboxDeliveryPlan('db','http://127.0.0.1:3000',{});
   assert.equal(plan.local,true);
-  assert.deepEqual([...plan.handlers.keys()],[PAIRING,SCHEDULE,INVITATION,ACTIVATION,RESET,FEEDBACK,REMINDER]);
+  assert.deepEqual([...plan.handlers.keys()],[PAIRING,SCHEDULE,INVITATION,ACTIVATION,RESET,FEEDBACK,REMINDER,
+    DELETION_CONFIRMATION,DELETION_REMINDER,DELETION_BLOCKED]);
   assert.deepEqual(state.invitationConfigCalls,[{localRuntime:true}]);
   assert.equal(plan.handlers.get(PAIRING).localRuntime,true);
   assert.equal(plan.handlers.get(SCHEDULE).localRuntime,true);
@@ -130,9 +144,15 @@ test('local development captures every mail type with its kind and at most four 
   await send(REMINDER,{kind:'availability_cutoff'});
   await send(REMINDER,{kind:'session_soon'});
   await send(FEEDBACK,{});
+  await send(DELETION_CONFIRMATION,{});
+  await send(DELETION_REMINDER,{});
+  await send(DELETION_BLOCKED,{});
   assert.deepEqual(plan.captured.get(REMINDER).map(entry=>entry.kind),
     ['reminder-availability-cutoff','reminder-session-soon']);
   assert.deepEqual(plan.captured.get(FEEDBACK).map(entry=>entry.kind),['feedback']);
+  assert.deepEqual(plan.captured.get(DELETION_CONFIRMATION).map(entry=>entry.kind),['account-deletion-confirmation']);
+  assert.deepEqual(plan.captured.get(DELETION_REMINDER).map(entry=>entry.kind),['account-deletion-reminder']);
+  assert.deepEqual(plan.captured.get(DELETION_BLOCKED).map(entry=>entry.kind),['account-deletion-blocked']);
   assert.deepEqual(plan.captured.get(PAIRING).map(entry=>entry.kind),['solo','unavailable','paired','unavailable']);
   assert.deepEqual([SCHEDULE,INVITATION,ACTIVATION,RESET].map(type=>plan.captured.get(type).map(entry=>entry.kind)),
     [['schedule'],['invitation'],['activation'],['password-reset']]);
@@ -163,7 +183,8 @@ test('a configured provider is shared across types and unconfigured flows are om
   state.invitationConfig=null;
   state.resetConfig=null;
   const plan=await outboxDeliveryPlan('db','https://randori.example.test',{});
-  assert.deepEqual([...plan.handlers.keys()],[PAIRING,SCHEDULE,ACTIVATION,FEEDBACK,REMINDER]);
+  assert.deepEqual([...plan.handlers.keys()],[PAIRING,SCHEDULE,ACTIVATION,FEEDBACK,REMINDER,
+    DELETION_CONFIRMATION,DELETION_REMINDER,DELETION_BLOCKED]);
   assert.equal(state.senderCalls.length,1,'one provider client is created per plan');
   assert.equal(state.senderCalls[0].from,'Randori <mail@randori.example.test>');
   assert.equal(typeof state.senderCalls[0].resend.emails.send,'function');
@@ -172,6 +193,9 @@ test('a configured provider is shared across types and unconfigured flows are om
   assert.equal(plan.handlers.get(ACTIVATION).send,send);
   assert.equal(plan.handlers.get(FEEDBACK).send,send);
   assert.equal(plan.handlers.get(REMINDER).send,send);
+  assert.equal(plan.handlers.get(DELETION_CONFIRMATION).send,send);
+  assert.equal(plan.handlers.get(DELETION_REMINDER).send,send);
+  assert.equal(plan.handlers.get(DELETION_BLOCKED).send,send);
   assert.equal(plan.handlers.get(PAIRING).localRuntime,false);
   assert.deepEqual(state.invitationConfigCalls,[{localRuntime:false}]);
 });

@@ -3,6 +3,8 @@ import jwt from 'jsonwebtoken';
 import { createHash, randomBytes } from 'node:crypto';
 import { redactSentryText, resolveSentryRuntime, sanitizeSentryContext, sanitizeSentryEvent } from './_sentry.js';
 import { recordRecentAuth } from './_recent-auth.js';
+import { schemaCapabilityAvailable } from './_schema-capability.js';
+import { MIGRATION_CONTRACTS } from '../db/migration-contract.js';
 
 export const JWT_ISSUER = 'randori-circle';
 export const JWT_AUDIENCE = 'randori-web';
@@ -376,7 +378,29 @@ export async function verifyRequestAuth(req,db=null,{nowSeconds=Math.floor(Date.
     await revokeAccountSessions(sessionDb,payload.id,'membership_removed',{nowSeconds});
     return null;
   }
+  // Grace period (#372): a pending deletion locks the account out of every
+  // API. The cancel flow never comes through here — it verifies its session
+  // directly (api/auth.js), because a locked account's fresh sign-in
+  // session is the only credential that may cancel. Schema-gated, not
+  // flag-gated: a pending row is a durable promise that survives the flag
+  // going off. Duplicate of the predicate in
+  // api/_account-deletion-grace.js, which this module cannot import
+  // (that module reaches _db.js through _account-deletion.js).
+  if(await deletionPending(sessionDb,payload.id)) return null;
   return payload;
+}
+
+/** True when an active deletion request locks `userId` out of every API. */
+async function deletionPending(db,userId){
+  const graceVersion=MIGRATION_CONTRACTS.find(contract=>contract.name==='account-deletion-grace-period')?.version;
+  if(!Number.isSafeInteger(graceVersion)) return false;
+  if(!await schemaCapabilityAvailable(db,{version:graceVersion})) return false;
+  const result=await db.execute({
+    sql:`SELECT 1 AS pending FROM account_deletion_requests
+      WHERE user_id=? AND cancelled_at IS NULL AND executed_at IS NULL LIMIT 1`,
+    args:[userId],
+  });
+  return result.rows?.length===1;
 }
 
 export function verifyMutationOrigin(req) {

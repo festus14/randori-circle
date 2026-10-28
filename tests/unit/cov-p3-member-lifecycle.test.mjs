@@ -143,7 +143,9 @@ test('search pagination issues an opaque cursor that is bound to actor, circle, 
     cursor:first.next_cursor,cursorSecret:SECRET});
   assert.deepEqual(second.members.map(entry=>entry.id),[5]);
   // The snapshot maximum and offset come from the cursor; no new max read happens.
-  assert.equal(resumed.statements.length,2);
+  // The third statement is the grace-period schema probe (migration v23); the
+  // fake database answers it with a non-matching row, so no leaving lookup runs.
+  assert.equal(resumed.statements.length,3);
   assert.deepEqual(resumed.statements[1].args.slice(3,5),[4,9]);
 
   for(const options of [{actorUserId:2,search:'ann'},{actorUserId:1,search:'bob'}]){

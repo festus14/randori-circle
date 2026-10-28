@@ -757,7 +757,7 @@ test('two invited members complete the durable local session journey', async ({ 
       return {status:response.status,body:await response.json()};
     },cronSecret);
     expect(delivery.status).toBe(200);
-    expect(delivery.body.outbox).toMatchObject({claimed:3,deadline_reached:false,max_claims:8});
+    expect(delivery.body.outbox).toMatchObject({claimed:3,deadline_reached:false,max_claims:11});
     expect(delivery.body.email_delivery.captured).toHaveLength(2);
     expect(delivery.body.outbox.types['pairing.email.requested']).toMatchObject({
       claimed:2,delivered:2,backlog:0,

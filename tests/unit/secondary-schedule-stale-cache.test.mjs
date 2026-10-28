@@ -34,7 +34,7 @@ delete process.env.TURSO_DATABASE_URL;
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const N=MIGRATION_CONTRACTS.length;
-const V22_PLAN=MIGRATION_PLANS[N-1];
+const V23_PLAN=MIGRATION_PLANS[N-1];
 const resources=[];
 
 afterEach(async()=>{
@@ -91,9 +91,9 @@ test('concurrent pending-additive probes coalesce, then the next sequential call
 test('half-created artifact after a cached clean success rejects on the same client',async()=>{
   const db=await databaseAt(N-1);
   assert.equal(await ensureSecondaryScheduleReadiness(db),true);
-  // Only the first v22 operation: the feedback_items table, none of its
-  // indexes. The ledger is still at N-1, so this is a half-created table.
-  const create=V22_PLAN.operations.find(operation=>operation.operation==='ensure-table').sql;
+  // Only the first v23 operation: the account_deletion_requests table, none
+  // of its indexes. The ledger is still at N-1, so this is a half-created table.
+  const create=V23_PLAN.operations.find(operation=>operation.operation==='ensure-table').sql;
   await db.execute(create);
   await assert.rejects(
     ensureSecondaryScheduleReadiness(db),
@@ -101,7 +101,7 @@ test('half-created artifact after a cached clean success rejects on the same cli
   );
   // A rejected probe is not retained either: removing the artifact makes
   // the same client ready again.
-  await db.execute('DROP TABLE feedback_items');
+  await db.execute('DROP TABLE account_deletion_requests');
   assert.equal(await ensureSecondaryScheduleReadiness(db),true);
 });
 

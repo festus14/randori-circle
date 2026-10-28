@@ -2868,6 +2868,8 @@ a.btn{text-decoration:none}
 <!-- ---------- WP-A dialogs: confirm, prompt, sign-in and account security ---------- -->
 <div id="confirmOverlay" class="overlay" aria-hidden="true"><div class="modal rc-dialog dialog-compact" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMsg" tabindex="-1"><h3 id="confirmTitle">Confirm?</h3><p id="confirmMsg" class="dialog-text"></p><div class="dialog-actions"><button id="confirmCancel" class="btn secondary" type="button">Cancel</button><button id="confirmOk" class="btn" type="button">Confirm</button></div></div></div>
 <div id="promptOverlay" class="overlay" aria-hidden="true"><div class="modal rc-dialog dialog-compact" role="dialog" aria-modal="true" aria-labelledby="promptTitle" tabindex="-1"><label id="promptTitle" for="promptInput" class="dialog-title">Enter value</label><input id="promptInput" class="input" autocomplete="off"/><div class="dialog-actions"><button id="promptCancel" class="btn secondary" type="button">Cancel</button><button id="promptOk" class="btn" type="button">Save</button></div></div></div>
+  <!-- Issue #372: minimal cancel screen for a locked account. Nothing else is available from it. -->
+  <div id="deletionPendingOverlay" class="overlay" aria-hidden="true"><div class="modal rc-dialog" role="dialog" aria-modal="true" aria-labelledby="deletionPendingTitle" aria-describedby="deletionPendingText" tabindex="-1"><h3 id="deletionPendingTitle">Your account is scheduled for deletion</h3><p id="deletionPendingText" class="dialog-text"></p><div class="dialog-actions"><button id="deletionPendingCancel" class="btn" type="button" data-testid="deletion-pending-cancel">Cancel deletion</button></div><p id="deletionPendingStatus" class="small request-status" role="status" aria-live="polite"></p></div></div>
 <div id="authOverlay" class="overlay auth-overlay" aria-hidden="true">
   <div id="authDialog" class="modal rc-dialog auth-dialog" role="dialog" aria-modal="true" aria-labelledby="authTitle" aria-describedby="authDescription" tabindex="-1">
     <form id="authForm" class="auth-form" novalidate>
@@ -3623,14 +3625,24 @@ async function refreshMe(){
       console.warn('refreshMe failed', failure && failure.error ? failure.error : failure);
       me=null;
       try{ localStorage.removeItem(ME_KEY); }catch{}
+      // Issue #372: a locked account answers /api/auth/me with its scheduled
+      // deletion date. Show the cancel screen and nothing else.
+      if(failure?.code==='deletion_pending'&&typeof failure?.scheduled_for==='string'){
+        deletionPendingState={scheduled_for:failure.scheduled_for};
+        showDeletionPendingScreen(failure.scheduled_for);
+      }else if(deletionPendingState){
+        deletionPendingState=null;
+        hideDeletionPendingScreen();
+      }
     }else{
       me=nextUser;
       try{ localStorage.setItem(ME_KEY, JSON.stringify(me)); }catch{}
+      if(deletionPendingState){ deletionPendingState=null; hideDeletionPendingScreen(); }
     }
     const refreshedUserId=Number(me?.id||me?.uid)||null;
     const identityWasHydrated=authIdentityHydrated;
     const hydrationWasUnavailable=authIdentityHydrationUnavailable;
-    if(!failure||Number(failure?.http_status)===401){
+    if(!failure||Number(failure?.http_status)===401||failure?.code==='deletion_pending'){
       authIdentityHydrated=true;
       authIdentityHydrationUnavailable=false;
     }else if(!authIdentityHydrated){
@@ -5398,6 +5410,15 @@ async function refreshMe(){
       authRequest=null;
       setAuthBusy(false);
       invalidateAuthRefreshes();
+      // Issue #372: a locked account signed in successfully; show the
+      // cancel screen and nothing else. The session cookie is set, so
+      // the cancel flow works; `me` stays null until cancel + refreshMe.
+      if(data?.deletion_pending&&typeof data?.scheduled_for==='string'){
+        deletionPendingState={scheduled_for:data.scheduled_for};
+        closeAuthModal();
+        showDeletionPendingScreen(data.scheduled_for);
+        return;
+      }
       localStorage.removeItem(TOKEN_KEY);
       localStorage.setItem(ME_KEY,JSON.stringify(data.user));
       me=data.user;
@@ -7642,14 +7663,85 @@ async function refreshMe(){
   window.addEventListener('randori:auth-refreshed',()=>window._randori_sync_data_export());
   Promise.resolve(authCapabilitiesPromise).then(()=>window._randori_sync_data_export(),()=>{});
   window._randori_sync_data_export();
+  // Issue #372: the cancel screen for a locked account. Nothing else is
+  // available from it: the overlay covers the app until the member cancels
+  // (which restores the account) or the session ends.
+  let deletionPendingState=null;
+  function formatDeletionPendingDate(iso){
+    try{
+      return new Intl.DateTimeFormat('en-GB',{day:'numeric',month:'long',year:'numeric',timeZone:'UTC'})
+        .format(new Date(iso));
+    }catch{ return String(iso); }
+  }
+  function setDeletionPendingShellInert(inert){
+    // The overlay covers the app, but the dashboard DOM stays in the
+    // document: while the cancel screen is up the app shell must be out of
+    // the tab order and the screen-reader tree, and restored on hide.
+    const shell=document.querySelector('.shell');
+    if(!shell) return;
+    if(inert){ shell.setAttribute('inert',''); shell.setAttribute('aria-hidden','true'); }
+    else{ shell.removeAttribute('inert'); shell.removeAttribute('aria-hidden'); }
+  }
+  function showDeletionPendingScreen(scheduledFor){
+    const overlay=document.getElementById('deletionPendingOverlay');
+    const text=document.getElementById('deletionPendingText');
+    if(!overlay||!text) return;
+    text.textContent=`Your account is scheduled for deletion on ${formatDeletionPendingDate(scheduledFor)}. Cancel deletion to keep your account.`;
+    const status=document.getElementById('deletionPendingStatus');
+    if(status) status.textContent='';
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden','false');
+    setDeletionPendingShellInert(true);
+    document.getElementById('deletionPendingCancel')?.focus();
+  }
+  function hideDeletionPendingScreen(){
+    const overlay=document.getElementById('deletionPendingOverlay');
+    if(!overlay) return;
+    overlay.classList.remove('show');
+    overlay.setAttribute('aria-hidden','true');
+    setDeletionPendingShellInert(false);
+  }
+  document.getElementById('deletionPendingCancel')?.addEventListener('click',async()=>{
+    const status=document.getElementById('deletionPendingStatus');
+    const button=document.getElementById('deletionPendingCancel');
+    if(!button||button.disabled) return;
+    button.disabled=true;
+    if(status) status.textContent='Cancelling…';
+    try{
+      await api('/api/auth/account/delete/cancel',{method:'POST',body:{}});
+      hideDeletionPendingScreen();
+      deletionPendingState=null;
+      button.disabled=false;
+      try{ toast('Deletion cancelled. Your account is restored.'); }catch{}
+      await refreshMe();
+    }catch(error){
+      button.disabled=false;
+      if(Number(error?.http_status)===403&&error?.code==='recent_auth_required'){
+        if(status) status.textContent='Your sign-in confirmation expired. Sign in again, then cancel.';
+        hideDeletionPendingScreen();
+        openAuthModal('signin',{message:'Sign in again to cancel the deletion.'});
+      }else if(Number(error?.http_status)===409&&error?.code==='not_pending'){
+        hideDeletionPendingScreen();
+        deletionPendingState=null;
+        try{ toast('No deletion was scheduled.'); }catch{}
+        await refreshMe();
+      }else if(status) status.textContent='Couldn’t cancel the deletion. Try again in a moment.';
+    }
+  });
   // One-time notice after the deletion reload (no account data is stored).
   (function showAccountDeletedNotice(){
     let deleted=false;
+    let scheduledFor=null;
     try{ deleted=sessionStorage.getItem('randori-account-deleted-v1')==='1'; sessionStorage.removeItem('randori-account-deleted-v1'); }catch{}
+    try{ scheduledFor=sessionStorage.getItem('randori-account-deletion-scheduled-v1'); sessionStorage.removeItem('randori-account-deletion-scheduled-v1'); }catch{}
     const notice=document.getElementById('landingAccountDeleted');
-    if(!deleted||!notice) return;
+    if((!deleted&&!scheduledFor)||!notice) return;
     notice.hidden=false;
-    setTimeout(()=>{ notice.textContent='Your account was deleted. Thank you for practising with Randori Circle.'; },50);
+    setTimeout(()=>{
+      notice.textContent=scheduledFor
+        ?`Your account is scheduled for deletion on ${formatDeletionPendingDate(scheduledFor)}. We emailed you how to cancel — sign in again before then to cancel.`
+        :'Your account was deleted. Thank you for practising with Randori Circle.';
+    },50);
   })();
   async function copyLatestInviteLink(){
     if(activeCircleRole!=='owner'||!latestInviteUrl) return;

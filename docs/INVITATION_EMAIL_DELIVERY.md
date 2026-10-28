@@ -180,7 +180,7 @@ Failure of any current-state check becomes terminal `INVITATION_INACTIVE`
 suppression. Provider 429 and 5xx failures retain the same idempotency key and
 use the shared maximum of five attempts, ten-second provider timeout, bounded
 backoff, lease heartbeat, and dead-letter path. The shared dispatcher admits
-invitation work in fair one-per-type rounds under the aggregate eight-claim,
+invitation work in fair one-per-type rounds under the aggregate eleven-claim,
 45-second invocation budget.
 
 Owner create/resend remains same-origin and owner-authorized. The public

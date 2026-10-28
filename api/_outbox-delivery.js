@@ -36,6 +36,12 @@ import {
   createReminderEmailHandler,
   REMINDER_EMAIL_EVENT_TYPE,
 } from './_reminders.js';
+import {
+  ACCOUNT_DELETION_BLOCKED_EVENT_TYPE,
+  ACCOUNT_DELETION_CONFIRMATION_EVENT_TYPE,
+  ACCOUNT_DELETION_REMINDER_EVENT_TYPE,
+  createAccountDeletionEmailHandler,
+} from './_account-deletion-grace.js';
 import { localIdentityAdapterEnabled, strictLocalPairingRuntime } from './_local-runtime.js';
 
 // Single registry of outbox delivery adapters. Both the scheduled worker
@@ -57,6 +63,13 @@ export const OUTBOX_DELIVERY_TYPES=Object.freeze([
   // Issue #287. Always registered so queued reminders drain (to `suppressed`
   // while REMINDERS_ENABLED is off) instead of aging into a backlog alert.
   Object.freeze({type:REMINDER_EMAIL_EVENT_TYPE,key:'reminder_delivery',label:'reminder email'}),
+  // Issue #372. One handler for the confirmation, 48h reminder and blocked
+  // notifications; registered whenever a sender exists so queued rows drain
+  // (to `suppressed` when the request is gone) instead of aging into a
+  // backlog alert. The handler itself re-checks the pending request.
+  Object.freeze({type:ACCOUNT_DELETION_CONFIRMATION_EVENT_TYPE,key:'account_deletion_confirmation_delivery',label:'account deletion confirmation'}),
+  Object.freeze({type:ACCOUNT_DELETION_REMINDER_EVENT_TYPE,key:'account_deletion_reminder_delivery',label:'account deletion reminder'}),
+  Object.freeze({type:ACCOUNT_DELETION_BLOCKED_EVENT_TYPE,key:'account_deletion_blocked_delivery',label:'account deletion blocked'}),
 ]);
 
 export function configuredOutboxBaseUrl(){
@@ -83,7 +96,10 @@ function localCaptureSender(captured,type){
             :type===INVITE_REQUEST_EVENT_TYPE?'invite-request'
               :type===FEEDBACK_SUBMITTED_EVENT_TYPE?'feedback'
               :type===REMINDER_EMAIL_EVENT_TYPE?`reminder-${String(message.kind).replaceAll('_','-')}`
-                :'activation';
+                  :type===ACCOUNT_DELETION_CONFIRMATION_EVENT_TYPE?'account-deletion-confirmation'
+                    :type===ACCOUNT_DELETION_REMINDER_EVENT_TYPE?'account-deletion-reminder'
+                      :type===ACCOUNT_DELETION_BLOCKED_EVENT_TYPE?'account-deletion-blocked'
+                        :'activation';
     captured.get(type).push({recipient_email:String(message.to),kind,subject:String(message.subject),
       links:[...message.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4)});
     return {providerName:'local-capture',providerMessageId:`local-${randomUUID()}`};
@@ -151,6 +167,13 @@ export async function outboxDeliveryPlan(db,baseUrl,req,{types=null}={}){
   if(include(REMINDER_EMAIL_EVENT_TYPE)&&reminderSend){
     handlers.set(REMINDER_EMAIL_EVENT_TYPE,createReminderEmailHandler({db,baseUrl,send:reminderSend,
       localScope:strictLocalPairingRuntime(req)}));
+  }
+  for(const type of [ACCOUNT_DELETION_CONFIRMATION_EVENT_TYPE,ACCOUNT_DELETION_REMINDER_EVENT_TYPE,
+    ACCOUNT_DELETION_BLOCKED_EVENT_TYPE]){
+    const accountDeletionSend=sender(type);
+    if(include(type)&&accountDeletionSend){
+      handlers.set(type,createAccountDeletionEmailHandler({db,baseUrl,send:accountDeletionSend}));
+    }
   }
   return {local,captured,handlers};
 }

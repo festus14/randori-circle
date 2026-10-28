@@ -70,6 +70,16 @@ import {
   readAccountDeletionEligibility,
 } from './_account-deletion.js';
 import {
+  DELETION_GRACE_MIGRATION_VERSION,
+  accountDeletionGraceEnabled,
+  cancelAccountDeletion,
+  deletionPendingScheduledAt,
+  readActiveDeletionPending,
+  readDeletionCancelSession,
+  requestAccountDeletion,
+} from './_account-deletion-grace.js';
+import { schemaFeatureAvailable } from './_schema-capability.js';
+import {
   DataExportTooLargeError,
   buildDataExport,
   dataExportEnabled,
@@ -318,6 +328,7 @@ async function handleCapabilities(req,res){
   const identityConfigured=identityManagementEnabled(req);
   const inviteRequestsConfigured=inviteRequestsEnabled();
   let verifiedEmailActivation=false,passwordReset=false,identityManagement=false,inviteRequests=false;
+  let accountDeletionGrace=false;
   if(activationConfigured||resetConfigured||identityConfigured||inviteRequestsConfigured){
     let db;
     try{
@@ -332,6 +343,12 @@ async function handleCapabilities(req,res){
         inviteRequestsConfigured?inviteRequestIntakeAvailable(db).catch(()=>false):false,
       ]);
     }catch{}
+  }
+  if(accountDeletionGraceEnabled()){
+    try{
+      accountDeletionGrace=await schemaFeatureAvailable(getClient(),{
+        enabled:true,version:DELETION_GRACE_MIGRATION_VERSION});
+    }catch{ accountDeletionGrace=false; }
   }
   const passwordSignup=localPasswordSignupEnabled(req)||verifiedEmailActivation;
   const googleOAuth=Boolean(googleOAuthRequestConfiguration(req))
@@ -353,6 +370,9 @@ async function handleCapabilities(req,res){
       ...(process.env.ADMIN_DIAGNOSTICS_ENABLED==='true'?{adminDiagnostics:true}:{}),
       // Issue #339: advertised only while the flag (and circle membership) is on.
       ...(accountDeletionEnabled()?{accountDeletion:true}:{}),
+      // Issue #372: advertised only while the grace flag is on and migration
+      // v23 is applied; the client then shows the 14-day copy.
+      ...(accountDeletionGrace?{accountDeletionGrace:true}:{}),
       // Issue #365: advertised only while the flag is on.
       ...(dataExportEnabled()?{dataExport:true}:{}),
       ...(circleMembershipEnabled()&&process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED==='true'
@@ -830,6 +850,17 @@ async function handleLogin(req,res){
     {recentAuthMethod:'password'}); }
   catch{ return res.status(503).json({error:'login temporarily unavailable'}); }
   appendCookies(res,[sessionCookie(req,token)]);
+  // Issue #372: a locked account signs in successfully (the session is
+  // what the cancel flow verifies), so the response carries the pending
+  // flag — the app shows the cancel screen instead of the dashboard.
+  // The flag check never fails the login: a probe error falls back to the
+  // plain response and the boot refreshMe still answers 409.
+  let pending=null;
+  try{ pending=await readActiveDeletionPending(db,row.id); }catch{}
+  if(pending){
+    return res.json({ok:true,user:{id:row.id,email:row.email,name:row.display_name,color:row.color,
+      is_admin,isAdmin:is_admin},deletion_pending:true,scheduled_for:deletionPendingScheduledAt(pending)});
+  }
   return res.json({ ok:true, user:{ id:row.id, email:row.email, name:row.display_name, color:row.color, is_admin, isAdmin:is_admin }});
 }
 
@@ -847,7 +878,18 @@ async function handleMe(req,res){
     await ensureAuthReadiness(db);
     payload=await verifyRequestAuth(req,db);
   }catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
-  if(!payload) return res.status(401).json({error:'authentication required'});
+  if(!payload){
+    // Locked accounts (#372): verifyRequestAuth refuses them, so answer the
+    // cancel screen from the signed session instead of a bare 401.
+    try{
+      const pending=await readActiveDeletionPending(db,signedPayload.id);
+      if(pending){
+        return res.status(409).json({error:'account deletion pending',
+          code:'deletion_pending',scheduled_for:deletionPendingScheduledAt(pending)});
+      }
+    }catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
+    return res.status(401).json({error:'authentication required'});
+  }
   try{
     if(localIdentity){
       try{ await ensureCircleMembershipReadiness(db); }
@@ -945,15 +987,37 @@ async function handleAccountDeletion(req,res,ep){
     payload=await verifyRequestAuth(req,db);
   }catch{ return unavailable(); }
   if(!payload){
-    // A lost response must not turn a retry into a confusing failure: the same
-    // signed session of an already deleted account is answered as done.
-    const signed=req.method==='POST'?verifySignedRequestAuth(req):null;
+    // verifyRequestAuth refuses locked accounts: a pending deletion is
+    // answered from the signed session instead of as an authentication
+    // failure, so the member learns their deletion is scheduled.
+    const signed=verifySignedRequestAuth(req);
     try{
-      if(signed&&await accountDeletedForSession(db,{userId:signed.id,sessionHash:signed.sessionHash})){
-        appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
-        return res.json({ok:true,status:'already_deleted'});
+      if(signed){
+        const pending=await readActiveDeletionPending(db,signed.id);
+        if(pending){
+          if(req.method==='GET'){
+            return res.json({ok:true,deletion_pending:true,
+              scheduled_for:deletionPendingScheduledAt(pending)});
+          }
+          try{ parseAccountDeletionRequest(req.body); }catch{
+            return res.status(400).json({error:'type DELETE to confirm',code:'confirmation_required'});
+          }
+          return res.status(409).json({error:'account deletion already scheduled',
+            code:'already_pending',scheduled_for:deletionPendingScheduledAt(pending)});
+        }
       }
     }catch{ return unavailable(); }
+    if(req.method==='POST'){
+      // A lost response must not turn a retry into a confusing failure: the same
+      // signed session of an already deleted account is answered as done.
+      const signedPost=verifySignedRequestAuth(req);
+      try{
+        if(signedPost&&await accountDeletedForSession(db,{userId:signedPost.id,sessionHash:signedPost.sessionHash})){
+          appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
+          return res.json({ok:true,status:'already_deleted'});
+        }
+      }catch{ return unavailable(); }
+    }
     return res.status(401).json({error:'authentication required'});
   }
   const adminEmails=getAdminEmails();
@@ -961,10 +1025,16 @@ async function handleAccountDeletion(req,res,ep){
     let eligibility;
     try{ eligibility=await readAccountDeletionEligibility(db,{userId:payload.id,adminEmails}); }
     catch{ return unavailable(); }
-    if(eligibility.ok) return res.json({ok:true,eligible:true});
+    let grace=false;
+    try{
+      grace=await schemaFeatureAvailable(db,{enabled:accountDeletionGraceEnabled(),
+        version:DELETION_GRACE_MIGRATION_VERSION});
+    }catch{ grace=false; }
+    if(eligibility.ok) return res.json({ok:true,eligible:true,...(grace?{grace:true}:{})});
     if(!ACCOUNT_DELETION_REFUSALS[eligibility.reason]) return res.status(401).json({error:'authentication required'});
     return res.json({ok:true,eligible:false,code:eligibility.reason,
-      ...(eligibility.circles?{circles:eligibility.circles}:{})});
+      ...(eligibility.circles?{circles:eligibility.circles}:{}),
+      ...(grace?{grace:true}:{})});
   }
   try{ parseAccountDeletionRequest(req.body); }
   catch{ return res.status(400).json({error:'type DELETE to confirm',code:'confirmation_required'}); }
@@ -972,6 +1042,33 @@ async function handleAccountDeletion(req,res,ep){
   catch(error){
     if(error?.statusCode===429) return res.status(429).json({error:'too many attempts; try again later'});
     return unavailable();
+  }
+  let grace=false;
+  try{
+    grace=await schemaFeatureAvailable(db,{enabled:accountDeletionGraceEnabled(),
+      version:DELETION_GRACE_MIGRATION_VERSION});
+  }catch{ grace=false; }
+  if(grace){
+    // Issue #372: schedule the deletion 14 days out instead of deleting now.
+    let result;
+    try{ result=await requestAccountDeletion(db,{userId:payload.id,sessionHash:payload.sessionHash,adminEmails}); }
+    catch(error){
+      if(error?.code==='RECENT_AUTH_REQUIRED'){
+        return res.status(403).json({error:'recent authentication required',code:'recent_auth_required'});
+      }
+      return unavailable();
+    }
+    if(!result.ok){
+      if(result.reason==='already_pending'){
+        return res.status(409).json({error:'account deletion already scheduled',
+          code:'already_pending',scheduled_for:result.scheduled_for});
+      }
+      return accountDeletionRefusal(res,result);
+    }
+    appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
+    const response={ok:true,status:result.status,scheduled_for:result.scheduled_for};
+    deliverCommittedOutboxEvents(req,result.outboxEvents);
+    return res.json(response);
   }
   let result;
   try{ result=await deleteAccount(db,{userId:payload.id,sessionHash:payload.sessionHash,adminEmails,hashInvitationEmail}); }
@@ -984,6 +1081,50 @@ async function handleAccountDeletion(req,res,ep){
   if(!result.ok) return accountDeletionRefusal(res,result);
   appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
   return res.json({ok:true,status:result.status});
+}
+
+// --- account deletion cancel (issue #372, ACCOUNT_DELETION_GRACE_ENABLED) ---
+// POST with exactly {} cancels a pending deletion. The session is verified
+// without verifyRequestAuth (which refuses locked accounts): the request
+// revoked every session, so a live session proves a fresh sign-in after the
+// request, and the account must still hold an active membership. With the
+// deletion flag off the endpoint answers like an unknown one; a pending
+// request still cancels, because the flag gates new requests only.
+async function handleAccountDeletionCancel(req,res,ep){
+  if(!accountDeletionEnabled()) return unknownAuthEndpoint(res,ep);
+  if(req.method!=='POST'){
+    res.setHeader('Allow','POST');
+    return res.status(405).json({error:'POST only'});
+  }
+  if(!req.body||typeof req.body!=='object'||Array.isArray(req.body)||Object.keys(req.body).length){
+    return res.status(400).json({error:'invalid request'});
+  }
+  const unavailable=()=>res.status(503).json({error:'account deletion cancellation temporarily unavailable'});
+  let db,cancelSession;
+  try{
+    db=getClient();
+    await ensureAuthReadiness(db);
+    await ensureAccountDeletionReadiness(db);
+    cancelSession=await readDeletionCancelSession(db,req);
+  }catch{ return unavailable(); }
+  if(!cancelSession) return res.status(401).json({error:'authentication required'});
+  if(!cancelSession.pending) return res.status(409).json({error:'no account deletion is scheduled',code:'not_pending'});
+  let result;
+  try{
+    result=await cancelAccountDeletion(db,{userId:cancelSession.userId,
+      sessionHash:cancelSession.sessionHash});
+  }catch(error){
+    if(error?.code==='RECENT_AUTH_REQUIRED'){
+      return res.status(403).json({error:'recent authentication required',code:'recent_auth_required'});
+    }
+    return unavailable();
+  }
+  if(!result.ok){
+    if(result.reason==='not_pending') return res.status(409).json({error:'no account deletion is scheduled',code:'not_pending'});
+    return res.status(401).json({error:'authentication required'});
+  }
+  return res.json({ok:true,status:result.status,
+    ...(result.scheduled_for?{scheduled_for:result.scheduled_for}:{})});
 }
 
 async function bindGoogleProviderIdentity(db,{issuer,subject,userId}){
@@ -1414,7 +1555,7 @@ async function handleGoogleCallback(req,res){
   res.end();
 }
 
-const AVAILABLE_AUTH_ENDPOINTS=Object.freeze(['capabilities','signup','activation-resend','activation-verify','password-reset-request','password-reset-consume','recent-auth','identities','identity-password','identity-google-unlink','login','logout','logout-all','me','google/start','google/reauth/start','google/link/start','google/callback']);
+const AVAILABLE_AUTH_ENDPOINTS=Object.freeze(['capabilities','signup','activation-resend','activation-verify','password-reset-request','password-reset-consume','recent-auth','identities','identity-password','identity-google-unlink','login','logout','logout-all','me','account-delete','account-delete-cancel','google/start','google/reauth/start','google/link/start','google/callback']);
 
 function unknownAuthEndpoint(res,ep){
   return res.status(404).json({ error:`unknown auth endpoint '${ep}'`, available:AVAILABLE_AUTH_ENDPOINTS, hint:'endpoint query param ?endpoint=signup etc' });
@@ -1422,6 +1563,10 @@ function unknownAuthEndpoint(res,ep){
 
 function accountDeletionRoute(ep,urlPath){
   return ep==='account-delete'||urlPath.startsWith('/api/auth/account/delete');
+}
+
+function accountDeletionCancelRoute(ep,urlPath){
+  return ep==='account-delete-cancel'||urlPath.startsWith('/api/auth/account/delete/cancel');
 }
 
 function dataExportRoute(ep,urlPath){
@@ -1487,8 +1632,8 @@ export default async function handler(req,res){
     'password-reset-consume','recent-auth','identity-password','identity-google-unlink','google-link-start',
     'google-reauth-start','google-start']
     .some(name=>ep===name||ep.includes(name))
-    // With the flag off the deletion path stays indistinguishable from an unknown endpoint.
-    ||(accountDeletionEnabled()&&accountDeletionRoute(ep,urlPath))
+    // With the flag off the deletion paths stay indistinguishable from an unknown endpoint.
+    ||(accountDeletionEnabled()&&(accountDeletionRoute(ep,urlPath)||accountDeletionCancelRoute(ep,urlPath)))
     ||urlPath.includes('/activation/resend')||urlPath.includes('/activation/verify')
     ||urlPath.includes('/password-reset/')||urlPath.includes('/recent-auth')
     ||urlPath.includes('/identities/password')||urlPath.includes('/identities/google')
@@ -1497,6 +1642,7 @@ export default async function handler(req,res){
   if(req.method==='POST'&&!logoutMutation&&credentialMutation&&!verifyAuthMutationOrigin(req)){
     return res.status(403).json({error:'same-origin request required'});
   }
+  if (accountDeletionCancelRoute(ep,urlPath)) return handleAccountDeletionCancel(req,res,ep);
   if (accountDeletionRoute(ep,urlPath)) return handleAccountDeletion(req,res,ep);
   if (dataExportRoute(ep,urlPath)) return handleDataExport(req,res,ep);
   // also detect google via path that contains google

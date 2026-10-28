@@ -63,8 +63,9 @@ deployment through `REMINDERS_SESSION_SOON_ENABLED`, not per member.
 ## Outbox contract
 
 - One event type, `reminder.email.requested` v1, with template version 1. The
-  fair dispatcher now has seven types, still below the eight-claim cap, so
-  every type keeps a first-round claim ([budget](OUTBOX_INVOCATION_BUDGET.md)).
+  fair dispatcher has eleven types (the account-deletion grace period added
+  three more after reminders), at the eleven-claim cap, so every type keeps a
+  first-round claim ([budget](OUTBOX_INVOCATION_BUDGET.md)).
 - Payloads hold only identifiers: kind, circle or week/pair or
   publication/group ids, the availability cycle key, the recipient user id,
   and for `session_soon` a SHA-256 fingerprint of the agreed instant. No

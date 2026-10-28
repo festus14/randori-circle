@@ -12,6 +12,7 @@ import {
   sealCredentialEnvelope,
 } from './_key-rotation.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
+import { isDeletionPending } from './_account-deletion-grace.js';
 import { outboxRedactedSql } from './_outbox-retention.js';
 import { classifyPairingProviderError } from './_pairing-email.js';
 import {
@@ -266,6 +267,20 @@ export function createInvitationEmailHandler({db,baseUrl,send,localRuntime=false
     const current=await db.execute({sql:activeInvitationSql(),args:[payload.actorUserId,
       payload.invitationId,payload.circleId,payload.tokenHash,payload.emailHash,payload.email]});
     if(current.rows?.length!==1) return {status:'suppressed',reasonCode:'INVITATION_INACTIVE'};
+    // Issue #372: the recipient is resolved by email/hash only, so a pending
+    // member invited to another circle would still be emailed. Resolve the
+    // recipient email to an account id and suppress when that account has an
+    // active deletion request. A non-numeric id (fake-DB callers) is no
+    // account and skips the check.
+    const recipientAccount=await db.execute({
+      sql:`SELECT id FROM auth_accounts WHERE lower(email)=? LIMIT 2`,
+      args:[payload.email],
+    });
+    const recipientUserId=recipientAccount.rows?.length===1?Number(recipientAccount.rows[0].id):null;
+    if(Number.isSafeInteger(recipientUserId)&&recipientUserId>0
+      &&await isDeletionPending(db,recipientUserId)){
+      return {status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'};
+    }
     const subjectCircle=String(current.rows[0].circle_name||'Randori Circle')
       .replace(/[\u0000-\u001f\u007f]+/gu,' ').trim().slice(0,100)||'Randori Circle';
     const circleName=escapeHtml(subjectCircle);

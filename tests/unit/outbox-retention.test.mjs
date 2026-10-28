@@ -767,7 +767,7 @@ function spyingClient(log) {
   };
 }
 
-const FLAG_OFF_METRIC_KEYS = ['app_logs_retention', 'budget_ms', 'claimed', 'deadline_reached', 'key_rotation',
+const FLAG_OFF_METRIC_KEYS = ['account_deletion_grace', 'app_logs_retention', 'budget_ms', 'claimed', 'deadline_reached', 'key_rotation',
   'legacy_reconciliation_complete', 'logging_complete', 'max_claims', 'metrics_complete', 'types'];
 
 async function cron() {

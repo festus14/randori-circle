@@ -95,11 +95,12 @@ async function databaseAt(version){
 const ready=async()=>({ready:true,reason:null});
 const N=MIGRATION_CONTRACTS.length;
 
-test('migrations 1-21 stay breaking, and v22 is the first additive migration',()=>{
+test('migrations 1-21 stay breaking, and v22/v23 are additive migrations',()=>{
   assert.ok(MIGRATION_CONTRACTS.slice(0,21).every(contract=>contract.compatibility==='breaking'));
+  assert.equal(MIGRATION_CONTRACTS[21].compatibility,'additive');
   assert.equal(MIGRATION_CONTRACTS.at(-1).compatibility,'additive');
-  assert.equal(MIGRATION_CONTRACTS.at(-1).version,22);
-  assert.equal(compatibility.pendingAdditiveContract()?.version,22);
+  assert.equal(MIGRATION_CONTRACTS.at(-1).version,23);
+  assert.equal(compatibility.pendingAdditiveContract()?.version,23);
   assert.equal(compatibility.ADDITIVE_READINESS_LAG,1);
 });
 
@@ -126,7 +127,7 @@ test('code at M with a breaking M is not ready on a real M-1 database; declaring
 
   // The same database and code, with M declared additive, is ready.
   // The manifest must match the modelled code (1..M): the checked-in
-  // readiness manifest is at v22, which this database does not have.
+  // readiness manifest is at v23, which this database does not have.
   const additive=declaredAdditive(M).slice(0,M);
   assert.equal(await inspectDatabaseReadiness(db,{contracts:additive,manifest:manifestAt(M)}),true);
   assert.equal(await ensureCirclePairingReadiness(db,{contracts:additive}),true);

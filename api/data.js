@@ -52,6 +52,7 @@ import {
 import { ensureProgressReadiness, parseProgressQuery, progressDashboardEnabled, readMemberProgress } from './_progress.js';
 import { handleFeedbackRoute } from './_feedback-api.js';
 import { DELETED_ACCOUNT_PASSWORD_HASH, LIVE_ACCOUNT_SQL } from './_account-deletion.js';
+import { isDeletionPending } from './_account-deletion-grace.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import {
   canonicalCompletionPair,
@@ -1362,6 +1363,13 @@ async function handleInit(req,res){
   catch{ return res.status(503).json({error:'data unavailable'}); }
   if(!actor) return res.status(401).json({error:'authentication required'});
   try{
+    // Issue #372: handleInit verifies only the signed token, so a pending
+    // admin would otherwise get a successful API response beyond the cancel
+    // flow. A locked account gets 401 here, before any initialization runs.
+    // A check failure falls through to the 503 below (fail closed).
+    if(await isDeletionPending(getClient(),actor.id)){
+      return res.status(401).json({error:'authentication required'});
+    }
     const initialized=await initializePrimaryCircleData(getClient(),{
       actor,adminEmails:[...getAdminEmails()],nowSeconds,
     });
