@@ -14,6 +14,10 @@ import { requireRecentAuth } from './_recent-auth.js';
 import { feedbackSchemaNotInstalled } from './_feedback-config.js';
 import { FEEDBACK_MIGRATION_VERSION } from './_feedback-config.js';
 import { MIGRATION_CONTRACTS } from '../db/migration-contract.js';
+import {
+  openDeletionLedgerDb,
+  recordDeletionLedgerEntry,
+} from './_deletion-ledger-db.js';
 
 export const ACCOUNT_DELETION_CONFIRMATION='DELETE';
 export const DELETED_MEMBER_NAME='Deleted member';
@@ -203,10 +207,84 @@ export async function ensureAccountDeletionReadiness(db){
 
 async function readAccount(executor,userId){
   const result=await executor.execute({
-    sql:`SELECT id,email,password_hash,is_admin,is_demo FROM auth_accounts WHERE id=? LIMIT 2`,
+    sql:`SELECT id,email,password_hash,is_admin,is_demo,created_at FROM auth_accounts WHERE id=? LIMIT 2`,
     args:[userId],
   });
   return result.rows?.length===1?result.rows[0]:null;
+}
+
+// ---------------------------------------------------------------------------
+// Durable deletion-ledger writer (issue #383).
+//
+// Runs AFTER the app-database deletion transaction commits, never
+// before and never inside it: the ledger lives in a separate database,
+// the two cannot share a transaction, and an entry for a deletion that
+// then fails to commit would re-apply a deletion that never happened.
+//
+// `deletionLedgerClient` (new optional parameter on the deletion
+// functions) selects the ledger target:
+//   undefined — the env-configured ledger database
+//     (DELETION_LEDGER_DATABASE_URL / DELETION_LEDGER_AUTH_TOKEN); a
+//     no-op returning {recorded:false} when it is not configured;
+//   null      — explicitly disabled (tests that must not touch a ledger);
+//   a client  — used directly and left open (the caller owns it).
+// A ledger-write failure throws after the deletion has committed: the
+// deletion stands, and the caller must surface the error rather than
+// lose the entry silently. A retry re-enters through the
+// already-deleted path, which backfills the entry from the audit trail
+// (below), so the failure is recoverable. The return value gains a
+// `ledger:{ok:true,recorded:true}` field only when an entry was actually
+// recorded, so existing already-deleted / refused shapes are unchanged
+// when no ledger is configured.
+// ---------------------------------------------------------------------------
+
+async function recordDeletionLedgerEntryForDeletion(entry,{deletionLedgerClient,ledgerEnv}={}){
+  if(deletionLedgerClient===null) return Object.freeze({ok:true,recorded:false,reason:'disabled'});
+  if(deletionLedgerClient){
+    await recordDeletionLedgerEntry(deletionLedgerClient,entry);
+    return Object.freeze({ok:true,recorded:true});
+  }
+  const client=openDeletionLedgerDb(ledgerEnv);
+  if(!client) return Object.freeze({ok:true,recorded:false,reason:'not_configured'});
+  try{
+    await recordDeletionLedgerEntry(client,entry);
+    return Object.freeze({ok:true,recorded:true});
+  }finally{
+    try{ await client.close?.(); }catch{}
+  }
+}
+
+// Backfills the ledger entry for an account that is already
+// tombstoned: the deletion time is the earliest `account.deleted`
+// audit event (null when no audit row exists — always treated as
+// due), and `created_at` comes from the tombstone row itself. This is
+// what makes a retry after a ledger-write failure recover the entry,
+// and what records pre-#383 tombstones when a deletion is re-requested.
+async function recordDeletionLedgerForTombstonedAccount(db,accountId,{deletionLedgerClient,ledgerEnv}={}){
+  const account=await db.execute({
+    sql:`SELECT created_at FROM auth_accounts WHERE id=? AND password_hash=? LIMIT 1`,
+    args:[accountId,DELETED_ACCOUNT_PASSWORD_HASH],
+  });
+  if(account.rows?.length!==1) return Object.freeze({ok:true,recorded:false,reason:'not_tombstoned'});
+  const audit=await db.execute({
+    sql:`SELECT MIN(created_at) AS deleted_at FROM circle_audit_events
+      WHERE subject_user_id=? AND event_type=?`,
+    args:[accountId,ACCOUNT_DELETED_AUDIT_EVENT],
+  });
+  const createdAt=normalizeDatabaseTimestamp(account.rows[0].created_at,'created_at');
+  const deletedAt=audit.rows?.[0]?.deleted_at==null
+    ?null
+    :normalizeDatabaseTimestamp(audit.rows[0].deleted_at,'deleted_at');
+  return recordDeletionLedgerEntryForDeletion(
+    {account_id:accountId,deleted_at:deletedAt,created_at:createdAt},
+    {deletionLedgerClient,ledgerEnv},
+  );
+}
+
+function withLedgerResult(result,ledger){
+  return ledger?.recorded
+    ?Object.freeze({...result,ledger:Object.freeze({ok:true,recorded:true})})
+    :Object.freeze(result);
 }
 
 async function lastOwnerCircles(executor,userId){
@@ -494,6 +572,7 @@ async function rollback(transaction){
  */
 export async function deleteAccount(db,{
   userId,sessionHash,hashInvitationEmail,adminEmails=[],nowSeconds=Math.floor(Date.now()/1000),
+  deletionLedgerClient,ledgerEnv,
 }={}){
   const id=positiveId(userId);
   if(!db||typeof db.transaction!=='function'||!id||!/^[a-f0-9]{64}$/.test(String(sessionHash))
@@ -512,7 +591,15 @@ export async function deleteAccount(db,{
   try{
     const account=await readAccount(transaction,id);
     if(!account) return await stop({ok:false,reason:'not_found'});
-    if(isDeletedAccount(account)) return await stop({ok:true,status:'already_deleted'});
+    if(isDeletedAccount(account)){
+      // Already tombstoned: backfill the durable ledger entry (if
+      // any) from the audit trail, so a retry after a ledger-write
+      // failure recovers the entry. The transaction is rolled back
+      // first; the backfill reads the tombstone from `db`.
+      await rollback(transaction); finished=true;
+      const ledger=await recordDeletionLedgerForTombstonedAccount(db,id,{deletionLedgerClient,ledgerEnv});
+      return withLedgerResult({ok:true,status:'already_deleted'},ledger);
+    }
     await requireRecentAuth(transaction,{id,sessionHash},{nowSeconds});
     const eligibility=await evaluateEligibility(transaction,account,admins);
     if(!eligibility.ok) return await stop(eligibility);
@@ -538,7 +625,14 @@ export async function deleteAccount(db,{
     const {tombstoned,...counts}=summary;
     if(tombstoned!==1) throw new Error('account tombstone failed');
     await transaction.commit(); finished=true;
-    return Object.freeze({ok:true,status:'deleted',summary:Object.freeze(counts)});
+    // Durable ledger (#383), after the commit: one entry, the
+    // deletion time just committed and the account's creation time.
+    const ledger=await recordDeletionLedgerEntryForDeletion(
+      {account_id:id,deleted_at:occurredAt,
+        created_at:normalizeDatabaseTimestamp(account.created_at,'created_at')},
+      {deletionLedgerClient,ledgerEnv},
+    );
+    return withLedgerResult({ok:true,status:'deleted',summary:Object.freeze(counts)},ledger);
   }catch(error){
     if(!finished) await rollback(transaction);
     throw error;
@@ -558,6 +652,7 @@ export async function deleteAccount(db,{
  */
 export async function executeScheduledAccountDeletion(db,{
   userId,adminEmails=[],hashInvitationEmail,nowSeconds=Math.floor(Date.now()/1000),
+  deletionLedgerClient,ledgerEnv,
 }={}){
   const id=positiveId(userId);
   if(!db||typeof db.transaction!=='function'||!id||typeof hashInvitationEmail!=='function'
@@ -575,7 +670,13 @@ export async function executeScheduledAccountDeletion(db,{
   try{
     const account=await readAccount(transaction,id);
     if(!account) return await stop({ok:false,reason:'not_found'});
-    if(isDeletedAccount(account)) return await stop({ok:true,status:'already_deleted'});
+    if(isDeletedAccount(account)){
+      // Already tombstoned: backfill the durable ledger entry, as in
+      // deleteAccount — a retry after a ledger-write failure recovers it.
+      await rollback(transaction); finished=true;
+      const ledger=await recordDeletionLedgerForTombstonedAccount(db,id,{deletionLedgerClient,ledgerEnv});
+      return withLedgerResult({ok:true,status:'already_deleted'},ledger);
+    }
     const pending=await transaction.execute({
       sql:`SELECT requested_at,scheduled_for FROM account_deletion_requests
         WHERE user_id=? AND cancelled_at IS NULL AND executed_at IS NULL LIMIT 1`,
@@ -615,8 +716,16 @@ export async function executeScheduledAccountDeletion(db,{
     if(tombstoned!==1) throw new Error('account tombstone failed');
     if(grace_executed!==1) throw new Error('account deletion request was not marked executed');
     await transaction.commit(); finished=true;
-    return Object.freeze({ok:true,status:'deleted',summary:Object.freeze(counts),
-      scheduled_for:new Date(Number(pending.rows[0].scheduled_for)*1000).toISOString()});
+    // Durable ledger (#383), after the commit. Blocked, cancelled and
+    // not-due requests return before this point and write no entry:
+    // the ledger records executions only.
+    const ledger=await recordDeletionLedgerEntryForDeletion(
+      {account_id:id,deleted_at:occurredAt,
+        created_at:normalizeDatabaseTimestamp(account.created_at,'created_at')},
+      {deletionLedgerClient,ledgerEnv},
+    );
+    return withLedgerResult({ok:true,status:'deleted',summary:Object.freeze(counts),
+      scheduled_for:new Date(Number(pending.rows[0].scheduled_for)*1000).toISOString()},ledger);
   }catch(error){
     if(!finished) await rollback(transaction);
     throw error;
@@ -633,13 +742,18 @@ export async function executeScheduledAccountDeletion(db,{
 // and the account's creation time, and nothing else. No personal data: the
 // account id is opaque, and neither the email nor any other column is kept.
 //
-// The ledger is built from the still-live SOURCE database (PITR creates a
-// new database and never deletes the source) and lives only in an
-// operator-held file outside any database. A ledger table inside the
-// database would roll back with the restore it is meant to repair, so it
-// would be useless; a ledger in a GitHub artifact would keep account ids on
-// a 30/90-day retention schedule for no benefit. No schema change: every
-// column read here already exists.
+// Two ways to obtain the ledger. (a) Built from the still-live SOURCE
+// database (PITR creates a new database and never deletes the source)
+// and held only in an operator-held file outside any database.
+// (b) Since #383, the durable ledger: every deletion execution also
+// writes its entry, at deletion time, to a SEPARATE ledger database
+// (api/_deletion-ledger-db.js), which survives the source database
+// itself being destroyed. A ledger table inside the app database would
+// roll back with the restore it is meant to repair, so it would be
+// useless; a ledger in a GitHub artifact would keep account ids on a
+// 30/90-day retention schedule for no benefit. No app-DB schema change:
+// every column read here already exists, and the ledger DB has its
+// own schema (scripts/deletion-ledger.mjs init).
 //
 // The deletion time is the earliest `account.deleted` audit event for the
 // account. Deletion writes one such event per membership the account held,

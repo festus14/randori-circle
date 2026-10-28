@@ -4872,6 +4872,34 @@ correction that "Starter" is not a current Turso plan name, and the dead
 `point` variable in `verifyDeletionLedger` is removed. #383 is not
 landed by this PR.
 
+*Update, 28 October 2026 — #383 implemented:* the residual risk above
+is now fixed in code. The durable ledger lives in a **separate Turso
+database** (owner decision 2026-10-27): `api/_deletion-ledger-db.js`
+is the ledger-DB client (config, validated read/write, retention
+purge, destroy; no DDL, no app-DB migration), the ledger DB has its
+own schema (one table, the minimal `{account_id, deleted_at,
+created_at}` shape; `scripts/deletion-ledger.mjs init`), and the
+deletion path in `api/_account-deletion.js` writes one entry after
+the app-DB deletion transaction commits — immediate deletions at
+deletion time, grace-period deletions at scheduled execution, and
+nothing for a cancelled or blocked grace request. A ledger-write
+failure surfaces to the caller (the deletion stands); a retry
+backfills the entry from the audit trail. The CLI gains
+`export --from ledger-db`, `reapply`/`verify --from ledger-db`
+(restore from a destroyed source with no ledger file), `purge
+--before` (entries older than now minus the provider backup window;
+null-`deleted_at` entries are never purged by time) and `destroy`
+(exact confirmation phrase). `privacy.html` (Backups bullet) now
+states the ledger's bounded retention. **Production status:** the
+writer is inactive in production until the owner provisions the
+second production Turso database and wires its credentials (#440,
+owner-only; config-only wiring in #444), so until then a restore
+from a destroyed production source still cannot re-apply deletions.
+Verification: `tests/unit/deletion-ledger-db.test.mjs`,
+`tests/unit/deletion-ledger-writer.test.mjs`, and
+`tests/unit/deletion-ledger-destroyed-source.test.mjs` (source
+database deleted, ledger intact, re-apply passes `verify`).
+
 ## ID-90: Let a signed-in member download their own data as one JSON archive, behind a flag
 
 Status: implemented; behind `DATA_EXPORT_ENABLED` (off by default), no migration. Issue #365.

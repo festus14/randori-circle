@@ -317,13 +317,19 @@ including personal data deleted after T. Before any cutover, the operator
 re-applies every deletion newer than the restore point, using the deletion
 ledger: one entry per tombstoned account — the opaque account id, the
 deletion time (the earliest `account.deleted` audit event, or null when no
-audit row exists), and the account's creation time. The ledger is built
-from the still-live source database (PITR never deletes the source) and
-kept only in an operator-held file outside any database: a ledger table
-inside the database would roll back with the restore it is meant to repair.
-The full step-by-step procedure, including the executable CLI
-(`scripts/deletion-ledger.mjs`: `export`, `reapply`, `verify`) and the
-verification gate that blocks the cutover, is in
+audit row exists), and the account's creation time. There are two ways to
+obtain the ledger. When the source database survives, it is built from
+the still-live source (PITR never deletes the source) and kept only in an
+operator-held file outside any database. When the source itself is
+destroyed, the ledger comes from its **durable store: a separate Turso
+database** (issue #383, owner decision 2026-10-27) — every deletion
+execution writes its entry there at deletion time, so the ledger
+survives the source. A ledger table inside the app database would roll
+back with the restore it is meant to repair. The full step-by-step
+procedure, including the executable CLI
+(`scripts/deletion-ledger.mjs`: `export`, `reapply`, `verify`, plus the
+ledger-database modes `init`, `purge`, `destroy`) and the verification
+gate that blocks the cutover, is in
 [`docs/TURSO_BACKUP_RESTORE_REHEARSAL.md`](TURSO_BACKUP_RESTORE_REHEARSAL.md)
 ("Re-applying account deletions after a restore"). The same code also
 re-runs the deletion's scrubbing statements with the original deletion
@@ -332,10 +338,34 @@ last-owner/last-admin gates for the reasons documented in
 `api/_account-deletion.js` (the original deletion already passed them; the
 restored database holds stale state).
 
-**Residual risk.** If the source database itself is destroyed, the ledger
-cannot be built from it — there is no durable off-database ledger yet.
-That follow-up is #383. Owner confirmation of the production Turso plan
-tier is #384.
+**Durable ledger, retention and destruction (#383).** The ledger database
+has its own schema (one table, the minimal entry shape — no app-DB
+migration is involved) and its own credentials
+(`DELETION_LEDGER_DATABASE_URL`, `DELETION_LEDGER_AUTH_TOKEN`; see
+[ENVIRONMENT.md](ENVIRONMENT.md)). The writer runs on execution only:
+an immediate deletion writes at deletion time, a grace-period deletion
+writes when the scheduled execution runs, and a cancelled or blocked
+grace request writes nothing. A ledger-write failure surfaces to the
+caller (the deletion itself stands); a retry backfills the entry from
+the account's audit trail. Entries are kept only as long as a restore
+could still need them: entries deleted before (now − the provider
+backup window) are purged with `scripts/deletion-ledger.mjs purge
+--before <cutoff>`; entries with an unknown deletion time are never
+purged by time and need operator resolution. `destroy` deletes every
+entry, for a verified cutover past the backup window or for retiring
+the ledger database. The ledger is never committed to the repo and
+never uploaded as a GitHub artifact. `privacy.html` (Backups bullet)
+states this retention: the minimal record, bounded by the backup
+window, then destroyed.
+
+**Production status.** The code above is merged, but the writer is
+inactive in production until the owner provisions the second
+production Turso database and wires its credentials (#440, owner-only;
+config-only wiring follows in #444). Until then, no production
+deletion writes a ledger entry, and a restore from a destroyed
+production source still cannot re-apply deletions — the residual risk
+below remains open in production until #440/#444 land. Owner
+confirmation of the production Turso plan tier is #384.
 
 ## Limits and follow-ups
 
