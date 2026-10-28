@@ -189,14 +189,11 @@ The chat retention runbook is under [Privacy and data](#privacy-and-data).
 These describe a possible future platform. None of it is what runs today
 (Vercel functions plus Turso); see the [README](../README.md#how-it-is-built)
 for the current stack. The current architecture diagrams are the Mermaid
-diagrams in [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md); the files below were
-deliberately not edited to look current (no checked-in Excalidraw export
-pipeline exists, so hand-editing the JSON + SVG + PNG would produce three
-artefacts that disagree — see SYSTEM_DESIGN.md §12).
+diagrams in [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) — see SYSTEM_DESIGN.md §12.
+The legacy Excalidraw/SVG/PNG diagram files that depicted the proposed
+target were deleted (#430): no checked-in Excalidraw export pipeline
+exists, so they could not be regenerated verifiably.
 
 | Doc | What it covers |
 | --- | --- |
 | [PRODUCTION_ARCHITECTURE_PLAN.md](PRODUCTION_ARCHITECTURE_PLAN.md) | A possible Next.js/PostgreSQL end state and delivery plan. **Note:** a proposal, not the current runtime (Vercel functions plus Turso). Superseded for current-runtime questions by [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) |
-| [randori-production-architecture.png](randori-production-architecture.png) | Diagram for the architecture plan above. **Note:** shows the proposed target (Next.js, Supabase, Liveblocks, LiveKit), not what runs today |
-| [randori-production-architecture.svg](randori-production-architecture.svg) | Browser-viewable copy of the same target diagram |
-| [randori-production-architecture.excalidraw](randori-production-architecture.excalidraw) | Editable Excalidraw source of the same target diagram |
