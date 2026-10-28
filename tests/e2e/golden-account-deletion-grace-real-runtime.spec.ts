@@ -160,7 +160,10 @@ test('account deletion grace: a member schedules deletion, cancels from the pend
     await expect(member.getByTestId('deletion-pending-cancel')).toBeVisible();
     await expect(member.locator('#deletionPendingText')).toContainText(
       `scheduled for deletion on ${formatDate(firstScheduled)}`);
-    await expect(member.locator('#dashPairArea')).toHaveCount(0);
+    // The overlay covers the app: the dashboard DOM stays behind it, so
+    // the assertion is that the pending screen itself is up, not that the
+    // dashboard nodes are gone.
+    await expect(member.locator('#deletionPendingOverlay.show')).toBeVisible();
     expect((await json(member,'/api/auth/me')).status).toBe(409);
     expect((await json(member,'/api/auth/me')).body.code).toBe('deletion_pending');
     expect((await json(member,'/api/history')).status).toBe(401);
