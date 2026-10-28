@@ -130,7 +130,7 @@ at most one active request per account):
   tombstones the account exactly as an immediate deletion would.
 - **Blocked execution.** If the account is the last owner or last admin
   when the job runs, the account stays locked, one
-  `account.deletion_blocked` audit event is written, and each admin gets
+  `account.deletion_blocked` audit event per circle is written, and each admin gets
   one blocked notification (outbox idempotency keys dedupe repeats). The
   deletion runs on a later check once another owner or admin exists.
 - **Flag rollback.** Turning `ACCOUNT_DELETION_GRACE_ENABLED` off stops

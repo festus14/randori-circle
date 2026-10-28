@@ -5225,7 +5225,7 @@ change their mind — the remaining criterion from #302.
   pending row and re-checks the last-owner / last-admin rules inside the
   same transaction as the existing deletion. If the account is the last
   owner or last admin, the account stays locked, one
-  `account.deletion_blocked` audit event is written, and each admin gets
+  `account.deletion_blocked` audit event per circle is written, and each admin gets
   one blocked notification; the deletion runs on a later check once
   another owner or admin exists.
 - **Rollback rule.** The flag gates new requests only. A pending request
