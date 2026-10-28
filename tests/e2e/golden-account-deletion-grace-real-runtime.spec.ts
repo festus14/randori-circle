@@ -208,9 +208,11 @@ test('account deletion grace: a member schedules deletion, cancels from the pend
     expect(rows[0].cancelled_at).not.toBeNull();
     expect(rows[1].cancelled_at).toBeNull();
 
-    // Age the second request past its scheduled date; the cron executes it.
+    // Age the second request past its scheduled date (requested 15 days ago,
+    // due an hour ago, keeping scheduled_for > requested_at); the cron executes it.
     await withDatabase(golden,db=>db.execute({
-      sql:`UPDATE account_deletion_requests SET scheduled_for=strftime('%s','now')-3600
+      sql:`UPDATE account_deletion_requests
+        SET requested_at=strftime('%s','now')-15*24*3600, scheduled_for=strftime('%s','now')-3600
         WHERE user_id=? AND cancelled_at IS NULL AND executed_at IS NULL`,args:[memberId],
     }));
     const executed=await drainOutbox(owner);
@@ -244,7 +246,8 @@ test('account deletion grace: a member schedules deletion, cancels from the pend
     expect(blockedRequest.status,JSON.stringify(blockedRequest.body)).toBe(200);
     expect(blockedRequest.body.status).toBe('pending_deletion');
     await withDatabase(golden,db=>db.execute({
-      sql:`UPDATE account_deletion_requests SET scheduled_for=strftime('%s','now')-3600
+      sql:`UPDATE account_deletion_requests
+        SET requested_at=strftime('%s','now')-15*24*3600, scheduled_for=strftime('%s','now')-3600
         WHERE user_id=? AND cancelled_at IS NULL AND executed_at IS NULL`,args:[blockedId],
     }));
     const blockedRun=await drainOutbox(owner);
