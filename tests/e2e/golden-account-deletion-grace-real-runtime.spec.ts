@@ -167,9 +167,9 @@ test('account deletion grace: a member schedules deletion, cancels from the pend
     await expect(member.locator('#deletionPendingOverlay.show')).toBeVisible();
     await expect(member.locator('.shell')).toHaveAttribute('inert','');
     await expect(member.locator('.shell')).toHaveAttribute('aria-hidden','true');
-    await expect(member.evaluate(()=>document.activeElement?.id)).toBe('deletionPendingCancel');
+    expect(await member.evaluate(()=>document.activeElement?.id)).toBe('deletionPendingCancel');
     await member.keyboard.press('Tab');
-    await expect(member.evaluate(()=>Boolean(document.activeElement?.closest('.shell')))).toBe(false);
+    expect(await member.evaluate(()=>Boolean(document.activeElement?.closest('.shell')))).toBe(false);
     expect((await json(member,'/api/auth/me')).status).toBe(409);
     expect((await json(member,'/api/auth/me')).body.code).toBe('deletion_pending');
     expect((await json(member,'/api/history')).status).toBe(401);
