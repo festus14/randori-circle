@@ -132,8 +132,13 @@ test('with the grace flag on, requesting deletion schedules it and the cancel en
   // Other APIs refuse the locked account.
   const members=await invoke({endpoint:'members',url:'/api/members',cookie,handler:membersHandler});
   assert.equal(members.statusCode,401);
-  // A fresh sign-in reaches the cancel flow.
-  const fresh=await signedIn();
+  // A fresh sign-in succeeds and carries the pending flag, so the app
+  // shows the cancel screen instead of the dashboard.
+  const freshLogin=await login();
+  assert.equal(freshLogin.statusCode,200);
+  assert.equal(freshLogin.body.deletion_pending,true);
+  assert.equal(freshLogin.body.scheduled_for,requested.body.scheduled_for);
+  const fresh=sessionCookie(freshLogin);
   const cancelled=await cancelDeletion({cookie:fresh,method:'POST',body:{}});
   assert.deepEqual([cancelled.statusCode,cancelled.body],[200,{ok:true,status:'cancelled',
     scheduled_for:requested.body.scheduled_for}]);

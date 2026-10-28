@@ -5197,7 +5197,10 @@ change their mind — the remaining criterion from #302.
   publications), reminders and emails (handlers suppress mail queued before
   the request); partners and owners see it as "Leaving" in the roster.
 - Signing in again (password or Google) issues a session that can only
-  reach the cancel flow (`POST /api/auth/account/delete/cancel`): the app
+  reach the cancel flow (`POST /api/auth/account/delete/cancel`): password
+  sign-in answers 200 with `deletion_pending` + `scheduled_for` so the app
+  shows the screen without a second round trip (Google lands on the boot
+  refresh, where `/api/auth/me` answers 409). The app
   shows a minimal "Your account is scheduled for deletion on {date}.
   Cancel deletion?" screen and nothing else. Cancelling sets
   `cancelled_at`, writes one `account.deletion_cancelled` audit event per

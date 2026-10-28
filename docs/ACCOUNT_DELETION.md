@@ -58,6 +58,11 @@ The session alone chooses the account; no id is accepted.
 | retry with the old signed cookie after success | `200 {ok:true,status:"already_deleted"}` |
 | signed out, cross-site POST, too many attempts, schema not ready | `401`, `403`, `429` (shared 10-per-15-minutes identity budget), `503` |
 
+Password sign-in for an account with a pending deletion answers `200`
+with `deletion_pending:true` and `scheduled_for` alongside the user, so the
+app shows the cancel screen straight away; `/api/auth/me` answers `409
+{code:"deletion_pending",scheduled_for}` for the same account.
+
 `/api/auth/account/delete/cancel` (rewrite to
 `/api/auth?endpoint=account-delete-cancel`) cancels a pending deletion.
 `POST {}` — exactly the empty object — from a session signed in after the
@@ -84,6 +89,10 @@ at most one active request per account):
   again (password or Google) issues a session that can only reach the
   cancel flow; the app shows a minimal "Your account is scheduled for
   deletion on {date}. Cancel deletion?" screen and nothing else.
+  Password sign-in answers 200 with `deletion_pending: true` and
+  `scheduled_for`, so the app shows that screen straight away; a Google
+  sign-in lands on the boot refresh, where `/api/auth/me` answers 409
+  `deletion_pending`.
 - **Leaving.** Partners and owners see the member as "Leaving" in the
   owner roster (`deletion_pending` on the roster entry, rendered as a
   Leaving badge). The member is excluded from future pairing (primary and

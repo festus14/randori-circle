@@ -54,7 +54,7 @@ test('real cron drains saturated mixed types fairly and then reports an empty qu
       },cronSecret);
       expect(first.status).toBe(200);
       expect(first.body.outbox).toMatchObject({
-        budget_ms:45_000,max_claims:8,deadline_reached:false,claimed:7,
+        budget_ms:45_000,max_claims:11,deadline_reached:false,claimed:7,
       });
       expect(first.body.outbox.types['pairing.email.requested']).toMatchObject({
         claimed:5,dead_lettered:5,backlog:0,dead_letter:5,

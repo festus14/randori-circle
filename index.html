@@ -5410,6 +5410,15 @@ async function refreshMe(){
       authRequest=null;
       setAuthBusy(false);
       invalidateAuthRefreshes();
+      // Issue #372: a locked account signed in successfully; show the
+      // cancel screen and nothing else. The session cookie is set, so
+      // the cancel flow works; `me` stays null until cancel + refreshMe.
+      if(data?.deletion_pending&&typeof data?.scheduled_for==='string'){
+        deletionPendingState={scheduled_for:data.scheduled_for};
+        closeAuthModal();
+        showDeletionPendingScreen(data.scheduled_for);
+        return;
+      }
       localStorage.removeItem(TOKEN_KEY);
       localStorage.setItem(ME_KEY,JSON.stringify(data.user));
       me=data.user;

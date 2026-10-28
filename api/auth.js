@@ -850,6 +850,17 @@ async function handleLogin(req,res){
     {recentAuthMethod:'password'}); }
   catch{ return res.status(503).json({error:'login temporarily unavailable'}); }
   appendCookies(res,[sessionCookie(req,token)]);
+  // Issue #372: a locked account signs in successfully (the session is
+  // what the cancel flow verifies), so the response carries the pending
+  // flag — the app shows the cancel screen instead of the dashboard.
+  // The flag check never fails the login: a probe error falls back to the
+  // plain response and the boot refreshMe still answers 409.
+  let pending=null;
+  try{ pending=await readActiveDeletionPending(db,row.id); }catch{}
+  if(pending){
+    return res.json({ok:true,user:{id:row.id,email:row.email,name:row.display_name,color:row.color,
+      is_admin,isAdmin:is_admin},deletion_pending:true,scheduled_for:deletionPendingScheduledAt(pending)});
+  }
   return res.json({ ok:true, user:{ id:row.id, email:row.email, name:row.display_name, color:row.color, is_admin, isAdmin:is_admin }});
 }
 
