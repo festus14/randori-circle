@@ -250,13 +250,20 @@ function readLedger(path){
 }
 
 // A malformed --restore-point is a usage error, not a generic failure:
-// deletionLedgerEntriesAfter / verifyDeletionLedger throw a bare
-// TypeError for it, so map that (and only that) to DELETION_LEDGER_USAGE.
-function deletionLedgerEntriesAfterOrUsage(ledger,restorePoint){
+// deletionLedgerEntriesAfter throws a bare TypeError for it, so map
+// that (and only that) to DELETION_LEDGER_USAGE. Any other error —
+// notably a corrupt ledger entry, which parseDeletionLedger also
+// reports as a TypeError — is rethrown, so it surfaces as a
+// DELETION_LEDGER_FAILED database failure instead of a bogus usage
+// error (same pattern as verifyDeletionLedgerOrUsage below).
+export function deletionLedgerEntriesAfterOrUsage(ledger,restorePoint){
   try{
     return deletionLedgerEntriesAfter(ledger,restorePoint);
-  }catch{
-    fail('valid --restore-point is required','DELETION_LEDGER_USAGE');
+  }catch(error){
+    if(error instanceof TypeError&&/valid restore point/.test(error.message)){
+      fail('valid --restore-point is required','DELETION_LEDGER_USAGE');
+    }
+    throw error;
   }
 }
 
@@ -271,11 +278,21 @@ async function verifyDeletionLedgerOrUsage(client,{ledger,restorePoint}){
   }
 }
 
-async function purgeDeletionLedgerOrUsage(client,{before}){
+// A malformed --before is a usage error, not a generic failure:
+// purgeDeletionLedgerEntries throws a bare TypeError for it
+// (`valid purge cutoff is required`), so map that (and only that) to
+// DELETION_LEDGER_USAGE. Any other error — e.g. purging a ledger
+// database whose table was never created (`init` not run), which the
+// database reports as a missing-table failure — is rethrown, so it
+// surfaces as DELETION_LEDGER_FAILED instead of a bogus usage error.
+export async function purgeDeletionLedgerOrUsage(client,{before}){
   try{
     return await purgeDeletionLedgerEntries(client,{before});
-  }catch{
-    fail('valid --before is required','DELETION_LEDGER_USAGE');
+  }catch(error){
+    if(error instanceof TypeError&&/valid purge cutoff/.test(error.message)){
+      fail('valid --before is required','DELETION_LEDGER_USAGE');
+    }
+    throw error;
   }
 }
 

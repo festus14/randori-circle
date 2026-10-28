@@ -347,7 +347,21 @@ an immediate deletion writes at deletion time, a grace-period deletion
 writes when the scheduled execution runs, and a cancelled or blocked
 grace request writes nothing. A ledger-write failure surfaces to the
 caller (the deletion itself stands); a retry backfills the entry from
-the account's audit trail. Entries are kept only as long as a restore
+the account's audit trail. For an immediate deletion the caller is the
+user, who sees the error and retries — the retry re-enters as
+`already_deleted` and backfills. For a scheduled (cron) execution there
+is no user to retry, and the cron will NOT pick the account up again:
+the execution already marked `executed_at` inside the deletion
+transaction, and the cron's due query selects only requests with
+`executed_at IS NULL`. A cron ledger failure therefore appears as an
+`execution_failed` entry for that user in the grace job result, with
+the deletion standing and the ledger entry missing. The operator must
+re-invoke `executeScheduledAccountDeletion` for that account id (a
+one-off run against the app database, with the ledger database
+configured): it takes the already-deleted branch — it needs no pending
+request — and backfills the entry from the audit trail. Do not wait
+for the next cron run; there is no automatic backfill retry.
+Entries are kept only as long as a restore
 could still need them: entries deleted before (now − the provider
 backup window) are purged with `scripts/deletion-ledger.mjs purge
 --before <cutoff>`; entries with an unknown deletion time are never
@@ -356,7 +370,9 @@ entry, for a verified cutover past the backup window or for retiring
 the ledger database. The ledger is never committed to the repo and
 never uploaded as a GitHub artifact. `privacy.html` (Backups bullet)
 states this retention: the minimal record, bounded by the backup
-window, then destroyed.
+window for entries with a known deletion time (purge is a manual
+operator step), with unknown-time entries held until the operator
+resolves them.
 
 **Production status.** The code above is merged, but the writer is
 inactive in production until the owner provisions the second

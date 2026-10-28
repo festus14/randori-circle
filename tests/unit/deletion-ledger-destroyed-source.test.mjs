@@ -232,6 +232,45 @@ test('CLI purge destroys entries older than the cutoff and never null entries; d
   assert.deepEqual(await readDeletionLedgerEntries(client),[]);
 });
 
+test('CLI purge against an un-initialised ledger DB is a DB failure, not a usage error',async()=>{
+  // No `init`: the file exists but the ledger table was never created,
+  // so purge fails at the database — it must not be misreported as
+  // "valid --before is required".
+  const freshDirectory=mkdtempSync(join(tmpdir(),'randori-deletion-ledger-uninit-'));
+  resources.push(async()=>{ rmSync(freshDirectory,{recursive:true,force:true}); });
+  const freshUrl=`file:${join(freshDirectory,'ledger.db')}`;
+  let caught;
+  try{
+    await run({argv:['purge','--before','2026-10-27T00:00:00.000Z'],env:ledgerEnv(freshUrl)});
+  }catch(error){ caught=error; }
+  assert.ok(caught);
+  assert.notEqual(caught.code,'DELETION_LEDGER_USAGE');
+  assert.deepEqual(publicCliError(caught),{
+    ok:false,error:'DELETION_LEDGER_FAILED',message:'deletion ledger operation failed',
+  });
+});
+
+test('CLI corrupt ledger entry is a DB failure, not a usage error',async()=>{
+  const ledger=await ledgerDb();
+  // A 24-char deleted_at that passes the schema CHECK but is not a
+  // real timestamp: corrupt data the reader must reject as a failure.
+  await ledger.client.execute({sql:`INSERT INTO deletion_ledger (account_id,deleted_at,created_at) VALUES
+    (2,'2026-13-99T99:99:99.999Z','${BEFORE}')`,args:[]});
+  const directory=mkdtempSync(join(tmpdir(),'randori-deletion-ledger-corrupt-'));
+  resources.push(async()=>{ rmSync(directory,{recursive:true,force:true}); });
+  let caught;
+  try{
+    await run({argv:['export','--from','ledger-db','--out',join(directory,'ledger.json'),
+      '--restore-point',RESTORE_POINT],env:ledgerEnv(ledger.url)});
+  }catch(error){ caught=error; }
+  assert.ok(caught);
+  assert.match(caught.message,/valid deleted_at/);
+  assert.notEqual(caught.code,'DELETION_LEDGER_USAGE');
+  assert.deepEqual(publicCliError(caught),{
+    ok:false,error:'DELETION_LEDGER_FAILED',message:'deletion ledger operation failed',
+  });
+});
+
 test('CLI ledger modes validate config: missing ledger URL is a typed config error, reapply from ledger-db needs JWT_SECRET',async()=>{
   const restored=await migratedAppDb('randori-ledger-config-');
   await assert.rejects(
@@ -261,4 +300,9 @@ test('privacy wording: the policy describes the durable ledger and its bounded r
   assert.match(privacy,/separate database/);
   assert.doesNotMatch(privacy,/that re-application is not yet possible/);
   assert.match(privacy,/no longer than the backup window/);
+  // The bound is qualified: purge is manual, and unknown-time entries
+  // are never purged by time — the policy must not promise a 1-day
+  // bound for them.
+  assert.match(privacy,/purge is a manual step/);
+  assert.match(privacy,/whose deletion time is unknown is never removed by time passing/);
 });
