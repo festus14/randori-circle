@@ -68,6 +68,11 @@ import {
 } from './_reminders.js';
 import { configuredOutboxBaseUrl, OUTBOX_DELIVERY_TYPES, outboxDeliveryPlan } from './_outbox-delivery.js';
 import {
+  ACCOUNT_DELETION_BLOCKED_EVENT_TYPE,
+  ACCOUNT_DELETION_CONFIRMATION_EVENT_TYPE,
+  ACCOUNT_DELETION_REMINDER_EVENT_TYPE,
+} from './_account-deletion-grace.js';
+import {
   CIRCLE_HEALTH_CACHE_CONTROL,
   circleHealthEnabled,
   circleHealthQueryValid,
@@ -79,7 +84,8 @@ import {
   ensureDemoShuffleReadiness,
   ensureNotificationPreferencesReadiness,
 } from './_ops-readiness.js';
-import { ensureCircleMembershipReadiness } from './_circle-membership.js';
+import { ensureCircleMembershipReadiness, hashInvitationEmail } from './_circle-membership.js';
+import { runAccountDeletionGraceJobs } from './_account-deletion-grace.js';
 import {
   canUseLegacySinglePrimaryCircleFeatures,
   multiCircleAvailabilityEnabled,
@@ -92,10 +98,17 @@ import {
 
 export const OUTBOX_CRON_BUDGET_MS=45_000;
 export const OUTBOX_CRON_FINALIZATION_RESERVE_MS=5_000;
-export const OUTBOX_CRON_MAX_CLAIMS=8;
+// Issue #372: eleven registered delivery types (eight before the grace
+// period added confirmation, reminder and blocked), so the cap must cover
+// one first-round claim per type.
+export const OUTBOX_CRON_MAX_CLAIMS=11;
 // Issue #287: the reminder due-check gets its own slice of the preparation
 // window so a slow query can never hold back the delivery rounds.
 export const OUTBOX_REMINDER_DUE_CHECK_BUDGET_MS=5_000;
+// Issue #372: the deletion-grace job gets its own slice too — up to ten
+// deletions, each one write transaction, plus the reminder/blocked
+// enqueues. It never blocks delivery of other mail.
+export const OUTBOX_DELETION_GRACE_BUDGET_MS=10_000;
 // ID-72: app_logs retention runs after the delivery round with this budget.
 export const OUTBOX_APP_LOG_RETENTION_BUDGET_MS=2_000;
 // ID-83: outbox personal-data retention (OUTBOX_PII_RETENTION_ENABLED) runs
@@ -474,6 +487,9 @@ function unavailableDeliverySummary(type,status){
   if(type===PASSWORD_RESET_EVENT_TYPE) return 'password reset email delivery unavailable';
   if(type===INVITE_REQUEST_EVENT_TYPE) return 'invite request notification delivery unavailable';
   if(type===REMINDER_EMAIL_EVENT_TYPE) return 'reminder email delivery unavailable';
+  if(type===ACCOUNT_DELETION_CONFIRMATION_EVENT_TYPE) return 'account deletion confirmation delivery unavailable';
+  if(type===ACCOUNT_DELETION_REMINDER_EVENT_TYPE) return 'account deletion reminder delivery unavailable';
+  if(type===ACCOUNT_DELETION_BLOCKED_EVENT_TYPE) return 'account deletion blocked delivery unavailable';
   return 'activation email delivery unavailable';
 }
 
@@ -512,11 +528,31 @@ export async function runReminderDueCheck(db,req,deadlineAtMs){
     errors:{...errors}};
 }
 
+// Issue #372: the deletion-grace job runs inside the timeboxed preparation
+// so a reminder or blocked notification it enqueues can be claimed in this
+// invocation. A failure or timeout is reported and retried next run; it
+// never blocks delivery of other mail. The job itself is flag-independent:
+// pending requests are durable promises that still cancel and execute
+// when the grace flag is off.
+export async function runAccountDeletionGraceCheck(db,deadlineAtMs){
+  let job;
+  try{
+    job=await settleBeforeDeadline(()=>runAccountDeletionGraceJobs(db,{
+      adminEmails:[...getAdminEmails()],hashInvitationEmail,
+    }),deadlineAtMs);
+  }catch{
+    return {ran:false,error:'GRACE_JOB_FAILED'};
+  }
+  if(!job.completed) return {ran:false,error:'GRACE_JOB_TIMEOUT'};
+  return job.value;
+}
+
 export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
   maxClaims=OUTBOX_CRON_MAX_CLAIMS,
   finalizationReserveMs=OUTBOX_CRON_FINALIZATION_RESERVE_MS,
   minimumDispatchWindowMs=OUTBOX_CRON_MIN_DISPATCH_WINDOW_MS,
   reminderDueCheckBudgetMs=OUTBOX_REMINDER_DUE_CHECK_BUDGET_MS,
+  deletionGraceBudgetMs=OUTBOX_DELETION_GRACE_BUDGET_MS,
   appLogRetentionBudgetMs=OUTBOX_APP_LOG_RETENTION_BUDGET_MS,
   outboxPiiRetentionBudgetMs=OUTBOX_PII_RETENTION_BUDGET_MS,
 }={}){
@@ -529,6 +565,7 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
   // Nothing is queued when no reminder handler can deliver (no provider and no
   // local capture), so intents never pile up undeliverable.
   let reminders={enqueued:null,errors:{}};
+  let accountDeletionGrace={ran:false};
   const preparation=await settleBeforeDeadline(async()=>{
     await migrateLegacyPairingEmails(db,{limit:maxClaims});
     const deliveryPlan=await outboxDeliveryPlan(db,baseUrl,req);
@@ -537,6 +574,8 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
         ?await runReminderDueCheck(db,req,Math.min(preparationDeadline,performance.now()+reminderDueCheckBudgetMs))
         :{enqueued:null,errors:{due_check:'NO_DELIVERY_HANDLER'}};
     }
+    accountDeletionGrace=await runAccountDeletionGraceCheck(db,
+      Math.min(preparationDeadline,performance.now()+deletionGraceBudgetMs));
     return deliveryPlan;
   },preparationDeadline);
   const plan=preparation.completed?preparation.value:{
@@ -607,15 +646,17 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
     claimed:invocation.claimed,types,key_rotation:metricRead.completed?metricRead.value.keyRotation:null,
     app_logs_retention:appLogRetention,
     ...(piiRetentionEnabled?{outbox_pii_retention:outboxPiiRetention}:{}),
-    ...(remindersEnabled()?{reminders_enqueued:reminders.enqueued,reminder_errors:reminders.errors}:{})};
+    ...(remindersEnabled()?{reminders_enqueued:reminders.enqueued,reminder_errors:reminders.errors}:{}),
+    account_deletion_grace:accountDeletionGrace};
   const reminderFailed=Object.keys(reminders.errors).length>0;
+  const graceFailed=accountDeletionGrace.error!==undefined||(accountDeletionGrace.errors?.length||0)>0;
   // A retention run that failed, timed out or stopped part-way is a warning,
   // not a success (ID-72 app_logs, ID-83 outbox personal data).
   const retentionIncomplete=[appLogRetention,outboxPiiRetention]
     .some(result=>result?.failed===true||result?.timed_out===true||result?.partial===true);
   if(!metrics.deadline_reached&&performance.now()<deadlineAtMs){
     const logged=await settleBeforeDeadline(()=>logServerOps(
-      invocation.retried||invocation.deadLettered||invocation.leaseLost||reminderFailed||retentionIncomplete
+      invocation.retried||invocation.deadLettered||invocation.leaseLost||reminderFailed||graceFailed||retentionIncomplete
         ?'warn':'success',
       'outbox_invocation','outbox invocation completed',metrics,null,
     ),deadlineAtMs);

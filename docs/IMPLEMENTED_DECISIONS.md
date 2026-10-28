@@ -118,6 +118,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-90](#id-90-let-a-signed-in-member-download-their-own-data-as-one-json-archive-behind-a-flag) | Let a signed-in member download their own data as one JSON archive, behind a flag | Security, Secrets & Privacy | Active |
 | [ID-91](#id-91-product-feedback--shared-platform-for-bug-reports-feature-requests-and-product-feedback-data-model--api) | Product feedback — shared platform for bug reports, feature requests and product feedback (data model + API) | Product & UI | Active |
 | [ID-92](#id-92-force-dompurify-to-3417-via-npm-overrides-to-clear-the-dev-only-audit-findings-382) | Force dompurify to `^3.4.17` via npm overrides to clear the dev-only audit findings (#382) | Dependencies | Active |
+| [ID-93](#id-93-give-account-deletion-a-14-day-cancellable-grace-period-behind-a-flag) | Give account deletion a 14-day cancellable grace period, behind a flag | Security, Secrets & Privacy | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -131,7 +132,7 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-93). Never reuse a number, even if an entry is
+   plus one (currently ID-94). Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
 2. **Check for collisions before you claim it.** Parallel PRs are the
@@ -5172,3 +5173,87 @@ reintroduces the vulnerable 3.4.8 copy and fails the full audit.
 audit reports 2 findings again. No code, flag, migration or production
 change.
 
+## ID-93: Give account deletion a 14-day cancellable grace period, behind a flag
+
+**Status: Active.** Issue #372; owner-approved to build 2026-10-27. Amends
+ID-81 (immediate deletion) without changing it: with the grace flag off,
+deletion is still immediate.
+
+**Context.** Deletion (ID-81) tombstoned the account straight away. The
+owner decided (2026-10-22) that a member who deletes in haste, or whose
+account is deleted after a compromised sign-in, should have 14 days to
+change their mind — the remaining criterion from #302.
+
+**Decision.**
+- `ACCOUNT_DELETION_GRACE_ENABLED` (default off, on top of
+  `ACCOUNT_DELETION_ENABLED`) switches new deletion requests to the grace
+  path: the request writes one row in `account_deletion_requests`
+  (additive migration v23: `user_id`, `requested_at`, `scheduled_for`,
+  `cancelled_at`, `executed_at`, at most one active request per account),
+  revokes every session, and schedules deletion at request time + 14 days.
+  The same re-auth + type-DELETE confirmation as today gates the request.
+- While pending, the account is locked: `verifyRequestAuth` refuses it, so
+  no API works; it is excluded from future pairing (primary and secondary
+  publications), reminders and emails (handlers suppress mail queued before
+  the request); partners and owners see it as "Leaving" in the roster.
+- Signing in again (password or Google) issues a session that can only
+  reach the cancel flow (`POST /api/auth/account/delete/cancel`): the app
+  shows a minimal "Your account is scheduled for deletion on {date}.
+  Cancel deletion?" screen and nothing else. Cancelling sets
+  `cancelled_at`, writes one `account.deletion_cancelled` audit event per
+  circle, and restores the account exactly as it was — the request changed
+  nothing else. An expired invitation is not reopened, and no membership
+  is restored: a member an owner removed during the grace period cannot
+  cancel and is still deleted on schedule. A re-request after cancelling
+  starts a new 14 days.
+- Emails from `hello@randoricircle.com` (`RESEND_FROM` in production),
+  account emails with no unsubscribe link: a confirmation on request (date
+  + how to cancel) and a reminder about 48 hours before deletion. Each is
+  one outbox row with a stable idempotency key, and the handler re-checks
+  the pending request, so each is sent once.
+- The three grace email types join the fair outbox dispatcher, so
+  `OUTBOX_CRON_MAX_CLAIMS` rises 8 → 11 (eleven registered types, one
+  first-round claim each).
+- After 14 days, the outbox cron (every 5 minutes) runs the bounded,
+  idempotent grace job (at most 10 executions per run): it re-reads the
+  pending row and re-checks the last-owner / last-admin rules inside the
+  same transaction as the existing deletion. If the account is the last
+  owner or last admin, the account stays locked, one
+  `account.deletion_blocked` audit event is written, and each admin gets
+  one blocked notification; the deletion runs on a later check once
+  another owner or admin exists.
+- **Rollback rule.** The flag gates new requests only. A pending request
+  is a durable promise: turning the flag off stops new grace requests
+  (they go back to immediate deletion) but pending requests still cancel
+  and execute on schedule. The lock and the job are driven by the pending
+  row, not by the flag.
+- Migration v23 is additive (a new table and two indexes on it) and ships
+  on the #371 zero-downtime release order (ID-87): merge (the app stays
+  healthy on v22, all grace paths check that v23 is applied first) →
+  rehearsal → status → apply (owner-run protected cutover) → flag on.
+  `privacy.html` and `docs/ACCOUNT_DELETION.md` describe the grace period;
+  the privacy policy no longer says deletion is immediate.
+
+**Alternatives considered and rejected.**
+- Deleting immediately and restoring from backup on request: backups are
+  point-in-time, up to a day old, and restore would resurrect other
+  members' deleted data — the wrong tool for an undo window.
+- A longer or shorter window: 14 days matches the decision (2026-10-22);
+  48 hours of reminder lead time leaves a real chance to cancel after the
+  nudge.
+- Baking the pending state into `auth_accounts` (an `ADD COLUMN`): the
+  migration runner has no `ALTER TABLE` operation and the additive check
+  refuses it, so the state lives in its own table.
+
+**Verification.** `tests/unit/account-deletion-grace.test.mjs` (request →
+locked → cancel → restored; request → locked → day 14 → deleted via the
+cron job with a controlled clock; locked accounts get no emails/reminders,
+are not paired, and cannot use any API except the cancel flow;
+confirmation + reminder sent once each; last-owner / last-admin at
+execution) and `tests/e2e/golden-account-deletion-grace-real-runtime.spec.ts`
+(golden path: cancel + execute). Readiness, pairing readiness and migration
+readiness stay green throughout: pending, cancelled and deleted.
+
+**Removal.** Turn `ACCOUNT_DELETION_GRACE_ENABLED` off: new requests delete
+immediately again, pending requests still complete. The v23 table stays
+(no destructive migration); empty rows remain as request history.

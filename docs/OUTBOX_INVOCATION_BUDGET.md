@@ -14,7 +14,7 @@ independent budget for each notification type:
 | Production function target | at least 60 seconds | Hosting/scheduler requirement |
 | Application work budget | 45 seconds | Admission, provider-wait, finalization, and metrics deadline |
 | Finalization reserve | 5 seconds | Finish claimed leases, metrics, log, and response |
-| Global claim cap | 8 events | Bound database/provider work per invocation |
+| Global claim cap | 11 events | Bound database/provider work per invocation |
 | Event provider timeout | at most 10 seconds | Preserve each event's stricter v6 policy |
 | Sweep limit | 1 exhausted lease per type | Bound maintenance after useful delivery work |
 
@@ -71,15 +71,17 @@ payload contains only publication, circle, user, and result-kind identifiers;
 dispatch resolves and revalidates current delivery data before provider access.
 
 Reminders (issue #287, [REMINDERS.md](REMINDERS.md)) add one seventh type,
-`reminder.email.requested`, for all three reminder kinds. Seven types still fit
-under the eight-claim cap, so every type keeps a first-round claim. Reminders
+`reminder.email.requested`, for all three reminder kinds. The account-deletion
+grace period (issue #372, [ACCOUNT_DELETION.md](ACCOUNT_DELETION.md)) adds
+three more types — confirmation, reminder and blocked — for eleven types
+under the eleven-claim cap, so every type keeps a first-round claim. Reminders
 are queued by a bounded due-check (at most 50 new intents per kind) inside the
 same timeboxed preparation step as the legacy pairing bridge, with its own
 5-second slice, so a slow due-check is abandoned (reported as
 `reminders_enqueued: null` with `reminder_errors.due_check`) rather than
 holding back the delivery rounds. Kinds fail independently and any reminder
 error logs the invocation at `warn` level. A unit test fails clearly if the
-number of outbox types ever exceeds the eight-claim cap. While `REMINDERS_ENABLED`
+number of outbox types ever exceeds the eleven-claim cap. While `REMINDERS_ENABLED`
 is off the due-check makes no query; the handler stays registered so any queued
 reminder drains as `suppressed`.
 

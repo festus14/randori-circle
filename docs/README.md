@@ -82,7 +82,7 @@ rings are under [Operations runbooks](#operations-runbooks).
 
 | Doc | What it covers |
 | --- | --- |
-| [OUTBOX_INVOCATION_BUDGET.md](OUTBOX_INVOCATION_BUDGET.md) | The fair, eight-claim, 45-second budget shared by every email type in `/api/cron/outbox` (ID-15) |
+| [OUTBOX_INVOCATION_BUDGET.md](OUTBOX_INVOCATION_BUDGET.md) | The fair, eleven-claim, 45-second budget shared by every email type in `/api/cron/outbox` (ID-15) |
 | [INVITATION_EMAIL_DELIVERY.md](INVITATION_EMAIL_DELIVERY.md) | Encrypted, gated invitation email with the copy-link fallback (ID-25) |
 | [SCHEDULE_NOTIFICATIONS.md](SCHEDULE_NOTIFICATIONS.md) | Primary-room schedule emails and the 24-hour session reminder |
 | [SECONDARY_SCHEDULE_NOTIFICATIONS.md](SECONDARY_SCHEDULE_NOTIFICATIONS.md) | Dashboard-only schedule emails for secondary pairs (ID-34). Off in production |

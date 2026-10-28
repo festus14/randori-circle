@@ -74,6 +74,9 @@ export const OUTBOX_PII_FREE_EVENT_TYPES=Object.freeze([
   'schedule.email.requested', // v1 ids + instants; v2 opaque schedule id + fingerprint
   'inviterequest.email.requested', // circle_id, owner_user_id, digest_hour
   'reminder.email.requested', // ids + cycle key or instant fingerprint
+  'account.deletion.confirmation', // ids + scheduled_for; the handler reads the address from the account
+  'account.deletion.reminder', // ids + scheduled_for; the handler reads the address from the account
+  'account.deletion.blocked', // ids + scheduled_for + reason; the handler reads the address from the account
 ]);
 const INVITATION_EVENT_TYPE='invitation.email.requested';
 

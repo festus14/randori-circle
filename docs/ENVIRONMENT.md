@@ -132,7 +132,8 @@ production state in the [feature flag table](#feature-flags):
 `REMINDERS_ENABLED`, `REMINDERS_SESSION_SOON_ENABLED`,
 `PROGRESS_DASHBOARD_ENABLED`, `EXERCISE_SUGGESTIONS_ENABLED`,
 `CIRCLE_HEALTH_ENABLED`, `ADMIN_DIAGNOSTICS_ENABLED`,
-`ACCOUNT_DELETION_ENABLED`, `DATA_EXPORT_ENABLED`,
+`ACCOUNT_DELETION_ENABLED`, `ACCOUNT_DELETION_GRACE_ENABLED`,
+`DATA_EXPORT_ENABLED`,
 `OUTBOX_PII_RETENTION_ENABLED` and `AI_ENABLED`.
 `ALLOW_OPEN_SIGNUP` is the exception: it is development-only, works only in
 the local runtime and is ignored when `NODE_ENV=production`.
@@ -384,6 +385,7 @@ them off cannot undo.
 | `CIRCLE_HEALTH_ENABLED` | Owner-only Circle health card and `GET /api/circle/health` | off | On (observed: `circleHealth`) | `CIRCLE_MEMBERSHIP_ENABLED` | ID-78 ([circle health](CIRCLE_HEALTH.md)) | Safe; nothing is stored |
 | `ADMIN_DIAGNOSTICS_ENABLED` | Read-only admin Diagnostics in the Circle view | off | On (observed: `adminDiagnostics`) | none (still admin-only) | ID-73 | Safe; nothing is stored |
 | `ACCOUNT_DELETION_ENABLED` | Self-service Delete account in Edit profile (`POST /api/auth/account/delete`) | off | On (observed: `accountDeletion`) | `CIRCLE_MEMBERSHIP_ENABLED` | ID-81 ([account deletion](ACCOUNT_DELETION.md)) | Hides the endpoint and UI. **Irreversible:** accounts already deleted stay deleted |
+| `ACCOUNT_DELETION_GRACE_ENABLED` | 14-day cancellable grace period for account deletion: request locks the account and schedules deletion, sign-in leads to a cancel screen, the outbox cron executes it (`POST /api/auth/account/delete/cancel`) | off | Off (observed: no `accountDeletionGrace`) | `ACCOUNT_DELETION_ENABLED`, migration v23 applied | ID-93 ([account deletion](ACCOUNT_DELETION.md)) | Turning it off stops new grace requests (they delete immediately); pending requests still cancel and execute on schedule |
 | `DATA_EXPORT_ENABLED` | Download my data in Edit profile (`GET /api/auth/account/export`): a JSON archive of the member's own data, partners by display name only | off | Off (observed: no `dataExport`) | none | ID-90 ([data export](DATA_EXPORT.md)) | Safe; nothing is stored. Turning it off hides the endpoint, the capability and the UI |
 | `OUTBOX_PII_RETENTION_ENABLED` | Hourly removal of recipient addresses and sealed links from delivered or suppressed outbox rows after 7 days and from dead letters after 30 | off | On (owner) | The matching privacy policy text (live since 2026-10-22) | ID-83 | Stops further redaction. **Irreversible:** redacted rows cannot be restored and redacted dead letters stay non-replayable |
 | `AI_ENABLED` | Consent-gated AI feedback in `api/ai.js` | off | Off (privacy policy says AI is off) | `GROQ_API_KEY` or `OPENAI_API_KEY`; privacy and consent review ([#7](https://github.com/festus14/randori-circle/issues/7)) | ID-41 | AI routes return 503 |

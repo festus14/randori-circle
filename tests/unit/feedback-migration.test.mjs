@@ -1,7 +1,8 @@
-// Migration v22 (#353): feedback_items, feedback_votes and
-// feedback_events are additive, empty, indexed and exact after v21, and
-// only then pass request readiness. On a v21 database the code stays
-// ready (ID-87 pending-additive) while the feature stays gated off.
+// Migration v23 (#372): account_deletion_requests is additive, empty,
+// indexed and exact after v22, and only then passes grace readiness. On a
+// v22 database the code stays ready (ID-87 pending-additive) while the
+// feature stays gated off. The v22 feedback migration keeps its contract
+// below as a regression pin.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,13 +16,10 @@ import { applyMigrations, inspectMigrationState, prepareMigrationConnection } fr
 import { ledgerReadiness } from '../../db/migration-compatibility.js';
 import { READINESS_SCHEMA_MANIFEST } from '../../db/schema-readiness-manifest.js';
 import { SCHEMA_MANIFEST } from '../../db/schema-manifest.js';
-import {
-  ensureFeedbackReadiness,
-  feedbackSchemaNotInstalled,
-} from '../../api/_feedback-config.js';
+import { graceSchemaAvailable } from '../../api/_account-deletion-grace.js';
 import { schemaCapabilityAvailable } from '../../api/_schema-capability.js';
 
-const V22=EXECUTABLE_MIGRATIONS[21];
+const V23=EXECUTABLE_MIGRATIONS[22];
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const HASH='a'.repeat(64);
 const ID='00000000-0000-4000-8000-000000000001';
@@ -46,30 +44,13 @@ async function seedCircle(db){
     VALUES (10,'3c20c4da-1906-4ca4-b4fd-5971f1dd066d','randori-circle','Randori Circle',1,1)`);
 }
 
-test('v22 is additive, empty, indexed, and exact after v21, and only then passes request readiness',async()=>{
+test('v23 is additive, empty, indexed, and exact after v22, and only then passes grace readiness',async()=>{
   const item=fixture();
   try{
-    await apply(item.db,EXECUTABLE_MIGRATIONS.slice(0,21));
+    await apply(item.db,EXECUTABLE_MIGRATIONS.slice(0,22));
     const before=await inspectMigrationState(item.db);
-    assert.equal(before.currentVersion,21);
-    // Code at v22 is ready on a v21 database (pending additive), and the
-    // feature capability is still off until the cutover applies v22.
-    assert.deepEqual(ledgerReadiness({currentVersion:21,rows:Array.from({length:21},(_,i)=>({}))}),
-      {currentVersion:21,expectedVersion:22,ready:true,state:'pending_additive',pendingVersion:22});
-    // The capability cache is per client, so the pre-cutover check runs
-    // on a second client and never warms this test client's cache.
-    const probeClient=createClient({url:item.url});
-    try{
-      assert.equal(await schemaCapabilityAvailable(probeClient,{version:22}),false);
-    }finally{ probeClient.close(); }
-    await assert.rejects(ensureFeedbackReadiness(item.db),error=>feedbackSchemaNotInstalled(error),
-      'request paths fail closed on the pre-v22 schema without creating it');
-    assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM sqlite_master WHERE name='feedback_items'`)).rows[0].c,0,
-      'the readiness probe never runs DDL');
-    const result=await applyMigrations(item.db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
-    assert.deepEqual(result.applied.map(entry=>entry.version),[22]);
-    assert.equal(V22.name,'feedback-platform');
-    assert.equal(MIGRATION_CONTRACTS[21].checksum,V22.checksum);
+    assert.equal(before.currentVersion,22);
+    // The v22 feedback contract is unchanged by the v23 migration.
     assert.equal(MIGRATION_CONTRACTS[21].compatibility,'additive');
     assert.deepEqual(MIGRATION_CONTRACTS[21].introduces,{
       tables:['feedback_items','feedback_votes','feedback_events'],
@@ -78,26 +59,45 @@ test('v22 is additive, empty, indexed, and exact after v21, and only then passes
         'idx_feedback_votes_feedback','idx_feedback_votes_user','idx_feedback_events_feedback'],
       triggers:[],
     });
-    assert.deepEqual(V22.operations.map(operation=>operation.name),[
-      'feedback_items','feedback_votes','feedback_events',
-      'idx_feedback_items_author','idx_feedback_items_circle_status',
-      'idx_feedback_items_closed_retention','uq_feedback_items_author_idempotency',
-      'idx_feedback_votes_feedback','idx_feedback_votes_user','idx_feedback_events_feedback',
+    // Code at v23 is ready on a v22 database (pending additive), and the
+    // feature capability is still off until the cutover applies v23.
+    assert.deepEqual(ledgerReadiness({currentVersion:22,rows:Array.from({length:22},(_,i)=>({}))}),
+      {currentVersion:22,expectedVersion:23,ready:true,state:'pending_additive',pendingVersion:23});
+    // The capability cache is per client, so the pre-cutover check runs
+    // on a second client and never warms this test client's cache.
+    const probeClient=createClient({url:item.url});
+    try{
+      assert.equal(await schemaCapabilityAvailable(probeClient,{version:23}),false);
+      assert.equal(await graceSchemaAvailable(probeClient),false,
+        'grace paths fail closed on the pre-v23 schema without creating it');
+    }finally{ probeClient.close(); }
+    assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM sqlite_master WHERE name='account_deletion_requests'`)).rows[0].c,0,
+      'the readiness probe never runs DDL');
+    const result=await applyMigrations(item.db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
+    assert.deepEqual(result.applied.map(entry=>entry.version),[23]);
+    assert.equal(V23.name,'account-deletion-grace-period');
+    assert.equal(MIGRATION_CONTRACTS[22].checksum,V23.checksum);
+    assert.equal(MIGRATION_CONTRACTS[22].compatibility,'additive');
+    assert.deepEqual(MIGRATION_CONTRACTS[22].introduces,{
+      tables:['account_deletion_requests'],
+      indexes:['uq_account_deletion_requests_active_user','idx_account_deletion_requests_due'],
+      triggers:[],
+    });
+    assert.deepEqual(V23.operations.map(operation=>operation.name),[
+      'account_deletion_requests',
+      'uq_account_deletion_requests_active_user',
+      'idx_account_deletion_requests_due',
     ]);
-    assert.ok(V22.operations.every(operation=>['ensure-table','ensure-index'].includes(operation.operation)),
-      'v22 adds no triggers or state rows');
-    for(const table of ['feedback_items','feedback_votes','feedback_events']){
-      assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM ${table}`)).rows[0].c,0);
-    }
+    assert.ok(V23.operations.every(operation=>['ensure-table','ensure-index'].includes(operation.operation)),
+      'v23 adds no triggers or state rows');
+    assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM account_deletion_requests`)).rows[0].c,0);
     const state=await inspectMigrationState(item.db);
-    assert.equal(state.currentVersion,22);
+    assert.equal(state.currentVersion,23);
     assert.equal(state.schemaExact,true);
-    assert.equal(await schemaCapabilityAvailable(item.db,{version:22}),true);
-    assert.equal(await ensureFeedbackReadiness(item.db),true);
+    assert.equal(await schemaCapabilityAvailable(item.db,{version:23}),true);
+    assert.equal(await graceSchemaAvailable(item.db),true);
     assert.equal(READINESS_SCHEMA_MANIFEST.checksum,SCHEMA_MANIFEST.checksum);
-    assert.ok(READINESS_SCHEMA_MANIFEST.tables.some(table=>table.name==='feedback_items'));
-    assert.ok(READINESS_SCHEMA_MANIFEST.tables.some(table=>table.name==='feedback_votes'));
-    assert.ok(READINESS_SCHEMA_MANIFEST.tables.some(table=>table.name==='feedback_events'));
+    assert.ok(READINESS_SCHEMA_MANIFEST.tables.some(table=>table.name==='account_deletion_requests'));
   }finally{ item.close(); }
 });
 

@@ -32,6 +32,10 @@ mock.module('../../api/_account-deletion.js',{exports:{
   accountDeletionEnabled:()=>process.env.ACCOUNT_DELETION_ENABLED==='true',
   accountDeletedForSession:(...args)=>S.deletedForSession(...args),
   deleteAccount:(...args)=>S.remove(...args),
+  // Imported by api/_account-deletion-grace.js (issue #372); the grace
+  // request path is not exercised here because the grace flag stays off.
+  executeScheduledAccountDeletion:async()=>{ throw new Error('grace execution not used'); },
+  isDeletedAccount:()=>false,
   ensureAccountDeletionReadiness:(...args)=>S.ready(...args),
   parseAccountDeletionRequest:body=>{
     if(body?.confirm!=='DELETE'||Object.keys(body).length!==1) throw new Error('confirmation_required');

@@ -155,6 +155,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'81f2ee53153fc3d46458a6b0dd9be5c186b558687259145896d53d808bcd3d12',
     checksum:'a0f196d455adee47c7d8228fb2e8578fdc3e2fc399735f1373c92898d2dd68d8',
   }),
+  Object.freeze({
+    version:23,
+    name:'account-deletion-grace-period',
+    description:'Account-deletion grace period (#372): account_deletion_requests with one active request per account (requested_at, scheduled_for, cancelled_at, executed_at) and a due-scan index.',
+    operationsChecksum:'cc7386d7f60a8bb939a63b9498142d10543ad8bc5a62c5314e1538b7980efaab',
+    checksum:'3d6e50ab71308d53b9ea22c391dd48b630162eb613696891e68060aa205cc75b',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

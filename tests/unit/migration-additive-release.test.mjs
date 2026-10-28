@@ -1,6 +1,6 @@
 // Zero-downtime additive release, end to end on real migrated SQLite (ID-87,
-// #371), using the first real additive migration: v22, the feedback tables
-// (#353). Everything is the production code: health, circle pairing,
+// #371), using the latest real additive migration: v23, the account deletion
+// grace table (#372). Everything is the production code: health, circle pairing,
 // schedule and pairing readiness, admin diagnostics, the schema capability
 // check and the migration runner.
 //
@@ -18,7 +18,7 @@ import { createClient } from '@libsql/client';
 import { MIGRATION_PLANS } from '../../db/migration-plan.js';
 
 const { MIGRATION_CONTRACTS, validateMigrationContracts }=await import('../../db/migration-contract.js');
-const V22=MIGRATION_PLANS[21];
+const V23=MIGRATION_PLANS[22];
 
 const { readAdminDiagnostics }=await import('../../api/_admin-diagnostics.js');
 const { ensureCirclePairingReadiness }=await import('../../api/_circle-pairing.js');
@@ -40,7 +40,7 @@ const {
 }=await import('../../db/migration-runner.js');
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
-const N=22;
+const N=23;
 const resources=[];
 
 afterEach(async()=>{
@@ -79,7 +79,7 @@ test('the additive declaration used here passes the real migration check',()=>{
   assert.deepEqual(inspectMigrationCompatibility({migrations:EXECUTABLE_MIGRATIONS,contracts:MIGRATION_CONTRACTS}),[]);
   assert.equal(pendingAdditiveContract()?.version,N,'production modules see the declaration');
   assert.deepEqual(MIGRATION_CONTRACTS[N-1].introduces,
-    {tables:['feedback_items','feedback_votes','feedback_events'],indexes:[...V22.indexes],triggers:[]});
+    {tables:['account_deletion_requests'],indexes:[...V23.indexes],triggers:[]});
 });
 
 test('code at N stays ready on every surface while the database moves from N-1 to N',async()=>{
@@ -130,11 +130,11 @@ test('one additive migration behind is still judged exactly',async()=>{
   assert.equal(await inspectDatabaseReadiness(db),true);
 
   // A half-created introduced table is drift, and grants no capability.
-  const create=V22.operations.find(operation=>operation.operation==='ensure-table').sql;
+  const create=V23.operations.find(operation=>operation.operation==='ensure-table').sql;
   await db.execute(create);
   assert.equal(await inspectDatabaseReadiness(db),false);
   assert.equal(await schemaCapabilityAvailable(db,{version:N,env:{}}),false);
-  await db.execute('DROP TABLE feedback_items');
+  await db.execute('DROP TABLE account_deletion_requests');
   assert.equal(await inspectDatabaseReadiness(db),true);
 
   // Drift in the existing schema still blocks.

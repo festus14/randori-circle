@@ -26,6 +26,10 @@ import {
 } from '../db/migration-compatibility.js';
 import { inspectSchema, readOnlyDatabase } from '../db/schema-inspector.js';
 import { READINESS_SCHEMA_MANIFEST } from '../db/schema-readiness-manifest.js';
+import {
+  deletionPendingExclusionSql,
+  graceSchemaAvailable,
+} from './_account-deletion-grace.js';
 
 const TRANSACTION_ATTEMPTS=4;
 const CYCLE_KEY_PATTERN=/^[0-9a-f]{64}$/;
@@ -224,6 +228,10 @@ async function assertAuthority(db,authority){
 
 async function circleAccounts(db,circleId){
   let result;
+  // Locked accounts (#372) are excluded from future pairing; the predicate
+  // is only added once migration v23 is present (readiness tolerance).
+  const graceOn=await graceSchemaAvailable(db);
+  const exclusion=graceOn?` AND ${deletionPendingExclusionSql('account.id')}`:'';
   try{
     result=await db.execute({
       sql:`SELECT account.id
@@ -232,7 +240,7 @@ async function circleAccounts(db,circleId){
         JOIN circles circle ON circle.id=membership.circle_id
         WHERE membership.circle_id=? AND membership.status='active'
           AND circle.is_primary=0 AND circle.archived_at IS NULL
-          AND COALESCE(account.is_demo,0)=0
+          AND COALESCE(account.is_demo,0)=0${exclusion}
         ORDER BY account.id`,
       args:[circleId],
     });

@@ -168,6 +168,7 @@ const EXPECTED_TABLE_COVERAGE=[
   {table:'auth_password_resets',section:null,included:false},
   {table:'auth_email_activations',section:null,included:false},
   {table:'auth_identity_audit_events',section:null,included:false},
+  {table:'account_deletion_requests',section:'deletion_requests',included:true},
   {table:'auth_rate_limits',section:null,included:false},
   {table:'circle_memberships',section:'memberships',included:true},
   {table:'circles',section:'memberships',included:true},
@@ -210,8 +211,8 @@ const EXPECTED_TABLE_COVERAGE=[
 ];
 
 test('every inventory table has explicit export coverage',()=>{
-  assert.equal(EXPECTED_TABLE_COVERAGE.length,48);
-  assert.equal(ACCOUNT_DATA_INVENTORY.length,48);
+  assert.equal(EXPECTED_TABLE_COVERAGE.length,49);
+  assert.equal(ACCOUNT_DATA_INVENTORY.length,49);
   assert.deepEqual(
     DATA_EXPORT_TABLE_COVERAGE.map(entry=>({table:entry.table,section:entry.section,included:entry.included})),
     EXPECTED_TABLE_COVERAGE);
@@ -243,6 +244,9 @@ test('readiness stays green on a migrated database and fails closed on drift',as
 
 test('the export holds the member\'s own data from every exported section',async()=>{
   const db=await fixture();
+  await db.execute(`INSERT INTO account_deletion_requests
+    (user_id,requested_at,scheduled_for,cancelled_at,executed_at)
+    VALUES (2,1700000000,1701209600,1700003600,NULL)`);
   const archive=await buildDataExport(db,{userId:2});
   assert.equal(archive.version,1);
   assert.equal(archive.format,'randori-circle-data-export');
@@ -313,6 +317,9 @@ test('the export holds the member\'s own data from every exported section',async
   assert.equal(archive.feedback.events_included,false);
   assert.ok(archive.excluded_tables.some(row=>row.table==='auth_sessions'));
   assert.ok(archive.excluded_tables.some(row=>row.table==='pair_code_documents'));
+  assert.deepEqual(archive.deletion_requests,[{id:1,requested_at:1700000000,scheduled_for:1701209600,
+    cancelled_at:1700003600,executed_at:null}]);
+  assert.equal(archive.counts.deletion_requests,1);
   assert.equal(archive.counts.invitations_received,1);
   assert.equal(archive.counts.created_circles,1);
   assert.equal(archive.counts.messages,1);

@@ -1,8 +1,14 @@
 # Self-service account deletion
 
 Issue #339, decision ID-81. Behind `ACCOUNT_DELETION_ENABLED` (default off) and
-only when `CIRCLE_MEMBERSHIP_ENABLED=true`. No migration: every column used
-already exists. The visual design is provisional (`needs-design`).
+only when `CIRCLE_MEMBERSHIP_ENABLED=true`. No migration for the original
+flow: every column used already exists.
+
+Issue #372, decision ID-93, adds a **14-day cancellable grace period** behind
+`ACCOUNT_DELETION_GRACE_ENABLED` (default off) plus additive migration v23
+(`account_deletion_requests`). With the grace flag on, requesting deletion
+schedules it 14 days out instead of deleting straight away; with the flag
+off the original immediate flow runs unchanged.
 
 ## What a member sees
 
@@ -17,8 +23,12 @@ is deleted and what stays, anonymised. The flow is:
 3. **Final confirmation.** Cancel has focus; **Delete my account** is the
    destructive button.
 
-Afterwards the browser clears the app's storage and reloads to the landing
-page, which shows "Your account was deleted." The dialog reuses the app's
+With the grace period on, afterwards the browser clears the app's storage and
+reloads to the landing page, which shows "Your account is scheduled for
+deletion on {date}." A confirmation email (from `hello@randoricircle.com`,
+no unsubscribe link — it is an account email) gives the date and how to
+cancel. With the grace flag off, the landing page shows "Your account was
+deleted." as before. The dialog reuses the app's
 dialog focus trap (`openPromiseDialog`), Escape cancels until the deletion
 request is in flight, and everything renders through DOM nodes and
 `textContent`. `assets/account-deletion.js` is imported only for a signed-in
@@ -37,23 +47,87 @@ The session alone chooses the account; no id is accepted.
 | Request | Response |
 | --- | --- |
 | Flag off, or membership-free mode | `404`, the same body as any unknown auth endpoint; no capability |
-| `GET` signed in | `200 {ok:true,eligible:true}` or `200 {ok:true,eligible:false,code,circles?}` with `code` `last_owner`, `last_admin` or `demo_account` |
-| `POST {"confirm":"DELETE"}` | `200 {ok:true,status:"deleted"}` and `Set-Cookie: randori_session=; Max-Age=0` |
+| `GET` signed in | `200 {ok:true,eligible:true}` or `200 {ok:true,eligible:false,code,circles?}` with `code` `last_owner`, `last_admin` or `demo_account`; `grace:true` while the grace period is on |
+| `GET` with a pending deletion | `200 {ok:true,deletion_pending:true,scheduled_for}` |
+| `POST {"confirm":"DELETE"}` (grace off) | `200 {ok:true,status:"deleted"}` and `Set-Cookie: randori_session=; Max-Age=0` |
+| `POST {"confirm":"DELETE"}` (grace on) | `200 {ok:true,status:"pending_deletion",scheduled_for}` and `Set-Cookie: randori_session=; Max-Age=0` |
+| `POST {"confirm":"DELETE"}` while a deletion is pending | `409 {code:"already_pending",scheduled_for}` |
 | any other body (including extra keys such as `user_id`) | `400 {code:"confirmation_required"}` |
 | no recent sign-in for this session | `403 {code:"recent_auth_required"}` |
 | only owner / last admin / demo | `409 last_owner` (with `circles`) / `409 last_admin` / `403 demo_account` |
 | retry with the old signed cookie after success | `200 {ok:true,status:"already_deleted"}` |
 | signed out, cross-site POST, too many attempts, schema not ready | `401`, `403`, `429` (shared 10-per-15-minutes identity budget), `503` |
 
+`/api/auth/account/delete/cancel` (rewrite to
+`/api/auth?endpoint=account-delete-cancel`) cancels a pending deletion.
+`POST {}` — exactly the empty object — from a session signed in after the
+request returns `200 {ok:true,status:"cancelled",scheduled_for}` and the
+session keeps working as the restored account. `409 {code:"not_pending"}`
+when nothing is scheduled; `401` with no usable session; `403
+{code:"recent_auth_required"}` when the sign-in proof is older than 10
+minutes (sign in again, then cancel). With the deletion flag off the
+endpoint answers like an unknown one, but a pending request still cancels:
+the flag gates new requests only.
+
 `POST` is same-origin only. Readiness is a read-only probe of every column the
 deletion touches; there is no request-path DDL.
+
+## Grace period (issue #372, ID-93)
+
+While a deletion is pending (`account_deletion_requests`, migration v23:
+`user_id`, `requested_at`, `scheduled_for`, `cancelled_at`, `executed_at`;
+at most one active request per account):
+
+- **Locked.** Every session is revoked at request time. The account cannot
+  use any API: `verifyRequestAuth` refuses it everywhere, so pairing,
+  reminders, emails and every other endpoint are closed to it. Signing in
+  again (password or Google) issues a session that can only reach the
+  cancel flow; the app shows a minimal "Your account is scheduled for
+  deletion on {date}. Cancel deletion?" screen and nothing else.
+- **Leaving.** Partners and owners see the member as "Leaving" in the
+  owner roster (`deletion_pending` on the roster entry, rendered as a
+  Leaving badge). The member is excluded from future pairing (primary and
+  secondary publications) and from reminders and emails, including mail
+  queued before the request (handlers suppress it at delivery).
+- **Cancelling.** Cancelling sets `cancelled_at`, writes one
+  `account.deletion_cancelled` audit event per circle, and restores the
+  account exactly as it was: the request changed nothing else, so there is
+  nothing to restore. An expired invitation is **not** reopened, and no
+  membership is restored — a member an owner removed during the grace
+  period cannot cancel and is still deleted on schedule. A deletion
+  requested again after cancelling starts a new 14 days.
+- **Data export.** A member's deletion requests are included in their
+  data export under `deletion_requests` (requested, scheduled, cancelled
+  and executed timestamps; ids only, no personal data).
+- **Emails**, from `hello@randoricircle.com` (`RESEND_FROM` in production):
+  account emails, so no unsubscribe link. A confirmation on request, with
+  the date and how to cancel; a reminder about 48 hours before deletion.
+  Each is one outbox row with a stable idempotency key, and the delivery
+  handler re-checks the pending request, so each is sent once.
+- **Deletion.** After 14 days, the outbox cron (every 5 minutes) runs the
+  bounded, idempotent grace job (`runAccountDeletionGraceJobs`, at most 10
+  executions per run): it re-checks the pending row and the last-owner /
+  last-admin rules inside the same transaction as the existing deletion
+  (`executeScheduledAccountDeletion`), marks the request executed, and
+  tombstones the account exactly as an immediate deletion would.
+- **Blocked execution.** If the account is the last owner or last admin
+  when the job runs, the account stays locked, one
+  `account.deletion_blocked` audit event is written, and each admin gets
+  one blocked notification (outbox idempotency keys dedupe repeats). The
+  deletion runs on a later check once another owner or admin exists.
+- **Flag rollback.** Turning `ACCOUNT_DELETION_GRACE_ENABLED` off stops
+  new grace requests (they go back to immediate deletion) but does not
+  touch pending ones: they still cancel and execute on schedule. The lock
+  and the job are driven by the pending row, not by the flag.
 
 ## What happens, in one write transaction
 
 The recent-auth proof and the owner/admin rules are checked inside the
 transaction before any change, so concurrent requests serialize (a second
 request sees `already_deleted` or a busy database) and a co-owner race always
-leaves an active owner.
+leaves an active owner. A scheduled (grace-period) deletion runs the same
+transaction from the cron job, with the pending row re-read and the
+owner/admin rules re-checked inside it; a concurrent cancellation wins.
 
 - **Account row tombstoned, not deleted.** Pairings, completion receipts,
   schedules, session controls and code documents reference it through RESTRICT
@@ -119,6 +193,7 @@ account reaches nothing.
 | `auth_provider_email_state` | `subject`, `email_hash` | Delete | Keyed hash of the Google email for the removed link. |
 | `auth_password_resets` | `user_id`, `email_hash`, `token_hash` | Delete | Pending or used reset tokens. |
 | `auth_email_activations` | `email`, `email_hash`, `password_hash`, `display_name`, `color` | Anonymise | The activation that created the account still held the email, name and password hash. Scrubbed (pending ones revoked); the row stays for its RESTRICT invitation key. |
+| `account_deletion_requests` | `user_id`, `requested_at`, `scheduled_for`, `cancelled_at`, `executed_at` | Keep | Grace-period request history: opaque ids and timestamps only. The executed row is the audit trail of a deletion; cancelled rows prove a request was withdrawn. |
 | `auth_identity_audit_events` | `user_id`, `actor_user_id` | Keep | Security audit of codes only, no personal data; the id now resolves to the tombstone. |
 | `auth_rate_limits` | `key` | Keep | Secret-keyed hashes that expire within 15 minutes and cannot be linked back to the account. |
 | `circle_memberships` | `user_id`, `role`, `status`, `invited_by` | Anonymise | Every membership made inactive and demoted to member. Rows stay so history and invited_by resolve to "Deleted member"; reactivation is refused. |
@@ -264,3 +339,22 @@ tier is #384.
 Merging changes nothing. To enable, set `ACCOUNT_DELETION_ENABLED=true` in
 Vercel Production (circle membership must already be on) and redeploy; unset it
 to hide the endpoint and the UI again. Deletions already made stay made.
+
+### Grace period rollout (issue #372)
+
+Migration v23 is additive (a new table and two indexes on it), so it follows
+the #371 zero-downtime release order in
+[`docs/TURSO_PRODUCTION_MIGRATION.md`](TURSO_PRODUCTION_MIGRATION.md):
+
+1. **Merge.** The app stays healthy on v22: readiness tolerates one
+   additive migration behind, and all grace code paths check that v23 is
+   applied before touching the new table, so deletion requests stay
+   immediate.
+2. **Rehearsal → status → apply v23** (the protected cutover; owner-run,
+   never the agent, never auto-merged).
+3. **Turn `ACCOUNT_DELETION_GRACE_ENABLED=true` on** in Vercel Production
+   and redeploy. New deletion requests then schedule 14 days out.
+
+Rollback: set the flag to `false` first — new requests go back to
+immediate deletion, and pending requests still cancel and execute on
+schedule. PITR only if needed, per the runbook.

@@ -42,8 +42,8 @@ const VALID_INTRODUCES=Object.freeze({
 });
 
 function candidate(operations,{introduces,compatibility='additive'}={}){
-  const migration={version:23,name:'synthetic-23',checksum:HEX,operations};
-  const contract={version:23,name:'synthetic-23',checksum:HEX,compatibility};
+  const migration={version:24,name:'synthetic-24',checksum:HEX,operations};
+  const contract={version:24,name:'synthetic-24',checksum:HEX,compatibility};
   if(compatibility==='additive'){
     const derived={tables:[],indexes:[],triggers:[]};
     for(const operation of operations){
@@ -68,7 +68,7 @@ function codes(operations,options={}){
     .map(item=>`${item.code}${item.detail?`:${item.detail}`:''}`);
 }
 
-test('the checked-in migrations pass the check, with v22 the one declared additive',()=>{
+test('the checked-in migrations pass the check, with v22 and v23 declared additive',()=>{
   assert.deepEqual(inspectMigrationCompatibility({migrations:EXECUTABLE_MIGRATIONS}),[]);
   assert.equal(assertMigrationCompatibility({migrations:EXECUTABLE_MIGRATIONS}),true);
   assert.equal(validateExecutableMigrations(),true);
@@ -204,7 +204,7 @@ test('malformed or truncated input fails closed instead of slipping through',()=
   assert.deepEqual(additiveViolations(null).map(item=>[item.version,item.code]),[[null,'no_operations']]);
   assert.deepEqual(additiveViolations({version:5,operations:[FEEDBACK]},{previous:[{version:1}]}),[]);
   const {migrations,contracts}=candidate([FEEDBACK]);
-  migrations[22]={...migrations[22],operations:undefined};
+  migrations[23]={...migrations[23],operations:undefined};
   assert.deepEqual(inspectMigrationCompatibility({migrations,contracts}).map(item=>item.code),
     ['no_operations','introduces_mismatch']);
 });
@@ -221,7 +221,7 @@ test('the contract must list exactly what an additive migration introduces',()=>
   assert.deepEqual(codes([table('feedback_items','DROP TABLE users')],{compatibility:'breaking'}),[]);
   // The migrations must be the contracts, in order.
   const {migrations,contracts}=candidate([FEEDBACK]);
-  migrations[22]={...migrations[22],name:'renamed'};
+  migrations[23]={...migrations[23],name:'renamed'};
   assert.deepEqual(inspectMigrationCompatibility({migrations,contracts}).map(item=>item.code),['contract_mismatch']);
   assert.throws(()=>inspectMigrationCompatibility({migrations:[],contracts}),/non-empty prefix/);
   assert.throws(()=>inspectMigrationCompatibility({migrations:[...migrations,migrations[0]],contracts}),/non-empty prefix/);
@@ -233,7 +233,7 @@ test('violations are reported with the migration, the reason and the offending s
   assert.throws(()=>assertMigrationCompatibility(options),error=>{
     assert.equal(error.code,'MIGRATION_COMPATIBILITY_INVALID');
     assert.equal(error.violations.length,1);
-    assert.equal(error.message,'migration 23 is marked additive but destructive_sql (ensure-table feedback_suggestions: DROP)');
+    assert.equal(error.message,'migration 24 is marked additive but destructive_sql (ensure-table feedback_suggestions: DROP)');
     return true;
   });
   assert.equal(formatCompatibilityViolation({version:3,code:'no_operations',operation:null,name:null,detail:null}),
@@ -274,7 +274,7 @@ test('the deployability gate reports a mislabelled migration and a migration set
     {MIGRATION_CONTRACTS:contractList},
   ];
   assert.deepEqual(await inspectMigrationReleaseContract({load:loadWith(migrations,contracts)}),[
-    'migration release contract: migration 23 is marked additive but destructive_sql (ensure-table feedback_suggestions: DROP)',
+    'migration release contract: migration 24 is marked additive but destructive_sql (ensure-table feedback_suggestions: DROP)',
   ]);
   assert.deepEqual(await inspectMigrationReleaseContract({load:async()=>{ throw new Error('migration 20 is marked additive but trigger_on_existing_table'); }}),
     ['migration release contract: migration 20 is marked additive but trigger_on_existing_table']);

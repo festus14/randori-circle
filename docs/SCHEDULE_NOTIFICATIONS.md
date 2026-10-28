@@ -33,7 +33,7 @@ does not contain an email address, bearer token, invitation link, message body,
 or display name. The worker resolves those values at dispatch time. The shared
 outbox limits each event to five attempts and a ten-second provider timeout.
 The shared serverless drain admits schedule work in one-per-type fair rounds;
-all types together are capped at eight claims and one 45-second deadline.
+all types together are capped at eleven claims and one 45-second deadline.
 Both schedule event versions occupy this one schedule lane.
 
 | Mutation | Immediate email | Delayed email | Recipients |
@@ -76,7 +76,7 @@ The local runtime and tests use an in-memory capture adapter. Production keeps
 the existing Resend adapter behind `RESEND_API_KEY` and `RESEND_FROM`; missing
 configuration leaves work pending and exposes only aggregate status.
 
-`/api/cron/outbox` has one 45-second deadline, eight-claim cap, and fair
+`/api/cron/outbox` has one 45-second deadline, eleven-claim cap, and fair
 parallel claim rounds across pairing, schedule, invitation, activation, and
 password-reset email. A real SQLite regression saturates the five-type queue
 and verifies that every type gets a first-round claim.

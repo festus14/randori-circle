@@ -52,6 +52,8 @@ export const ACCOUNT_DATA_INVENTORY=Object.freeze([
   ['auth_email_activations',['email','email_hash','password_hash','display_name','color'],'anonymise',
     'The activation that created the account still held the email, name and password hash. Scrubbed (pending ones revoked); the row stays for its RESTRICT invitation key.'],
   ['auth_identity_audit_events',['user_id','actor_user_id'],'keep','Security audit of codes only, no personal data; the id now resolves to the tombstone.'],
+  ['account_deletion_requests',['user_id','requested_at','scheduled_for','cancelled_at','executed_at'],'keep',
+    'Grace-period request history: opaque ids and timestamps only. The executed row is the audit trail of a deletion; cancelled rows prove a request was withdrawn.'],
   ['auth_rate_limits',['key'],'keep','Secret-keyed hashes that expire within 15 minutes and cannot be linked back to the account.'],
   ['circle_memberships',['user_id','role','status','invited_by'],'anonymise',
     'Every membership made inactive and demoted to member. Rows stay so history and invited_by resolve to "Deleted member"; reactivation is refused.'],
@@ -263,6 +265,10 @@ async function evaluateEligibility(executor,account,adminEmails){
   return Object.freeze({ok:true});
 }
 
+export async function evaluateAccountDeletionEligibility(executor,account,adminEmails=[]){
+  return evaluateEligibility(executor,account,normalizedAdminEmails(adminEmails));
+}
+
 /** Read-only pre-check for the settings UI. The deletion re-checks everything in its transaction. */
 export async function readAccountDeletionEligibility(db,{userId,adminEmails=[]}={}){
   const id=positiveId(userId);
@@ -332,7 +338,7 @@ function changed(result){
 // name the summary count it produces. Lookups use indexed keys (user ids,
 // invitation ids, primary keys); the outbox and app_logs predicates scan those
 // tables once, bounded by their retention.
-function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,nowSeconds,feedback=false}){
+function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,nowSeconds,feedback=false,graceExecutedAt=null}){
   const recipientArgs=outboxRecipientArgs(userId,email,emailHash,occurredAt);
   const suppressWhere=`${OUTBOX_ACTIONABLE} AND (${OUTBOX_RECIPIENT_SQL} OR ${OUTBOX_SENT_INVITATION_SQL})`;
   const suppressArgs=[...recipientArgs,userId];
@@ -460,6 +466,11 @@ function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,no
       {count:'feedback_items_deleted',sql:`DELETE FROM feedback_items WHERE author_user_id=?`,args:[userId]},
     ]:[]),
     {count:'logs_deleted',sql:`DELETE FROM app_logs WHERE user_id=?`,args:[userId]},
+    // Grace-period execution (#372): mark the request executed inside the
+    // same transaction, so a concurrent cancel or retry cannot interleave.
+    // Only the scheduled-execution path passes graceExecutedAt.
+    ...(graceExecutedAt===null?[]:[{count:'grace_executed',sql:`UPDATE account_deletion_requests SET executed_at=?
+      WHERE user_id=? AND cancelled_at IS NULL AND executed_at IS NULL`,args:[graceExecutedAt,userId]}]),
     // Last: the tombstone. Exactly one row must change.
     {count:'tombstoned',sql:`UPDATE auth_accounts
       SET email=?,password_hash=?,display_name=?,color=?,google_sub=NULL,bio=NULL,tz=NULL,
@@ -528,6 +539,84 @@ export async function deleteAccount(db,{
     if(tombstoned!==1) throw new Error('account tombstone failed');
     await transaction.commit(); finished=true;
     return Object.freeze({ok:true,status:'deleted',summary:Object.freeze(counts)});
+  }catch(error){
+    if(!finished) await rollback(transaction);
+    throw error;
+  }
+}
+
+/**
+ * Executes a scheduled grace-period deletion (issue #372, ID-93). No
+ * recent-authentication proof: the request already proved it, and the
+ * request revoked every session. The pending row is re-read inside the
+ * transaction, so a concurrent cancellation wins over execution, and the
+ * last-owner / last-admin rules are re-checked at execution time. A member
+ * an owner already removed holds no active membership, so the gates are
+ * skipped for them and they are still deleted on schedule. Returns the
+ * eligibility result (last_owner / last_admin) when blocked; the caller
+ * keeps the account locked and notifies admins.
+ */
+export async function executeScheduledAccountDeletion(db,{
+  userId,adminEmails=[],hashInvitationEmail,nowSeconds=Math.floor(Date.now()/1000),
+}={}){
+  const id=positiveId(userId);
+  if(!db||typeof db.transaction!=='function'||!id||typeof hashInvitationEmail!=='function'
+    ||!Number.isSafeInteger(nowSeconds)||nowSeconds<1){
+    throw new TypeError('valid scheduled account deletion required');
+  }
+  const admins=normalizedAdminEmails(adminEmails);
+  const occurredAt=new Date(nowSeconds*1000).toISOString();
+  const transaction=await db.transaction('write');
+  let finished=false;
+  const stop=async result=>{
+    await rollback(transaction); finished=true;
+    return Object.freeze(result);
+  };
+  try{
+    const account=await readAccount(transaction,id);
+    if(!account) return await stop({ok:false,reason:'not_found'});
+    if(isDeletedAccount(account)) return await stop({ok:true,status:'already_deleted'});
+    const pending=await transaction.execute({
+      sql:`SELECT requested_at,scheduled_for FROM account_deletion_requests
+        WHERE user_id=? AND cancelled_at IS NULL AND executed_at IS NULL LIMIT 1`,
+      args:[id],
+    });
+    if(pending.rows?.length!==1) return await stop({ok:false,reason:'not_pending'});
+    if(Number(pending.rows[0].scheduled_for)>nowSeconds){
+      return await stop({ok:false,reason:'not_due'});
+    }
+    const membership=await transaction.execute({
+      sql:`SELECT 1 AS active FROM circle_memberships membership
+        JOIN circles circle ON circle.id=membership.circle_id
+        WHERE membership.user_id=? AND membership.status='active' AND circle.archived_at IS NULL
+        LIMIT 1`,
+      args:[id],
+    });
+    if(membership.rows?.length===1){
+      const eligibility=await evaluateEligibility(transaction,account,admins);
+      if(!eligibility.ok) return await stop(eligibility);
+    }
+    const email=String(account.email).trim().toLowerCase();
+    const contract=MIGRATION_CONTRACTS[FEEDBACK_MIGRATION_VERSION-1];
+    const feedbackProbe=await transaction.execute({
+      sql:'SELECT version,name,checksum FROM schema_migrations WHERE version=? LIMIT 2',
+      args:[FEEDBACK_MIGRATION_VERSION],
+    });
+    const feedback=feedbackProbe.rows?.length===1
+      &&Number(feedbackProbe.rows[0].version)===contract.version
+      &&String(feedbackProbe.rows[0].name)===contract.name
+      &&String(feedbackProbe.rows[0].checksum)===contract.checksum;
+    const plan=deletionStatements({userId:id,email,emailHash:hashInvitationEmail(email)||null,
+      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback,graceExecutedAt:nowSeconds});
+    const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
+    const summary={};
+    plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });
+    const {tombstoned,grace_executed,...counts}=summary;
+    if(tombstoned!==1) throw new Error('account tombstone failed');
+    if(grace_executed!==1) throw new Error('account deletion request was not marked executed');
+    await transaction.commit(); finished=true;
+    return Object.freeze({ok:true,status:'deleted',summary:Object.freeze(counts),
+      scheduled_for:new Date(Number(pending.rows[0].scheduled_for)*1000).toISOString()});
   }catch(error){
     if(!finished) await rollback(transaction);
     throw error;

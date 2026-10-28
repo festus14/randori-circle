@@ -8,6 +8,7 @@
 // Rendering uses DOM nodes and textContent only.
 export const REAUTH_MARKER_KEY = 'randori-account-deletion-reauth-v1';
 export const DELETED_NOTICE_KEY = 'randori-account-deleted-v1';
+export const SCHEDULED_NOTICE_KEY = 'randori-account-deletion-scheduled-v1';
 export const CONFIRMATION_WORD = 'DELETE';
 export const REAUTH_TTL_MS = 10 * 60 * 1000;
 // Device preferences that say nothing about the account survive the deletion.
@@ -16,7 +17,9 @@ const GOOGLE_AUTHORIZATION = 'https://accounts.google.com/o/oauth2/v2/auth';
 
 export const COPY = Object.freeze({
   title: 'Delete account',
-  intro: 'Permanently delete your Randori account. This can’t be undone.',
+  intro: 'Delete your Randori account.',
+  // Shown only while the 14-day grace period is on (issue #372).
+  graceNote: 'Your account is locked straight away and deleted 14 days after you confirm. You can sign in again any time before then to cancel.',
   deletedTitle: 'What is deleted',
   deleted: Object.freeze([
     'Your name, email address, password and Google sign-in link.',
@@ -55,6 +58,8 @@ export const COPY = Object.freeze({
   continue: 'Continue',
   finalTitle: 'Delete your account permanently?',
   finalText: 'Your account is deleted straight away and you are signed out on every device. Your partners keep their history with your name replaced by “Deleted member”.',
+  // Final step while the 14-day grace period is on (issue #372).
+  finalTextGrace: 'Your account will be locked straight away and deleted in 14 days. You can sign in again before then to cancel it. Your partners keep their history with your name replaced by “Deleted member” once the deletion runs.',
   confirmDelete: 'Delete my account',
   cancel: 'Cancel',
   close: 'Close',
@@ -143,6 +148,8 @@ function buildSection(doc, section) {
   const blocked = node(doc, 'div', { className: 'rc-banner rc-banner--warning', id: 'accountDeletionBlocked', testid: 'account-deletion-blocked' });
   blocked.setAttribute('role', 'status');
   blocked.hidden = true;
+  const graceNote = node(doc, 'p', { className: 'field-help', id: 'accountDeletionGraceNote', testid: 'account-deletion-grace-note', text: COPY.graceNote });
+  graceNote.hidden = true;
   const status = liveStatus(node(doc, 'p', { className: 'small request-status', id: 'accountDeletionStatus', testid: 'account-deletion-status' }));
   const open = button(doc, COPY.open, { className: 'btn danger', id: 'accountDeletionOpen', testid: 'account-deletion-open' });
   const circle = button(doc, COPY.openCircle, { className: 'btn secondary', id: 'accountDeletionCircle' });
@@ -153,9 +160,9 @@ function buildSection(doc, section) {
   actions.append(retry, circle, open);
   const body = node(doc, 'div', { className: 'card-b onboarding-body' });
   body.append(bulletList(doc, COPY.deletedTitle, COPY.deleted), bulletList(doc, COPY.keptTitle, COPY.kept),
-    node(doc, 'p', { className: 'field-help', text: COPY.rejoin }), blocked, status, actions);
+    node(doc, 'p', { className: 'field-help', text: COPY.rejoin }), graceNote, blocked, status, actions);
   section.replaceChildren(head, body);
-  return { blocked, status, open, circle, retry };
+  return { blocked, graceNote, status, open, circle, retry };
 }
 
 function buildDialog(doc) {
@@ -216,6 +223,7 @@ export function mountAccountDeletion({ doc, host }) {
     const message = eligibility?.eligible === false ? blockedMessage(eligibility.code, eligibility.circles) : null;
     view.blocked.textContent = message || '';
     view.blocked.hidden = !message;
+    view.graceNote.hidden = eligibility?.grace !== true;
     view.circle.hidden = !message || eligibility.code === 'demo_account';
     view.retry.hidden = eligibility?.failed !== true;
     view.open.disabled = eligibility?.eligible !== true;
@@ -229,7 +237,7 @@ export function mountAccountDeletion({ doc, host }) {
     renderEligibility();
     const loading = host.api('/api/auth/account/delete', { method: 'GET' }).then(
       result => (result?.ok === true && typeof result.eligible === 'boolean'
-        ? { eligible: result.eligible, code: result.code, circles: result.circles }
+        ? { eligible: result.eligible, code: result.code, circles: result.circles, grace: result.grace === true }
         : { failed: true }),
       () => ({ failed: true }),
     ).then(eligibility => {
@@ -317,7 +325,7 @@ export function mountAccountDeletion({ doc, host }) {
     remove.addEventListener('click', () => { void submitDeletion(); });
     const cancel = cancelButton();
     // Cancel takes focus first: this is the irreversible step.
-    render({ title: COPY.finalTitle, text: COPY.finalText, buttons: [cancel, remove], status: message, focus: cancel });
+    render({ title: COPY.finalTitle, text: state.eligibility?.grace === true ? COPY.finalTextGrace : COPY.finalText, buttons: [cancel, remove], status: message, focus: cancel });
   }
 
   function showBlocked(code, circles) {
@@ -380,14 +388,20 @@ export function mountAccountDeletion({ doc, host }) {
     }
   }
 
-  async function finish() {
+  async function finish(result = {}) {
     state.step = 'done';
     const closeDialog = state.closeDialog;
     state.closeDialog = null;
     closeDialog?.();
     try { await host.signOutLocally(); } catch {}
     clearDeviceData(host.storage);
-    try { host.storage.session.setItem(DELETED_NOTICE_KEY, '1'); } catch {}
+    try {
+      if (result?.status === 'pending_deletion' && typeof result?.scheduled_for === 'string') {
+        host.storage.session.setItem(SCHEDULED_NOTICE_KEY, result.scheduled_for);
+      } else {
+        host.storage.session.setItem(DELETED_NOTICE_KEY, '1');
+      }
+    } catch {}
     host.reload('/');
   }
 
@@ -398,7 +412,7 @@ export function mountAccountDeletion({ doc, host }) {
     setBusy(true, COPY.working);
     try {
       const result = await host.api('/api/auth/account/delete', { method: 'POST', body: { confirm: CONFIRMATION_WORD } });
-      if (result?.ok === true) { await finish(); return; }
+      if (result?.ok === true) { await finish(result); return; }
       throw Object.assign(new Error('unexpected'), { http_status: 503 });
     } catch (error) {
       setBusy(false, '');
@@ -406,6 +420,11 @@ export function mountAccountDeletion({ doc, host }) {
       const status = Number(error?.http_status);
       if (code === 'recent_auth_required') void checkRecentAuth(generation, COPY.reauthExpired);
       else if (['last_owner', 'last_admin', 'demo_account'].includes(code)) showBlocked(code, error.circles);
+      // A concurrent request already scheduled the deletion: land on the
+      // same scheduled notice as a fresh request.
+      else if (code === 'already_pending' && typeof error?.scheduled_for === 'string') {
+        await finish({ status: 'pending_deletion', scheduled_for: error.scheduled_for });
+      }
       else showFinal(status === 401 ? COPY.signedOut : (status === 429 ? COPY.rateLimited : COPY.unconfirmed));
     }
   }

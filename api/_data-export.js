@@ -95,6 +95,7 @@ export const DATA_EXPORT_SECTION_LIMITS=Object.freeze({
   aiReservations:500,
   feedbackItems:500,
   feedbackVotes:1000,
+  deletionRequests:100,
 });
 
 // Coverage of every account-deletion inventory table. `section` names the
@@ -109,6 +110,7 @@ const EXPLICIT_TABLE_COVERAGE=Object.freeze({
   auth_password_resets:{section:null,included:false,reason:'Token hashes for password recovery; secrets, not user content.'},
   auth_email_activations:{section:null,included:false,reason:'Holds the account-creation password hash and email; a credential artefact, not user content.'},
   auth_identity_audit_events:{section:null,included:false,reason:'Security audit trail of identity changes; ids and codes only, not user content.'},
+  account_deletion_requests:{section:'deletion_requests',included:true,reason:'Own deletion requests: when requested, scheduled, cancelled or executed. Ids and unix timestamps only; the row is the member\'s own request history.'},
   auth_rate_limits:{section:null,included:false,reason:'Secret-keyed rate-limit hashes that expire within 15 minutes.'},
   circle_memberships:{section:'memberships',included:true,reason:'Own memberships, with the circle and the inviter by display name.'},
   circles:{section:'memberships',included:true,reason:'Circle metadata for circles the member belongs to, plus circles they created but hold no membership for (created_circles), reached through their membership or created_by.'},
@@ -317,6 +319,7 @@ async function readFeedback(db,userId){
 const READINESS_PROBES=Object.freeze([
   `SELECT id,email,display_name,color,created_at,last_login,is_available,availability_updated_at,is_admin,is_demo,bio,tz,interview_focus,leetcode_handle,phone FROM auth_accounts LIMIT 0`,
   `SELECT issuer,subject,user_id FROM auth_provider_identities LIMIT 0`,
+  `SELECT id,user_id,requested_at,scheduled_for,cancelled_at,executed_at FROM account_deletion_requests LIMIT 0`,
   `SELECT circle_id,user_id,role,status,invited_by,joined_at,updated_at FROM circle_memberships LIMIT 0`,
   `SELECT id,public_id,name,is_primary,archived_at,created_by,created_at FROM circles LIMIT 0`,
   `SELECT id,circle_id,email_hash,created_by,created_at,expires_at,used_at,used_by,revoked_at FROM circle_invitations LIMIT 0`,
@@ -986,6 +989,19 @@ export async function buildDataExport(db,{userId}={}){
     created_at:row.created_at??null,
   })));
 
+  const {rows:deletionRequestRows,truncated:deletionRequestsTruncated}=await cappedQuery(db,
+    `SELECT id,requested_at,scheduled_for,cancelled_at,executed_at FROM account_deletion_requests
+    WHERE user_id=? ORDER BY id DESC LIMIT ?`,
+    [id],DATA_EXPORT_SECTION_LIMITS.deletionRequests);
+  markTruncated('deletion_requests',deletionRequestsTruncated);
+  const deletionRequests=Object.freeze(deletionRequestRows.map(row=>Object.freeze({
+    id:Number(row.id),
+    requested_at:Number(row.requested_at),
+    scheduled_for:Number(row.scheduled_for),
+    cancelled_at:row.cancelled_at==null?null:Number(row.cancelled_at),
+    executed_at:row.executed_at==null?null:Number(row.executed_at),
+  })));
+
   const feedback=await readFeedback(db,id);
   markTruncated('feedback_items',feedback.truncated_items);
   markTruncated('feedback_votes',feedback.truncated_votes);
@@ -1011,6 +1027,7 @@ export async function buildDataExport(db,{userId}={}){
     invitations:Object.freeze({sent:invitationsSent,accepted:invitationsAccepted,received:invitationsReceived}),
     created_circles:createdCircles,
     invite_requests:inviteRequests,
+    deletion_requests:deletionRequests,
     ai:Object.freeze({sessions:aiSessions,feedback:aiFeedback,consents:aiConsents,
       usage:aiUsage,reservations:aiReservations}),
     feedback,
@@ -1040,6 +1057,7 @@ export async function buildDataExport(db,{userId}={}){
       invitations_received:invitationsReceived.length,
       created_circles:createdCircles.length,
       invite_requests:inviteRequests.length,
+      deletion_requests:deletionRequests.length,
       ai_sessions:aiSessions.length,
       ai_feedback:aiFeedback.length,
       ai_usage:aiUsage.length,

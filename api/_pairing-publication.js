@@ -17,6 +17,10 @@ import {
   chatRetentionScopeRegistrationStatement,
 } from './_chat-retention.js';
 import { validateActiveCircleMutationContext } from './_active-circle.js';
+import {
+  deletionPendingExclusionSql,
+  graceSchemaAvailable,
+} from './_account-deletion-grace.js';
 
 const PARTICIPANT_SOURCES=new Set(['auth','users']);
 const NOTIFICATION_KINDS=new Set(['paired','unavailable']);
@@ -528,10 +532,16 @@ async function assertPublisher(db,{scope,localRuntime,callerId,circleContext}){
 
 async function pairingAccounts(db,scope){
   let result;
+  // Locked accounts (#372) are excluded from future pairing. The pending
+  // table does not exist before migration v23, so the predicate is only
+  // added once the schema is present — the readiness tolerance window.
+  const graceOn=await graceSchemaAvailable(db);
+  const localExclusion=graceOn?` AND ${deletionPendingExclusionSql('id')}`:'';
+  const circleExclusion=graceOn?` AND ${deletionPendingExclusionSql('account.id')}`:'';
   try{
     result=await db.execute(scope.kind==='local'
       ?`SELECT id,email,is_available FROM auth_accounts
-        WHERE COALESCE(is_demo,0)=0 ORDER BY id`
+        WHERE COALESCE(is_demo,0)=0${localExclusion} ORDER BY id`
       :{
         sql:`SELECT account.id,account.email,account.is_available
           FROM auth_accounts account
@@ -539,7 +549,7 @@ async function pairingAccounts(db,scope){
             ON membership.user_id=account.id AND membership.circle_id=?
           JOIN circles circle ON circle.id=membership.circle_id
           WHERE COALESCE(account.is_demo,0)=0 AND membership.status='active'
-            AND circle.is_primary=1 AND circle.archived_at IS NULL
+            AND circle.is_primary=1 AND circle.archived_at IS NULL${circleExclusion}
           ORDER BY account.id`,
         args:[scope.circleId],
       });

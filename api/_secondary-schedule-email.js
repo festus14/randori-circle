@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { isDeletionPending } from './_account-deletion-grace.js';
 import { secondaryCircleScheduleEmailEnabled } from './_active-circle.js';
 import { createOutboxEventStatement, OutboxDeliveryError } from './_outbox.js';
 import { emailProviderReason } from './_email-provider-reason.js';
@@ -379,6 +380,12 @@ export function createSecondaryScheduleEmailHandler({db,origin,send}={}){
     }
     const resolved=await resolveDelivery(db,payload);
     if(resolved.suppressed) return {status:'suppressed',reasonCode:resolved.suppressed};
+    // Locked accounts (#372) get no schedule email, even ones queued before
+    // the request. Checked after the flag check and resolve so flag-off
+    // drains without a database read and the resolve query stays first.
+    if(await isDeletionPending(db,payload.recipientUserId)){
+      return {status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'};
+    }
     const content=render(resolved.payload,resolved.row,origin);
     try{
       const delivery=await send({to:resolved.payload.email,subject:content.subject,html:content.html,

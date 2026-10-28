@@ -14,6 +14,7 @@ import { multiCircleAvailabilityEnabled, secondaryCircleSchedulingEnabled } from
 import { availabilityCycleKey } from './_availability.js';
 import { emailProviderReason } from './_email-provider-reason.js';
 import { createOutboxEventStatement, OutboxDeliveryError } from './_outbox.js';
+import { isDeletionPending } from './_account-deletion-grace.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
 import { canonicalRoomId, escapeHtml } from './_pairing.js';
 import { normalizeScheduleInstant } from './_schedule.js';
@@ -694,6 +695,11 @@ export function createReminderEmailHandler({db,baseUrl,send,now=()=>new Date(),t
     const payload=parseEvent(event);
     if(!remindersEnabled()) return suppressed('REMINDERS_DISABLED');
     if(payload.kind==='session_soon'&&!sessionSoonRemindersEnabled()) return suppressed('REMINDERS_DISABLED');
+    // Locked accounts (#372) get no reminders, even ones queued before the request.
+    // Checked after the flag checks (so flag-off drains without a database
+    // read) and before resolve, so a pending account is reported as such
+    // rather than under a resolve reason.
+    if(await isDeletionPending(db,payload.recipient_user_id)) return suppressed('ACCOUNT_DELETION_PENDING');
     const instantNow=readClock(now);
     let resolved;
     let content;

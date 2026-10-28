@@ -1,4 +1,5 @@
 import { canonicalRoomId, escapeHtml } from './_pairing.js';
+import { isDeletionPending } from './_account-deletion-grace.js';
 import { secondaryCirclePairingEmailEnabled } from './_active-circle.js';
 import { OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
 import { emailProviderReason } from './_email-provider-reason.js';
@@ -325,6 +326,12 @@ export function createPairingEmailHandler({db,baseUrl,send,localRuntime=false}={
       }
       const resolved=await resolveSecondaryPairingEmail(db,payload);
       if(resolved.suppressed) return {status:'suppressed',reasonCode:resolved.suppressed};
+      // Locked accounts (#372) get no pairing email, even one queued before
+      // the request. Checked after the flag check and resolve so flag-off
+      // drains without a database read.
+      if(await isDeletionPending(db,payload.userId)){
+        return {status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'};
+      }
       const content=renderSecondaryPairingEmail(resolved.payload,resolved.row,origin);
       try{
         const delivery=await send({
@@ -364,6 +371,10 @@ export function createPairingEmailHandler({db,baseUrl,send,localRuntime=false}={
     });
     if(Number(preference.rows?.[0]?.email_enabled)===0){
       return {status:'suppressed',reasonCode:'EMAIL_DISABLED'};
+    }
+    // Locked accounts (#372) get no pairing email, even one queued before the request.
+    if(await isDeletionPending(db,payload.userId)){
+      return {status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'};
     }
     const content=await renderPairingEmail(db,payload,origin);
     try{

@@ -1,6 +1,7 @@
 import { canonicalRoomId, escapeHtml } from './_pairing.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
 import { classifyPairingProviderError } from './_pairing-email.js';
+import { isDeletionPending } from './_account-deletion-grace.js';
 import { normalizeScheduleInstant, projectSchedule, readScheduleState } from './_schedule.js';
 import {
   createSecondaryScheduleEmailHandler,
@@ -266,6 +267,12 @@ export function createScheduleEmailHandler({db,baseUrl,send,localRuntime=false}=
     const email=String(row.email||'').trim().toLowerCase();
     if(email.length>320||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
       return {status:'suppressed',reasonCode:'RECIPIENT_INVALID'};
+    }
+    // Locked accounts (#372) get no schedule email, even ones queued before
+    // the request. Checked after the recipient query so its position and the
+    // invalid-payload no-query invariant are unchanged.
+    if(await isDeletionPending(db,payload.recipientUserId)){
+      return {status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'};
     }
     if(payload.instant&&Date.parse(String(row.now_utc))>=Date.parse(payload.instant)){
       return {status:'suppressed',reasonCode:'SESSION_ELAPSED'};
