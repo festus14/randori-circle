@@ -161,9 +161,15 @@ test('account deletion grace: a member schedules deletion, cancels from the pend
     await expect(member.locator('#deletionPendingText')).toContainText(
       `scheduled for deletion on ${formatDate(firstScheduled)}`);
     // The overlay covers the app: the dashboard DOM stays behind it, so
-    // the assertion is that the pending screen itself is up, not that the
-    // dashboard nodes are gone.
+    // the assertion is that the pending screen itself is up and the app
+    // shell behind it is inert and hidden from assistive tech — not that
+    // the dashboard nodes are gone.
     await expect(member.locator('#deletionPendingOverlay.show')).toBeVisible();
+    await expect(member.locator('.shell')).toHaveAttribute('inert','');
+    await expect(member.locator('.shell')).toHaveAttribute('aria-hidden','true');
+    await expect(member.evaluate(()=>document.activeElement?.id)).toBe('deletionPendingCancel');
+    await member.keyboard.press('Tab');
+    await expect(member.evaluate(()=>Boolean(document.activeElement?.closest('.shell')))).toBe(false);
     expect((await json(member,'/api/auth/me')).status).toBe(409);
     expect((await json(member,'/api/auth/me')).body.code).toBe('deletion_pending');
     expect((await json(member,'/api/history')).status).toBe(401);
@@ -182,6 +188,8 @@ test('account deletion grace: a member schedules deletion, cancels from the pend
     const cancelled=member.waitForResponse(pathIs('/api/auth/account/delete/cancel','POST'));
     await member.getByTestId('deletion-pending-cancel').click();
     expect((await cancelled).status()).toBe(200);
+    await expect(member.locator('.shell')).not.toHaveAttribute('inert');
+    await expect(member.locator('.shell')).not.toHaveAttribute('aria-hidden');
     await expect(member.locator('#dashPairArea')).toContainText('Local Circle Owner');
     expect((await json(member,'/api/auth/me')).status).toBe(200);
     const cancelledRow=await withDatabase(golden,async db=>(await db.execute({
@@ -207,6 +215,23 @@ test('account deletion grace: a member schedules deletion, cancels from the pend
     expect(rows).toHaveLength(2);
     expect(rows[0].cancelled_at).not.toBeNull();
     expect(rows[1].cancelled_at).toBeNull();
+
+    // The 48h reminder is delivered once through the production cron route
+    // when the second request enters its reminder window, and is not
+    // re-queued on the next run.
+    await withDatabase(golden,db=>db.execute({
+      sql:`UPDATE account_deletion_requests
+        SET requested_at=strftime('%s','now')-12*24*3600, scheduled_for=strftime('%s','now')+47*3600
+        WHERE user_id=? AND cancelled_at IS NULL AND executed_at IS NULL`,args:[memberId],
+    }));
+    const reminded=await drainOutbox(owner);
+    expect(reminded.outbox?.account_deletion_grace?.reminders_queued).toBe(1);
+    const reminders=reminded.account_deletion_reminder_delivery?.captured||[];
+    expect(reminders).toHaveLength(1);
+    expect(reminders[0].recipient_email).toBe(pair.member.email);
+    expect(reminders[0].kind).toBe('account-deletion-reminder');
+    expect(reminders[0].subject).toBe('Your Randori Circle account will be deleted in about 48 hours');
+    expect((await drainOutbox(owner)).outbox?.account_deletion_grace?.reminders_queued).toBe(0);
 
     // Age the second request past its scheduled date (requested 15 days ago,
     // due an hour ago, keeping scheduled_for > requested_at); the cron executes it.

@@ -541,6 +541,25 @@ test('notification configuration, payload parsing, rendering, and suppression fa
   await assert.rejects(passthrough(event(payload)),error=>error.code==='DELIVERY_TIMEOUT');
 });
 
+test('invite-request digests suppress when the owner has a pending deletion',async()=>{
+  currentDb=await migratedDatabase();
+  enableOwnerNotifications();
+  const sent=[];
+  const handler=notification.createInviteRequestNotificationHandler({db:currentDb,baseUrl:ORIGIN,
+    send:async message=>{ sent.push(message); return {data:{id:'msg_1'}}; }});
+  const event={eventVersion:1,idempotencyKey:'invite-request-digest/v1/10/1/1',
+    payload:{circle_id:10,owner_user_id:1,digest_hour:1,template_version:1}};
+  await requests.submitInviteRequest(currentDb,{name:'One',email:'one@example.test'});
+  assert.deepEqual(await handler(event),{status:'delivered',providerName:'email',providerMessageId:'msg_1'});
+  assert.equal(sent.length,1);
+  // The owner now has a pending deletion request: the same digest suppresses.
+  const now=Math.floor(Date.now()/1000);
+  await currentDb.execute({sql:`INSERT INTO account_deletion_requests (user_id,requested_at,scheduled_for)
+    VALUES (?,?,?)`,args:[1,now,now+14*24*3600]});
+  assert.deepEqual(await handler(event),{status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'});
+  assert.equal(sent.length,1,'no digest to a pending owner');
+});
+
 test('the outbox registry builds the notification handler only when delivery is configured',async()=>{
   currentDb=await migratedDatabase();
   const req={headers:{host:'randori.example.test'},socket:{remoteAddress:'198.51.100.1'}};

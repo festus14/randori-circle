@@ -1,5 +1,6 @@
 import { escapeHtml } from './_pairing.js';
 import { normalizeInvitationEmail } from './_circle-membership.js';
+import { isDeletionPending } from './_account-deletion-grace.js';
 import { createOutboxEventStatement, OutboxDeliveryError } from './_outbox.js';
 import { emailProviderReason } from './_email-provider-reason.js';
 import { inviteRequestsEnabled } from './_invite-request-config.js';
@@ -120,6 +121,11 @@ export function createInviteRequestNotificationHandler({db,baseUrl,send,localRun
       args:[metadata.ownerUserId,metadata.circleId],
     });
     if(current.rows?.length!==1) return {status:'suppressed',reasonCode:'INVITE_REQUEST_OWNER_INACTIVE'};
+    // Issue #372: a locked owner gets no mail, even mail queued before the
+    // request. The owner id is the validated payload value.
+    if(await isDeletionPending(db,metadata.ownerUserId)){
+      return {status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'};
+    }
     const row=current.rows[0];
     if(row.email_enabled!==null&&row.email_enabled!==undefined&&Number(row.email_enabled)===0){
       return {status:'suppressed',reasonCode:'NOTIFICATIONS_DISABLED'};

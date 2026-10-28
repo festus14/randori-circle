@@ -22,12 +22,21 @@ import {
   DELETION_GRACE_SECONDS,
   accountDeletionGraceEnabled,
   cancelAccountDeletion,
+  createAccountDeletionBlockedEvent,
   createAccountDeletionEmailHandler,
   graceSchemaAvailable,
   isDeletionPending,
+  readDeletionCancelSession,
   requestAccountDeletion,
   runAccountDeletionGraceJobs,
 } from '../../api/_account-deletion-grace.js';
+import {
+  consumePasswordReset,
+  createPasswordResetHandler,
+  openPasswordResetToken,
+  passwordResetKeyRing,
+  requestPasswordReset,
+} from '../../api/_password-reset.js';
 import { initializeLocalPrimaryCircleData } from '../../api/_admin-init.js';
 import { hashInvitationEmail } from '../../api/_circle-membership.js';
 import { issueSession, verifyRequestAuth, verifySignedRequestAuth } from '../../api/_db.js';
@@ -40,6 +49,7 @@ import { applyMigrations, inspectMigrationState, prepareMigrationConnection } fr
 import { readMigrationLedger, validateMigrationLedger } from '../../db/migration-ledger-readiness.js';
 import { ledgerReadiness } from '../../db/migration-compatibility.js';
 import { createMigratedDatabase } from '../support/migrated-db.mjs';
+import { adoptCredentialKeyControl } from '../support/credential-key-control.mjs';
 
 const JWT_SECRET='account-deletion-grace-test-secret-at-least-32-bytes';
 const NOW=1_750_000_000;
@@ -55,7 +65,7 @@ afterEach(async()=>{
   while(resources.length){ try{ await resources.pop()(); }catch{} }
   if(originalSecret===undefined) delete process.env.JWT_SECRET; else process.env.JWT_SECRET=originalSecret;
   for(const key of ['ACCOUNT_DELETION_ENABLED','ACCOUNT_DELETION_GRACE_ENABLED','CIRCLE_MEMBERSHIP_ENABLED',
-    'REMINDERS_ENABLED','FEEDBACK_ENABLED'])
+    'REMINDERS_ENABLED','FEEDBACK_ENABLED','PASSWORD_RESET_ENCRYPTION_KEY','PASSWORD_RESET_ENABLED'])
     delete process.env[key];
 });
 
@@ -305,8 +315,22 @@ test('the cron job executes on day 14, tombstones, and never executes twice',asy
 test('a member removed by an owner during the grace period is still deleted on schedule',async()=>{
   const {db}=await fixture();
   assert.equal((await request(db)).ok,true);
+  // Both memberships go inactive: the member is out of every circle, so
+  // the cancel flow cannot verify them any more.
   await db.execute({sql:`UPDATE circle_memberships SET status='inactive' WHERE circle_id=1 AND user_id=?`,args:[MEMBER]});
-  // They cannot cancel any more: no active membership, so no cancel session.
+  // Both memberships go inactive: the member is out of every circle, so
+  // the cancel flow cannot verify them any more. The membership gate in
+  // readDeletionCancelSession only runs with membership on (as in
+  // production), so enable it for this assertion and clear it again before
+  // the cron run.
+  await db.execute({sql:`UPDATE circle_memberships SET status='inactive' WHERE circle_id=20 AND user_id=?`,args:[MEMBER]});
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  const token=await issueSession(db,{id:MEMBER,email:MEMBER_EMAIL,name:'Member'},
+    {recentAuthMethod:'password',nowSeconds:NOW+60});
+  assert.equal(await readDeletionCancelSession(db,
+    {headers:{cookie:`randori_session=${encodeURIComponent(token)}`}},{nowSeconds:NOW+60}),null,
+    'a member removed from every circle gets no cancel session');
+  delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
   const due=await runAccountDeletionGraceJobs(db,{nowSeconds:NOW+DELETION_GRACE_SECONDS,
     adminEmails:[],hashInvitationEmail});
   assert.equal(due.executed,1);
@@ -338,6 +362,10 @@ test('last-owner at execution keeps the account locked and notifies admins once'
     adminEmails:[],hashInvitationEmail});
   assert.deepEqual({blocked:rerun.blocked,blocked_notifications:rerun.blocked_notifications},
     {blocked:1,blocked_notifications:0});
+  assert.equal((await auditEvents(db,'account.deletion_blocked')).length,2,
+    'the second run writes no second blocked audit event (dedupe key)');
+  assert.equal((await outboxRows(db,ACCOUNT_DELETION_BLOCKED_EVENT_TYPE)).length,1,
+    'the second run enqueues no second blocked notification');
   // Once a co-owner exists, the deletion runs.
   await db.execute({sql:`UPDATE circle_memberships SET status='active' WHERE circle_id=20 AND user_id=4`});
   const unblocked=await runAccountDeletionGraceJobs(db,{nowSeconds:NOW+DELETION_GRACE_SECONDS+600,
@@ -387,6 +415,75 @@ test('emails: confirmation and reminder deliver once; cancelled or executed requ
     payload:JSON.parse(reminder.payload_json),idempotencyKey:reminder.idempotency_key},{});
   assert.deepEqual(suppressed,{status:'suppressed',reasonCode:'ACCOUNT_DELETION_NOT_PENDING'});
   assert.equal(sent.length,1,'no reminder after cancellation');
+});
+
+test('password reset is refused for a pending account at request, delivery and consume, leaving password and cancel session untouched',async()=>{
+  const {db}=await fixture();
+  process.env.PASSWORD_RESET_ENCRYPTION_KEY=Buffer.alloc(32,23).toString('base64url');
+  process.env.PASSWORD_RESET_ENABLED='true';
+  await adoptCredentialKeyControl(db,passwordResetKeyRing());
+  // The reset handler reads expiry against the real database clock, so the
+  // request uses real now (the grace clock stays on the fixed NOW). The
+  // consume calls below pass explicit nowSeconds, so they are unaffected.
+  const realNow=Math.floor(Date.now()/1000);
+  // A reset requested before the deletion request: one row, one outbox event.
+  assert.equal((await requestPasswordReset(db,{email:MEMBER_EMAIL},{nowSeconds:realNow})).accepted,true);
+  const resetRows=await outboxRows(db,'auth.passwordreset.requested');
+  assert.equal(resetRows.length,1);
+  const resetEvent={eventType:resetRows[0].event_type,eventVersion:resetRows[0].event_version,
+    payload:JSON.parse(resetRows[0].payload_json),idempotencyKey:resetRows[0].idempotency_key};
+  const token=openPasswordResetToken(resetEvent.payload.token_envelope,{idempotencyKey:resetEvent.idempotencyKey});
+  assert.ok(token,'the queued reset token opens');
+  const originalHash=String((await one(db,`SELECT password_hash FROM auth_accounts WHERE id=?`,[MEMBER]))?.password_hash);
+  assert.equal((await request(db)).ok,true);
+  // Request: the unknown-email shape, no new row, no new outbox event.
+  assert.deepEqual(await requestPasswordReset(db,{email:MEMBER_EMAIL},{nowSeconds:realNow+60}),{accepted:false});
+  assert.equal((await outboxRows(db,'auth.passwordreset.requested')).length,1);
+  // Delivery: suppressed, nothing sent.
+  const sent=[];
+  const handler=createPasswordResetHandler({db,baseUrl:'https://randori.example.test',
+    send:async message=>{ sent.push(message); return {providerName:'test'}; }});
+  assert.deepEqual(await handler(resetEvent),{status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'});
+  assert.equal(sent.length,0);
+  // Consume: refused as revoked, without changing the password or revoking
+  // the fresh sign-in session that the cancel flow needs.
+  const cancelToken=await issueSession(db,{id:MEMBER,email:MEMBER_EMAIL,name:'Member'},
+    {recentAuthMethod:'password',nowSeconds:NOW+60});
+  const cancelPayload=verifySignedRequestAuth(
+    {headers:{cookie:`randori_session=${encodeURIComponent(cancelToken)}`}},{nowSeconds:NOW+60});
+  const newHash=`$2a$10$${'n'.repeat(53)}`;
+  assert.deepEqual(await consumePasswordReset(db,{token,passwordHash:newHash},{nowSeconds:NOW+60}),{status:'revoked'});
+  assert.equal(String((await one(db,`SELECT password_hash FROM auth_accounts WHERE id=?`,[MEMBER]))?.password_hash),
+    originalHash,'the password is unchanged');
+  assert.equal(Number((await one(db,`SELECT COUNT(*) AS count FROM auth_sessions WHERE session_hash=? AND revoked_at IS NULL`,
+    [cancelPayload.sessionHash]))?.count),1,'the cancel session survived the refused consume');
+  // Cancelling restores the account, and the pre-request token is still
+  // usable afterwards: it was refused, not revoked.
+  assert.equal((await cancelAccountDeletion(db,{userId:MEMBER,
+    sessionHash:cancelPayload.sessionHash,nowSeconds:NOW+60})).ok,true);
+  assert.deepEqual(await consumePasswordReset(db,{token,passwordHash:newHash},{nowSeconds:realNow+61}),{status:'reset'});
+  assert.equal(String((await one(db,`SELECT password_hash FROM auth_accounts WHERE id=?`,[MEMBER]))?.password_hash),
+    newHash);
+});
+
+test('a blocked notification suppresses when its recipient admin is themselves pending',async()=>{
+  const {db}=await fixture();
+  assert.equal((await request(db)).ok,true);
+  const sent=[];
+  const handler=createAccountDeletionEmailHandler({db,baseUrl:'https://randori.example.test',
+    send:async message=>{ sent.push(message); return {providerName:'test'}; }});
+  const statement=createAccountDeletionBlockedEvent({userId:MEMBER,
+    scheduledFor:NOW+DELETION_GRACE_SECONDS,recipientUserId:1,reason:'last_owner'});
+  const event={eventType:statement.args[0],eventVersion:statement.args[1],
+    payload:JSON.parse(statement.args[3]),idempotencyKey:statement.args[2]};
+  assert.deepEqual(await handler(event),{status:'delivered',providerName:'test',providerMessageId:null});
+  assert.equal(sent.length,1);
+  assert.equal(sent[0].to,'owner@example.test');
+  // The recipient admin now has their own pending deletion request.
+  await db.execute({sql:`INSERT INTO account_deletion_requests (user_id,requested_at,scheduled_for)
+    VALUES (?,?,?)`,args:[1,NOW,NOW+DELETION_GRACE_SECONDS]});
+  assert.deepEqual(await handler(event),{status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'});
+  assert.equal(sent.length,1,'no blocked mail to a pending admin');
 });
 
 test('locked accounts get no reminder, pairing, schedule or feedback email',async()=>{

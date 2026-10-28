@@ -914,7 +914,7 @@ Each claim below was verified against the cited file on `main`.
 | 4 | Recent-auth window is 10 minutes | `api/_recent-auth.js` — `RECENT_AUTH_MAX_AGE_SECONDS = 10*60` |
 | 5 | OAuth transaction TTL is 10 minutes | `api/auth.js` — `OAUTH_TRANSACTION_TTL_SECONDS = 10*60` |
 | 6 | Outbox defaults: maxAttempts 5, delivery timeout 10 s, lease 30 s, heartbeat 8 s, base backoff 30 s, max backoff 6 h | `api/_outbox.js` — `OUTBOX_DEFAULTS` |
-| 7 | Outbox invocation claims at most 8 events, 45-second budget | `api/_outbox.js` (`maxClaims=8`, `45_000`); `docs/OUTBOX_INVOCATION_BUDGET.md` |
+| 7 | Outbox invocation claims at most 11 events, 45-second budget | `api/ops.js` (`OUTBOX_CRON_MAX_CLAIMS = 11`, `OUTBOX_CRON_BUDGET_MS = 45_000`); `docs/OUTBOX_INVOCATION_BUDGET.md` |
 | 8 | Immediate post-commit attempt bounded to 8 s / 8 events | `api/_outbox-immediate.js` — `OUTBOX_IMMEDIATE_BUDGET_MS = 8_000`, `OUTBOX_IMMEDIATE_MAX_EVENTS = 8` |
 | 9 | Pairing admission window is Sunday 08:00–10:00 UTC by database time | `docs/PAIRING_PUBLICATION_TOTALITY.md`; `api/_pairing-cycle.js` |
 | 10 | Video signals older than 1 hour are deleted | `api/video.js` — `DELETE FROM video_signals WHERE created_at < datetime('now','-1 hour')` |
@@ -935,6 +935,6 @@ Each claim below was verified against the cited file on `main`.
 | 25 | Region is `dub1`, Node 24 | `vercel.json` regions; `package.json` engines |
 | 26 | CSP includes `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` | `vercel.json` headers |
 | 27 | Production smoke daily 07:17 UTC; execution smoke daily 07:29 UTC; backup rehearsal Monday 03:17 UTC; backup watchdog hourly :47; outbox watchdog hourly :37 | `.github/workflows/production-smoke.yml`, `execution-smoke.yml`, `turso-backup-restore-rehearsal.yml`, `turso-backup-restore-watchdog.yml`, `outbox-dispatch-watchdog.yml` |
-| 28 | Outbox has 8 delivery types (pairing, schedule, invitation, activation, password reset, invite request, feedback, reminder) | `api/_outbox-delivery.js` — `OUTBOX_DELIVERY_TYPES` |
+| 28 | Outbox has 11 delivery types (pairing, schedule, invitation, activation, password reset, invite request, feedback, reminder, account-deletion confirmation, account-deletion reminder, account-deletion blocked) | `api/_outbox-delivery.js` — `OUTBOX_DELIVERY_TYPES` |
 | 29 | Google OIDC endpoints are accounts.google.com / oauth2.googleapis.com / googleapis JWKS | `api/_google-oidc.js` |
 | 30 | Pair-access authorization re-checks membership + participation in the storage statement | `api/_pair-access.js` — `authPairAccessSql()` |

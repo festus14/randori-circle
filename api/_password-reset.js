@@ -6,6 +6,11 @@ import {
 } from 'node:crypto';
 
 import { getJwtSecret, revokeAccountSessions } from './_db.js';
+import {
+  deletionPendingExclusionSql,
+  graceSchemaAvailable,
+  isDeletionPending,
+} from './_account-deletion-grace.js';
 import { hashInvitationEmail, normalizeInvitationEmail } from './_circle-membership.js';
 import {
   CredentialEnvelopeError,
@@ -161,6 +166,17 @@ function resetEvent({resetId,email,token,sendCount}){
 
 export async function requestPasswordReset(db,{email},{nowSeconds=null}={}){
   if(!db||typeof db.transaction!=='function') throw new TypeError('database client is required');
+  // Issue #372: a pending deletion locks the account, so a reset must never
+  // be queued for it. Schema-gated like verifyRequestAuth: while migration
+  // v23 is not applied the exclusion is omitted and the request behaves as
+  // before. The exclusion lives inside the INSERT ... SELECT, so a pending
+  // account takes exactly the unknown-email shape ({accepted:false}, no row,
+  // no outbox event) and the malformed-email statement shape is unchanged.
+  // A client without execute() (a transaction-only test wrapper) cannot be
+  // probed for the schema, so the exclusion is omitted for it, as before.
+  const pendingExclusion=typeof db.execute==='function'&&await graceSchemaAvailable(db)
+    ?` AND ${deletionPendingExclusionSql('account.id')}`
+    : '';
   const normalizedEmail=normalizeInvitationEmail(email);
   const emailHash=hashInvitationEmail(normalizedEmail);
   const resetId=randomUUID();
@@ -183,7 +199,7 @@ export async function requestPasswordReset(db,{email},{nowSeconds=null}={}){
         sql:`INSERT INTO auth_password_resets
             (id,user_id,email_hash,token_hash,created_at,expires_at,last_sent_at,send_count)
           SELECT ?,account.id,?,?,?,?,?,1 FROM auth_accounts account
-          WHERE lower(account.email)=? AND account.password_hash LIKE '$2%' ${membershipPredicate}
+          WHERE lower(account.email)=? AND account.password_hash LIKE '$2%' ${membershipPredicate}${pendingExclusion}
           ON CONFLICT(user_id) DO UPDATE SET
             id=excluded.id,email_hash=excluded.email_hash,token_hash=excluded.token_hash,
             created_at=CASE WHEN auth_password_resets.used_at IS NOT NULL
@@ -263,6 +279,15 @@ async function consumePasswordResetAttempt(db,{token,passwordHash},{nowSeconds=n
     });
     if(selected.rows?.length!==1) return await finish({status:'invalid'});
     const reset=selected.rows[0];
+    // Issue #372: a reset requested before the deletion request must not
+    // land during the grace period — consuming it would change the password
+    // (and revoke the cancel-flow session), so cancelling could no longer
+    // restore the account exactly. Refused as 'revoked', the existing
+    // "this token cannot be used now" status, without marking the row: the
+    // token stays usable if the request is cancelled first.
+    const pendingUserId=Number(reset.user_id);
+    if(Number.isSafeInteger(pendingUserId)&&pendingUserId>0&&typeof db.execute==='function'
+      &&await isDeletionPending(db,pendingUserId)) return await finish({status:'revoked'});
     if(reset.used_at!==null) return await finish({status:'used'});
     if(reset.revoked_at!==null) return await finish({status:'revoked'});
     if(Number(reset.expires_at)<=nowSeconds) return await finish({status:'expired'});
@@ -351,7 +376,7 @@ export function createPasswordResetHandler({db,baseUrl,send}={}){
             AND circle.is_primary=1 AND circle.archived_at IS NULL)`
       :'';
     const current=await db.execute({
-      sql:`SELECT reset.id,reset.token_hash FROM auth_password_resets reset
+      sql:`SELECT reset.id,reset.user_id,reset.token_hash FROM auth_password_resets reset
         JOIN auth_accounts account ON account.id=reset.user_id
         WHERE reset.id=? AND lower(account.email)=?
           AND reset.email_hash=? AND account.password_hash LIKE '$2%'
@@ -361,6 +386,14 @@ export function createPasswordResetHandler({db,baseUrl,send}={}){
       args:[metadata.resetId,metadata.email,hashInvitationEmail(metadata.email)],
     });
     if(current.rows?.length!==1) return {status:'suppressed',reasonCode:'PASSWORD_RESET_INACTIVE'};
+    // Issue #372: mail queued before the deletion request is suppressed at
+    // delivery for a pending account. The user_id guard keeps fake-DB callers
+    // (whose rows carry no user_id) on the old path.
+    const pendingUserId=Number(current.rows[0].user_id);
+    if(Number.isSafeInteger(pendingUserId)&&pendingUserId>0
+      &&await isDeletionPending(db,pendingUserId)){
+      return {status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'};
+    }
     await assertCredentialKeyControl(db,passwordResetKeyRing());
     const payload=resetCredential(metadata,event);
     if(!safeEqual(payload.tokenHash,current.rows[0].token_hash)){

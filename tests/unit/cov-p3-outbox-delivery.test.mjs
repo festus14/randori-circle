@@ -58,6 +58,10 @@ mock.module('../../api/_account-deletion-grace.js',{exports:{
   ACCOUNT_DELETION_REMINDER_EVENT_TYPE:DELETION_REMINDER,
   ACCOUNT_DELETION_BLOCKED_EVENT_TYPE:DELETION_BLOCKED,
   createAccountDeletionEmailHandler:factory('account-deletion'),
+  // Imported by the real invite-request notification handler, which the
+  // delivery registry loads. The mocked registry never delivers, so the
+  // lock is always off here.
+  isDeletionPending:async()=>false,
 }});
 mock.module('../../api/_local-runtime.js',{exports:{
   localIdentityAdapterEnabled:()=>state.local,

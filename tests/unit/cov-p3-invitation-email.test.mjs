@@ -243,6 +243,27 @@ test('handler sanitizes the circle subject and maps provider results and errors'
   assert.equal(messages.length,sent,'no provider call after suppression');
 });
 
+test('handler suppresses an invitation to a recipient with a pending deletion',async()=>{
+  const db=await fixture();
+  // The recipient is a real account, but not a member of the invited circle
+  // (invited to another circle): without the pending check they would be emailed.
+  await db.execute({sql:`INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
+    VALUES (2,?,'!m','Pending Member','#222222',0)`,args:['invitee@example.test']});
+  const {event}=await seededEvent(db);
+  const messages=[];
+  const handler=createInvitationEmailHandler({db,baseUrl:BASE_URL,send:async message=>{
+    messages.push(message);
+    return {data:{id:'resend-message-1'}};
+  }});
+  assert.deepEqual(await handler(event),{status:'delivered',providerName:'email',providerMessageId:'resend-message-1'});
+  assert.equal(messages.length,1);
+  const now=Math.floor(Date.now()/1000);
+  await db.execute({sql:`INSERT INTO account_deletion_requests (user_id,requested_at,scheduled_for)
+    VALUES (?,?,?)`,args:[2,now,now+14*24*3600]});
+  assert.deepEqual(await handler(event),{status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'});
+  assert.equal(messages.length,1,'no invitation mail to a pending account');
+});
+
 test('rotation metrics and readiness require a client and bound their snapshot',async()=>{
   configureProduction();
   await assert.rejects(()=>invitationEmailEnvelopeRotationMetrics(null),/database client is required/);

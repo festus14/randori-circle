@@ -293,6 +293,11 @@ export function createAccountDeletionEmailHandler({db,baseUrl,send}={}){
       if(!row||Number(row.is_demo)===1||(Number(row.is_admin)!==1&&!configuredAdmin)){
         return {status:'suppressed',reasonCode:'ACCOUNT_DELETION_RECIPIENT_NOT_ADMIN'};
       }
+      // Issue #372: a blocked notification must not go to a recipient admin
+      // who is themselves pending deletion.
+      if(await isDeletionPending(db,metadata.recipientUserId)){
+        return {status:'suppressed',reasonCode:'ACCOUNT_DELETION_PENDING'};
+      }
       const subject=await db.execute({
         sql:`SELECT display_name FROM auth_accounts WHERE id=? AND password_hash<>? LIMIT 1`,
         args:[metadata.userId,DELETED_ACCOUNT_PASSWORD_HASH],

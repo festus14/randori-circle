@@ -5193,9 +5193,12 @@ change their mind — the remaining criterion from #302.
   revokes every session, and schedules deletion at request time + 14 days.
   The same re-auth + type-DELETE confirmation as today gates the request.
 - While pending, the account is locked: `verifyRequestAuth` refuses it, so
-  no API works; it is excluded from future pairing (primary and secondary
-  publications), reminders and emails (handlers suppress mail queued before
-  the request); partners and owners see it as "Leaving" in the roster.
+  no API works except the cancel flow (sign-in, `/api/auth/me`'s 409, and
+  `POST /api/auth/account/delete/cancel`); it is excluded from future pairing (primary and secondary
+  publications), reminders and emails (every delivery handler for
+  account-addressed mail suppresses mail queued before the request,
+  including password-reset, invitation and invite-request mail, and blocked
+  notifications to a pending admin); partners and owners see it as "Leaving" in the roster.
 - Signing in again (password or Google) issues a session that can only
   reach the cancel flow (`POST /api/auth/account/delete/cancel`): password
   sign-in answers 200 with `deletion_pending` + `scheduled_for` so the app

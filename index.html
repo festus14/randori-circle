@@ -7673,6 +7673,15 @@ async function refreshMe(){
         .format(new Date(iso));
     }catch{ return String(iso); }
   }
+  function setDeletionPendingShellInert(inert){
+    // The overlay covers the app, but the dashboard DOM stays in the
+    // document: while the cancel screen is up the app shell must be out of
+    // the tab order and the screen-reader tree, and restored on hide.
+    const shell=document.querySelector('.shell');
+    if(!shell) return;
+    if(inert){ shell.setAttribute('inert',''); shell.setAttribute('aria-hidden','true'); }
+    else{ shell.removeAttribute('inert'); shell.removeAttribute('aria-hidden'); }
+  }
   function showDeletionPendingScreen(scheduledFor){
     const overlay=document.getElementById('deletionPendingOverlay');
     const text=document.getElementById('deletionPendingText');
@@ -7682,6 +7691,7 @@ async function refreshMe(){
     if(status) status.textContent='';
     overlay.classList.add('show');
     overlay.setAttribute('aria-hidden','false');
+    setDeletionPendingShellInert(true);
     document.getElementById('deletionPendingCancel')?.focus();
   }
   function hideDeletionPendingScreen(){
@@ -7689,6 +7699,7 @@ async function refreshMe(){
     if(!overlay) return;
     overlay.classList.remove('show');
     overlay.setAttribute('aria-hidden','true');
+    setDeletionPendingShellInert(false);
   }
   document.getElementById('deletionPendingCancel')?.addEventListener('click',async()=>{
     const status=document.getElementById('deletionPendingStatus');

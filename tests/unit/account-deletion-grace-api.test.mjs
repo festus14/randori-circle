@@ -15,6 +15,11 @@ import membersHandler from '../../api/members.js';
 import { initializeLocalPrimaryCircleData } from '../../api/_admin-init.js';
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { createMigratedDatabase } from '../support/migrated-db.mjs';
+import {
+  decodeGoogleOAuthTransactionCookie,
+  googleOAuthTransactionCookieName,
+  googleProviderFetch,
+} from '../support/google-oidc.mjs';
 
 const ORIGIN='https://randori.example.test';
 const PASSWORD='correct horse battery';
@@ -148,6 +153,49 @@ test('with the grace flag on, requesting deletion schedules it and the cancel en
   const row=await db.execute(`SELECT cancelled_at,executed_at FROM account_deletion_requests WHERE user_id=2`);
   assert.notEqual(row.rows[0].cancelled_at,null);
   assert.equal(row.rows[0].executed_at,null);
+});
+
+test('Google sign-in for a pending account issues a cancel-flow session: me answers 409 and the session cancels',async()=>{
+  const db=await fixture({grace:true});
+  await db.batch([
+    {sql:`UPDATE auth_accounts SET google_sub=? WHERE id=2`,args:['google-test-subject']},
+    `INSERT INTO auth_provider_identities (issuer,subject,user_id)
+      VALUES ('https://accounts.google.com','google-test-subject',2)`,
+  ],'write');
+  const cookie=await signedIn();
+  const requested=await requestDeletion(cookie);
+  assert.equal(requested.body.status,'pending_deletion');
+  process.env.GOOGLE_CLIENT_ID='client';
+  process.env.GOOGLE_CLIENT_SECRET='secret';
+  const originalFetch=globalThis.fetch;
+  try{
+    const start=await invoke({endpoint:'google/start',url:'/api/auth/google/start',method:'GET'});
+    assert.equal(start.statusCode,302,'ordinary Google sign-in starts with a redirect');
+    const state=new URL(start.headers.location).searchParams.get('state');
+    const startCookies=cookiesFrom(start.headers);
+    const transactionCookie=startCookies.find(value=>value.startsWith(`${googleOAuthTransactionCookieName(state)}=`));
+    const transaction=decodeGoogleOAuthTransactionCookie(transactionCookie,state);
+    assert.equal(transaction.purpose,'login');
+    globalThis.fetch=googleProviderFetch({claims:{
+      email:'member@example.test',name:'Member',sub:'google-test-subject',nonce:transaction.nonce,
+    }});
+    const callback=await invoke({endpoint:'google-callback',url:'/api/auth/google/callback',
+      method:'GET',query:{code:'test-code',state},cookie:transactionCookie});
+    assert.equal(callback.statusCode,302,JSON.stringify(callback.body));
+    assert.equal(callback.headers.location,`${ORIGIN}/?google=success`);
+    const googleCookie=sessionCookie(callback);
+    // The boot refresh maps this to the cancel screen: me answers 409.
+    const me=await invoke({endpoint:'me',cookie:googleCookie});
+    assert.deepEqual([me.statusCode,me.body.code,me.body.scheduled_for],
+      [409,'deletion_pending',requested.body.scheduled_for]);
+    // And the Google session cancels, like the password one.
+    const cancelled=await cancelDeletion({cookie:googleCookie,method:'POST',body:{}});
+    assert.deepEqual([cancelled.statusCode,cancelled.body],[200,{ok:true,status:'cancelled',
+      scheduled_for:requested.body.scheduled_for}]);
+    assert.equal((await invoke({endpoint:'me',cookie:googleCookie})).statusCode,200);
+  }finally{
+    globalThis.fetch=originalFetch;
+  }
 });
 
 test('cancel: 401 without a session, 409 when nothing is scheduled, 400 for a non-empty body, flag-off 404',async()=>{

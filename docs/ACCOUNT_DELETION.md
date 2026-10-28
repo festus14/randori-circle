@@ -84,11 +84,12 @@ While a deletion is pending (`account_deletion_requests`, migration v23:
 at most one active request per account):
 
 - **Locked.** Every session is revoked at request time. The account cannot
-  use any API: `verifyRequestAuth` refuses it everywhere, so pairing,
-  reminders, emails and every other endpoint are closed to it. Signing in
-  again (password or Google) issues a session that can only reach the
-  cancel flow; the app shows a minimal "Your account is scheduled for
-  deletion on {date}. Cancel deletion?" screen and nothing else.
+  use any API except the cancel flow: `verifyRequestAuth` refuses it
+  everywhere, and `/api/data` init refuses it too, so pairing, reminders,
+  emails and every other endpoint are closed to it. Signing in again
+  (password or Google) issues a session that can only reach the cancel flow;
+  the app shows a minimal "Your account is scheduled for deletion on
+  {date}. Cancel deletion?" screen and nothing else.
   Password sign-in answers 200 with `deletion_pending: true` and
   `scheduled_for`, so the app shows that screen straight away; a Google
   sign-in lands on the boot refresh, where `/api/auth/me` answers 409
@@ -97,14 +98,22 @@ at most one active request per account):
   owner roster (`deletion_pending` on the roster entry, rendered as a
   Leaving badge). The member is excluded from future pairing (primary and
   secondary publications) and from reminders and emails, including mail
-  queued before the request (handlers suppress it at delivery).
+  queued before the request: every delivery handler for account-addressed
+  mail re-checks the pending row at send time and suppresses — reminders,
+  pairing, schedule, feedback, invite-request digests, password resets,
+  invitations, and the grace emails themselves. A blocked notification
+  likewise suppresses when its recipient admin is themselves pending.
 - **Cancelling.** Cancelling sets `cancelled_at`, writes one
   `account.deletion_cancelled` audit event per circle, and restores the
   account exactly as it was: the request changed nothing else, so there is
   nothing to restore. An expired invitation is **not** reopened, and no
   membership is restored — a member an owner removed during the grace
   period cannot cancel and is still deleted on schedule. A deletion
-  requested again after cancelling starts a new 14 days.
+  requested again after cancelling starts a new 14 days. A password reset
+  cannot run during the grace period — the request, the delivery handler
+  and the consume step all refuse a pending account — so cancelling
+  restores the original password too; a reset token requested before the
+  deletion request stays unused and remains usable after a cancel.
 - **Data export.** A member's deletion requests are included in their
   data export under `deletion_requests` (requested, scheduled, cancelled
   and executed timestamps; ids only, no personal data).

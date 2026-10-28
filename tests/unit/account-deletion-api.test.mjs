@@ -444,3 +444,21 @@ test('the deletion route is wired in vercel.json and the local runtime',()=>{
   const local=readFileSync(new URL('../../scripts/local-server.mjs',import.meta.url),'utf8');
   assert.ok(local.includes(`['/api/auth/account/delete','account-delete']`));
 });
+
+test('a pending admin gets 401 from /api/data init instead of the successful no-op',async()=>{
+  const db=await fixture();
+  const ownerCookie=await signedIn('owner@example.test');
+  // Control: the primary circle is already initialised, so init is a
+  // successful no-op for a live admin.
+  const control=await invoke({handler:dataHandler,endpoint:'init',url:'/api/init',method:'POST',
+    body:{},cookie:ownerCookie});
+  assert.deepEqual([control.statusCode,control.body.ok,control.body.changed],[200,true,false]);
+  // With a pending deletion request the same call is refused before any
+  // initialization runs.
+  const now=Math.floor(Date.now()/1000);
+  await db.execute({sql:`INSERT INTO account_deletion_requests (user_id,requested_at,scheduled_for)
+    VALUES (?,?,?)`,args:[1,now,now+14*24*3600]});
+  const refused=await invoke({handler:dataHandler,endpoint:'init',url:'/api/init',method:'POST',
+    body:{},cookie:ownerCookie});
+  assert.deepEqual([refused.statusCode,refused.body],[401,{error:'authentication required'}]);
+});
