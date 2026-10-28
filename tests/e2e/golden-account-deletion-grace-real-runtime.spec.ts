@@ -234,17 +234,31 @@ test('account deletion grace: a member schedules deletion, cancels from the pend
     const blockedPage=(await newGoldenPage(browser,golden)).page;
     const blocked=await acceptInvitationThroughUi(blockedPage,golden,inviteUrl,{email:'blocked.member@example.test',name:'Blocked Member'});
     const blockedId=blocked.id;
+    // circle-blocked starts with two owners, so the request is not
+    // refused as last-owner at request time. The co-owner leaves before
+    // the cron runs, which is what makes the execution block.
     await withDatabase(golden,async db=>{
       await db.execute({sql:`INSERT INTO circles (public_id,slug,name,is_primary,created_by,archived_at)
         VALUES ('circle-blocked','blocked','Blocked Club',0,?,NULL)`,args:[blockedId]});
       const circle=await db.execute({sql:`SELECT id FROM circles WHERE public_id='circle-blocked'`,args:[]});
       const circleId=Number(circle.rows[0].id);
+      const ownerRow=await db.execute({sql:`SELECT id FROM auth_accounts WHERE email='owner@randori.test'`,args:[]});
       await db.execute({sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by)
         VALUES (?,?, 'owner','active',NULL)`,args:[circleId,blockedId]});
+      await db.execute({sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by)
+        VALUES (?,?, 'owner','active',?)`,args:[circleId,Number(ownerRow.rows[0].id),blockedId]});
     });
     const blockedRequest=await json(blockedPage,'/api/auth/account/delete','POST',{confirm:'DELETE'});
     expect(blockedRequest.status,JSON.stringify(blockedRequest.body)).toBe(200);
     expect(blockedRequest.body.status).toBe('pending_deletion');
+    // The co-owner leaves: the requester is now the last owner, so the
+    // execution must block instead of deleting.
+    await withDatabase(golden,db=>db.execute({
+      sql:`UPDATE circle_memberships SET status='inactive' WHERE circle_id=
+        (SELECT id FROM circles WHERE public_id='circle-blocked')
+        AND user_id=(SELECT id FROM auth_accounts WHERE email='owner@randori.test')`,
+      args:[],
+    }));
     await withDatabase(golden,db=>db.execute({
       sql:`UPDATE account_deletion_requests
         SET requested_at=strftime('%s','now')-15*24*3600, scheduled_for=strftime('%s','now')-3600
@@ -262,14 +276,13 @@ test('account deletion grace: a member schedules deletion, cancels from the pend
     expect(stillLocked[0].password_hash).not.toBe('!account-deleted');
     // A second blocked run does not re-notify.
     expect((await drainOutbox(owner)).outbox?.account_deletion_grace?.blocked_notifications).toBe(0);
-    // Once the owner co-owns the circle, the deletion runs.
-    await withDatabase(golden,async db=>{
-      const circle=await db.execute({sql:`SELECT id FROM circles WHERE public_id='circle-blocked'`,args:[]});
-      const circleId=Number(circle.rows[0].id);
-      const ownerRow=await db.execute({sql:`SELECT id FROM auth_accounts WHERE email='owner@randori.test'`,args:[]});
-      await db.execute({sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by)
-        VALUES (?,?, 'owner','active',?)`,args:[circleId,Number(ownerRow.rows[0].id),blockedId]});
-    });
+    // Once the owner co-owns the circle again, the deletion runs.
+    await withDatabase(golden,db=>db.execute({
+      sql:`UPDATE circle_memberships SET status='active' WHERE circle_id=
+        (SELECT id FROM circles WHERE public_id='circle-blocked')
+        AND user_id=(SELECT id FROM auth_accounts WHERE email='owner@randori.test')`,
+      args:[],
+    }));
     const unblocked=await drainOutbox(owner);
     expect(unblocked.outbox?.account_deletion_grace?.executed).toBe(1);
     const blockedTombstone=await withDatabase(golden,async db=>(await db.execute({
