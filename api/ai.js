@@ -4,7 +4,7 @@ import { appLogClientFields } from './_log-privacy.js';
 import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
-import { ensureAiAnalyzeReadiness, ensureAiFeedbackReadiness, ensureAiHistoryReadiness, ensureAiLogReadiness } from './_ai-readiness.js';
+import { ensureAiConsentReadiness, ensureAiConsentRoomReadiness, ensureAiAnalyzeReadiness, ensureAiFeedbackReadiness, ensureAiHistoryReadiness, ensureAiLogReadiness } from './_ai-readiness.js';
 
 initSentry();
 
@@ -19,7 +19,7 @@ function getEndpoint(req){
     if (idParam) return 'feedback';
     const parts = u.pathname.split('/').filter(Boolean);
     const last = parts.pop()?.toLowerCase()||'';
-    if (['analyze','feedback','history'].includes(last)) return last;
+    if (['analyze','consent','feedback','history'].includes(last)) return last;
     return last;
   }catch{ return (req.url||'').split('?')[0].split('/').filter(Boolean).pop()?.toLowerCase()||''; }
 }
@@ -74,6 +74,7 @@ const MODELS = {
   fast: { name:'llama-3.1-8b-instant', price_in_per_mtok:0.05, price_out_per_mtok:0.08, context:131072 },
   balanced: { name:'llama-3.3-70b-versatile', price_in_per_mtok:0.59, price_out_per_mtok:0.79, context:131072 },
 };
+// Bump whenever the consent terms, provider list, or data sent change.
 const AI_CONSENT_POLICY_VERSION='2026-09-17';
 
 class AiPairAccessError extends Error{
@@ -312,28 +313,117 @@ async function resolveAnalysisRoom(db, roomId, userId){
   };
 }
 
-async function recordAndVerifyRoomConsent(db, userId, room, participantIds){
+// Only the explicit consent endpoint can restore a revoked or lapsed choice.
+// Analyze may create a never-consented caller's row as a backstop, but never
+// changes an existing row (including its policy version and consent date).
+async function writeRoomConsent(db,userId,room,{backstop=false}={}){
   await db.execute({
     sql:`INSERT INTO ai_consents (user_id,consented_at,revoked_at,policy_version)
       SELECT ?,datetime('now'),NULL,?
       WHERE EXISTS (${authOnlyPairAccessSql()})
-      ON CONFLICT(user_id) DO UPDATE SET
-        consented_at=datetime('now'),revoked_at=NULL,policy_version=excluded.policy_version`,
+      ON CONFLICT(user_id) DO ${backstop?'NOTHING':`UPDATE SET
+        consented_at=datetime('now'),revoked_at=NULL,policy_version=excluded.policy_version`}`,
     args:[userId,AI_CONSENT_POLICY_VERSION,...pairAccessArgs(userId,room)],
   });
-  const placeholders=participantIds.map(()=>'?').join(',');
+}
+
+async function verifyRoomConsent(db,userId,room){
+  // Read the current canonical participants, including a third participant;
+  // no participant ids or individual choices leave this endpoint.
   const result=await db.execute({
-    sql:`WITH access AS (${authOnlyPairAccessSql()}), consented AS (
-        SELECT user_id FROM ai_consents
-        WHERE user_id IN (${placeholders}) AND revoked_at IS NULL AND policy_version=?
+    sql:`WITH access AS (${authOnlyPairAccessSql()}), participants AS (
+        SELECT user_a_id AS user_id FROM access
+        UNION SELECT user_b_id FROM access
+        UNION SELECT user_c_id FROM access WHERE user_c_id IS NOT NULL
       )
-      SELECT consented.user_id
-      FROM access LEFT JOIN consented ON 1=1`,
-    args:[...pairAccessArgs(userId,room),...participantIds,AI_CONSENT_POLICY_VERSION],
+      SELECT participant.user_id,consent.user_id AS consented_user_id
+      FROM participants participant LEFT JOIN ai_consents consent
+        ON consent.user_id=participant.user_id AND consent.revoked_at IS NULL
+          AND consent.policy_version=?`,
+    args:[...pairAccessArgs(userId,room),AI_CONSENT_POLICY_VERSION],
   });
   if(!result.rows?.length) throw new AiPairAccessError();
-  const consented=new Set(result.rows.map(row=>Number(row.user_id)).filter(Number.isSafeInteger));
-  return participantIds.filter(id=>!consented.has(Number(id)));
+  return result.rows.filter(row=>row.consented_user_id==null).map(row=>Number(row.user_id));
+}
+
+async function recordAndVerifyRoomConsent(db,userId,room){
+  await writeRoomConsent(db,userId,room,{backstop:true});
+  return verifyRoomConsent(db,userId,room);
+}
+
+// Used inside the feedback INSERT itself so a revocation cannot race a
+// separate read. Membership and the consent of every current participant
+// are checked in the same statement as the write.
+function roomConsentGuardSql(){
+  return `NOT EXISTS (
+    SELECT 1 FROM (${authOnlyPairAccessSql()}) consent_room
+    WHERE NOT EXISTS (SELECT 1 FROM ai_consents WHERE user_id=consent_room.user_a_id AND revoked_at IS NULL AND policy_version=?)
+       OR NOT EXISTS (SELECT 1 FROM ai_consents WHERE user_id=consent_room.user_b_id AND revoked_at IS NULL AND policy_version=?)
+       OR (consent_room.user_c_id IS NOT NULL AND NOT EXISTS
+         (SELECT 1 FROM ai_consents WHERE user_id=consent_room.user_c_id AND revoked_at IS NULL AND policy_version=?))
+  )`;
+}
+
+class AiConsentError extends Error{
+  constructor(count){ super('AI consent required from every room participant'); this.pendingCount=count; }
+}
+
+async function ownConsentState(db,userId){
+  const result=await db.execute({sql:`SELECT consented_at,revoked_at,policy_version FROM ai_consents WHERE user_id=?`,args:[userId]});
+  const row=result.rows?.[0];
+  return {
+    consented:!!row && row.revoked_at==null && row.policy_version===AI_CONSENT_POLICY_VERSION,
+    policy_version:AI_CONSENT_POLICY_VERSION,
+    consented_at:row?.consented_at??null,
+    available:process.env.AI_ENABLED==='true',
+  };
+}
+
+async function handleConsent(req,res){
+  if(!['GET','POST'].includes(req.method)) return res.status(405).json({error:'GET or POST only'});
+  const auth=await tryAuth(req);
+  const userId=Number(auth.userId);
+  if(!auth.authed||!Number.isSafeInteger(userId)||userId<1) return res.status(401).json({error:'authentication required'});
+  const body=req.method==='POST'?await parseBody(req):null;
+  if(body && body.ai_consent!==true && body.ai_consent!==false) return res.status(400).json({error:'ai_consent must be true or false'});
+  if(body?.ai_consent===true && process.env.AI_ENABLED!=='true') return res.status(503).json({error:'AI coaching is not enabled for this release'});
+  const roomId=body?.ai_consent===true?body.room_id:
+    req.method==='GET'?(req.query?.room_id||new URL(req.url,'http://localhost').searchParams.get('room_id')):null;
+  if(roomId && !canonicalAnalysisRoom(roomId)) return res.status(403).json({error:'trusted room membership required'});
+  if(body?.ai_consent===true && !roomId) return res.status(403).json({error:'trusted room membership required'});
+  let db;
+  try{
+    db=getClient();
+    await ensureAiConsentReadiness(db);
+    if(roomId && process.env.AI_ENABLED==='true') await ensureAiConsentRoomReadiness(db);
+  }catch{ return res.status(503).json({error:'AI service temporarily unavailable'}); }
+  let room=null;
+  if(roomId && process.env.AI_ENABLED==='true'){
+    room=await resolveAnalysisRoom(db,roomId,userId);
+    if(!room || !room.participantIds.includes(userId) || (room.participantIds.length===1&&!room.singleUser)){
+      return res.status(403).json({error:'trusted room membership required'});
+    }
+  }
+  if(body?.ai_consent===false){
+    // Withdrawal works even while AI is disabled, and touches only the caller.
+    await db.execute({sql:`UPDATE ai_consents SET revoked_at=datetime('now') WHERE user_id=?`,args:[userId]});
+  }else if(body?.ai_consent===true){
+    await writeRoomConsent(db,userId,room);
+  }
+  const state=await ownConsentState(db,userId);
+  if(room){
+    try{
+      const missing=await verifyRoomConsent(db,userId,room);
+      state.pending_participant_count=missing.length;
+      // A partner's affirmative consent is the existing durable request signal.
+      // No room-request table, notification, or individual consent is exposed.
+      state.feedback_requested=room.participantIds.some(id=>id!==userId&&!missing.includes(id));
+    }catch(error){
+      if(error instanceof AiPairAccessError) return res.status(403).json({error:'trusted room membership required'});
+      throw error;
+    }
+  }
+  return res.json(state);
 }
 
 async function createAuthorizedSession(db,{room,userId,pairLabel,transcript,code,questions,durationSec,reservationId}){
@@ -377,13 +467,18 @@ async function createAuthorizedFeedback(db,{room,userId,sessionId,role,feedback,
           estimated_cost_cents,confidence
         )
         SELECT ?,?,?,?,?,?,?,?
-        WHERE EXISTS (${authOnlyPairAccessSql()}) AND ${sessionGuard}
+        WHERE EXISTS (${authOnlyPairAccessSql()}) AND ${sessionGuard} AND ${roomConsentGuardSql()}
         RETURNING id`,
       args:[sessionId,role||'both',JSON.stringify(feedback||{}),JSON.stringify({validation:verification,combined_len:combinedLength}),modelUsed,reason,costCents,verification.score,
-        ...accessArgs,sessionId,room.roomId,userId],
+        ...accessArgs,sessionId,room.roomId,userId,...accessArgs,
+        AI_CONSENT_POLICY_VERSION,AI_CONSENT_POLICY_VERSION,AI_CONSENT_POLICY_VERSION],
     });
   const feedbackId=Number(inserted.rows?.[0]?.id);
-  if(!Number.isSafeInteger(feedbackId)||feedbackId<1) throw new AiPairAccessError();
+  if(!Number.isSafeInteger(feedbackId)||feedbackId<1){
+    const missing=await verifyRoomConsent(db,userId,room);
+    if(missing.length) throw new AiConsentError(missing.length);
+    throw new AiPairAccessError();
+  }
   return feedbackId;
 }
 
@@ -752,6 +847,7 @@ async function handleAnalyze(req,res){
     });
   }catch(error){
     if(error instanceof AiPairAccessError) return res.status(403).json({error:'trusted room membership required'});
+    if(error instanceof AiConsentError) return res.status(403).json({error:error.message,pending_participant_count:error.pendingCount,processing_started:true});
     await logServer('error','ai_feedback_insert_fail',String(error?.message||error).slice(0,300),{room_id,session_id:sessId},{req,db,source:'server-ai'});
     return res.status(500).json({error:'feedback create failed'});
   }
@@ -858,6 +954,9 @@ export default async function handler(req,res){
   try{
     if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
     initSentry();
+    const epRaw=getEndpoint(req);
+    // Personal status and withdrawal remain available independently of rooms.
+    if(epRaw==='consent' && (req.method==='GET'||req.body?.ai_consent===false)) return await handleConsent(req,res);
     if(multiCircleControlPlaneEnabled()){
       try{
         const payload=await verifyRequestAuth(req);
@@ -868,14 +967,14 @@ export default async function handler(req,res){
         }
       }catch{ return res.status(503).json({error:'circle context unavailable'}); }
     }
-    const epRaw=getEndpoint(req);
     const ep=epRaw.replace('feedback/','feedback ').split(' ')[0];
     const path=(req.url||'').toLowerCase();
+    if (ep==='consent') return await handleConsent(req,res);
     if (ep==='analyze' || path.includes('/analyze')) return await handleAnalyze(req,res);
     if (ep.startsWith('feedback') || ep==='feedback' || path.includes('/feedback')) return await handleFeedback(req,res);
     if (ep==='history' || path.includes('/history')) return await handleHistory(req,res);
     if (req.method==='POST') return await handleAnalyze(req,res);
-    return res.status(400).json({ error:'ai route required: analyze|feedback/:id|history', got:ep, available:['analyze','feedback','history'] });
+    return res.status(400).json({ error:'ai route required: analyze|consent|feedback/:id|history', got:ep, available:['analyze','consent','feedback','history'] });
   }catch(e){
     try{ await logServer('error','api_unhandled', String(e && e.message||e).slice(0,500), {stack: e && e.stack ? String(e.stack).slice(0,2000):'', url: req && req.url}, {req, source:'server-ai', route:req && req.url, skipSentry:true}); }catch{}
     captureSentryException(e, {tags:{event:'api_unhandled', source:'server-ai'}, extra:{route:req && req.url}});

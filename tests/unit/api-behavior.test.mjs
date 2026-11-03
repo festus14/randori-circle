@@ -2921,7 +2921,7 @@ test('AI consent path stores a template analysis and exposes owned feedback hist
   process.env.AI_ENABLED = 'true';
   executeHandler = sql => {
     if (sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 20, week_id: 10, user_a_id: 2, user_b_id: 3, user_c_id: null, is_ai_pair: 0, week_label: '2026-W38' }]);
-    if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 2 }, { user_id: 3 }]);
+    if (sql.includes('SELECT participant.user_id,consent.user_id AS consented_user_id')) return rows([{ user_id: 2,consented_user_id:2 }, { user_id: 3,consented_user_id:3 }]);
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
     if (sql.trimStart().startsWith('SELECT calls FROM ai_account_monthly_usage')) return rows([{ calls: 2 }]);
     if (sql.includes('INSERT INTO ai_account_monthly_reservations') && sql.includes('RETURNING reservation_id')) return rows([{ reservation_id: 'reservation-70' }]);
@@ -2979,7 +2979,7 @@ test('AI analysis requires trusted room membership and every human participant c
       if (Number(args[0]) === 21) return rows([{ pair_group_id: 21, week_id: 10, user_a_id: 1, user_b_id: 3, user_c_id: null, is_ai_pair: 0, week_label: '2026-W38' }]);
       return rows([]);
     }
-    if (sql.includes('SELECT user_id FROM ai_consents')) return rows(consentedIds.map(user_id => ({ user_id })));
+    if (sql.includes('SELECT participant.user_id,consent.user_id AS consented_user_id')) return rows([2,3].map(user_id => ({ user_id,consented_user_id:consentedIds.includes(user_id)?user_id:null })));
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
     if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 0 }]);
     if (sql.includes('SELECT calls,tokens_in FROM ai_usage')) return rows([{ calls: 0, tokens_in: 0 }]);
@@ -3017,7 +3017,7 @@ test('AI provider network failures preserve Groq retries and OpenAI fallback', a
   process.env.OPENAI_API_KEY = 'test-openai-key';
   executeHandler = sql => {
     if (sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 22, week_id: 10, user_a_id: 2, user_b_id: 2, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
-    if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 2 }]);
+    if (sql.includes('SELECT participant.user_id,consent.user_id AS consented_user_id')) return rows([{ user_id: 2,consented_user_id:2 }]);
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
     if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 0 }]);
     if (sql.includes('SELECT calls,tokens_in FROM ai_usage')) return rows([{ calls: 0, tokens_in: 0 }]);
@@ -3176,7 +3176,7 @@ test('AI provider selection, quota, and ownership branches remain fail-closed', 
   process.env.AI_ENABLED = 'true';
   executeHandler = sql => {
     if (sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 21, week_id: 10, user_a_id: 2, user_b_id: 2, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
-    if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 2 }]);
+    if (sql.includes('SELECT participant.user_id,consent.user_id AS consented_user_id')) return rows([{ user_id: 2,consented_user_id:2 }]);
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
     if (sql.trimStart().startsWith('SELECT calls FROM ai_account_monthly_usage')) return rows([]);
     if (sql.includes('INSERT INTO ai_account_monthly_reservations') && sql.includes('RETURNING reservation_id')) return rows([{ reservation_id: 'reservation-72' }]);
@@ -3231,7 +3231,7 @@ test('AI rejects missing content and enforces demo quota before provider calls',
 
   executeHandler = sql => {
     if (sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 22, week_id: 10, user_a_id: 3, user_b_id: 3, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
-    if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 3 }]);
+    if (sql.includes('SELECT participant.user_id,consent.user_id AS consented_user_id')) return rows([{ user_id: 3,consented_user_id:3 }]);
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 1 }]);
     if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 100 }]);
     return rows();

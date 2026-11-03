@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const html = await readFile(new URL('../../index.html', import.meta.url), 'utf8');
+const aiFrontend = await readFile(new URL('../../assets/ai-feedback.js', import.meta.url), 'utf8');
+const html = await readFile(new URL('../../index.html', import.meta.url), 'utf8')+'\n'+aiFrontend;
 
 test('light and dark themes define and consume semantic status and control tokens', () => {
   const darkTheme = html.match(/:root\{([\s\S]*?)\}/)?.[1];
@@ -118,8 +119,8 @@ test('user-visible copy has no implementation jargon (final cleanup)', () => {
   assert.doesNotMatch(html, /\$\{recap\.pair\.week_label\} recap/);
   assert.match(html, /circleUi\.pairingWeekLabel\(recap\.pair\)/);
   // Model routing, cost and quota details are admin-only.
-  assert.match(html, /function aiDebugPanel\(\)\{[\s\S]{0,200}window\._randori_logs\?\.isAdmin/);
-  assert.match(html, /const dbgEl=aiDebugPanel\(\);/);
+  assert.match(aiFrontend, /function aiDebugPanel\(\)\{[\s\S]{0,200}window\._randori_logs\?\.isAdmin/);
+  assert.match(aiFrontend, /const dbgEl=aiDebugPanel\(\);/);
 });
 
 test('empty-state titles use the body text token and only the leading icon is muted', () => {
