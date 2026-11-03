@@ -21,11 +21,27 @@ async function select(page:Page,origin:string,publicId:string){
   await page.reload({waitUntil:'domcontentloaded'});
   await expect.poll(()=>page.evaluate(()=>(window as any)._randori_circle_control?.scheduleContext?.()?.circlePublicId)).toBe(publicId);
 }
-async function selectThroughUi(page:Page,publicId:string){
+async function switchBeforeReload(page:Page,publicId:string,consumeOldResponse:()=>Promise<void>){
   await page.locator('[data-tab="circle"]').click();
   const selector=page.getByTestId('circle-context-select');
   await expect(selector).toBeVisible();
-  await Promise.all([page.waitForEvent('domcontentloaded'),selector.selectOption(publicId)]);
+  let release=()=>{},arrived=()=>{};
+  const gate=new Promise<void>(resolve=>release=resolve),committed=new Promise<void>(resolve=>arrived=resolve);
+  const handler=async route=>{
+    if(route.request().method()!=='PUT')return route.fallback();
+    const response=await route.fetch();arrived();await gate;await route.fulfill({response});
+  };
+  await page.route('**/api/circles',handler);
+  try{
+    const selecting=selector.selectOption(publicId);
+    await committed;
+    // The server has switched and the browser has invalidated its epoch.
+    // Hold only the live PUT response so the old document can consume its
+    // already-completed workspace response before the normal page reload.
+    await consumeOldResponse();
+    const reloaded=page.waitForEvent('domcontentloaded');
+    release();await selecting;await reloaded;
+  }finally{release();await page.unroute('**/api/circles',handler);}
   await expect.poll(()=>page.evaluate(()=>(window as any)._randori_circle_control?.scheduleContext?.()?.circlePublicId)).toBe(publicId);
 }
 const reads=['messages','runs','pair-recap','session-completion','meeting-link','session-controls','code-document','video'];
@@ -181,13 +197,28 @@ test('real runtime: flag-off gates and delayed prior-circle responses, context w
     const before=(await (await owner.request.get(`${golden.origin}/api/circles`)).json()).context_version;
     const secondTab=await pair.owner.context.newPage();await secondTab.goto(golden.url,{waitUntil:'domcontentloaded'});
     await expect.poll(()=>secondTab.evaluate(()=>(window as any)._randori_circle_control?.scheduleContext?.()?.circlePublicId)).toBe(primary.public_id);
-    let release=()=>{},started=()=>{};const seen=new Promise<void>(resolve=>started=resolve),gate=new Promise<void>(resolve=>release=resolve);
-    await owner.route('**/api/history',async route=>{
-      const response=await route.fetch();started();await gate;await route.fulfill({response}).catch(()=>{});
-    },{times:1});
-    await owner.locator('[data-tab="history"]').click();await seen;
-    await selectThroughUi(owner,secondary.publicId);
-    release();
+    await owner.evaluate(()=>{
+      const originalFetch=window.fetch.bind(window);
+      let release=()=>{};
+      const gate=new Promise<void>(resolve=>release=resolve);
+      (window as any)._438ReleaseHistory=release;
+      (window as any)._438HistoryArrived=false;
+      window.fetch=async(input,options)=>{
+        const response=await originalFetch(input,options);
+        const url=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url,location.origin);
+        if(url.pathname==='/api/history'&&!(window as any)._438HistoryArrived){
+          (window as any)._438HistoryArrived=true;await gate;
+        }
+        return response;
+      };
+    });
+    await owner.locator('[data-tab="history"]').click();
+    await owner.waitForFunction(()=>(window as any)._438HistoryArrived===true);
+    await switchBeforeReload(owner,secondary.publicId,async()=>{
+      await owner.evaluate(()=>(window as any)._438ReleaseHistory());
+      await owner.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+      await expect(owner.locator('#historyPersonal [data-testid="pair-history-row"]')).toHaveCount(0);
+    });
     await expect.poll(()=>secondTab.evaluate(()=>(window as any)._randori_circle_control?.scheduleContext?.()?.circlePublicId)).toBe(secondary.publicId);
     await owner.locator('[data-tab="history"]').click();
     await expect(owner.locator('#historyPersonal')).toContainText('Secondary Dojo');
@@ -200,23 +231,23 @@ test('real runtime: flag-off gates and delayed prior-circle responses, context w
     // after a selector switch, for both chat and completion pollers.
     for(const surface of ['messages','session-completion']){
       await select(owner,golden.origin,secondary.publicId);
-      let unblock=()=>{},arrived=()=>{};
-      const captured=new Promise<void>(resolve=>arrived=resolve),hold=new Promise<void>(resolve=>unblock=resolve);
-      await owner.route(`**/api/${surface}?*`,async route=>{
-        const response=await route.fetch();arrived();await hold;await route.fulfill({response}).catch(()=>{});
-      },{times:1});
-      await owner.evaluate(({surface,room})=>{
+      await owner.evaluate(async({surface,room})=>{
+        const response=await fetch(`/api/${surface}?room_id=${encodeURIComponent(room)}`);
+        if(response.status!==200)throw new Error('workspace response was not authorized');
         // Circle selection reloads the page; retain only the generic outcome
         // so the assertion observes the old document's abort after navigation.
         sessionStorage.setItem('_438Delayed','pending');
-        void fetch(`/api/${surface}?room_id=${encodeURIComponent(room)}`).then(response=>response.json()).then(()=>{
-          sessionStorage.setItem('_438Delayed','consumed');
-          document.getElementById('historyPersonal')?.append('stale private workspace response');
-        }).catch(error=>sessionStorage.setItem('_438Delayed',error.name));
+        (window as any)._438ReadBody=async()=>{
+          try{
+            await response.json();sessionStorage.setItem('_438Delayed','consumed');
+            document.getElementById('historyPersonal')?.append('stale private workspace response');
+          }catch(error){sessionStorage.setItem('_438Delayed',error.name);}
+        };
       },{surface,room:secondary.room});
-      await captured;
-      await selectThroughUi(owner,primary.public_id);
-      unblock();
+      await switchBeforeReload(owner,primary.public_id,async()=>{
+        await owner.evaluate(()=>(window as any)._438ReadBody());
+        expect(await owner.evaluate(()=>sessionStorage.getItem('_438Delayed'))).toBe('AbortError');
+      });
       await expect.poll(()=>owner.evaluate(()=>sessionStorage.getItem('_438Delayed'))).toBe('AbortError');
       await expect(owner.locator('#historyPersonal')).not.toContainText('stale private workspace response');
       await expect(owner.locator('#workspaceChatArea [data-testid="pair-chat-input"]')).toHaveCount(0);
