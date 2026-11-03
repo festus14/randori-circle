@@ -41,8 +41,15 @@ sent. After the request each address gets one result row: **Invited · Copy
 link**, **Already a member** (or **Former member** for an inactive one),
 **Already invited · Resend**, **Invalid · reason**, or **Failed · Retry**.
 Invalid and failed addresses stay in the textarea so the owner can fix them and
-send again; everything else is removed. Links and addresses live only in tab
-memory and are cleared on any identity or circle change.
+send again; everything else is removed. Links live only in tab memory and are
+cleared on any identity or circle change. Pending invitation addresses are remembered for up to 7 days in the
+sending browser’s local storage, scoped to the sender account and circle.
+Reloading or switching circles keeps the sender’s pending cards identifiable;
+other accounts and browsers receive no address from the list API. Addresses
+are removed when that browser refreshes a list where they are no longer
+pending. If browser storage is unavailable, addresses remain in tab memory.
+Invitations sent before this cache existed keep the private label; the list
+API cannot recover their addresses.
 
 ### API contract
 

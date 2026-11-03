@@ -17,6 +17,7 @@ test('only the sending browser can identify a pending invitation after reload',a
     const member=await acceptInvitationThroughUi(other.page,golden,memberInvite.inviteUrl,{
       email:'another.member@example.test',name:'Another Member',
     });
+    expect((await json(other.page,'/api/invitations/prepare','POST',{token:memberInvite.inviteUrl.hash.slice('#invite='.length)})).status).toBe(400);
     const pending=await createInvitationThroughUi(sender.page,golden,email);
     const row=sender.page.locator(`[data-invitation-id="${pending.invitationId}"]`);
     await expect(row.locator('b')).toHaveText(email);
@@ -30,9 +31,16 @@ test('only the sending browser can identify a pending invitation after reload',a
     await sender.page.reload({waitUntil:'domcontentloaded'});
     await sender.page.locator('[data-tab="circle"]').click();
     await expect(row).toBeVisible();
-    // Baseline reproduction; changed to the required email assertion after fixing.
-    await expect(row.locator('b')).toHaveText('Private invitation');
+    await expect(row.locator('b')).toHaveText(email);
+    await expect(row).toContainText('expires in 7 days');
+    await expect(row.getByTestId('circle-invite-resend')).toBeVisible();
+    await expect(row.getByTestId('circle-invite-revoke')).toBeVisible();
     observations.senderAfterReload=await row.innerText();
+    const sameBrowserTab=await sender.context.newPage();
+    await sameBrowserTab.goto(golden.url,{waitUntil:'domcontentloaded'});
+    await sameBrowserTab.locator('[data-tab="circle"]').click();
+    await expect(sameBrowserTab.locator(`[data-invitation-id="${pending.invitationId}"] b`)).toHaveText(email);
+    await sameBrowserTab.close();
     await test.info().attach('sender-after-reload.png',{body:await sender.page.getByTestId('circle-invites').screenshot(),contentType:'image/png'});
 
     await other.page.locator('[data-tab="circle"]').click();
@@ -64,6 +72,30 @@ test('only the sending browser can identify a pending invitation after reload',a
     await expect(fresh.page.locator('body')).not.toContainText(email);
     observations.senderFreshBrowser=await freshRow.innerText();
 
+    // The unregistered invitee cannot access the management list either.
+    const anonymous=await newGoldenPage(browser,golden);
+    await anonymous.page.goto(golden.url,{waitUntil:'domcontentloaded'});
+    const anonymousList=await json(anonymous.page,'/api/invitations');
+    expect(anonymousList).toEqual({status:401,body:{error:'authentication required'}});
+    observations.inviteeWithoutSession=anonymousList;
+
+    // Resend rotates the bearer without changing its original expiry; revoke
+    // then invalidates it. No raw bearer is written into browser storage.
+    await withDatabase(golden,db=>db.execute({sql:`UPDATE outbox_events
+      SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-61 seconds')
+      WHERE event_type='invitation.email.requested' AND json_extract(payload_json,'$.invitation_id')=?`,args:[pending.invitationId]}));
+    const oldToken=pending.inviteUrl.hash.slice('#invite='.length);
+    const resent=await json(sender.page,`/api/invitations/${pending.invitationId}`,'POST',{action:'resend'});
+    expect(resent.status).toBe(200);
+    const newToken=new URL(resent.body.invitation.invite_url,golden.url).hash.slice('#invite='.length);
+    expect(newToken).not.toBe(oldToken);
+    const refreshed=await json(sender.page,'/api/invitations');
+    expect(refreshed.body.invitations.find((invite:any)=>invite.id===pending.invitationId).expires_at)
+      .toBe(senderList.body.invitations.find((invite:any)=>invite.id===pending.invitationId).expires_at);
+    expect((await json(sender.page,'/api/invitations/prepare','POST',{token:oldToken})).status).toBe(400);
+    expect((await json(sender.page,'/api/invitations/prepare','POST',{token:newToken})).status).toBe(200);
+    expect((await sender.page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage})))).not.toContain(newToken);
+
     // A second account in the sending browser must not inherit its labels.
     await signOutThroughMenu(sender.page);
     await signInMemberSession(sender.page,golden,member.email);
@@ -71,6 +103,13 @@ test('only the sending browser can identify a pending invitation after reload',a
     await expect(row.locator('b')).toHaveText('Private invitation');
     await expect(sender.page.locator('body')).not.toContainText(email);
     observations.otherAccountInSendingBrowser=await row.innerText();
+    // Returning to the sender account in the same browser restores its label.
+    await signOutThroughMenu(sender.page);
+    await signInOwner(sender.page,golden);
+    await sender.page.locator('[data-tab="circle"]').click();
+    await expect(row.locator('b')).toHaveText(email);
+    expect((await json(sender.page,`/api/invitations/${pending.invitationId}`,'DELETE')).status).toBe(200);
+    expect((await json(sender.page,'/api/invitations/prepare','POST',{token:newToken})).status).toBe(400);
     expect(golden.external).toEqual([]);
   }finally{
     await test.info().attach('viewer-evidence.json',{body:JSON.stringify(observations,null,2),contentType:'application/json'});
