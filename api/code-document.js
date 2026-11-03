@@ -6,7 +6,6 @@ import {
   sendMultiCircleFeatureUnavailable,
 } from './_active-circle.js';
 import { ensureCodeDocumentReadiness } from './_data-readiness.js';
-import { dispatchWorkspaceCodeDocument, prepareWorkspaceRequest, sendWorkspaceFailure } from './_workspace-router.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { getAuthenticatedPairAccess } from './_pair-access.js';
 import {
@@ -64,8 +63,9 @@ export default async function handler(req,res){
   if(!viewerId) return res.status(401).json({ok:false,error:'authentication required'});
   let db;
   try{
-    const selected=await prepareWorkspaceRequest(req,res);
-    if(selected?.mode==='secondary')return await dispatchWorkspaceCodeDocument(req,res,selected);
+    const router=secondaryCircleWorkspaceEnabled()?await import('./_workspace-router.js'):null;
+    const selected=router?await router.prepareWorkspaceRequest(req,res):null;
+    if(selected?.mode==='secondary')return await router.dispatchWorkspaceCodeDocument(req,res,selected);
     db=getClient();
     if(selected){
       db=selected.db;
@@ -78,7 +78,7 @@ export default async function handler(req,res){
     if(!selected&&multiCircleControlPlaneEnabled()&&!(await canUseLegacySinglePrimaryCircleFeatures(db,auth))){
       return sendMultiCircleFeatureUnavailable(res);
     }
-  }catch(error){ if(secondaryCircleWorkspaceEnabled())return sendWorkspaceFailure(res,error);return res.status(503).json({ok:false,error:'code document unavailable'}); }
+  }catch(error){ if(secondaryCircleWorkspaceEnabled())return (await import('./_workspace-router.js')).sendWorkspaceFailure(res,error);return res.status(503).json({ok:false,error:'code document unavailable'}); }
 
   try{
     if(req.method==='GET'){
@@ -95,5 +95,5 @@ export default async function handler(req,res){
     if(!result) return res.status(404).json({ok:false,error:'code document not found'});
     if(result.terminal) return res.status(409).json({ok:false,code:'session_completed',error:'session is completed'});
     return res.json({...codeDocumentResponse(result),idempotent:result.idempotent});
-  }catch(error){ return req.workspace?sendWorkspaceFailure(res,error):sendFailure(res,error); }
+  }catch(error){ return req.workspace?(await import('./_workspace-router.js')).sendWorkspaceFailure(res,error):sendFailure(res,error); }
 }

@@ -91,6 +91,15 @@ export const ACCOUNT_DATA_INVENTORY=Object.freeze([
   ['pair_room_snapshots',['updated_by','code'],'keep','Jointly written pair workspace; stays with the partner and expires after 90 days.'],
   ['pair_meeting_links',['updated_by','meeting_url'],'delete','A link they added may be their personal meeting room.'],
   ['video_signals',['from_id','to_id','payload'],'keep','Signalling keyed by random peer ids, not the account; purged after about an hour.'],
+  ["circle_pair_messages", ["sender_id", "message"], "anonymise", "Their secondary messages become Message deleted; partner conversation order is preserved."],
+  ["circle_session_runs", ["user_id", "code", "test_cases_snapshot", "results_json"], "anonymise", "Secondary solo runs are deleted; shared attested pair code stays with the partner."],
+  ["circle_pair_code_documents", ["last_actor_id", "y_state_base64"], "keep", "Joint secondary pair document; retained for the partner with the existing 90-day expiry."],
+  ["circle_pair_room_snapshots", ["updated_by", "code"], "keep", "Shared secondary workspace; retained for the partner. Solo snapshots are deleted."],
+  ["circle_session_completion_receipts", ["user_id"], "keep", "Immutable secondary completion evidence for the partner."],
+  ["circle_pair_session_controls", ["candidate_user_id", "updated_by"], "keep", "Secondary interview roles; actor ids resolve to the tombstone."],
+  ["circle_pair_meeting_links", ["updated_by", "meeting_url"], "delete", "Their secondary meeting URL may identify a personal meeting room."],
+  ["circle_video_signals", ["from_id", "to_id", "payload"], "keep", "Random peer ids; bounded secondary signalling expires after one hour."],
+  ["circle_chat_retention_scopes", ["group_user_a_id", "group_user_b_id"], "keep", "Immutable group-owner ids allow retention to sweep the partner conversation after deletion."],
   ['ai_sessions',['created_by','transcript','code_snapshots','interviewer_questions'],'delete','AI sessions they started (AI is off in production).'],
   ['ai_feedback',['session_id','feedback_json','evidence'],'delete','Feedback on the AI sessions they started.'],
   ['ai_consents',['user_id'],'delete','AI consent record.'],
@@ -109,6 +118,7 @@ export const NO_PERSONAL_DATA_TABLES=Object.freeze([
   'ai_usage','chat_retention_audit_events','chat_retention_control','chat_retention_legal_holds','chat_retention_runs',
   'chat_retention_scopes','circle_membership_rollout','circle_pairing_publications','credential_key_controls',
   'pairing_cycles','pairing_weeks','questions',
+  'circle_chat_retention_control','circle_chat_retention_runs','circle_chat_retention_legal_holds','circle_chat_retention_audit_events',
 ]);
 
 // Browser storage the client clears after a deletion, and server-side
@@ -416,7 +426,14 @@ function changed(result){
 // name the summary count it produces. Lookups use indexed keys (user ids,
 // invitation ids, primary keys); the outbox and app_logs predicates scan those
 // tables once, bounded by their retention.
-function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,nowSeconds,feedback=false,graceExecutedAt=null}){
+async function workspaceSchemaInstalled(transaction){
+  const contract=MIGRATION_CONTRACTS[23];
+  const result=await transaction.execute({sql:'SELECT version,name,checksum FROM schema_migrations WHERE version=? LIMIT 2',args:[24]});
+  const row=result.rows?.[0];
+  return result.rows?.length===1&&Number(row.version)===contract.version&&row.name===contract.name&&row.checksum===contract.checksum;
+}
+
+function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,nowSeconds,feedback=false,workspace=false,graceExecutedAt=null}){
   const recipientArgs=outboxRecipientArgs(userId,email,emailHash,occurredAt);
   const suppressWhere=`${OUTBOX_ACTIONABLE} AND (${OUTBOX_RECIPIENT_SQL} OR ${OUTBOX_SENT_INVITATION_SQL})`;
   const suppressArgs=[...recipientArgs,userId];
@@ -524,6 +541,15 @@ function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,no
           THEN json_extract(test_cases_snapshot,'$.attestation_version') END) IS NOT 3`,
     args:[userId]},
     {sql:`DELETE FROM pair_meeting_links WHERE updated_by=?`,args:[userId]},
+    ...(workspace?[
+      {count:'secondary_messages_redacted',sql:`UPDATE circle_pair_messages SET message=? WHERE sender_id=? AND message<>?`,args:[DELETED_MESSAGE_TEXT,userId,DELETED_MESSAGE_TEXT]},
+      {count:'secondary_solo_runs_deleted',sql:`DELETE FROM circle_session_runs WHERE user_id=? AND group_is_solo=1`,args:[userId]},
+      {sql:`DELETE FROM circle_pair_room_snapshots WHERE group_is_solo=1 AND group_user_a_id=?`,args:[userId]},
+      {count:'secondary_pair_run_code_cleared',sql:`UPDATE circle_session_runs SET code='' WHERE user_id=? AND group_is_solo=0 AND code<>''
+        AND ((CASE WHEN json_valid(test_cases_snapshot) THEN json_extract(test_cases_snapshot,'$.attestation_version') END) IS NOT 4
+          OR (CASE WHEN json_valid(test_cases_snapshot) THEN json_extract(test_cases_snapshot,'$.document_version') END) IS NULL)`,args:[userId]},
+      {sql:`DELETE FROM circle_pair_meeting_links WHERE updated_by=?`,args:[userId]},
+    ]:[]),
     {sql:`DELETE FROM ai_feedback WHERE session_id IN (SELECT id FROM ai_sessions WHERE created_by=?)`,args:[userId]},
     {sql:`DELETE FROM ai_sessions WHERE created_by=?`,args:[userId]},
     {sql:`DELETE FROM ai_consents WHERE user_id=?`,args:[userId]},
@@ -618,7 +644,7 @@ export async function deleteAccount(db,{
       &&String(feedbackProbe.rows[0].name)===contract.name
       &&String(feedbackProbe.rows[0].checksum)===contract.checksum;
     const plan=deletionStatements({userId:id,email,emailHash:hashInvitationEmail(email)||null,
-      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback});
+      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback,workspace:await workspaceSchemaInstalled(transaction)});
     const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
     const summary={};
     plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });
@@ -708,7 +734,7 @@ export async function executeScheduledAccountDeletion(db,{
       &&String(feedbackProbe.rows[0].name)===contract.name
       &&String(feedbackProbe.rows[0].checksum)===contract.checksum;
     const plan=deletionStatements({userId:id,email,emailHash:hashInvitationEmail(email)||null,
-      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback,graceExecutedAt:nowSeconds});
+      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback,workspace:await workspaceSchemaInstalled(transaction),graceExecutedAt:nowSeconds});
     const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
     const summary={};
     plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });
@@ -893,7 +919,7 @@ export async function reapplyAccountDeletion(db,{
     const email=String(account.email).trim().toLowerCase();
     const plan=deletionStatements({userId:parsed.account_id,email,
       emailHash:hashInvitationEmail(email)||null,
-      tombstoneEmail:deletedAccountEmail(parsed.account_id),occurredAt,nowSeconds});
+      tombstoneEmail:deletedAccountEmail(parsed.account_id),occurredAt,nowSeconds,workspace:await workspaceSchemaInstalled(transaction)});
     const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
     const summary={};
     plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });

@@ -166,8 +166,8 @@ const PLAN_METADATA=Object.freeze([
   "version": 24,
   "name": "circle-owned-workspace",
   "description": "Parallel circle-owned workspace, circle-bound completion guards, and secondary chat retention.",
-  "operationsChecksum": "ff89d0907b11d51d8d5fc2ae5343fd7e2166202cdf6d9f4243eb64e81c7869c2",
-  "checksum": "ffcefe039f4ee0c4df88cf6f0e1e6acfcfe42a62c33f44d366165c41748a4e0b"
+  "operationsChecksum": "1130da89e0e33b48fdc60427c8cfe14d112597023c88b7db26f5e37beb12a6e9",
+  "checksum": "3b474aaf59bcc418ff400488ddc7f14a4fe7ae0a199a24db09e73176b2029240"
 }),]);
 
 function definePlan(operationSet,metadata){

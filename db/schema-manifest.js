@@ -417,7 +417,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM="60df31991cf1792fe671bad0867722144a976a71fe12835097eba1e9ca72699c";
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM="a6ffce01c504e51770e2eeb341a2896ae618451d8080992a23e625adaa48dd95";
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

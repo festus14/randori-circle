@@ -3,7 +3,6 @@ import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
 import { readCodeProjectionForWorkspace } from './_code-document.js';
-import { dispatchWorkspaceVideo, prepareWorkspaceRequest, sendWorkspaceFailure } from './_workspace-router.js';
 import { secondaryCircleWorkspaceEnabled } from './_active-circle.js';
 
 const WORKSPACE_SCHEMA_VERSION = 3;
@@ -739,6 +738,7 @@ export default async function handler(req,res){
   if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
   if(secondaryCircleWorkspaceEnabled()){
     try{
+      const {prepareWorkspaceRequest,dispatchWorkspaceVideo}=await import('./_workspace-router.js');
       const selected=await prepareWorkspaceRequest(req,res);
       if(selected?.mode==='secondary')return await dispatchWorkspaceVideo(req,res,selected);
       if(selected){
@@ -747,7 +747,7 @@ export default async function handler(req,res){
         const json=res.json.bind(res);
         res.json=body=>{ if(body?.error==='not a member of this room'){ res.status(404); return json({error:'pair not found'}); } return json(body); };
       }
-    }catch(error){return sendWorkspaceFailure(res,error);}
+    }catch(error){return (await import('./_workspace-router.js')).sendWorkspaceFailure(res,error);}
   }
   if(!req.workspace&&multiCircleControlPlaneEnabled()){
     try{

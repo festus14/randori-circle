@@ -75,7 +75,7 @@ test('first receipt freezes the complete secondary group and eligibility; member
     await f.db.execute({sql:'UPDATE auth_session_circle_contexts SET context_version=8 WHERE session_hash=?',args:[HASH]});
     await assert.rejects(sendSecondaryMessage(f.client,f.room,{room_id:f.room.roomId,message:'stale'}),{code:'circle_context_changed'});
     await f.db.execute({sql:'UPDATE auth_session_circle_contexts SET context_version=7 WHERE session_hash=?',args:[HASH]});
-    await f.db.execute('UPDATE circle_memberships SET status=\'left\',left_at=1 WHERE circle_id=20 AND user_id=1');
+    await f.db.execute('UPDATE circle_memberships SET status=\'inactive\' WHERE circle_id=20 AND user_id=1');
     await assert.rejects(sendSecondaryMessage(f.client,f.room,{room_id:f.room.roomId,message:'left'}),{code:'circle_context_changed'});
     assert.equal((await f.db.execute('SELECT COUNT(*) AS count FROM circle_pair_messages')).rows[0].count,0);
   }finally{f.close();}
@@ -101,6 +101,13 @@ test('parallel retention: colliding primary and secondary group IDs have indepen
     await runChatRetentionWorker({db:worker,workerId:'secondary-dry',enabled:true,mode:'dry_run'});
     assert.equal((await f.db.execute('SELECT COUNT(*) AS count FROM circle_pair_messages')).rows[0].count,1);
     await enqueueNextChatRetentionRun(worker,{mode:'purge',...await evidence(worker,secondaryScope)});
+    const hold={...secondaryScope,holdLevel:'room'};
+    await placeChatRetentionHold(worker,{hold,reason:'EXPORT_PENDING'});
+    await runChatRetentionWorker({db:worker,workerId:'secondary-held',enabled:true,mode:'purge'});
+    assert.equal((await f.db.execute('SELECT COUNT(*) AS count FROM circle_pair_messages')).rows[0].count,1);
+    assert.equal((await f.db.execute('SELECT COUNT(*) AS count FROM chat_retention_legal_holds')).rows[0].count,0);
+    assert.equal((await f.db.execute("SELECT status FROM circle_chat_retention_runs WHERE mode='purge'")).rows[0].status,'held');
+    await releaseChatRetentionHold(worker,{hold});
     await runChatRetentionWorker({db:worker,workerId:'secondary-purge',enabled:true,mode:'purge'});
     assert.equal((await f.db.execute('SELECT COUNT(*) AS count FROM circle_pair_messages')).rows[0].count,0);
     assert.equal((await f.db.execute('SELECT COUNT(*) AS count FROM pair_messages')).rows[0].count,1);

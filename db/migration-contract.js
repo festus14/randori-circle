@@ -174,7 +174,7 @@ export const MIGRATION_CONTRACTS=Object.freeze([
   Object.freeze({
   "version": 24,
   "name": "circle-owned-workspace",
-  "checksum": "b97d12b544763fdcea260ae39dbc3c764251604231721d80afc8dfe4e9b3d0f2",
+  "checksum": "9ea26a3cf6ce073379989ec57b5f5228505acf0a1c0a0318e45d8a21f8aa4eeb",
   "compatibility": "breaking"
 }),]);
 

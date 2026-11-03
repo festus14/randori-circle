@@ -28,6 +28,7 @@ function harness(){
   const window={
     addEventListener(){},dispatchEvent(){ return true; },
     _randori_auth:{me:{id:1}},
+    RandoriWorkspaceScope:{canonicalRoom:room=>/^week_[1-9]\d*_pair_[1-9]\d*$/.test(room)},
     _randori_authorized_room:ROOM,
     _randori_questions:{selectedIdentity:()=>({slug:'focus-block-rollup',version:1})},
     _randori_workspace:{hydrated:true,room:ROOM,flush:async()=>true},
