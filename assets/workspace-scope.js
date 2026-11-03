@@ -57,7 +57,8 @@
     if(notice) notice.textContent='Workspace is not available in this circle yet.';
   }
   const WORKSPACE=/^\/api\/(?:history|messages|runs|execute|my-pair|pair-recap|session-completion|session-controls|meeting-link|code-document|video(?:\/.*)?|ai(?:\/.*)?)$/;
-  root.fetch=async function workspaceFetch(input,options={}){
+  root.fetch=async function workspaceFetch(input,options){
+    if(!enabled()) return originalFetch(input,options);
     const url=new URL(typeof input==='string'||input instanceof URL?String(input):input.url,root.location.origin);
     const control=root._randori_circle_control;
     if(url.origin!==root.location.origin||!WORKSPACE.test(url.pathname)||!control) return originalFetch(input,options);
@@ -66,19 +67,21 @@
     const started=generation,operation=await control.capturePairing(id);
     const matches=()=>started===generation&&control.matchesPairing(operation);
     if(!matches()) throw new DOMException('circle context changed','AbortError');
+    options=options||{};
     const controller=new AbortController(),source=options.signal||input?.signal;
     const abort=()=>controller.abort();
     if(source?.aborted) controller.abort(); else source?.addEventListener('abort',abort,{once:true});
     controllers.add(controller);
     const headers=new Headers(options.headers||input?.headers);
-    if(Number.isSafeInteger(operation.contextVersion)) headers.set('X-Randori-Circle-Context-Version',String(operation.contextVersion));
+    const contextHeader='X-Randori-Circle-Context-Version';
+    let contextVersion=Number(headers.get(contextHeader));
     const release=()=>{ controllers.delete(controller); source?.removeEventListener('abort',abort); };
     const check=body=>{
       if(!matches()) throw new DOMException('circle context changed','AbortError');
       if(body?.code==='circle_feature_unavailable'){ unavailable(); return body; }
       if(body?.code==='circle_context_changed'||body?.code==='active_circle_required'||body?.error==='active circle membership required'){ reset(); return body; }
       if(enabled()&&body?.ok===true){
-        if(!control.matchesPairing(operation,body)) throw new DOMException('circle context changed','AbortError');
+        if(body.circle_context_version!==contextVersion||body.circle_public_id!==operation.circlePublicId) throw new DOMException('circle context changed','AbortError');
         if(body.circle&&canonicalRoom(body.room_id)){
           const pair=body.recap?.pair||body.pair;
           rooms.set(body.room_id,{circle:body.circle,generation,solo:pair?pair.solo===true:rooms.get(body.room_id)?.solo===true});
@@ -88,6 +91,22 @@
       return body;
     };
     try{
+      if(!headers.has(contextHeader)){
+        // capturePairing fences the local epoch but may contain an old version.
+        // Read server authority for each header we add; explicit headers belong
+        // to the caller and must retain their value, even if the cache differs.
+        const currentResponse=await originalFetch('/api/circles',{credentials:'same-origin',cache:'no-store',signal:controller.signal});
+        const current=await currentResponse.json();
+        if(!matches()) throw new DOMException('circle context changed','AbortError');
+        if(!currentResponse.ok||current?.ok!==true||!Number.isSafeInteger(current.context_version)
+          ||current.context_version<0||current.context_version<operation.contextVersion
+          ||current.active_circle?.public_id!==operation.circlePublicId){
+          reset();
+          throw new DOMException('circle context changed','AbortError');
+        }
+        contextVersion=current.context_version;
+        headers.set(contextHeader,String(contextVersion));
+      }
       const response=await originalFetch(input,{...options,headers,signal:controller.signal});
       if(!matches()) throw new DOMException('circle context changed','AbortError');
       const json=response.json.bind(response),text=response.text.bind(response),clone=response.clone.bind(response);
