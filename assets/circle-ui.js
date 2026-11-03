@@ -7,7 +7,8 @@
 //
 // Everything here is presentation: it formats server-provided values into
 // labels, validates response shapes before they reach the DOM, and builds
-// small text-only nodes. It never fetches, authorizes, or stores anything.
+// small text-only nodes. The sender address cache uses caller-provided browser
+// storage; these helpers never fetch or authorize.
 (function installCircleUi(root) {
   'use strict';
 
@@ -105,6 +106,90 @@
       ? [Array.from(words[0])[0], Array.from(words[1])[0]]
       : Array.from(words[0]).slice(0, 2);
     return letters.join('').toUpperCase();
+  }
+
+  // Only addresses supplied by this account in this browser are remembered.
+  // The list API never supplies addresses. Scope by account and circle so a
+  // shared browser cannot render a previous sender's address for another user.
+  function createInvitationEmailStore({ storage, now = Date.now } = {}) {
+    const memory = new Map();
+    let storageUnavailable = false;
+    const prefix = 'randori-invitation-emails-v1:';
+    function key(scope) {
+      const userId = scope?.userId;
+      const circle = scope?.circlePublicId;
+      return Number.isSafeInteger(userId) && userId > 0
+        && typeof circle === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(circle)
+        ? `${prefix}${userId}:${circle}` : null;
+    }
+    function save(scopeKey, entries) {
+      try {
+        if (storageUnavailable) return;
+        const target = storage?.();
+        if (!target) { storageUnavailable = true; return; }
+        if (entries.size) target?.setItem(scopeKey, JSON.stringify([...entries.values()]));
+        else target?.removeItem(scopeKey);
+      } catch { storageUnavailable = true; /* Keep the current tab usable. */ }
+    }
+    function load(scopeKey) {
+      let entries = memory.get(scopeKey) || new Map();
+      // Read the current browser value so another sending tab's addresses
+      // survive when this tab remembers a different invitation.
+      try {
+        const values = storageUnavailable ? null : JSON.parse(storage?.()?.getItem(scopeKey) || '[]');
+        if (storage && !storageUnavailable) {
+          entries = new Map();
+          if (Array.isArray(values)) for (const value of values.slice(-200)) {
+            const email = boundedText(value?.email, 254);
+            if (UUID_PATTERN.test(value?.id) && email
+              && Number.isFinite(value?.expiresAt) && value.expiresAt > now()
+              && value.expiresAt <= now() + 7 * DAY) {
+              entries.set(value.id, { id: value.id, email, expiresAt: value.expiresAt });
+            }
+          }
+        }
+      } catch { /* Keep tab memory if browser storage is corrupt or blocked. */ }
+      memory.set(scopeKey, entries);
+      for (const [id, entry] of entries) if (entry.expiresAt <= now()) entries.delete(id);
+      return entries;
+    }
+    return Object.freeze({
+      remember(scope, id, email) {
+        const scopeKey = key(scope);
+        const address = boundedText(email, 254);
+        if (!scopeKey || !UUID_PATTERN.test(id) || !address) return;
+        const entries = load(scopeKey);
+        entries.set(id, { id, email: address, expiresAt: now() + 7 * DAY });
+        while (entries.size > 200) entries.delete(entries.keys().next().value);
+        save(scopeKey, entries);
+      },
+      get(scope, id) {
+        const scopeKey = key(scope);
+        if (!scopeKey) return null;
+        const entries = load(scopeKey);
+        save(scopeKey, entries);
+        return entries.get(id)?.email || null;
+      },
+      snapshot(scope) {
+        const scopeKey = key(scope);
+        return scopeKey ? new Map(load(scopeKey)) : new Map();
+      },
+      retainListed(scope, invitations, snapshot) {
+        const scopeKey = key(scope);
+        if (!scopeKey) return;
+        const listed = new Set(invitations.filter(invitation => invitation.status !== 'expired').map(invitation => invitation.id));
+        const entries = load(scopeKey);
+        // An older list must not delete addresses another tab sent or updated
+        // while its request was in flight. Prune only unchanged snapshot rows.
+        for (const [id, previous] of snapshot) {
+          const current = entries.get(id);
+          if (!listed.has(id) && current?.email === previous.email
+            && current?.expiresAt === previous.expiresAt) entries.delete(id);
+        }
+        save(scopeKey, entries);
+      },
+      clear() { memory.clear(); },
+    });
   }
 
   function describeInvitation(invitation, { now = Date.now(), knownEmail = null, locale } = {}) {
@@ -559,6 +644,7 @@
     absoluteDate,
     avatarNode,
     badgeNode,
+    createInvitationEmailStore,
     describeInvitation,
     durationLabel,
     exerciseLabel,

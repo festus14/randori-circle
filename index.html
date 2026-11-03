@@ -2389,7 +2389,7 @@ a.btn{text-decoration:none}
           <section id="circleOwnerPanel" class="card circle-card" hidden aria-labelledby="circleInvitesTitle" style="display:none">
             <div class="card-h"><h3 id="circleInvitesTitle" class="circle-card-title">Invitations</h3><span id="circleInvitesMeta" class="circle-card-meta"></span></div>
             <div class="card-b circle-card-body">
-              <p class="small muted circle-help">Each invitation works once, only for the email you enter, and expires after 7 days. For privacy, the address is shown only in the browser that sent it.</p>
+              <p class="small muted circle-help">Each invitation works once, only for the email you enter, and expires after 7 days. For privacy, the address is shown only to your account in the browser that sent it, until the invitation expires.</p>
               <form id="circleInviteForm" class="circle-invite-form" novalidate>
                 <label class="small muted circle-field">Email address
                   <input id="circleInviteEmail" data-testid="circle-invite-email" class="input" type="email" autocomplete="email" spellcheck="false" maxlength="254" required placeholder="teammate@example.com" aria-describedby="circleInviteEmailError" />
@@ -5993,11 +5993,17 @@ async function refreshMe(){
   const inviteRequestsStatus=document.getElementById('circleInviteRequestsStatus');
   const inviteRequestsCount=document.getElementById('circleInviteRequestsCount');
   const inviteRequestsMore=document.getElementById('circleInviteRequestsMore');
-  // Addresses the owner typed (or approved) in this tab, keyed by invitation
-  // id. The server only returns an email fingerprint, so this lets the owner
-  // recognise invitations they just sent. Memory only; cleared on any circle
-  // or identity change.
-  const circleInviteEmails=new Map();
+  // Sender-only addresses survive reloads in this browser for up to 7 days.
+  // Invitation links remain in tab memory; only addresses are cached.
+  const circleInviteEmails=circleUi.createInvitationEmailStore({storage:()=>localStorage});
+  function invitationEmailScope(){
+    const operation=captureCircleControlOperation();
+    return activeCircleRole==='owner'&&circleControlOperationMatches(operation)
+      ?{userId:operation.userId,circlePublicId:authCapabilities.multiCircleControlPlane?operation.circlePublicId:'primary'}:null;
+  }
+  function rememberInvitationEmail(id,email){
+    circleInviteEmails.remember(invitationEmailScope(),String(id).toLowerCase(),email);
+  }
   // Bulk invite controller (assets/bulk-invite.js); mounted further below.
   let bulkInviteController=null;
   // Circle health controller (assets/circle-health.js, issue #292); imported on demand further below.
@@ -6535,7 +6541,7 @@ async function refreshMe(){
   }
 
   function invitationRow(invitation){
-    const view=circleUi.describeInvitation(invitation,{knownEmail:circleInviteEmails.get(String(invitation?.id||'').toLowerCase())||null});
+    const view=circleUi.describeInvitation(invitation,{knownEmail:circleInviteEmails.get(invitationEmailScope(),String(invitation?.id||'').toLowerCase())||null});
     if(!view) return null;
     const row=document.createElement('li'); row.className='circle-row circle-invite-row';
     row.dataset.invitationId=view.id; row.dataset.invitationStatus=view.status;
@@ -6611,10 +6617,13 @@ async function refreshMe(){
       circleInvites.appendChild(loading);
     }
     try{
+      const emailScope=invitationEmailScope();
+      const emailSnapshot=circleInviteEmails.snapshot(emailScope);
       const result=await api('/api/invitations',{method:'GET'});
       if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId
         ||!circleControlOperationMatches(operation,result)) return;
       const invitations=Array.isArray(result?.invitations)?result.invitations:[];
+      circleInviteEmails.retainListed(emailScope,invitations,emailSnapshot);
       renderInvitationRows(invitations);
       if(circleInvitesMeta) circleInvitesMeta.textContent=circleUi.invitationSummary(invitations).replace(/\.$/,'');
     }catch{
@@ -6766,7 +6775,7 @@ async function refreshMe(){
       if(Number(me?.id||me?.uid)!==userId||!circleControlOperationMatches(operation)) return false;
       const outcome=circleUi.inviteRequestDecisionOutcome(decision,result,request);
       if(!outcome) throw new Error('invalid invite request decision response');
-      if(outcome.invitation?.id&&outcome.invitation.email) circleInviteEmails.set(outcome.invitation.id,outcome.invitation.email);
+      if(outcome.invitation?.id&&outcome.invitation.email) rememberInvitationEmail(outcome.invitation.id,outcome.invitation.email);
       if(outcome.invitation?.inviteUrl){
         const absolute=new URL(outcome.invitation.inviteUrl,window.location.origin);
         if(absolute.origin===window.location.origin&&absolute.pathname==='/invite'&&!absolute.search){
@@ -7502,7 +7511,7 @@ async function refreshMe(){
       latestInviteUrl=absoluteInviteUrl.href;
       latestInviteId=invitationId;
       latestInviteOwnerId=userId;
-      circleInviteEmails.set(invitationId,email);
+      rememberInvitationEmail(invitationId,email);
       if(input) input.value='';
       if(circleInviteLink) circleInviteLink.hidden=false;
       if(circleInviteStatus) circleInviteStatus.textContent=result?.email_delivery?.queued===true
@@ -7542,7 +7551,7 @@ async function refreshMe(){
       matches:(operation,result)=>circleControlOperationMatches(operation,result),
       createMany:emails=>api('/api/invitations',{method:'POST',body:{emails}}),
       resend:id=>api(`/api/invitations/${encodeURIComponent(id)}`,{method:'POST',body:{action:'resend'}}),
-      rememberEmail:(id,email)=>{ if(id&&email) circleInviteEmails.set(String(id).toLowerCase(),email); },
+      rememberEmail:(id,email)=>{ if(id&&email) rememberInvitationEmail(id,email); },
       refresh:()=>activeCircleRole==='owner'?loadOwnerInvitations(circleRenderEpoch):Promise.resolve(),
       copy:text=>navigator.clipboard.writeText(text),
     }});
