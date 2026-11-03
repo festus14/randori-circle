@@ -32,21 +32,24 @@ import { afterEach, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
 
-import { ensureCirclePairingReadiness } from '../../api/_circle-pairing.js';
-import { inspectDatabaseReadiness } from '../../api/_health.js';
-import { ensureSecondaryScheduleReadiness } from '../../api/_secondary-schedule.js';
-import {
-  findPendingIntroducedArtifacts,
-  inspectLedgerReadiness,
-} from '../../db/migration-compatibility.js';
-import { MIGRATION_CONTRACTS, validateMigrationContracts } from '../../db/migration-contract.js';
-import { MIGRATION_PLANS } from '../../db/migration-plan.js';
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import {
+await import('../support/historical-v23.mjs');
+const {
   applyMigrations,
   inspectMigrationState,
   prepareMigrationConnection,
-} from '../../db/migration-runner.js';
+}=await import('../../db/migration-runner.js');
+
+const { ensureCirclePairingReadiness }=await import('../../api/_circle-pairing.js');
+const { inspectDatabaseReadiness }=await import('../../api/_health.js');
+const { ensureSecondaryScheduleReadiness }=await import('../../api/_secondary-schedule.js');
+const {
+  findPendingIntroducedArtifacts,
+  inspectLedgerReadiness,
+}=await import('../../db/migration-compatibility.js');
+const { MIGRATION_CONTRACTS, validateMigrationContracts }=await import('../../db/migration-contract.js');
+import { MIGRATION_PLANS } from '../../db/migration-plan.js';
+const { EXECUTABLE_MIGRATIONS }=await import('../../db/executable-migrations.js');
+
 import { readOnlyDatabase } from '../../db/schema-inspector.js';
 
 // The secondary-schedule readiness cache is keyed by TURSO_DATABASE_URL

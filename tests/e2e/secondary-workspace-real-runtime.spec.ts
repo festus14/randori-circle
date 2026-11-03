@@ -71,8 +71,10 @@ test('real runtime: both directions, non-members, scoped History, independent ro
     await owner.getByTestId('pair-recap-reopen').click();
     await expect(owner.getByTestId('workspace-circle')).toContainText('In Secondary Dojo');
     await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_workspace?.room)).toBe(secondary.room);
-    const chat=await raw(owner,golden.origin,'/api/messages','POST',{room_id:secondary.room,message:'Secondary private chat'});
-    expect(chat.status,chat.text).toBe(201);
+    await expect(owner.getByTestId('pair-chat-input')).toBeVisible();
+    await owner.getByTestId('pair-chat-input').fill('Secondary private chat');
+    await owner.getByTestId('pair-chat-send').click();
+    await expect(owner.getByTestId('pair-chat-list')).toContainText('Secondary private chat');
     await select(partner,golden.origin,secondary.publicId);
     const messages=await raw(partner,golden.origin,resource('messages',secondary.room));
     expect(messages.body.messages.map((row:any)=>row.message)).toContain('Secondary private chat');
@@ -152,6 +154,42 @@ test('real runtime: flag-off gates and delayed prior-circle responses, context w
     const stale=await raw(owner,golden.origin,'/api/messages','POST',{room_id:pair.room,message:'stale must not commit'},before);
     expect(stale.status).toBe(409);expect(stale.body.code).toBe('circle_context_changed');
     await withDatabase(golden,async db=>expect((await db.execute(`SELECT COUNT(*) AS count FROM pair_messages WHERE message='stale must not commit'`)).rows[0].count).toBe(0));
+    // A completed HTTP response must still be rejected when its body is consumed
+    // after a selector switch, for both chat and completion pollers.
+    for(const surface of ['messages','session-completion']){
+      await select(owner,golden.origin,secondary.publicId);
+      let unblock=()=>{},arrived=()=>{};
+      const captured=new Promise<void>(resolve=>arrived=resolve),hold=new Promise<void>(resolve=>unblock=resolve);
+      await owner.route(`**/api/${surface}?*`,async route=>{
+        const response=await route.fetch();arrived();await hold;await route.fulfill({response}).catch(()=>{});
+      },{times:1});
+      await owner.evaluate(({surface,room})=>{
+        (window as any)._438Delayed='pending';
+        void fetch(`/api/${surface}?room_id=${encodeURIComponent(room)}`).then(response=>response.json()).then(()=>{
+          (window as any)._438Delayed='consumed';
+          document.getElementById('historyPersonal')?.append('stale private workspace response');
+        }).catch(error=>(window as any)._438Delayed=error.name);
+      },{surface,room:secondary.room});
+      await captured;
+      await owner.getByTestId('circle-context-select').selectOption(primary.public_id);
+      await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_circle_control?.scheduleContext?.()?.circlePublicId)).toBe(primary.public_id);
+      unblock();
+      await expect.poll(()=>owner.evaluate(()=>(window as any)._438Delayed)).toBe('AbortError');
+      await expect(owner.locator('#historyPersonal')).not.toContainText('stale private workspace response');
+      await expect(owner.locator('#workspaceChatArea [data-testid="pair-chat-input"]')).toHaveCount(0);
+      expect(await owner.evaluate(()=>localStorage.getItem('randori-code'))).toBeNull();
+    }
+    // Losing membership invalidates a live workspace and clears private state.
+    await select(owner,golden.origin,secondary.publicId);
+    await owner.goto(`${golden.origin}/join/${secondary.room}`,{waitUntil:'domcontentloaded'});
+    await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_authorized_room)).toBe(secondary.room);
+    await expect(owner.getByTestId('pair-chat-input')).toBeVisible();
+    await owner.getByTestId('pair-chat-input').fill('private unsent draft');
+    await withDatabase(golden,db=>db.execute({sql:"UPDATE circle_memberships SET status='inactive' WHERE circle_id=? AND user_id=?",args:[20,pair.owner.user.id]}));
+    await owner.evaluate(async room=>{await fetch(`/api/messages?room_id=${encodeURIComponent(room)}`).then(response=>response.json()).catch(()=>{});},secondary.room);
+    await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_authorized_room)).toBeNull();
+    await expect(owner.locator('#workspaceChatArea [data-testid="pair-chat-input"]')).toHaveCount(0);
+    expect(await owner.evaluate(()=>localStorage.getItem('randori-code'))).toBeNull();
     await secondTab.close();
   }finally{restore();await golden.close();}
 });

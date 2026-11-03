@@ -47,7 +47,7 @@
     try{ root._randori_code?.getEditor?.()?.setValue?.(''); }catch{}
   }
   function unavailable(){
-    stop();
+    reset();
     const host=document.getElementById('view-code');
     let notice=document.getElementById('workspaceCircleUnavailable');
     if(!notice&&host){ notice=document.createElement('p'); notice.id='workspaceCircleUnavailable'; notice.setAttribute('role','status'); host.prepend(notice); }
@@ -73,7 +73,7 @@
     const check=body=>{
       if(!matches()) throw new DOMException('circle context changed','AbortError');
       if(body?.code==='circle_feature_unavailable'){ unavailable(); return body; }
-      if(body?.code==='circle_context_changed'||body?.code==='active_circle_required'||body?.error==='active circle membership required'){ stop(); return body; }
+      if(body?.code==='circle_context_changed'||body?.code==='active_circle_required'||body?.error==='active circle membership required'){ reset(); return body; }
       if(enabled()&&body?.ok===true){
         if(!control.matchesPairing(operation,body)) throw new DOMException('circle context changed','AbortError');
         if(body.circle&&canonicalRoom(body.room_id)){
@@ -89,7 +89,12 @@
       const json=response.json.bind(response),text=response.text.bind(response),clone=response.clone.bind(response);
       response.json=async()=>{ try{ return check(await json()); }finally{ release(); } };
       response.text=async()=>{ try{ const value=await text(); let body; try{ body=JSON.parse(value); }catch{} check(body); return value; }finally{ release(); } };
-      response.clone=()=>{ const copy=clone(),read=copy.json.bind(copy); copy.json=async()=>check(await read()); return copy; };
+      response.clone=()=>{
+        const copy=clone(),read=copy.json.bind(copy),readText=copy.text.bind(copy);
+        copy.json=async()=>check(await read());
+        copy.text=async()=>{ const value=await readText();let body;try{body=JSON.parse(value);}catch{}check(body);return value; };
+        return copy;
+      };
       return response;
     }catch(error){ release(); throw error; }
   };

@@ -40,7 +40,9 @@ const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   // Owner circle health panel (issue #292).
   'assets/circle-health.js',
   // Self-service account deletion in Edit profile (issue #339, ID-81).
-  'assets/account-deletion.js'];
+  'assets/account-deletion.js',
+  // Secondary workspace transport and response epoch fencing (#438).
+  'assets/workspace-scope.js'];
 // Operator tools that cannot run under unit tests; see
 // docs/testing/COVERAGE_BASELINE.md ("Excluded from scope"). Their pure
 // decision logic lives in sibling modules that are measured.

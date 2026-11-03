@@ -16,7 +16,9 @@ import {chatRetentionEvidenceBindingDigest,enqueueNextChatRetentionRun,setChatRe
   adoptChatRetentionScope,placeChatRetentionHold,releaseChatRetentionHold} from '../../api/_chat-retention.js';
 import {readWorkspaceHistory} from '../../api/_workspace-history.js';
 import * as Y from 'yjs';
+import {buildDataExport} from '../../api/_data-export.js';
 const KEY='workspace-test-key-at-least-thirty-two-characters',HASH='a'.repeat(64);
+process.env.JWT_SECRET=KEY;
 async function fixture(){
   const restore=enableWorkspace(),directory=mkdtempSync(join(tmpdir(),'randori-438-unit-'));
   const db=createClient({url:`file:${await copyMigratedDatabase(join(directory,'test.sqlite'))}`});
@@ -58,6 +60,13 @@ test('secondary chat, snapshots, documents, signals and controls use only the ow
     assert.equal((await readSecondarySignals(f.client,f.room)).signals.length,1);
     assert.equal((await f.db.execute('SELECT COUNT(*) AS count FROM video_signals')).rows[0].count,0);
     await mutateSecondarySignals(f.client,f.room,{}, {purge:true});assert.equal((await readSecondarySignals(f.client,f.room)).signals.length,0);
+    const archive=await buildDataExport(f.db,{userId:1});
+    assert.equal(archive.secondary_workspace.messages[0].message,'private secondary');
+    assert.equal(archive.secondary_workspace.messages[0].circle_id,20);
+    assert.equal(archive.secondary_workspace.session_controls[0].timer_state,'paused');
+    assert.equal(archive.secondary_workspace.session_controls[0].updated_by,'User 1');
+    assert.equal(JSON.stringify(archive.secondary_workspace).includes('group_user_b_id'),false);
+    assert.equal((await buildDataExport(f.db,{userId:2})).secondary_workspace.messages.length,0);
     const history=await readWorkspaceHistory(f.client,f.client.workspaceContext,KEY);assert.equal(history.total,1);assert.equal(history.history[0].circle.public_id,f.secondary.publicId);
   }finally{f.close();}
 });

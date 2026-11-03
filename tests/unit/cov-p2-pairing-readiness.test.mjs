@@ -103,7 +103,7 @@ test('disabled foreign keys make readiness fail closed',async()=>{
 });
 
 test('schema inspection is bounded in objects and per-table indexes',async()=>{
-  const tooMany={execute:async()=>({rows:Array.from({length:256},(_,index)=>({type:'table',name:`t${index}`}))})};
+  const tooMany={execute:async()=>({rows:Array.from({length:384},(_,index)=>({type:'table',name:`t${index}`}))})};
   await assert.rejects(pairingSchemaV6Fingerprint(tooMany),/schema object limit exceeded/);
   await withDatabase(async db=>{
     const wideIndexes=(sql,result)=>sql.startsWith('PRAGMA index_list("users")')
@@ -143,4 +143,16 @@ test('an empty schema has a stable fingerprint without metadata reads',async()=>
   assert.equal(first,await pairingSchemaV6Fingerprint({execute:async()=>({})}));
   assert.equal(calls.length,1);
   assert.notEqual(first,PAIRING_SCHEMA_V6_FINGERPRINT);
+});
+
+
+test('v24 is ready with 328 objects and rejects databases above the 384-object inspection bound',async()=>{
+  await withDatabase(async db=>{
+    const count=Number((await db.execute("SELECT COUNT(*) AS count FROM sqlite_schema WHERE type IN ('table','index','view','trigger')")).rows[0].count);
+    assert.equal(count,328);
+    assert.equal(await pairingSchemaV6Ready(db),true);
+    for(let index=count;index<=384;index++)await db.execute(`CREATE TABLE guard_probe_${index}(id INTEGER)`);
+    await assert.rejects(pairingSchemaV6Fingerprint(db),/schema object limit exceeded/);
+    assert.equal(await pairingSchemaV6Ready(db),false);
+  });
 });

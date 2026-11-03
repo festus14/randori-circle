@@ -17,6 +17,8 @@ import { createClient } from '@libsql/client';
 
 import { MIGRATION_PLANS } from '../../db/migration-plan.js';
 
+await import('../support/historical-v23.mjs');
+
 const { MIGRATION_CONTRACTS, validateMigrationContracts }=await import('../../db/migration-contract.js');
 const V23=MIGRATION_PLANS[22];
 
@@ -76,7 +78,7 @@ async function readinessCard(db){
 
 test('the additive declaration used here passes the real migration check',()=>{
   assert.equal(validateMigrationContracts(MIGRATION_CONTRACTS),true);
-  assert.deepEqual(inspectMigrationCompatibility({migrations:EXECUTABLE_MIGRATIONS,contracts:MIGRATION_CONTRACTS}),[]);
+  assert.deepEqual(inspectMigrationCompatibility({migrations:EXECUTABLE_MIGRATIONS.slice(0,23),contracts:MIGRATION_CONTRACTS}),[]);
   assert.equal(pendingAdditiveContract()?.version,N,'production modules see the declaration');
   assert.deepEqual(MIGRATION_CONTRACTS[N-1].introduces,
     {tables:['account_deletion_requests'],indexes:[...V23.indexes],triggers:[]});
@@ -103,9 +105,9 @@ test('code at N stays ready on every surface while the database moves from N-1 t
   assert.equal(await schemaCapabilityAvailable(db,{version:N-1,env}),true);
 
   // 2. The protected cutover applies N through the same runner.
-  const state=await inspectMigrationState(db);
+  const state=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,23)});
   assert.deepEqual([state.classification,state.currentVersion,state.ready],['managed',N-1,true]);
-  const applied=await applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
+  const applied=await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,23),expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
   assert.deepEqual(applied.applied.map(item=>item.version),[N]);
 
   // 3. Still ready, now current; nothing pairing depends on moved.

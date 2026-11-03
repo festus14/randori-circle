@@ -98,18 +98,17 @@ const N=MIGRATION_CONTRACTS.length;
 test('migrations 1-21 stay breaking, and v22/v23 are additive migrations',()=>{
   assert.ok(MIGRATION_CONTRACTS.slice(0,21).every(contract=>contract.compatibility==='breaking'));
   assert.equal(MIGRATION_CONTRACTS[21].compatibility,'additive');
-  assert.equal(MIGRATION_CONTRACTS.at(-1).compatibility,'additive');
-  assert.equal(MIGRATION_CONTRACTS.at(-1).version,23);
-  assert.equal(compatibility.pendingAdditiveContract()?.version,23);
+  assert.equal(MIGRATION_CONTRACTS[22].compatibility,'additive');
+  assert.equal(MIGRATION_CONTRACTS.at(-1).compatibility,'breaking');
+  assert.equal(MIGRATION_CONTRACTS.at(-1).version,24);
+  assert.equal(compatibility.pendingAdditiveContract(),null);
   assert.equal(compatibility.ADDITIVE_READINESS_LAG,1);
 });
 
 test('code at M with a breaking M is not ready on a real M-1 database; declaring M additive is the only difference',async()=>{
-  // M=21 pins the last breaking migration: code at 22 is already ready on
-  // a 21 database (v22 is additive), so the breaking case is modelled one
-  // version down. The database at 20 is two behind the checked-in code,
-  // so the diagnostics card still reports it as behind.
-  const M=21;
+  // v24 is the current breaking release. The hypothetical additive declaration
+  // below exercises policy only; it never alters the checked-in v24 contract.
+  const M=24;
   const breakingContracts=MIGRATION_CONTRACTS.slice(0,M);
   const db=await databaseAt(M-1);
   assert.equal(await inspectDatabaseReadiness(db,{contracts:breakingContracts,manifest:manifestAt(M)}),false);

@@ -139,6 +139,15 @@ const EXPLICIT_TABLE_COVERAGE=Object.freeze({
   pair_room_snapshots:{section:null,included:false,reason:'Jointly written pair workspace; the partner\'s contributions are the partner\'s data.'},
   pair_meeting_links:{section:'schedules',included:true,reason:'Meeting links for the member\'s own pair groups, the same visibility the room already gives them.'},
   video_signals:{section:null,included:false,reason:'Ephemeral call set-up signalling keyed by random peer ids, purged after about an hour.'},
+  circle_pair_messages:{section:"secondary_workspace",included:true,reason:"Only secondary messages sent by the member; partner messages are never exported."},
+  circle_session_runs:{section:"secondary_workspace",included:true,reason:"Own secondary-circle code runs."},
+  circle_session_completion_receipts:{section:"secondary_workspace",included:true,reason:"Own secondary-circle completion receipts."},
+  circle_pair_session_controls:{section:"secondary_workspace",included:true,reason:"Controls for the member's secondary rooms, actors by display name."},
+  circle_pair_meeting_links:{section:"secondary_workspace",included:true,reason:"Meeting links for the member's secondary rooms."},
+  circle_pair_code_documents:{section:null,included:false,reason:"Jointly written secondary document; partner contributions are not the member's data."},
+  circle_pair_room_snapshots:{section:null,included:false,reason:"Jointly written secondary workspace; partner contributions are not the member's data."},
+  circle_video_signals:{section:null,included:false,reason:"Ephemeral call set-up signalling; random peer ids and no durable user content."},
+  circle_chat_retention_scopes:{section:null,included:false,reason:"Operational retention ownership registry; member pairings are exported separately."},
   ai_sessions:{section:'ai',included:true,reason:'AI sessions the member started.'},
   ai_feedback:{section:'ai',included:true,reason:'Feedback on the member\'s own AI sessions (distinct from #353 product feedback).'},
   ai_consents:{section:'ai',included:true,reason:'Own AI consent record.'},
@@ -314,6 +323,31 @@ async function readFeedback(db,userId){
     votes_included:votesIncluded,events_included:false,
     truncated_items:truncatedItems,truncated_votes:truncatedVotes,
     ...(votesReason?{votes_reason:votesReason}:{})});
+}
+
+// Secondary account exports remain available independently of the active-circle selector.
+// Explicit projections exclude partner ids, signalling and jointly authored documents.
+async function readSecondaryWorkspace(db,userId,markTruncated){
+  const specs=[
+    ['messages','circle_pair_messages','row.id AS message_id,row.message,row.created_at','row.sender_id=?',DATA_EXPORT_SECTION_LIMITS.messages],
+    ['code_runs','circle_session_runs','row.id AS run_id,row.question_id,row.question_slug,row.language,row.code,row.test_cases_snapshot,row.results_json,row.passed_count,row.total_count,row.duration_ms,row.created_at','row.user_id=?',DATA_EXPORT_SECTION_LIMITS.codeRuns],
+    ['session_completions','circle_session_completion_receipts','row.confirmed_at','row.user_id=?',DATA_EXPORT_SECTION_LIMITS.sessionCompletions],
+    ['session_controls','circle_pair_session_controls','row.timer_state,row.remaining_ms,row.anchor_at,row.revision,row.created_at,row.updated_at,candidate.display_name AS candidate,updater.display_name AS updated_by','? IN (row.group_user_a_id,row.group_user_b_id)',DATA_EXPORT_SECTION_LIMITS.sessionControls],
+    ['meeting_links','circle_pair_meeting_links','row.meeting_url,row.accepted_schedule_at,row.revision,row.created_at,row.updated_at','? IN (row.group_user_a_id,row.group_user_b_id)',DATA_EXPORT_SECTION_LIMITS.meetingLinks],
+  ];
+  const sections={};
+  for(const [section,table,columns,predicate,limit] of specs){
+    if(!await tableExists(db,table)){ sections[section]=Object.freeze([]); continue; }
+    const joins=section==='session_controls'
+      ?'LEFT JOIN auth_accounts candidate ON candidate.id=row.candidate_user_id LEFT JOIN auth_accounts updater ON updater.id=row.updated_by':'';
+    const {rows,truncated}=await cappedQuery(db,
+      `SELECT row.circle_id,row.publication_id,row.group_id,${columns} FROM ${table} row ${joins} WHERE ${predicate} ORDER BY row.group_id DESC LIMIT ?`,
+      [userId],limit);
+    markTruncated(`secondary_workspace_${section}`,truncated);
+    sections[section]=Object.freeze(rows.map(row=>Object.freeze({...row,
+      ...(section==='code_runs'?{test_cases_snapshot:parsedJson(row.test_cases_snapshot),results_json:parsedJson(row.results_json)}:{})})));
+  }
+  return Object.freeze(sections);
 }
 
 const READINESS_PROBES=Object.freeze([
@@ -1006,6 +1040,8 @@ export async function buildDataExport(db,{userId}={}){
   markTruncated('feedback_items',feedback.truncated_items);
   markTruncated('feedback_votes',feedback.truncated_votes);
 
+  const secondaryWorkspace=await readSecondaryWorkspace(db,id,markTruncated);
+
   const archive=Object.freeze({
     version:DATA_EXPORT_VERSION,
     format:DATA_EXPORT_FORMAT,
@@ -1022,6 +1058,7 @@ export async function buildDataExport(db,{userId}={}){
     session_controls:sessionControls,
     messages,
     code_runs:codeRuns,
+    secondary_workspace:secondaryWorkspace,
     notification_preferences:notificationPreferences,
     custom_questions:customQuestions,
     invitations:Object.freeze({sent:invitationsSent,accepted:invitationsAccepted,received:invitationsReceived}),
@@ -1037,6 +1074,7 @@ export async function buildDataExport(db,{userId}={}){
     // but are not in the archive. Empty when nothing was capped.
     truncated_sections:Object.freeze([...truncatedSections]),
     counts:Object.freeze({
+      ...Object.fromEntries(Object.entries(secondaryWorkspace).map(([section,rows])=>[`secondary_workspace_${section}`,rows.length])),
       memberships:memberships.length,
       availability:availability.length,
       pairings_primary:primaryPairings.length,

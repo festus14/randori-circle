@@ -139,8 +139,8 @@ async function validateLedger(db){
 export async function pairingSchemaV6Fingerprint(db){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client required');
   const objectResult=await db.execute(`SELECT type,name,tbl_name,sql FROM sqlite_schema
-    WHERE type IN ('table','index','view','trigger') ORDER BY type,name LIMIT 256`);
-  if((objectResult.rows||[]).length>=256) throw new Error('schema object limit exceeded');
+    WHERE type IN ('table','index','view','trigger') ORDER BY type,name LIMIT 384`);
+  if((objectResult.rows||[]).length>=384) throw new Error('schema object limit exceeded');
   const objects=projectRows(objectResult.rows,['type','name','tbl_name','sql'])
     .filter(item=>!String(item.name).startsWith('sqlite_')
       &&!TOLERATED_TABLES.has(String(item.name))

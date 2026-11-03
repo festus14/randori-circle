@@ -9,7 +9,7 @@ workspace. AI, progress, statistics and unscoped operations retain their existin
 ## Owner cutover
 
 Migration v24, `circle-owned-workspace`, is **breaking** because completion guards
-are installed on the existing secondary pairing tables. Merging this code makes
+and the schedule ownership index are installed on existing secondary tables. Merging this code makes
 readiness fail until the owner applies v24. Production application is a separate
 owner operation using the protected migration workflow, its backup and restore
 rehearsal, one-version apply and subsequent status inspection. This PR never
@@ -65,3 +65,13 @@ messages. Disabling workspace access does not discard retention ownership.
 No request path creates tables, rewrites legacy tables or copies secondary rows
 into legacy workspace tables. No circle names, room IDs, participant names,
 messages or code are included in workspace telemetry.
+
+## Account lifecycle
+
+Account deletion redacts secondary chat, deletes solo runs and solo snapshots,
+removes the member's meeting links and clears unattested shared run code. Shared
+attested documents, receipt snapshots and retention ownership remain available
+to partners with the existing expiry policy. Account export includes the member's
+own secondary messages, runs and receipts plus visible controls and meeting links;
+joint documents, signalling and the operational retention registry are excluded
+with explicit reasons.
