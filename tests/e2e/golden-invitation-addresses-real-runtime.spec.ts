@@ -1,4 +1,4 @@
-import {expect,test} from '@playwright/test';
+import {type APIResponse,expect,test} from '@playwright/test';
 import {
   acceptInvitationThroughUi,createInvitationThroughUi,json,newGoldenPage,
   signInMemberSession,signInOwner,signOutThroughMenu,startGoldenRuntime,withDatabase,
@@ -20,13 +20,15 @@ test('a delayed list in another tab preserves a concurrently sent address after 
     await expect(sender.page.getByTestId('circle-invites')).toContainText('No invitations yet.');
 
     // Both tabs share the sender's real session and localStorage. Fetch the
-    // real list before the send, then hold its response at Tab B's boundary.
+    // real list before the send, then hold every GET at Tab B's boundary.
+    // Boot and tab selection can both load it; reuse the same stale response
+    // so neither request can settle before release or observe the later send.
     const tabB=await sender.context.newPage();
-    let delayed=false;
+    let delayedResponse:Promise<APIResponse>|undefined;
     await tabB.route('**/api/invitations',async route=>{
-      if(route.request().method()!=='GET'||delayed) return route.continue();
-      delayed=true;
-      const response=await route.fetch();
+      if(route.request().method()!=='GET') return route.continue();
+      if(!delayedResponse) delayedResponse=route.fetch();
+      const response=await delayedResponse;
       expect(response.status()).toBe(200);
       recordStaleResponse(await response.json());
       await release;
