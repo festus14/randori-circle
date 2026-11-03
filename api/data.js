@@ -102,6 +102,7 @@ import {
   validateActiveCircleMutationContext,
 } from './_active-circle.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { dispatchWorkspaceData } from './_workspace-router.js';
 import {
   HEALTH_RESPONSE,
   READY_RESPONSE,
@@ -1200,7 +1201,7 @@ async function handleSessionCompletion(req,res){
   let db;
   let completionVersionKey;
   try{
-    db=getClient();
+    db=req.workspace?.db||getClient();
     await ensureDataSessionCompletionReadiness(db);
     completionVersionKey=getJwtSecret();
   }
@@ -1252,7 +1253,7 @@ async function handleMeetingLink(req,res){
   }
   let db,versionKey;
   try{
-    db=getClient(); await ensureDataMeetingLinkReadiness(db); versionKey=getJwtSecret();
+    db=req.workspace?.db||getClient(); await ensureDataMeetingLinkReadiness(db); versionKey=getJwtSecret();
   }catch{ return res.status(503).json({error:'meeting link unavailable'}); }
   if(multiCircleControlPlaneEnabled()&&!strictLocalPairingRuntime(req)){
     const selectionResponse={statusCode:200,body:null,status(code){ this.statusCode=code; return this; },json(body){ this.body=body; return this; }};
@@ -1313,7 +1314,7 @@ async function handleSessionControls(req,res){
   }
   let db,versionKey;
   try{
-    db=getClient(); await ensureDataSessionControlsReadiness(db); versionKey=getJwtSecret();
+    db=req.workspace?.db||getClient(); await ensureDataSessionControlsReadiness(db); versionKey=getJwtSecret();
   }catch{ return res.status(503).json({error:'session controls unavailable'}); }
   if(multiCircleControlPlaneEnabled()&&!strictLocalPairingRuntime(req)){
     const selectionResponse={statusCode:200,body:null,status(code){ this.statusCode=code; return this; },json(body){ this.body=body; return this; }};
@@ -1817,7 +1818,7 @@ async function handleMessages(req,res){
     throw error;
   }
 
-  const db=getClient();
+  const db=req.workspace?.db||getClient();
   let access;
   try{ access=await getPairAccess(db,payload,input.weekId,input.pairGroupId); }
   catch{ return res.status(503).json({error:'messages unavailable'}); }
@@ -1910,7 +1911,7 @@ async function handlePairRecap(req,res){
   const userId=Number(payload.id||payload.uid);
   let db;
   let completionVersionKey;
-  try{ db=getClient(); }
+  try{ db=req.workspace?.db||getClient(); }
   catch{ return res.status(503).json({error:'pair recap unavailable'}); }
   const accessSql=authPairAccessSql();
   const accessArgs=authPairAccessArgs({userId,weekId:room.weekId,pairGroupId:room.pairGroupId});
@@ -2137,6 +2138,12 @@ function runResultsDigest(resultsJson){
 
 function runAttestationPayload(fields,attestationVersion=2){
   const {userId,questionSlug,questionVersion,language,passedCount,totalCount,resultsJson}=fields;
+  if(attestationVersion===4){
+    return JSON.stringify([4,Number(fields.circleId),Number(fields.publicationId),Number(fields.groupId),
+      Number(userId),String(questionSlug),Number(questionVersion),String(language),String(fields.codeHash),
+      fields.documentRevision??null,fields.documentStateHash??null,fields.documentVersion??null,
+      Number(passedCount),Number(totalCount),runResultsDigest(resultsJson)]);
+  }
   if(attestationVersion===3){
     return JSON.stringify([
       3,Number(userId),Number(fields.weekId),Number(fields.pairGroupId),String(questionSlug),
@@ -2177,9 +2184,9 @@ function runAttestationKeyring(){
     .map(secret=>({id:runAttestationKeyId(secret),secret}));
 }
 
-function signRunAttestation(fields){
+export function signRunAttestation(fields){
   const key=runAttestationKeyring()[0];
-  const version=fields.documentVersion?3:2;
+  const version=fields.circleId?4:fields.documentVersion?3:2;
   return {
     keyId:key.id,
     signature:createHmac('sha256',key.secret)
@@ -2189,7 +2196,7 @@ function signRunAttestation(fields){
   };
 }
 
-function verifyRunAttestation(signature,keyId,fields,version=2){
+export function verifyRunAttestation(signature,keyId,fields,version=2){
   try{
     if(typeof signature!=='string' || !/^[a-f0-9]{64}$/.test(signature)) return false;
     if(typeof keyId!=='string' || !/^[a-f0-9]{16}$/.test(keyId)) return false;
@@ -2290,7 +2297,7 @@ async function handleRuns(req,res){
   if(room&&pairLimit===null) return res.status(400).json({error:'limit must be an integer from 1 to 20'});
   let db;
   try{
-    db=getClient();
+    db=req.workspace?.db||getClient();
     await ensureDataRunsReadiness(db);
   }catch{
     return res.status(503).json({error:'runs unavailable'});
@@ -2528,7 +2535,7 @@ function appLogClientArgs(req,userId){
   return [ua,ip];
 }
 
-async function acquireExecutionLease(db,userId,req,metadata){
+export async function acquireExecutionLease(db,userId,req,metadata){
   const route=String(req.url||'').slice(0,300);
   const result=await db.execute({
     sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at)
@@ -2554,7 +2561,7 @@ async function acquireExecutionLease(db,userId,req,metadata){
   return positiveInteger(result.rows[0]?.id);
 }
 
-async function releaseExecutionLease(db,userId,leaseId,req){
+export async function releaseExecutionLease(db,userId,leaseId,req){
   if(!leaseId) return;
   try{
     await db.execute({
@@ -2623,7 +2630,7 @@ async function handleExecute(req,res){
   // read/write-only and fails closed if the deployment has not been prepared.
   // Resolve and validate client room identifiers before touching the database.
   let db;
-  try{ db=getClient(); }
+  try{ db=req.workspace?.db||getClient(); }
   catch{ return res.status(503).json({error:'execution service unavailable'}); }
   let accessArgs=null;
   let canonicalDocument=null;
@@ -2849,6 +2856,7 @@ const MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS=new Set([
 ]);
 
 async function requireSingleCircleDataFeature(req,res,endpoint){
+  if(req.workspace&&['runs','history','pair-recap','session-completion','messages','execute','meeting-link','session-controls'].includes(endpoint)) return true;
   if(!multiCircleControlPlaneEnabled()||!MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS.has(endpoint)) return true;
   if(endpoint==='meeting-link'||endpoint==='session-controls') return true;
   if(secondaryCircleCoordinationEnabled()&&(endpoint==='weeks'||endpoint==='my-pair')) return true;
@@ -2878,6 +2886,7 @@ export default async function handler(req,res){
   try{
   const ep=getEndpoint(req);
   const route=resolveDataRoute(req,ep);
+  if(await dispatchWorkspaceData(req,res,route)) return;
   if(!await requireSingleCircleDataFeature(req,res,route)) return;
   if(route==='runs') return await handleRuns(req,res);
   if(route==='leetcode-sync') return await handleLeetcodeSync(req,res);

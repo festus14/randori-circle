@@ -16,6 +16,7 @@ import {
 } from '../api/_chat-retention.js';
 import { LATEST_MIGRATION_VERSION } from '../db/migration-contract.js';
 import { inspectMigrationState, prepareMigrationConnection } from '../db/migration-runner.js';
+import { secondaryChatRetentionClient } from '../api/_secondary-chat-retention.js';
 
 const ACTIONS=new Set([
   'status','run','enable','disable','adopt_scope','hold_tenant','hold_room','release_tenant','release_room','replay',
@@ -74,18 +75,20 @@ function publicError(error){
   return /^[A-Z][A-Z0-9_]{0,63}$/.test(code)?code:'RETENTION_COMMAND_FAILED';
 }
 
-export async function runChatRetentionCli({env=process.env,createDatabase=createClient}={}){
+export async function runChatRetentionCli({env=process.env,createDatabase=createClient,secondaryWorkspace=false}={}){
   const action=String(env.CHAT_RETENTION_ACTION||'status').trim().toLowerCase().replaceAll('-','_');
   if(!ACTIONS.has(action)) throw new TypeError('invalid retention action');
   const url=required(env.TURSO_DATABASE_URL,'database URL');
   const authToken=String(env.TURSO_AUTH_TOKEN||'').trim()||undefined;
-  const db=createDatabase({url,authToken});
+  const rawDb=createDatabase({url,authToken});
+  let db=rawDb;
   try{
     await prepareMigrationConnection(db);
     const migration=await inspectMigrationState(db);
     if(!migration.ready||migration.currentVersion!==LATEST_MIGRATION_VERSION){
       throw new ChatRetentionError('RETENTION_SCHEMA_UNAVAILABLE');
     }
+    if(secondaryWorkspace)db=secondaryChatRetentionClient(rawDb);
     await ensureChatRetentionReadiness(db);
     if(action==='status') return Object.freeze({ok:true,action,metrics:await readChatRetentionMetrics(db)});
     if(action==='enable'||action==='disable'){
@@ -152,7 +155,7 @@ export async function runChatRetentionCli({env=process.env,createDatabase=create
 
 async function main(){
   try{
-    const result=await runChatRetentionCli();
+    const result=await runChatRetentionCli({secondaryWorkspace:process.argv.includes('--secondary-workspace')});
     process.stdout.write(`${JSON.stringify(result)}\n`);
   }catch(error){
     process.stderr.write(`${JSON.stringify({ok:false,error_code:publicError(error)})}\n`);

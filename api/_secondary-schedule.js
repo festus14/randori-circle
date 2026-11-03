@@ -31,6 +31,7 @@ const TRANSACTION_ATTEMPTS=3;
 const SCHEDULE_TABLES=new Set(['circle_pair_schedules','circle_pair_schedule_proposals']);
 const SCHEDULE_INDEXES=new Set([
   'uq_circle_pairing_groups_schedule_owner','idx_circle_pair_schedule_proposals_schedule',
+  'uq_circle_pair_schedules_meeting_owner',
 ]);
 const SCHEDULE_MUTATION_FIELDS=Object.freeze({
   propose:Object.freeze(['action','base_version','instant']),
@@ -44,6 +45,7 @@ const SCHEDULE_READINESS_MANIFEST=Object.freeze({
   artifactScope:'owned',
   tables:READINESS_SCHEMA_MANIFEST.tables.filter(item=>SCHEDULE_TABLES.has(item.name)),
   indexes:READINESS_SCHEMA_MANIFEST.indexes.filter(item=>SCHEDULE_INDEXES.has(item.name)),
+  triggers:READINESS_SCHEMA_MANIFEST.triggers.filter(item=>item.name==='circle_schedule_meeting_link_invalidate'),
   toleratedLegacyTables:[],
 });
 const __readinessByDatabaseUrl=new Map();

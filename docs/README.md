@@ -197,3 +197,5 @@ exists, so they could not be regenerated verifiably.
 | Doc | What it covers |
 | --- | --- |
 | [PRODUCTION_ARCHITECTURE_PLAN.md](PRODUCTION_ARCHITECTURE_PLAN.md) | A possible Next.js/PostgreSQL end state and delivery plan. **Note:** a proposal, not the current runtime (Vercel functions plus Turso). Superseded for current-runtime questions by [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) |
+
+- [Secondary circle workspace and owner cutover](SECONDARY_WORKSPACE.md) — issue #438, breaking v24, scoped room and History, parallel retention.

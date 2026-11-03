@@ -424,21 +424,38 @@
   }
 
   function historyRowView(item, options) {
-    const week = Number(item?.week_id);
-    const pair = Number(item?.pg_id);
+    const secondary = item?.circle?.is_primary === false;
+    const week = Number(secondary ? item?.publication_id : item?.week_id);
+    const pair = Number(secondary ? item?.group_id : item?.pg_id);
     if (!Number.isSafeInteger(week) || week < 1 || !Number.isSafeInteger(pair) || pair < 1) return null;
+    const roomMatch=secondary?String(item?.room_id||'').match(/^circle_([1-9]\d*)_publication_([1-9]\d*)_group_([1-9]\d*)$/):null;
+    if(secondary&&(!roomMatch||!roomMatch.slice(1).every(id=>Number.isSafeInteger(Number(id)))||Number(roomMatch[2])!==week||Number(roomMatch[3])!==pair)) return null;
     const partner = boundedText(item?.partner_name, 240) || 'Pair member';
     const weekLabel = pairingWeekLabel(item, options);
     const kind = boundedText(item?.topic_kind, 160);
     const topic = boundedText(item?.topic, 160) || (kind && (focusLabel(kind) || kind));
     return Object.freeze({
-      room: `week_${week}_pair_${pair}`,
+      room: secondary ? item.room_id : `week_${week}_pair_${pair}`,
       partner,
       partnerInitials: item?.is_ai === true ? 'AI' : initials(partner),
       week: weekLabel,
       topic,
       meta: topic ? `${weekLabel} · ${topic}` : weekLabel,
     });
+  }
+
+  function circleBadgeNode(doc, circle) {
+    if (!circle || typeof circle.public_id !== 'string' || !circle.public_id
+      || typeof circle.is_primary !== 'boolean') return null;
+    const name = boundedText(circle.name, 120);
+    if (!name) return null;
+    const node = doc.createElement('span'); node.className = 'circle-workspace-context';
+    node.dataset.testid = 'circle-attribution';
+    const label = doc.createElement('span'); label.textContent = `In ${name}`;
+    const badge = doc.createElement('span'); badge.className = 'kbd';
+    badge.textContent = circle.is_primary ? 'Primary' : 'Secondary';
+    node.append(label, ' ', badge);
+    return node;
   }
 
   function languageLabel(language) {
@@ -548,6 +565,7 @@
     focusLabel,
     historyCountLabel,
     historyRowView,
+    circleBadgeNode,
     iconNode,
     initials,
     invitationEmailRejectedHint,

@@ -162,7 +162,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'cc7386d7f60a8bb939a63b9498142d10543ad8bc5a62c5314e1538b7980efaab',
     checksum:'3d6e50ab71308d53b9ea22c391dd48b630162eb613696891e68060aa205cc75b',
   }),
-]);
+  Object.freeze({
+  "version": 24,
+  "name": "circle-owned-workspace",
+  "description": "Parallel circle-owned workspace, circle-bound completion guards, and secondary chat retention.",
+  "operationsChecksum": "ff89d0907b11d51d8d5fc2ae5343fd7e2166202cdf6d9f4243eb64e81c7869c2",
+  "checksum": "ffcefe039f4ee0c4df88cf6f0e1e6acfcfe42a62c33f44d366165c41748a4e0b"
+}),]);
 
 function definePlan(operationSet,metadata){
   if(operationSet.version!==metadata.version) throw new Error(`migration operation set ${operationSet.version} has no matching metadata`);

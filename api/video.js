@@ -3,6 +3,8 @@ import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
 import { readCodeProjectionForWorkspace } from './_code-document.js';
+import { dispatchWorkspaceVideo, prepareWorkspaceRequest, sendWorkspaceFailure } from './_workspace-router.js';
+import { secondaryCircleWorkspaceEnabled } from './_active-circle.js';
 
 const WORKSPACE_SCHEMA_VERSION = 3;
 const MAX_WORKSPACE_CODE_BYTES = 20 * 1024;
@@ -273,7 +275,7 @@ function validateBoard(board){
   return {board};
 }
 
-function parseWorkspacePayload(value){
+export function parseWorkspacePayload(value){
   let payload=value;
   let serialized;
   if(typeof payload==='string'){
@@ -357,13 +359,13 @@ function storedWorkspaceContent(row){
   return envelope;
 }
 
-function storedWorkspaceCode(workspace){
+export function storedWorkspaceCode(workspace){
   return workspace.schema_version===WORKSPACE_SCHEMA_VERSION
     ? JSON.stringify({code:workspace.code,board:workspace.board})
     : workspace.code;
 }
 
-function snapshotFromRow(row){
+export function snapshotFromRow(row){
   if(!row) return null;
   const storedQuestionId=String(row.question_id);
   const versionedQuestion=storedQuestionId.match(/^([a-z0-9]+(?:-[a-z0-9]+)*)@([1-9]\d*)$/);
@@ -654,7 +656,7 @@ async function handleSignal(req,res){
   if(!payload) return res.status(401).json({ok:false,error:'authentication required'});
   const userId=authenticatedUserId(payload);
   if(!userId) return res.status(401).json({ok:false,error:'authentication required'});
-  const db=getClient();
+  const db=req.workspace?.db||getClient();
   try{ await cleanupOld(db); }catch{ return res.status(503).json({ok:false,error:'video signaling unavailable'}); }
 
   if(req.method==='POST'){
@@ -735,7 +737,19 @@ async function handleSignal(req,res){
 
 export default async function handler(req,res){
   if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
-  if(multiCircleControlPlaneEnabled()){
+  if(secondaryCircleWorkspaceEnabled()){
+    try{
+      const selected=await prepareWorkspaceRequest(req,res);
+      if(selected?.mode==='secondary')return await dispatchWorkspaceVideo(req,res,selected);
+      if(selected){
+        const raw=req.method==='GET'?(req.query?.room_id??new URL(req.url,'http://localhost').searchParams.get('room_id')):req.body?.room_id;
+        if(typeof raw==='string'&&raw.startsWith('circle_'))return res.status(404).json({error:'pair not found'});
+        const json=res.json.bind(res);
+        res.json=body=>{ if(body?.error==='not a member of this room'){ res.status(404); return json({error:'pair not found'}); } return json(body); };
+      }
+    }catch(error){return sendWorkspaceFailure(res,error);}
+  }
+  if(!req.workspace&&multiCircleControlPlaneEnabled()){
     try{
       const payload=await verifyRequestAuth(req);
       const userId=Number(payload?.id??payload?.uid);

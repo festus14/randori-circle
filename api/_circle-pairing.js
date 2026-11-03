@@ -53,6 +53,12 @@ const CIRCLE_PAIRING_READINESS_MANIFEST=Object.freeze({
   artifactScope:'owned',
   tables:READINESS_SCHEMA_MANIFEST.tables.filter(item=>CIRCLE_PAIRING_TABLES.has(item.name)),
   indexes:READINESS_SCHEMA_MANIFEST.indexes.filter(item=>CIRCLE_PAIRING_INDEXES.has(item.name)),
+  // #438 resolution 3: readiness declarations only; publication and pairing
+  // generation logic is unchanged. v24 freezes receipt-backed snapshots.
+  triggers:READINESS_SCHEMA_MANIFEST.triggers.filter(item=>[
+    'circle_completion_group_update_guard','circle_completion_group_delete_guard',
+    'circle_completion_eligibility_update_guard','circle_completion_eligibility_delete_guard',
+  ].includes(item.name)),
   toleratedLegacyTables:[],
 });
 

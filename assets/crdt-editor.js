@@ -9061,7 +9061,7 @@ ${err.toString()}`);
   var QUEUE_RETENTION_MS = 90 * 24 * 60 * 60 * 1e3;
   var MAX_UPDATE_BYTES = 64 * 1024;
   var VERSION = /^[a-f0-9]{64}$/;
-  var ROOM = /^week_[1-9]\d*_pair_[1-9]\d*$/;
+  var ROOM = { test: (room) => window.RandoriWorkspaceScope?.canonicalRoom?.(room) === true };
   var ORIGIN_REMOTE = Symbol("remote");
   var ORIGIN_PENDING = Symbol("pending");
   var memoryQueues = /* @__PURE__ */ new Map();
@@ -9095,17 +9095,18 @@ ${err.toString()}`);
     return Number.isSafeInteger(id2) && id2 > 0 ? id2 : null;
   }
   function selectionIdentity(room = window._randori_workspace?.room) {
+    if (window.RandoriWorkspaceScope?.isSolo?.(room)) return null;
     const selection = window._randori_questions?.selectedIdentity?.();
     const version = Number(selection?.version);
     const language = String(document.getElementById("langSelect")?.value || "");
     if (!ROOM.test(String(room || "")) || typeof selection?.slug !== "string" || !selection.slug || !Number.isSafeInteger(version) || version < 1 || !["javascript", "python"].includes(language)) return null;
-    return { room: String(room), questionSlug: selection.slug, questionVersion: version, language };
+    return { room: String(room), circlePublicId: window._randori_circle_control?.scheduleContext?.()?.circlePublicId || null, questionSlug: selection.slug, questionVersion: version, language };
   }
   function identityKey(identity, owner = actorId()) {
-    return JSON.stringify([owner, identity.room, identity.questionSlug, identity.questionVersion, identity.language]);
+    return JSON.stringify([owner, identity.circlePublicId, identity.room, identity.questionSlug, identity.questionVersion, identity.language]);
   }
   function sameIdentity(left, right) {
-    return !!left && !!right && left.room === right.room && left.questionSlug === right.questionSlug && left.questionVersion === right.questionVersion && left.language === right.language;
+    return !!left && !!right && left.room === right.room && left.circlePublicId === right.circlePublicId && left.questionSlug === right.questionSlug && left.questionVersion === right.questionVersion && left.language === right.language;
   }
   function bytesToBase64(bytes) {
     let binary = "";
@@ -9709,6 +9710,11 @@ ${err.toString()}`);
   }, { capture: true });
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", scheduleActivation, { once: true });
   else scheduleActivation();
+  window.addEventListener("randori:workspace-scope-reset", () => {
+    clearActorQueue(state.actorId);
+    memoryQueues.clear();
+    deactivate();
+  });
   window._randori_crdt = {
     activate,
     deactivate,
