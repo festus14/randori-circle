@@ -20,15 +20,18 @@ import { afterEach, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
 
-import { ensureSecondaryScheduleReadiness } from '../../api/_secondary-schedule.js';
-import { MIGRATION_CONTRACTS } from '../../db/migration-contract.js';
-import { MIGRATION_PLANS } from '../../db/migration-plan.js';
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import {
+await import('../support/historical-v24.mjs');
+const {
   applyMigrations,
   inspectMigrationState,
   prepareMigrationConnection,
-} from '../../db/migration-runner.js';
+}=await import('../../db/migration-runner.js');
+
+const { ensureSecondaryScheduleReadiness }=await import('../../api/_secondary-schedule.js');
+const { MIGRATION_CONTRACTS }=await import('../../db/migration-contract.js');
+import { MIGRATION_PLANS } from '../../db/migration-plan.js';
+const { EXECUTABLE_MIGRATIONS }=await import('../../db/executable-migrations.js');
+
 
 delete process.env.TURSO_DATABASE_URL;
 
@@ -130,8 +133,8 @@ test('ledger advancing N-1 to N re-probes, then the current success is cached',a
   assert.equal(await ensureSecondaryScheduleReadiness(client),true);
   const afterPending=reads();
   // The protected cutover applies N through the same runner.
-  const state=await inspectMigrationState(db);
-  const applied=await applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
+  const state=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,24)});
+  const applied=await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,24),expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
   assert.deepEqual(applied.applied.map(item=>item.version),[N]);
   // The N-1 verdict was not retained, so this call re-probes the N schema
   // instead of returning the stale pending_additive success.

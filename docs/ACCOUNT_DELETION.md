@@ -310,7 +310,17 @@ account reaches nothing.
 | `pairing_email_outbox` | `user_id`, `recipient_email` | Anonymise | Legacy queue rows to them are cancelled and the address replaced. |
 | `users` | `name` | Keep | Legacy pre-membership roster keyed by name only; it cannot be attributed to the account without risking another member's row. |
 
-Tables with no personal data: `ai_usage`, `chat_retention_audit_events`, `chat_retention_control`, `chat_retention_legal_holds`, `chat_retention_runs`, `chat_retention_scopes`, `circle_membership_rollout`, `circle_pairing_publications`, `credential_key_controls`, `pairing_cycles`, `pairing_weeks`, `questions`.
+| `circle_pair_messages` | `sender_id`, `message` | Anonymise | Their secondary messages become Message deleted; partner conversation order is preserved. |
+| `circle_session_runs` | `user_id`, `code`, `test_cases_snapshot`, `results_json` | Anonymise | Secondary solo runs are deleted; shared attested pair code stays with the partner. |
+| `circle_pair_code_documents` | `last_actor_id`, `y_state_base64` | Keep | Joint secondary pair document; retained for the partner with the existing 90-day expiry. |
+| `circle_pair_room_snapshots` | `updated_by`, `code` | Keep | Shared secondary workspace; retained for the partner. Solo snapshots are deleted. |
+| `circle_session_completion_receipts` | `user_id` | Keep | Immutable secondary completion evidence for the partner. |
+| `circle_pair_session_controls` | `candidate_user_id`, `updated_by` | Keep | Secondary interview roles; actor ids resolve to the tombstone. |
+| `circle_pair_meeting_links` | `updated_by`, `meeting_url` | Delete | Their secondary meeting URL may identify a personal meeting room. |
+| `circle_video_signals` | `from_id`, `to_id`, `payload` | Keep | Random peer ids; bounded secondary signalling expires after one hour. |
+| `circle_chat_retention_scopes` | `group_user_a_id`, `group_user_b_id` | Keep | Immutable group-owner ids allow retention to sweep the partner conversation after deletion. |
+
+Tables with no personal data: `ai_usage`, `chat_retention_audit_events`, `chat_retention_control`, `chat_retention_legal_holds`, `chat_retention_runs`, `chat_retention_scopes`, `circle_membership_rollout`, `circle_pairing_publications`, `credential_key_controls`, `pairing_cycles`, `pairing_weeks`, `questions`, `circle_chat_retention_control`, `circle_chat_retention_runs`, `circle_chat_retention_legal_holds`, `circle_chat_retention_audit_events`.
 
 `tests/unit/account-deletion.test.mjs` fails if a table is added to the schema
 manifest without being placed in one of these lists, and asserts every listed

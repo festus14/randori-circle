@@ -36,6 +36,7 @@ import {
   multiCircleControlPlaneEnabled,
   secondaryCircleCoordinationEnabled,
   secondaryCircleSchedulingEnabled,
+  secondaryCircleWorkspaceEnabled,
 } from './_active-circle.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
 import { googleOAuthRequestConfiguration, setAuthResponseHeaders } from './_auth-config.js';
@@ -385,6 +386,7 @@ async function handleCapabilities(req,res){
       ...(multiCircleAvailabilityEnabled()?{multiCircleAvailability:true}:{}),
       ...(secondaryCircleCoordinationEnabled()?{secondaryCircleCoordination:true}:{}),
       ...(secondaryCircleSchedulingEnabled()?{secondaryCircleScheduling:true}:{}),
+      ...(secondaryCircleWorkspaceEnabled()?{secondaryCircleWorkspace:true}:{}),
       // Issue #292: advertised only while CIRCLE_HEALTH_ENABLED (and circle
       // membership) is on. The server still checks ownership on every read.
       ...(circleHealthEnabled()?{circleHealth:true}:{}),

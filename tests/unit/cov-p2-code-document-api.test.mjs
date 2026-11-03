@@ -25,6 +25,7 @@ mock.module('../../api/_db.js',{exports:{
   verifyRequestAuth:async()=>{ if(state.authThrows) throw new Error('auth store down'); return state.auth; },
 }});
 mock.module('../../api/_active-circle.js',{exports:{
+  secondaryCircleWorkspaceEnabled:()=>false,
   multiCircleControlPlaneEnabled:()=>state.multiCircle,
   canUseLegacySinglePrimaryCircleFeatures:async(db,auth)=>{ state.calls.push(['legacy',auth]); return state.legacyAllowed; },
   sendMultiCircleFeatureUnavailable:res=>res.status(409).json({code:'circle_feature_unavailable'}),

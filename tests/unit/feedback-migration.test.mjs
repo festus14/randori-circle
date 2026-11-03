@@ -48,7 +48,7 @@ test('v23 is additive, empty, indexed, and exact after v22, and only then passes
   const item=fixture();
   try{
     await apply(item.db,EXECUTABLE_MIGRATIONS.slice(0,22));
-    const before=await inspectMigrationState(item.db);
+    const before=await inspectMigrationState(item.db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,23)});
     assert.equal(before.currentVersion,22);
     // The v22 feedback contract is unchanged by the v23 migration.
     assert.equal(MIGRATION_CONTRACTS[21].compatibility,'additive');
@@ -73,8 +73,8 @@ test('v23 is additive, empty, indexed, and exact after v22, and only then passes
     }finally{ probeClient.close(); }
     assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM sqlite_master WHERE name='account_deletion_requests'`)).rows[0].c,0,
       'the readiness probe never runs DDL');
-    const result=await applyMigrations(item.db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
-    assert.deepEqual(result.applied.map(entry=>entry.version),[23,24]);
+    const result=await applyMigrations(item.db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,23),expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
+    assert.deepEqual(result.applied.map(entry=>entry.version),[23]);
     assert.equal(V23.name,'account-deletion-grace-period');
     assert.equal(MIGRATION_CONTRACTS[22].checksum,V23.checksum);
     assert.equal(MIGRATION_CONTRACTS[22].compatibility,'additive');
@@ -91,8 +91,8 @@ test('v23 is additive, empty, indexed, and exact after v22, and only then passes
     assert.ok(V23.operations.every(operation=>['ensure-table','ensure-index'].includes(operation.operation)),
       'v23 adds no triggers or state rows');
     assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM account_deletion_requests`)).rows[0].c,0);
-    const state=await inspectMigrationState(item.db);
-    assert.equal(state.currentVersion,24);
+    const state=await inspectMigrationState(item.db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,23)});
+    assert.equal(state.currentVersion,23);
     assert.equal(state.schemaExact,true);
     assert.equal(await schemaCapabilityAvailable(item.db,{version:23}),true);
     assert.equal(await graceSchemaAvailable(item.db),true);

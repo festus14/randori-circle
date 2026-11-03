@@ -1,0 +1,177 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+let moduleId=0;
+class Node{
+  constructor(tag){this.tag=tag;this.children=[];this.dataset={};this.value='';}
+  append(...children){this.children.push(...children);}
+  prepend(child){this.children.unshift(child);}
+  setAttribute(name,value){this[name]=value;}
+  remove(){this.removed=true;}
+}
+async function fixture({enabled=true,body=null,version=7,cachedVersion=version}={}){
+  const previous=new Map(['window','document','localStorage'].map(key=>[key,globalThis[key]])),nodes=new Map();
+  const host=new Node('section');nodes.set('view-code',host);nodes.set('editor',new Node('textarea'));nodes.set('roomSelect',new Node('select'));
+  const store=new Map([['randori-code','private'],['randori-theme','dark'],['randori-board:week_1_pair_2','private']]);
+  const storage={get length(){return store.size;},key:index=>[...store.keys()][index],removeItem:key=>store.delete(key)};
+  let epoch=1,publicId='dojo-20',actor=1;
+  const sent=[],events=[],stopped=[];
+  const root={location:{origin:'https://app.example.test'},fetch:async(input,options)=>{sent.push({input,options});
+      if(input==='/api/circles')return new Response(JSON.stringify({ok:true,context_version:version,active_circle:{public_id:publicId}}));
+      const context=new Headers(options?.headers||input?.headers).get('X-Randori-Circle-Context-Version');
+      if(context!==null&&context!==String(version))return new Response(JSON.stringify({code:'circle_context_changed'}),{status:409});
+      return new Response(JSON.stringify(body||{ok:true,circle_public_id:publicId,circle_context_version:version,circle:{public_id:publicId,name:'Dojo',is_primary:false},room_id:'circle_20_publication_3_group_4'}));},
+    _randori_auth:{me:{id:1},capabilities:{secondaryCircleWorkspace:enabled}},
+    _randori_circle_control:{capturePairing:async()=>({epoch,userId:actor,contextVersion:cachedVersion,circlePublicId:publicId}),
+      matchesPairing:(operation,body)=>operation.epoch===epoch&&operation.userId===actor&&operation.contextVersion===cachedVersion&&operation.circlePublicId===publicId
+        &&(!body||body.circle_context_version===cachedVersion&&body.circle_public_id===publicId)},
+    _randori_workspace:{deactivate:()=>stopped.push('workspace')},_randori_crdt:{deactivate:()=>stopped.push('crdt')},
+    _randori_video:{disposeForScopeChange:()=>stopped.push('video'),leaveVideo:()=>stopped.push('leave-signal')},_randori_code:{setCode:()=>stopped.push('code')},
+    RandoriCircleUI:{circleBadgeNode:(_doc,circle)=>{const badge=new Node('span');badge.textContent=`In ${circle.name} Secondary`;return badge;}},
+    dispatchEvent:event=>events.push(event.type)};
+  globalThis.window=root;globalThis.localStorage=storage;globalThis.document={getElementById:id=>nodes.get(id)||null,createElement:tag=>new Node(tag)};
+  await import(`../../assets/workspace-scope.js?fixture=${moduleId++}`);
+  return {root,sent,nodes,store,events,stopped,advanceCurrent(){version++;},switch(){epoch++;version++;cachedVersion++;publicId='dojo-30';root.RandoriWorkspaceScope.reset();},
+    close(){for(const [key,value]of previous){if(value===undefined)delete globalThis[key];else globalThis[key]=value;}}};
+}
+test('workspace fetch fences all pollers and preserves unrelated requests',async()=>{
+  const f=await fixture();try{
+    for(const endpoint of ['history','messages','runs','execute','my-pair','pair-recap','session-completion','session-controls','meeting-link','code-document','video/poll','ai/history']){
+      const response=await f.root.fetch(`/api/${endpoint}`,{method:'GET'});assert.equal((await response.json()).ok,true);
+      assert.equal(f.sent.at(-1).options.headers.get('X-Randori-Circle-Context-Version'),'7');
+    }
+    await f.root.fetch('/api/catalog');assert.equal(f.sent.at(-1).options?.headers,undefined);
+    await f.root.fetch('https://other.example.test/api/history');assert.equal(f.sent.at(-1).options?.headers,undefined);
+    assert.equal(f.root.RandoriWorkspaceScope.canonicalRoom('week_3_pair_4'),true);
+    assert.equal(f.root.RandoriWorkspaceScope.secondaryRoom('circle_20_publication_3_group_4'),true);
+    assert.equal(f.root.RandoriWorkspaceScope.canonicalRoom('circle_20_publication_3_group_9007199254740992'),false);
+    assert.equal(f.root.RandoriWorkspaceScope.canonicalRoom('week_03_pair_4'),false);
+  }finally{f.close();}
+});
+test('switch drops even a response whose HTTP request already completed, clears private caches and stops media',async()=>{
+  const f=await fixture();try{
+    f.root._randori_code.currentRoom='circle_20_publication_3_group_4';f.nodes.get('roomSelect').value=f.root._randori_code.currentRoom;
+    const response=await f.root.fetch('/api/history');f.switch();
+    await assert.rejects(response.json(),{name:'AbortError'});
+    assert.equal(f.store.has('randori-code'),false);assert.equal(f.store.has('randori-board:week_1_pair_2'),false);assert.equal(f.store.get('randori-theme'),'dark');
+    for(const surface of ['workspace','video','crdt','code'])assert.ok(f.stopped.includes(surface));
+    assert.ok(f.events.includes('randori:workspace-scope-reset'));assert.equal(f.root._randori_authorized_room,null);
+    assert.equal(f.root._randori_code.currentRoom,null);assert.equal(f.nodes.get('roomSelect').value,'');
+  }finally{f.close();}
+});
+test('old responses consumed as text and clones cannot cross the switch',async()=>{
+  const f=await fixture();try{
+    const response=await f.root.fetch('/api/messages'),copy=response.clone(),textCopy=response.clone();f.switch();
+    await assert.rejects(response.text(),{name:'AbortError'});await assert.rejects(copy.json(),{name:'AbortError'});await assert.rejects(textCopy.text(),{name:'AbortError'});
+  }finally{f.close();}
+});
+test('caller abort signals are linked, and a switch aborts outstanding writes',async()=>{
+  const f=await fixture();try{
+    const controller=new AbortController(),response=await f.root.fetch('/api/messages',{method:'POST',signal:controller.signal});
+    controller.abort();assert.equal(f.sent.at(-1).options.signal.aborted,true);
+    await response.json();
+    await f.root.fetch('/api/execute',{method:'POST'});f.switch();assert.equal(f.sent.at(-1).options.signal.aborted,true);
+  }finally{f.close();}
+});
+test('primary flag-off successes remain compatible with their legacy response shape',async()=>{
+  const f=await fixture({enabled:false});try{
+    const response=await f.root.fetch('/api/history');assert.equal((await response.json()).ok,true);
+    assert.equal(f.root.RandoriWorkspaceScope.enabled(),false);
+  }finally{f.close();}
+});
+
+test('flag-off fetch passes inputs and options through untouched, including explicit current headers',async()=>{
+  const f=await fixture({enabled:false,version:1,cachedVersion:0});try{
+    f.root._randori_circle_control.capturePairing=()=>{throw new Error('flag-off fetch must not capture context');};
+    for(const headers of [{ 'x-randori-circle-context-version':'1' },new Headers({'X-Randori-Circle-Context-Version':'1'}),[['X-Randori-Circle-Context-Version','1']]]){
+      const options={headers,signal:new AbortController().signal};
+      const response=await f.root.fetch('/api/my-pair',options);
+      assert.equal(response.status,200);assert.equal((await response.json()).ok,true);
+      assert.equal(f.sent.at(-1).options,options);
+      assert.equal(new Headers(headers).get('X-Randori-Circle-Context-Version'),'1');
+    }
+    const input=new Request('https://app.example.test/api/my-pair',{headers:{'X-Randori-Circle-Context-Version':'1'}});
+    assert.equal((await f.root.fetch(input)).status,200);
+    assert.equal(f.sent.at(-1).input,input);assert.equal(f.sent.at(-1).options,undefined);
+    const options={method:'POST',body:'unchanged'};
+    await f.root.fetch('/api/messages',options);assert.equal(f.sent.at(-1).options,options);
+    assert.equal(f.sent.some(request=>request.input==='/api/circles'),false);
+  }finally{f.close();}
+});
+
+test('enabled fetch preserves explicit current context headers instead of downgrading to the cached version',async()=>{
+  const f=await fixture({version:1,cachedVersion:0});try{
+    for(const headers of [{ 'x-randori-circle-context-version':'1' },new Headers({'X-Randori-Circle-Context-Version':'1'}),[['X-Randori-Circle-Context-Version','1']]]){
+      const response=await f.root.fetch('/api/my-pair',{headers});
+      assert.equal(response.status,200);assert.equal((await response.json()).ok,true);
+      assert.equal(f.sent.at(-1).options.headers.get('X-Randori-Circle-Context-Version'),'1');
+    }
+    const input=new Request('https://app.example.test/api/my-pair',{headers:{'X-Randori-Circle-Context-Version':'1'}});
+    assert.equal((await (await f.root.fetch(input)).json()).ok,true);
+    assert.equal(f.sent.at(-1).options.headers.get('X-Randori-Circle-Context-Version'),'1');
+    assert.equal(f.sent.some(request=>request.input==='/api/circles'),false);
+    // Explicit stale values also belong to the caller; the server rejects them.
+    assert.equal((await f.root.fetch('/api/my-pair',{headers:{'X-Randori-Circle-Context-Version':'0'}})).status,409);
+    assert.equal(f.sent.at(-1).options.headers.get('X-Randori-Circle-Context-Version'),'0');
+  }finally{f.close();}
+});
+
+test('enabled fetch obtains the current version for missing headers without reusing a stale cache',async()=>{
+  const f=await fixture({version:1,cachedVersion:0});try{
+    for(const version of [1,2]){
+      const response=await f.root.fetch('/api/my-pair');
+      assert.equal(response.status,200);assert.equal((await response.json()).ok,true);
+      assert.equal(f.sent.at(-1).options.headers.get('X-Randori-Circle-Context-Version'),String(version));
+      assert.equal(f.sent.at(-2).input,'/api/circles');
+      assert.equal(f.sent.at(-2).options.cache,'no-store');
+      f.advanceCurrent();
+    }
+  }finally{f.close();}
+});
+
+test('a context lookup older than the captured version cannot downgrade or send the workspace request',async()=>{
+  const f=await fixture({version:0,cachedVersion:1});try{
+    await assert.rejects(f.root.fetch('/api/messages',{method:'POST',body:'private'}),{name:'AbortError'});
+    assert.deepEqual(f.sent.map(request=>request.input),['/api/circles']);
+  }finally{f.close();}
+});
+
+test('context revocation and disabled workspace responses erase private editor state and caches',async()=>{
+  for(const body of [{code:'circle_context_changed'},{code:'active_circle_required'},
+    {error:'active circle membership required'},{code:'circle_feature_unavailable'}]){
+    const f=await fixture({body});try{
+      f.nodes.get('editor').value='private code';
+      const response=await f.root.fetch('/api/messages');assert.deepEqual(await response.json(),body);
+      assert.equal(f.store.has('randori-code'),false);assert.equal(f.nodes.get('editor').value,'');
+      assert.ok(f.stopped.includes('code'));assert.equal(f.root._randori_authorized_room,null);
+      if(body.code==='circle_feature_unavailable')assert.equal(f.nodes.get('view-code').children[0].textContent,'Workspace is not available in this circle yet.');
+    }finally{f.close();}
+  }
+});
+test('only current authorised response attribution mounts a badge and solo identity',async()=>{
+  const room='circle_20_publication_3_group_4';
+  const f=await fixture({body:{ok:true,room_id:room,circle_public_id:'dojo-20',circle_context_version:7,circle:{public_id:'dojo-20',name:'Dojo',is_primary:false},recap:{pair:{solo:true}}}});try{
+    f.root._randori_authorized_room=room;
+    const response=await f.root.fetch(new Request('https://app.example.test/api/pair-recap'));
+    await response.json();assert.equal(f.root.RandoriWorkspaceScope.isSolo(room),true);
+    f.root.RandoriWorkspaceScope.showRoomCircle(room);
+    assert.equal(f.nodes.get('view-code').children[0].textContent,'In Dojo Secondary');
+    f.switch();assert.equal(f.root.RandoriWorkspaceScope.isSolo(room),false);
+    assert.equal(f.nodes.get('editor').value,'');
+  }finally{f.close();}
+  const bad=await fixture({body:{ok:true,circle_public_id:'dojo-30',circle_context_version:8}});try{
+    await assert.rejects((await bad.root.fetch('/api/messages')).json(),{name:'AbortError'});
+  }finally{bad.close();}
+});
+
+test('initial identity hydration stops volatile work and retains saved drafts for authorised rehydration',async()=>{
+  const f=await fixture();try{
+    f.nodes.get('editor').value='unsent draft';
+    f.root.RandoriWorkspaceScope.reset({preserveDrafts:true});
+    assert.equal(f.store.get('randori-code'),'private');
+    assert.equal(f.store.has('randori-board:week_1_pair_2'),true);
+    assert.equal(f.nodes.get('editor').value,'unsent draft');
+    assert.ok(f.stopped.includes('video'));assert.equal(f.stopped.includes('leave-signal'),false);
+    f.root.RandoriWorkspaceScope.reset();
+    assert.equal(f.store.has('randori-code'),false);assert.equal(f.nodes.get('editor').value,'');
+  }finally{f.close();}
+});

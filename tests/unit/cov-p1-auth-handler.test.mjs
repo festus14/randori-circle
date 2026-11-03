@@ -104,6 +104,7 @@ mock.module('../../api/_active-circle.js',{exports:{
   multiCircleControlPlaneEnabled:()=>S.flags.controlPlane,
   secondaryCircleCoordinationEnabled:()=>S.flags.coordination,
   secondaryCircleSchedulingEnabled:()=>S.flags.scheduling,
+  secondaryCircleWorkspaceEnabled:()=>false,
 }});
 mock.module('../../api/_local-runtime.js',{exports:{
   localIdentityAdapterEnabled:()=>S.localIdentity,

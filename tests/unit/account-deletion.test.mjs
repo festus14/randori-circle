@@ -386,7 +386,7 @@ test('deletion erases or anonymises every inventoried column and keeps partners\
     outbox_suppressed:6,outbox_scrubbed:11,outbox_feedback_scrubbed:1,legacy_outbox:1,invitations_revoked:1,invitations_scrubbed:2,
     feedback_events_deleted:1,feedback_events_anonymised:1,feedback_votes_deleted:2,feedback_items_deleted:1,
     activations_scrubbed:1,invite_requests_expired:1,sessions_revoked:2,google_links_removed:1,
-    memberships_deactivated:4,messages_redacted:2,solo_runs_deleted:1,pair_run_code_cleared:2,logs_deleted:2,
+    memberships_deactivated:4,messages_redacted:2,solo_runs_deleted:1,pair_run_code_cleared:2,secondary_messages_redacted:0,secondary_solo_runs_deleted:0,secondary_pair_run_code_cleared:0,logs_deleted:2,
     circles_audited:4,
   });
 

@@ -212,7 +212,7 @@ function storedWorkspaceSeed(row,identity){
   return code;
 }
 
-function materialize(doc,{stored=false}={}){
+export function materializeCodeDocument(doc,{stored=false}={}){
   const invalid=message=>{
     if(stored) throw new CodeDocumentDataError(message);
     throw new CodeDocumentInputError(message);
@@ -239,6 +239,8 @@ function materialize(doc,{stored=false}={}){
     code,codeHash:sha256(Buffer.from(code,'utf8')),
   });
 }
+
+const materialize=materializeCodeDocument;
 
 function decodeStoredState(row){
   const encoded=String(row?.y_state_base64||'');

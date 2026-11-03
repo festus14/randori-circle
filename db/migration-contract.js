@@ -182,6 +182,12 @@ export const MIGRATION_CONTRACTS=Object.freeze([
       triggers:Object.freeze([]),
     }),
   }),
+  Object.freeze({
+  "version": 25,
+  "name": "circle-owned-workspace",
+  "checksum": "cd6d0de84ca6886367654f32d29951490334c1f08f8c6cda82aa0244df96e618",
+  "compatibility": "breaking"
+}),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

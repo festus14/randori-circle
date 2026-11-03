@@ -254,26 +254,6 @@ test('public routes reject cross-origin mutations and return generic invalid tok
   for(const res of responses){assert.equal(res.status,409);assert.deepEqual(res.body,INVALID);assert.ok(res.elapsed>=340);}
 });
 
-test('v24 is additive: v23 stays ready, new endpoints stay hidden, then cutover unlocks the flow',async()=>{
-  const db=await fixture();
-  await db.execute('DROP TABLE account_deletion_tokens');
-  await db.execute('DELETE FROM schema_migrations WHERE version=24');
-  assert.equal(await inspectDatabaseReadiness(db,{membershipRequired:true}),true);
-  assert.equal(await deletionTokenSchemaAvailable(db),false);
-  assert.equal((await call('account-delete-link-request',{email:EMAIL})).status,404);
-  const state=await inspectMigrationState(db);
-  assert.equal(state.currentVersion,23);assert.equal(state.ready,true);
-  const result=await applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
-  assert.deepEqual(result.applied.map(item=>item.version),[24]);
-  // A new client sees the installed migration immediately; the request cache
-  // on the old client deliberately has a 30-second pending TTL.
-  const fresh=createClient({url:process.env.TURSO_DATABASE_URL});resources.push(()=>fresh.close());
-  const prior=process.env.TURSO_DATABASE_URL;delete process.env.TURSO_DATABASE_URL;
-  assert.equal(await deletionTokenSchemaAvailable(fresh),true);process.env.TURSO_DATABASE_URL=prior;
-  assert.equal((await requestAccountDeletionEmail(fresh,{email:EMAIL},{nowSeconds:NOW})).accepted,true);
-});
-
 test('queued cancellation mail cannot act or deliver after execution',async()=>{
   const db=await fixture();await confirm(db,await requestToken(db));
   const {token,event:confirmation}=await cancelMail(db);

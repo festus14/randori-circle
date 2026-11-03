@@ -58,6 +58,37 @@ jobs:
             test-results
           retention-days: 7
           if-no-files-found: ignore
+  secondary-workspace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Verify secondary workspace and context cleanup
+        run: >-
+          npx playwright test tests/e2e/secondary-workspace-real-runtime.spec.ts
+          tests/e2e/board-sync.spec.ts tests/e2e/circle-archive.spec.ts
+          tests/e2e/member-lifecycle.spec.ts --project=chromium
+          --grep='real runtime: both directions|real runtime: flag-off gates|a board edit reloaded before its debounce|archive session loss stays signed out|a delayed member mutation cannot restore'
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-secondary-workspace-${{ github.run_attempt }}
+          path: |
+            playwright-report
+            test-results
+          retention-days: 7
+          if-no-files-found: ignore
   # Cross-browser smoke (issue #399): the @smoke subset only, on Firefox
   # and WebKit, in parallel with the full-suite `e2e` job. Non-required at
   # first (not in branch protection): promote to required after ~2 weeks

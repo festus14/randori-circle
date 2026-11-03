@@ -19,7 +19,9 @@ export const UNAVAILABLE_RESPONSE=Object.freeze({ok:false,status:'unavailable'})
 export const READINESS_TIMEOUT_MS=8_000;
 // v16's normalized schedule ownership adds two tables and their automatic
 // constraint indexes; keep a bounded margin for the full managed schema.
-export const MAX_READINESS_SCHEMA_OBJECTS=256;
+// v25 adds parallel workspace tables and their SQLite constraint indexes.
+// Keep the inspection bounded while allowing the complete managed schema.
+export const MAX_READINESS_SCHEMA_OBJECTS=384;
 
 const inFlightReadiness=new Map();
 

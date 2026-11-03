@@ -62,10 +62,21 @@ separately default-off.
   `SECONDARY_CIRCLE_SCHEDULING_ENABLED` flag adds only an opaque schedule
   identity and dashboard scheduling; it grants no room or workspace authority.
   `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` may then add dashboard-only v2
-  delivery. History, chat, execution, workspace, video, recap, and AI remain
+  delivery. With the workspace flag off, History, chat, execution, workspace, video, recap, and AI remain
   primary-only and return `409 circle_feature_unavailable`. See
   `SELECTED_CIRCLE_PAIRING.md`, `SECONDARY_SCHEDULING.md`, and
   `SECONDARY_SCHEDULE_NOTIFICATIONS.md`.
+
+- After owner application of breaking migration v25, the independent default-off
+  `SECONDARY_CIRCLE_WORKSPACE_ENABLED` flag adds selected-circle History, chat,
+  runs, execution, recap, completion, controls, meeting links, snapshots, code
+  documents and video signalling. It requires membership, control-plane,
+  availability and secondary coordination flags; scheduling stays independent.
+  AI, progress, stats and exercise suggestions retain their unavailable boundary.
+  Workspace statements bind the live session and generation; responses echo
+  circle attribution and context version. The shared transport aborts pollers
+  and drops delayed responses on the existing circle epoch. See
+  [Secondary workspace](SECONDARY_WORKSPACE.md) for scope, retention and cutover.
 
 The browser clears private circle and workspace state before reloading after a
 switch. Starting a switch advances a client control-plane epoch, so delayed

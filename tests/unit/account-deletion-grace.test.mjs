@@ -566,7 +566,7 @@ test('code at v23 with a v22 database is ready and the lock stays off (additive 
   const initial=await inspectMigrationState(v22,{migrations:EXECUTABLE_MIGRATIONS.slice(0,22)});
   await applyMigrations(v22,{migrations:EXECUTABLE_MIGRATIONS.slice(0,22),
     expectedStateFingerprint:initial.stateFingerprint,retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
-  const ledger=validateMigrationLedger(await readMigrationLedger(v22,{limit:30}),MIGRATION_CONTRACTS);
+  const ledger=validateMigrationLedger(await readMigrationLedger(v22,{limit:30}),MIGRATION_CONTRACTS.slice(0,23));
   const readiness=ledgerReadiness(ledger,{contracts:MIGRATION_CONTRACTS.slice(0,23)});
   assert.deepEqual({ready:readiness.ready,state:readiness.state,pendingVersion:readiness.pendingVersion},
     {ready:true,state:'pending_additive',pendingVersion:23});
