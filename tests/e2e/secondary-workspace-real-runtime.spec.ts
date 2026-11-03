@@ -30,8 +30,8 @@ test('real runtime: both directions, non-members, scoped History, independent ro
   let restore=()=>{};
   try{
     const pair=await createPairedCircle(browser,golden),owner=pair.owner.page,partner=pair.member.page;
-    const primary=(await (await owner.request.get(`${golden.origin}/api/circles`)).json()).circles[0];
     restore=enableWorkspace();configureExecutionProvider();
+    const primary=(await (await owner.request.get(`${golden.origin}/api/circles`)).json()).circles[0];
     const secondary=await withDatabase(golden,db=>seedSecondaryCircle(db,{users:[pair.owner.user.id,pair.member.user.id]}));
     const solo=await withDatabase(golden,db=>seedSecondaryCircle(db,{circleId:30,name:'Solo Dojo',publicId:'67e37755-88c5-4a29-ae64-a7cc5a3e9dc7',users:[pair.owner.user.id]}));
     expect(Number(secondary.group.id)).toBe(Number(pair.room.split('_').at(-1)));
@@ -124,8 +124,9 @@ test('real runtime: flag-off gates and delayed prior-circle responses, context w
   const golden=await startGoldenRuntime('randori-438-switch-');let restore=()=>{};
   try{
     const pair=await createPairedCircle(browser,golden),owner=pair.owner.page;
+    restore=enableWorkspace();
     const primary=(await (await owner.request.get(`${golden.origin}/api/circles`)).json()).circles[0];
-    restore=enableWorkspace();const secondary=await withDatabase(golden,db=>seedSecondaryCircle(db,{users:[pair.owner.user.id,pair.member.user.id]}));
+    const secondary=await withDatabase(golden,db=>seedSecondaryCircle(db,{users:[pair.owner.user.id,pair.member.user.id]}));
     await select(owner,golden.origin,secondary.publicId);
     process.env.SECONDARY_CIRCLE_WORKSPACE_ENABLED='false';
     const unavailable={error:'pairing and workspace features are not available for this circle context',code:'circle_feature_unavailable'};

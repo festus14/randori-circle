@@ -26,7 +26,7 @@
     for(const controller of controllers) controller.abort();
     controllers.clear(); rooms.clear();
     root._randori_crdt?.deactivate?.();
-    root._randori_video?.leaveVideo?.();
+    root._randori_video?.disposeForScopeChange?.();
     root._randori_workspace?.deactivate?.();
     root._randori_authorized_room=null;
     root._randori_join_room=null;
@@ -35,8 +35,9 @@
     document.getElementById('workspaceCircleBadge')?.remove();
     root.dispatchEvent(new CustomEvent('randori:workspace-scope-reset'));
   }
-  function reset(){
+  function reset({preserveDrafts=false}={}){
     stop();
+    if(preserveDrafts) return;
     // These maps and pending queues contain private circle data. Settings,
     // identity credentials and theme preferences have separate storage keys.
     for(let index=localStorage.length-1;index>=0;index-=1){ const key=localStorage.key(index); if(key?.startsWith('randori-board:')) localStorage.removeItem(key); }

@@ -3666,7 +3666,7 @@ async function refreshMe(){
         invalidatePreparedInvite('auth_changed');
         renderInviteGateState();
       }
-      resetCircleControlForIdentityChange({preserveLifecycleRecentAction:true});
+      resetCircleControlForIdentityChange({preserveLifecycleRecentAction:true,preserveWorkspaceDrafts:!identityWasHydrated&&!!refreshedUserId});
     }
     if(availabilityState.userId!==null
       &&(!Number.isSafeInteger(refreshedUserId)||refreshedUserId<1
@@ -6043,7 +6043,7 @@ async function refreshMe(){
     }
   }
 
-  function resetPrivateCircleControl({switching,preserveLifecycleRecentAction=false}){
+  function resetPrivateCircleControl({switching,preserveLifecycleRecentAction=false,preserveWorkspaceDrafts=false}){
     window._randori_onboarding_authority?.invalidate?.('circle');
     clearAvailability();
     circleCreateAbort?.abort();
@@ -6054,7 +6054,7 @@ async function refreshMe(){
     if(switching) setCircleContextState('switching','Switching circle…');
     else circleContextErrorLatched=false;
     circleControlEpoch+=1;
-    window.RandoriWorkspaceScope?.reset?.();
+    window.RandoriWorkspaceScope?.reset?.({preserveDrafts:preserveWorkspaceDrafts});
     circleRenderEpoch+=1;
     pairingRenderEpoch+=1;
     pairingPublicationAbort?.abort();
@@ -6109,11 +6109,11 @@ async function refreshMe(){
     return resetPrivateCircleControl({switching:true});
   }
 
-  function resetCircleControlForIdentityChange({preserveLifecycleRecentAction=false}={}){
+  function resetCircleControlForIdentityChange({preserveLifecycleRecentAction=false,preserveWorkspaceDrafts=false}={}){
     circleCreatePending=false;
     circleCreateAttempt=null;
     setCircleCreateState('idle','');
-    return resetPrivateCircleControl({switching:false,preserveLifecycleRecentAction});
+    return resetPrivateCircleControl({switching:false,preserveLifecycleRecentAction,preserveWorkspaceDrafts});
   }
 
   function renderCircleContextSelector(context){
@@ -6142,7 +6142,7 @@ async function refreshMe(){
       ?'Choose which circle to manage and view.'
       :(circles.length>1
         ?(authCapabilities.secondaryCircleCoordination
-          ?'Availability and weekly pairing follow this circle. Secondary circles are coordination-only. Workspaces are not enabled.'
+          ?(authCapabilities.secondaryCircleWorkspace?'Availability, pairing and workspace follow the selected circle.':'Availability and weekly pairing follow this circle. Secondary circles are coordination-only. Workspaces are not enabled.')
           :(authCapabilities.multiCircleAvailability
           ?'Circle-specific availability and member controls are active. Pairing is not enabled yet.'
           :'Circle-specific member and invitation controls are active. Pairing remains unavailable for this account.')
@@ -10018,6 +10018,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     get initiatePending(){return videoInitiateTimer!==null},
     get roomSwitchPending(){return videoRoomSwitchTimer!==null},
     joinVideo,
+    disposeForScopeChange:disposeVideoForAuthoritativeSignOut,
     leaveVideo,
     sendSignal,
   };

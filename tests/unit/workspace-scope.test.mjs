@@ -21,7 +21,7 @@ async function fixture({enabled=true,body=null}={}){
       matchesPairing:(operation,body)=>operation.epoch===epoch&&operation.userId===actor&&operation.contextVersion===version&&operation.circlePublicId===publicId
         &&(!body||body.circle_context_version===version&&body.circle_public_id===publicId)},
     _randori_workspace:{deactivate:()=>stopped.push('workspace')},_randori_crdt:{deactivate:()=>stopped.push('crdt')},
-    _randori_video:{leaveVideo:()=>stopped.push('video')},_randori_code:{setCode:()=>stopped.push('code')},
+    _randori_video:{disposeForScopeChange:()=>stopped.push('video'),leaveVideo:()=>stopped.push('leave-signal')},_randori_code:{setCode:()=>stopped.push('code')},
     RandoriCircleUI:{circleBadgeNode:(_doc,circle)=>{const badge=new Node('span');badge.textContent=`In ${circle.name} Secondary`;return badge;}},
     dispatchEvent:event=>events.push(event.type)};
   globalThis.window=root;globalThis.localStorage=storage;globalThis.document={getElementById:id=>nodes.get(id)||null,createElement:tag=>new Node(tag)};
@@ -101,4 +101,17 @@ test('only current authorised response attribution mounts a badge and solo ident
   const bad=await fixture({body:{ok:true,circle_public_id:'dojo-30',circle_context_version:8}});try{
     await assert.rejects((await bad.root.fetch('/api/messages')).json(),{name:'AbortError'});
   }finally{bad.close();}
+});
+
+test('initial identity hydration stops volatile work and retains saved drafts for authorised rehydration',async()=>{
+  const f=await fixture();try{
+    f.nodes.get('editor').value='unsent draft';
+    f.root.RandoriWorkspaceScope.reset({preserveDrafts:true});
+    assert.equal(f.store.get('randori-code'),'private');
+    assert.equal(f.store.has('randori-board:week_1_pair_2'),true);
+    assert.equal(f.nodes.get('editor').value,'unsent draft');
+    assert.ok(f.stopped.includes('video'));assert.equal(f.stopped.includes('leave-signal'),false);
+    f.root.RandoriWorkspaceScope.reset();
+    assert.equal(f.store.has('randori-code'),false);assert.equal(f.nodes.get('editor').value,'');
+  }finally{f.close();}
 });
