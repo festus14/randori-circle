@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>Delete your account · Randori Circle</title>
+  <link rel="stylesheet" href="/assets/legal.css">
+  <link rel="stylesheet" href="/assets/deletion-link.css">
+  <script src="/assets/deletion-link.js" defer></script>
+</head>
+<body data-public-page="delete-account">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header><a href="/">Randori Circle</a></header>
+  <main id="main">
+    <h1>Delete your account</h1>
+    <p id="intro">If you left every circle or were removed, request a deletion link at your account’s email address. No password or sign-in is needed.</p>
+    <form id="requestForm">
+      <label for="email">Account email</label>
+      <input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+      <button type="submit">Email me a deletion link</button>
+    </form>
+    <form id="confirmForm" hidden>
+      <p>Your account will be locked now and deleted 14 days later. We will email you the date and a link to cancel.</p>
+      <label for="confirm">Type DELETE</label>
+      <input id="confirm" name="confirm" autocomplete="off" spellcheck="false" required>
+      <button id="confirmButton" type="submit" disabled>Schedule account deletion</button>
+    </form>
+    <form id="cancelForm" hidden>
+      <p>Cancelling stops deletion but does not restore circle membership. If you left or were removed, you stay removed and need a new invitation to sign in.</p>
+      <button type="submit">Cancel account deletion</button>
+    </form>
+    <p id="status" role="status" aria-live="polite" tabindex="-1"></p>
+    <p><a href="/privacy">Privacy policy</a> · <a href="mailto:festusomole14@gmail.com">Contact Randori Circle</a></p>
+    <noscript>This page needs JavaScript to request or use a deletion link. You can also contact Randori Circle by email.</noscript>
+  </main>
+</body>
+</html>

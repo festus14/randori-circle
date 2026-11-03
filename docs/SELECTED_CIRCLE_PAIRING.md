@@ -23,7 +23,7 @@ agree a time through circle-owned normalized storage; that still creates no
 chat, video, execution, AI, recap, or workspace capability. Optional result
 email links only to the dashboard and is not a workspace authorization.
 
-After the separate owner-run v24 migration, `SECONDARY_CIRCLE_WORKSPACE_ENABLED`
+After the separate owner-run v25 migration, `SECONDARY_CIRCLE_WORKSPACE_ENABLED`
 may enable a secondary room through an authorized recap response. Coordination
 continues to return no legacy room identifiers and grants no room authority.
 The room uses the circle-owned publication and group namespace, parallel storage,

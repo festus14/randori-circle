@@ -78,7 +78,10 @@ import {
   readActiveDeletionPending,
   readDeletionCancelSession,
   requestAccountDeletion,
+  requestAccountDeletionViaEmailToken,
+  cancelAccountDeletionViaEmailToken,
 } from './_account-deletion-grace.js';
+import { DELETION_TOKEN_MIGRATION_VERSION, requestAccountDeletionEmail } from './_account-deletion-tokens.js';
 import { schemaFeatureAvailable } from './_schema-capability.js';
 import {
   DataExportTooLargeError,
@@ -257,9 +260,11 @@ async function enforceAuthRateLimit(db, req, action, email){
   const bucket=Math.floor(Date.now()/1000/windowSeconds);
   const limits=action==='signup'
     ? [[`ip:${ip}`,5],[`email:${email}`,5]]
-    :(['activation-verify','password-reset-consume'].includes(action)
+    :(['account-delete-confirm-token','account-delete-cancel-token'].includes(action)
+      ?[[`ip:${ip}`,10]]
+      :(['activation-verify','password-reset-consume'].includes(action)
       ?[[`ip:${ip}`,20]]
-      :(action==='password-reset-request'
+      :(['password-reset-request','account-delete-link-request'].includes(action)
         ?[[`ip:${ip}`,10],[`email:${email}`,5]]
       :(['recent-auth-password','recent-auth-google'].includes(action)
         ?[[`ip:${ip}`,10],[`account:${email}`,10]]
@@ -269,7 +274,7 @@ async function enforceAuthRateLimit(db, req, action, email){
         // A data export is a large, sensitive read: 5 per account per 15
         // minutes keeps a stolen session from bulk-harvesting it.
         ?[[`ip:${ip}`,20],[`account:${email}`,5]]
-        :[[`ip:${ip}`,20],[`email:${email}`,10]])))));
+        :[[`ip:${ip}`,20],[`email:${email}`,10]]))))));
   for(const [dimension,limit] of limits){
     const key=createHash('sha256').update(`${action}|${dimension}|${bucket}|${getJwtSecret()}`).digest('hex');
     const result=await db.execute({
@@ -613,6 +618,48 @@ async function handleActivationVerify(req,res){
   if(result.status!=='verified') return res.status(409).json({ok:false,status:result.status});
   appendCookies(res,[sessionCookie(req,result.sessionToken)]);
   return res.json({ok:true,status:'verified',user:result.user});
+}
+
+// Public deletion proofs have their own endpoints and never issue a session.
+async function handleAccountDeletionEmail(req,res,ep){
+  const cancelling=ep==='account-delete-cancel-token';
+  if(!cancelling&&!accountDeletionGraceEnabled()) return unknownAuthEndpoint(res,ep);
+  if(req.method==='POST'&&!verifyAuthMutationOrigin(req)) return res.status(403).json({error:'same-origin request required'});
+  let db;
+  try{
+    db=getClient();
+    if(!await schemaFeatureAvailable(db,{enabled:true,version:DELETION_TOKEN_MIGRATION_VERSION})){
+      return unknownAuthEndpoint(res,ep);
+    }
+  }catch{return res.status(503).json({error:'account deletion temporarily unavailable'});}
+  if(req.method!=='POST') return res.status(405).json({error:'POST only'});
+  const startedAt=Date.now();
+  const requesting=ep==='account-delete-link-request';
+  const email=String(req.body?.email||'').trim().toLowerCase();
+  if(requesting&&(!email||email.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))){
+    return res.status(400).json({error:'valid email required'});
+  }
+  let result,failure;
+  try{
+    await ensureAuthReadiness(db);
+    await ensureAccountDeletionReadiness(db);
+    await enforceAuthRateLimit(db,req,ep,requesting?email:'');
+    result=requesting?await requestAccountDeletionEmail(db,{email})
+      :cancelling?await cancelAccountDeletionViaEmailToken(db,{token:req.body?.token})
+        :await requestAccountDeletionViaEmailToken(db,{token:req.body?.token,confirm:req.body?.confirm});
+  }catch(error){failure=error;}
+  await completeActivationResponseFloor(startedAt);
+  if(failure?.statusCode===429) return res.status(429).json({error:'too many deletion attempts; try again later'});
+  if(failure) return res.status(503).json({error:'account deletion temporarily unavailable'});
+  if(requesting){
+    res.status(202).json({ok:true,pending:true,
+      message:'If that account can request deletion, a confirmation email will arrive shortly.'});
+  }else if(!result.ok){
+    return res.status(409).json({ok:false,status:'invalid'});
+  }else{
+    res.json(cancelling?{ok:true,status:'cancelled'}:{ok:true,status:result.status,scheduled_for:result.scheduled_for});
+  }
+  deliverCommittedOutboxEvents(req,result?.outboxEvents);
 }
 
 async function handlePasswordResetRequest(req,res){
@@ -1632,17 +1679,23 @@ export default async function handler(req,res){
   }
   const credentialMutation=['signup','login','activation-resend','activation-verify','password-reset-request',
     'password-reset-consume','recent-auth','identity-password','identity-google-unlink','google-link-start',
-    'google-reauth-start','google-start']
+    'google-reauth-start','google-start','account-delete-cancel-token']
     .some(name=>ep===name||ep.includes(name))
     // With the flag off the deletion paths stay indistinguishable from an unknown endpoint.
     ||(accountDeletionEnabled()&&(accountDeletionRoute(ep,urlPath)||accountDeletionCancelRoute(ep,urlPath)))
     ||urlPath.includes('/activation/resend')||urlPath.includes('/activation/verify')
-    ||urlPath.includes('/password-reset/')||urlPath.includes('/recent-auth')
+    ||urlPath.includes('/account/delete/cancel-token')||urlPath.includes('/password-reset/')||urlPath.includes('/recent-auth')
     ||urlPath.includes('/identities/password')||urlPath.includes('/identities/google')
     ||urlPath.includes('/google/start')||urlPath.includes('/google/link/start')
     ||urlPath.includes('/google/reauth/start');
   if(req.method==='POST'&&!logoutMutation&&credentialMutation&&!verifyAuthMutationOrigin(req)){
     return res.status(403).json({error:'same-origin request required'});
+  }
+  const deletionEmailEndpoint=new Map([['/api/auth/account/delete/link','account-delete-link-request'],
+    ['/api/auth/account/delete/confirm-token','account-delete-confirm-token'],
+    ['/api/auth/account/delete/cancel-token','account-delete-cancel-token']]).get(urlPath.split('?')[0]);
+  if(deletionEmailEndpoint||['account-delete-link-request','account-delete-confirm-token','account-delete-cancel-token'].includes(ep)){
+    return handleAccountDeletionEmail(req,res,deletionEmailEndpoint||ep);
   }
   if (accountDeletionCancelRoute(ep,urlPath)) return handleAccountDeletionCancel(req,res,ep);
   if (accountDeletionRoute(ep,urlPath)) return handleAccountDeletion(req,res,ep);

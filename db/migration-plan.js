@@ -163,12 +163,20 @@ const PLAN_METADATA=Object.freeze([
     checksum:'3d6e50ab71308d53b9ea22c391dd48b630162eb613696891e68060aa205cc75b',
   }),
   Object.freeze({
-  "version": 24,
+    version:24,
+    name:'account-deletion-email-tokens',
+    description:'Purpose-bound, hashed one-time request and cancellation proofs for removed-member deletion (#350).',
+    operationsChecksum:'c9a0d70df41d5a3d5caa846894a27771f066aa29be3f6c758e9ff22f5485cfb9',
+    checksum:'b94e7c23b91e0fbcc7b7e79ee7d0783865a4c624afe3ecd58772b93391466177',
+  }),
+  Object.freeze({
+  "version": 25,
   "name": "circle-owned-workspace",
   "description": "Parallel circle-owned workspace, circle-bound completion guards, and secondary chat retention.",
   "operationsChecksum": "1130da89e0e33b48fdc60427c8cfe14d112597023c88b7db26f5e37beb12a6e9",
-  "checksum": "3b474aaf59bcc418ff400488ddc7f14a4fe7ae0a199a24db09e73176b2029240"
-}),]);
+  "checksum": "a594451181260b34d2d87564e70c0b7b11f2cd36a77abd2ebcdcf3b6d8dfd333"
+}),
+]);
 
 function definePlan(operationSet,metadata){
   if(operationSet.version!==metadata.version) throw new Error(`migration operation set ${operationSet.version} has no matching metadata`);

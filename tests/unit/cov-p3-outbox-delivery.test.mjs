@@ -10,6 +10,7 @@ const SCHEDULE='schedule.email.requested';
 const INVITATION='invitation.email.requested';
 const ACTIVATION='auth.emailverification.requested';
 const RESET='auth.passwordreset.requested';
+const DELETION_LINK='account.deletion.link';
 const FEEDBACK='feedback.submitted';
 const REMINDER='reminder.email.requested';
 const DELETION_CONFIRMATION='account.deletion.confirmation';
@@ -62,6 +63,9 @@ mock.module('../../api/_account-deletion-grace.js',{exports:{
   // delivery registry loads. The mocked registry never delivers, so the
   // lock is always off here.
   isDeletionPending:async()=>false,
+}});
+mock.module('../../api/_account-deletion-tokens.js',{exports:{
+  DELETION_LINK_EVENT_TYPE:DELETION_LINK,createAccountDeletionLinkEmailHandler:factory('deletion-link'),
 }});
 mock.module('../../api/_local-runtime.js',{exports:{
   localIdentityAdapterEnabled:()=>state.local,
@@ -119,7 +123,7 @@ test('local development captures every mail type with its kind and at most four 
   state.local=true;
   const plan=await outboxDeliveryPlan('db','http://127.0.0.1:3000',{});
   assert.equal(plan.local,true);
-  assert.deepEqual([...plan.handlers.keys()],[PAIRING,SCHEDULE,INVITATION,ACTIVATION,RESET,FEEDBACK,REMINDER,
+  assert.deepEqual([...plan.handlers.keys()],[DELETION_LINK,PAIRING,SCHEDULE,INVITATION,ACTIVATION,RESET,FEEDBACK,REMINDER,
     DELETION_CONFIRMATION,DELETION_REMINDER,DELETION_BLOCKED]);
   assert.deepEqual(state.invitationConfigCalls,[{localRuntime:true}]);
   assert.equal(plan.handlers.get(PAIRING).localRuntime,true);
@@ -141,6 +145,8 @@ test('local development captures every mail type with its kind and at most four 
   await send(INVITATION,{});
   await send(ACTIVATION,{});
   await send(RESET,{});
+  await send(DELETION_LINK,{});
+  assert.deepEqual(plan.captured.get(DELETION_LINK).map(entry=>entry.kind),['account-deletion-link']);
   await send(REMINDER,{kind:'availability_cutoff'});
   await send(REMINDER,{kind:'session_soon'});
   await send(FEEDBACK,{});
@@ -183,7 +189,7 @@ test('a configured provider is shared across types and unconfigured flows are om
   state.invitationConfig=null;
   state.resetConfig=null;
   const plan=await outboxDeliveryPlan('db','https://randori.example.test',{});
-  assert.deepEqual([...plan.handlers.keys()],[PAIRING,SCHEDULE,ACTIVATION,FEEDBACK,REMINDER,
+  assert.deepEqual([...plan.handlers.keys()],[DELETION_LINK,PAIRING,SCHEDULE,ACTIVATION,FEEDBACK,REMINDER,
     DELETION_CONFIRMATION,DELETION_REMINDER,DELETION_BLOCKED]);
   assert.equal(state.senderCalls.length,1,'one provider client is created per plan');
   assert.equal(state.senderCalls[0].from,'Randori <mail@randori.example.test>');

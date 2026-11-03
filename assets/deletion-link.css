@@ -1,0 +1,6 @@
+[hidden]{display:none!important}
+main,header{max-width:680px;margin:24px auto;padding:0 24px}
+form{display:grid;gap:12px}
+input,button{font:inherit;padding:12px;min-height:44px;color:inherit;background:var(--color-surface)}
+:disabled{opacity:.6}
+:focus-visible{outline:3px solid var(--color-focus);outline-offset:2px}

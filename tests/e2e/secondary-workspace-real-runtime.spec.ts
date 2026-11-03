@@ -1,6 +1,6 @@
 import {expect,Page,test} from '@playwright/test';
 import bcrypt from 'bcryptjs';
-import * as Y from 'yjs';
+import {setCode} from './helpers';
 import {createPairedCircle,startGoldenRuntime,withDatabase,newGoldenPage,signInMemberSession,
   configureExecutionProvider,installDeterministicExecutionTransport,FOCUS_BLOCK_ROLLUP_SOLUTION} from './golden-runtime';
 import {enableWorkspace,seedSecondaryCircle} from '../support/secondary-workspace-fixture.mjs';
@@ -29,12 +29,33 @@ test('real runtime: both directions, non-members, scoped History, independent ro
   const golden=await startGoldenRuntime('randori-438-parity-'),transport=installDeterministicExecutionTransport(()=>golden.origin);
   let restore=()=>{};
   try{
-    const pair=await createPairedCircle(browser,golden),owner=pair.owner.page,partner=pair.member.page;
+    const pair=await createPairedCircle(browser,golden),owner=pair.owner.page,primaryOnly=pair.member.page;
     restore=enableWorkspace();configureExecutionProvider();
     const primary=(await (await owner.request.get(`${golden.origin}/api/circles`)).json()).circles[0];
-    const secondary=await withDatabase(golden,db=>seedSecondaryCircle(db,{users:[pair.owner.user.id,pair.member.user.id]}));
+    const secondary=await withDatabase(golden,async db=>{
+      const password=await bcrypt.hash('secondary-member-password-438',4);
+      const account=await db.execute({sql:`INSERT INTO auth_accounts(email,password_hash,display_name,color,is_available)
+        VALUES('secondary438@example.test',?,'Secondary Partner','#234567',1) RETURNING id`,args:[password]});
+      return seedSecondaryCircle(db,{users:[pair.owner.user.id,Number(account.rows[0].id)]});
+    });
+    const secondaryMember=await newGoldenPage(browser,golden),partner=secondaryMember.page;
+    await signInMemberSession(partner,golden,'secondary438@example.test','secondary-member-password-438');
     const solo=await withDatabase(golden,db=>seedSecondaryCircle(db,{circleId:30,name:'Solo Dojo',publicId:'67e37755-88c5-4a29-ae64-a7cc5a3e9dc7',users:[pair.owner.user.id]}));
     expect(Number(secondary.group.id)).toBe(Number(pair.room.split('_').at(-1)));
+    // U1 belongs to both circles, U2 only to primary, U3 only to secondary.
+    for(const [viewer,foreign] of [[primaryOnly,secondary.room],[partner,pair.room]] as const){
+      for(const surface of reads){
+        const denied=await raw(viewer,golden.origin,resource(surface,foreign));
+        const missing=foreign.startsWith('week_')?'week_999999_pair_999999':'circle_999999_publication_999999_group_999999';
+        const absent=await raw(viewer,golden.origin,resource(surface,missing));
+        expect([denied.status,denied.text],surface).toEqual([404,absent.text]);
+        expect(absent.status).toBe(404);
+      }
+      for(const surface of writes){
+        const denied=await raw(viewer,golden.origin,`/api/${surface}`,'POST',{room_id:foreign,message:'non-member must not store'});
+        expect([denied.status,denied.body],surface).toEqual([404,{error:'pair not found'}]);
+      }
+    }
     await select(owner,golden.origin,primary.public_id);
     for(const [active,foreign] of [[secondary, pair.room],[primary,secondary.room]]){
       await select(owner,golden.origin,active.publicId||active.public_id);
@@ -68,7 +89,10 @@ test('real runtime: both directions, non-members, scoped History, independent ro
     await owner.getByTestId('pair-history-view-recap').first().click();
     await expect(owner.getByTestId('pair-recap-status')).toHaveText('Recap loaded');
     await expect(owner.locator('#pairRecapArea')).toContainText('In Secondary Dojo');
-    await owner.getByTestId('pair-recap-reopen').click();
+    await Promise.all([
+      owner.waitForURL(`${golden.origin}/join/${secondary.room}`,{waitUntil:'domcontentloaded'}),
+      owner.getByTestId('pair-recap-reopen').click(),
+    ]);
     await expect(owner.getByTestId('workspace-circle')).toContainText('In Secondary Dojo');
     await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_workspace?.room)).toBe(secondary.room);
     await expect(owner.getByTestId('pair-chat-input')).toBeVisible();
@@ -83,12 +107,16 @@ test('real runtime: both directions, non-members, scoped History, independent ro
     expect((await raw(partner,golden.origin,resource('video',secondary.room))).body.signals).toHaveLength(1);
     const canonical=await raw(owner,golden.origin,resource('code-document',secondary.room));
     expect(canonical.status,canonical.text).toBe(200);
-    const doc=new Y.Doc();Y.applyUpdate(doc,Buffer.from(canonical.body.state,'base64'));
-    doc.getText('code').delete(0,doc.getText('code').length);doc.getText('code').insert(0,FOCUS_BLOCK_ROLLUP_SOLUTION);
-    const update=Buffer.from(Y.encodeStateAsUpdate(doc)).toString('base64');doc.destroy();
-    const merged=await raw(owner,golden.origin,'/api/code-document','POST',{room_id:secondary.room,question_slug:'focus-block-rollup',question_version:1,language:'javascript',client_id:'browser_438_owner',client_seq:1,update});
-    expect(merged.status,merged.text).toBe(200);
-    const execution=await raw(owner,golden.origin,'/api/execute','POST',{room_id:secondary.room,question_slug:'focus-block-rollup',question_version:1,language:'javascript',document_version:merged.body.document_version,code:'ignored client code'});
+    await owner.locator('#questionSelect').selectOption('focus-block-rollup');
+    await owner.locator('#langSelect').selectOption('javascript');
+    await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_crdt?.identity?.questionSlug),{timeout:15_000}).toBe('focus-block-rollup');
+    await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_crdt?.acknowledged),{timeout:15_000}).toBe(true);
+    // Edit the live document only after hydration; a server-side merge can
+    // otherwise race the browser's starter and execute a different document.
+    await setCode(owner,FOCUS_BLOCK_ROLLUP_SOLUTION);
+    const documentVersion=await owner.evaluate(()=>(window as any)._randori_crdt.flush());
+    expect(documentVersion).toMatch(/^[a-f0-9]{64}$/);
+    const execution=await raw(owner,golden.origin,'/api/execute','POST',{room_id:secondary.room,question_slug:'focus-block-rollup',question_version:1,language:'javascript',document_version:documentVersion,code:'ignored client code'});
     expect(execution.status,execution.text).toBe(200);expect(execution.body.passed_count).toBe(execution.body.total_count);
     const runs=await raw(partner,golden.origin,resource('runs',secondary.room));expect(runs.body.runs).toHaveLength(1);
     const completion=await raw(owner,golden.origin,resource('session-completion',secondary.room));
@@ -172,17 +200,19 @@ test('real runtime: flag-off gates and delayed prior-circle responses, context w
         const response=await route.fetch();arrived();await hold;await route.fulfill({response}).catch(()=>{});
       },{times:1});
       await owner.evaluate(({surface,room})=>{
-        (window as any)._438Delayed='pending';
+        // Circle selection reloads the page; retain only the generic outcome
+        // so the assertion observes the old document's abort after navigation.
+        sessionStorage.setItem('_438Delayed','pending');
         void fetch(`/api/${surface}?room_id=${encodeURIComponent(room)}`).then(response=>response.json()).then(()=>{
-          (window as any)._438Delayed='consumed';
+          sessionStorage.setItem('_438Delayed','consumed');
           document.getElementById('historyPersonal')?.append('stale private workspace response');
-        }).catch(error=>(window as any)._438Delayed=error.name);
+        }).catch(error=>sessionStorage.setItem('_438Delayed',error.name));
       },{surface,room:secondary.room});
       await captured;
       await owner.getByTestId('circle-context-select').selectOption(primary.public_id);
       await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_circle_control?.scheduleContext?.()?.circlePublicId)).toBe(primary.public_id);
       unblock();
-      await expect.poll(()=>owner.evaluate(()=>(window as any)._438Delayed)).toBe('AbortError');
+      await expect.poll(()=>owner.evaluate(()=>sessionStorage.getItem('_438Delayed'))).toBe('AbortError');
       await expect(owner.locator('#historyPersonal')).not.toContainText('stale private workspace response');
       await expect(owner.locator('#workspaceChatArea [data-testid="pair-chat-input"]')).toHaveCount(0);
       expect(await owner.evaluate(()=>localStorage.getItem('randori-code'))).toBeNull();

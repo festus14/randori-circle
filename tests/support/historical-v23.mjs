@@ -1,4 +1,4 @@
-// Model the historical additive v23 release without relaxing the current v24 contract.
+// Model the historical additive v23 release without relaxing the current v25 contract.
 import { mock } from 'node:test';
 import * as contracts from '../../db/migration-contract.js';
 import { SCHEMA_OPERATION_SETS, TOLERATED_LEGACY_TABLES, resolveCurrentArtifacts } from '../../db/schema-manifest.js';

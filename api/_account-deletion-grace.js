@@ -21,8 +21,8 @@
 // email exactly-once). Reminders are enqueued ~48h before deletion the
 // same way. All three emails are account emails from hello@randoricircle.com
 // (RESEND_FROM) with no unsubscribe link, and their payloads carry ids and
-// instants only — the handler reads the address from the account at send
-// time, so they are PII-free for outbox retention.
+// instants only when enqueued. Confirmation/reminder delivery adds an
+// encrypted cancel proof; the address is read from the account at send time.
 //
 // Rollback rule: the flag gates new requests only. A pending request is a
 // durable promise: turning the flag off stops new grace requests (they go
@@ -35,6 +35,10 @@ import { escapeHtml } from './_pairing.js';
 import { emailProviderReason } from './_email-provider-reason.js';
 import { getAdminEmails, verifySignedRequestAuth } from './_db.js';
 import { requireRecentAuth } from './_recent-auth.js';
+import {
+  NO_ACTIVE_MEMBERSHIP_SQL, cancelTokenForDeletionEmail, deletionTokenSchemaAvailable,
+  readDeletionToken,
+} from './_account-deletion-tokens.js';
 import {
   DELETED_ACCOUNT_PASSWORD_HASH,
   executeScheduledAccountDeletion,
@@ -140,8 +144,8 @@ export function deletionPendingExclusionSql(userIdColumn){
  * Verifies a cancel-flow session without verifyRequestAuth, which refuses
  * locked accounts. The request revoked every session, so a live session
  * row proves a fresh sign-in after the request; the caller additionally
- * requires an active membership, so a member removed during the grace
- * period cannot cancel. Returns null for an unusable session (the handler
+ * requires an active membership for this signed-in path. Removed members use
+ * cancelAccountDeletionViaEmailToken. Returns null for an unusable session (the handler
  * answers 401) and `{userId, sessionHash, pending}` otherwise, where
  * `pending` is null when there is no active request (the handler answers
  * 409 not_pending).
@@ -239,7 +243,7 @@ function emailMetadata(event){
     ?'blocked_reason,recipient_user_id,scheduled_for,template_version,user_id'
     :'recipient_user_id,scheduled_for,template_version,user_id';
   if(!payload||typeof payload!=='object'||Array.isArray(payload)
-    ||Object.keys(payload).sort().join(',')!==expected){
+    ||Object.keys(payload).filter(key=>!['token_envelope','token_id'].includes(key)).sort().join(',')!==expected){
     throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
   }
   const userId=positiveId(payload.user_id);
@@ -331,9 +335,10 @@ export function createAccountDeletionEmailHandler({db,baseUrl,send}={}){
     const subject=isReminder
       ?'Your Randori Circle account will be deleted in about 48 hours'
       :'Your Randori Circle account is scheduled for deletion';
-    const html=isReminder
-      ?`<h2>Your account will be deleted in about 48 hours</h2><p>Your Randori Circle account is scheduled for deletion on <b>${escapeHtml(date)}</b>.</p><p>To keep your account, sign in before then and choose Cancel deletion.</p><p><a href="${escapeHtml(origin)}">Sign in to Randori Circle</a></p>`
-      :`<h2>Your account is scheduled for deletion</h2><p>Your Randori Circle account is scheduled for deletion on <b>${escapeHtml(date)}</b>.</p><p>It is locked until then: you are signed out on every device, and it will not be paired or emailed.</p><p>To cancel, sign in any time before that date and choose Cancel deletion.</p><p><a href="${escapeHtml(origin)}">Sign in to Randori Circle</a></p><p>If you did not ask for this, sign in as soon as you can to cancel it.</p>`;
+    const cancelToken=await cancelTokenForDeletionEmail(db,event,pending);
+    const cancelLink=cancelToken
+      ?`<p><a href="${escapeHtml(origin)}/delete-account#cancel=${encodeURIComponent(cancelToken)}">Cancel account deletion</a></p>`:'';
+    const html=`<h2>${isReminder?'Your account will be deleted in about 48 hours':'Your account is scheduled for deletion'}</h2><p>Your Randori Circle account is scheduled for deletion on <b>${escapeHtml(date)}</b>.</p><p>Your account is locked until then. Ordinary pairing and reminder emails stop; account deletion emails still reach you.</p>${cancelLink}<p>Use the cancel link before that date to keep your account. Cancelling stops deletion but does not restore circle membership. If you left or were removed, you stay removed and need a new invitation to sign in.</p><p>If you still have an active membership, you can also <a href="${escapeHtml(origin)}">sign in to cancel</a>.</p><p>If you did not ask for deletion, use the cancel link.</p>`;
     try{
       const delivery=await send({to:recipient,subject,html,idempotencyKey:event.idempotencyKey,signal});
       if(delivery?.error) throw delivery.error;
@@ -371,6 +376,41 @@ async function rollback(transaction){
   try{ await transaction.rollback(); }catch{}
 }
 
+async function writePendingDeletion(transaction,{id,nowSeconds}){
+  const occurredAt=new Date(nowSeconds*1000).toISOString();
+  const scheduledFor=nowSeconds+DELETION_GRACE_SECONDS;
+  // Insert first, alone: a concurrent request loses the partial unique
+  // index race and is answered already_pending instead of erroring.
+  const inserted=await transaction.execute({
+    sql:`INSERT INTO account_deletion_requests (user_id,requested_at,scheduled_for)
+      VALUES (?,?,?) ON CONFLICT(user_id) WHERE cancelled_at IS NULL AND executed_at IS NULL DO NOTHING`,
+    args:[id,nowSeconds,scheduledFor],
+  });
+  if(Number(inserted.rowsAffected||0)!==1){
+    const raced=await transaction.execute({
+      sql:`SELECT scheduled_for FROM account_deletion_requests
+        WHERE user_id=? AND cancelled_at IS NULL AND executed_at IS NULL LIMIT 1`,
+      args:[id],
+    });
+    return {ok:false,reason:'already_pending',
+      scheduled_for:raced.rows?.length===1
+        ?new Date(Number(raced.rows[0].scheduled_for)*1000).toISOString():null};
+  }
+  const confirmation=createAccountDeletionConfirmationEvent({userId:id,requestedAt:nowSeconds});
+  await transaction.batch([
+    {sql:`UPDATE auth_sessions SET revoked_at=MAX(?,created_at),revocation_reason='logout_all'
+      WHERE user_id=? AND revoked_at IS NULL AND expires_at>?`,
+    args:[nowSeconds,id,nowSeconds]},
+    {sql:`DELETE FROM auth_recent_proofs WHERE user_id=?`,args:[id]},
+    auditStatements({userId:id,eventType:ACCOUNT_DELETION_REQUESTED_AUDIT_EVENT,
+      requestedAt:`${nowSeconds}`,occurredAt}),
+    confirmation,
+  ]);
+  return {ok:true,status:'pending_deletion',
+    scheduled_for:new Date(scheduledFor*1000).toISOString(),requested_at:occurredAt,
+    outboxEvents:Object.freeze([outboxStatementIdentity(confirmation)])};
+}
+
 /**
  * Schedules a deletion: same recent-auth proof and last-owner / last-admin
  * eligibility as immediate deletion, checked inside the write transaction.
@@ -386,8 +426,6 @@ export async function requestAccountDeletion(db,{
     ||!validNowSeconds(nowSeconds)){
     throw new TypeError('valid account deletion request required');
   }
-  const occurredAt=new Date(nowSeconds*1000).toISOString();
-  const scheduledFor=nowSeconds+DELETION_GRACE_SECONDS;
   const transaction=await db.transaction('write');
   let finished=false;
   const stop=async result=>{
@@ -410,41 +448,31 @@ export async function requestAccountDeletion(db,{
     await requireRecentAuth(transaction,{id,sessionHash},{nowSeconds});
     const eligibility=await readAccountDeletionEligibility(transaction,{userId:id,adminEmails});
     if(!eligibility.ok) return await stop(eligibility);
-    // Insert first, alone: a concurrent request loses the partial unique
-    // index race and is answered already_pending instead of erroring.
-    const inserted=await transaction.execute({
-      sql:`INSERT INTO account_deletion_requests (user_id,requested_at,scheduled_for)
-        VALUES (?,?,?) ON CONFLICT(user_id) WHERE cancelled_at IS NULL AND executed_at IS NULL DO NOTHING`,
-      args:[id,nowSeconds,scheduledFor],
-    });
-    if(Number(inserted.rowsAffected||0)!==1){
-      const raced=await transaction.execute({
-        sql:`SELECT scheduled_for FROM account_deletion_requests
-          WHERE user_id=? AND cancelled_at IS NULL AND executed_at IS NULL LIMIT 1`,
-        args:[id],
-      });
-      return await stop({ok:false,reason:'already_pending',
-        scheduled_for:raced.rows?.length===1
-          ?new Date(Number(raced.rows[0].scheduled_for)*1000).toISOString():null});
-    }
-    const confirmation=createAccountDeletionConfirmationEvent({userId:id,requestedAt:nowSeconds});
-    await transaction.batch([
-      {sql:`UPDATE auth_sessions SET revoked_at=MAX(?,created_at),revocation_reason='logout_all'
-        WHERE user_id=? AND revoked_at IS NULL AND expires_at>?`,
-      args:[nowSeconds,id,nowSeconds]},
-      {sql:`DELETE FROM auth_recent_proofs WHERE user_id=?`,args:[id]},
-      auditStatements({userId:id,eventType:ACCOUNT_DELETION_REQUESTED_AUDIT_EVENT,
-        requestedAt:`${nowSeconds}`,occurredAt}),
-      confirmation,
-    ]);
+    const result=await writePendingDeletion(transaction,{id,nowSeconds});
+    if(!result.ok) return await stop(result);
     await transaction.commit(); finished=true;
-    return Object.freeze({ok:true,status:'pending_deletion',
-      scheduled_for:new Date(scheduledFor*1000).toISOString(),
-      requested_at:occurredAt,
-      outboxEvents:Object.freeze([outboxStatementIdentity(confirmation)])});
+    return Object.freeze(result);
   }catch(error){
     if(!finished) await rollback(transaction);
     throw error;
+  }
+}
+
+async function writeDeletionCancellation(transaction,{id,pending,nowSeconds}){
+  const occurredAt=new Date(nowSeconds*1000).toISOString();
+  const cancelled=await transaction.execute({
+    sql:`UPDATE account_deletion_requests SET cancelled_at=?
+      WHERE id=? AND cancelled_at IS NULL AND executed_at IS NULL`,
+    args:[nowSeconds,Number(pending.id)],
+  });
+  if(Number(cancelled.rowsAffected||0)!==1) throw new Error('account deletion cancellation failed');
+  await transaction.execute(auditStatements({userId:id,
+    eventType:ACCOUNT_DELETION_CANCELLED_AUDIT_EVENT,
+    requestedAt:`${Number(pending.requested_at)}`,occurredAt}));
+  // A signed-in cancellation invalidates emailed proofs too, regardless of flags.
+  if(await deletionTokenSchemaAvailable(transaction)){
+    await transaction.execute({sql:`UPDATE account_deletion_tokens SET revoked_at=MAX(?,created_at)
+      WHERE user_id=? AND used_at IS NULL AND revoked_at IS NULL`,args:[nowSeconds,id]});
   }
 }
 
@@ -452,9 +480,8 @@ export async function requestAccountDeletion(db,{
  * Cancels a pending deletion. The caller (api/auth.js) must first verify a
  * live session for the account that postdates the request — every session
  * was revoked when the request was made, so a live session proves a fresh
- * sign-in — and that the account still holds an active membership, so a
- * member an owner removed during the grace period cannot cancel and is
- * still deleted on schedule. Cancelling changes nothing else: no
+ * sign-in — and that the account still holds an active membership for this
+ * signed-in path. Removed members cancel with their emailed proof. Cancelling changes nothing else: no
  * invitation is reopened and no membership is restored.
  */
 export async function cancelAccountDeletion(db,{
@@ -465,7 +492,6 @@ export async function cancelAccountDeletion(db,{
     ||!validNowSeconds(nowSeconds)){
     throw new TypeError('valid account deletion cancellation required');
   }
-  const occurredAt=new Date(nowSeconds*1000).toISOString();
   const transaction=await db.transaction('write');
   let finished=false;
   const stop=async result=>{
@@ -483,15 +509,7 @@ export async function cancelAccountDeletion(db,{
     });
     if(pending.rows?.length!==1) return await stop({ok:false,reason:'not_pending'});
     await requireRecentAuth(transaction,{id,sessionHash},{nowSeconds});
-    const cancelled=await transaction.execute({
-      sql:`UPDATE account_deletion_requests SET cancelled_at=?
-        WHERE id=? AND cancelled_at IS NULL AND executed_at IS NULL`,
-      args:[nowSeconds,Number(pending.rows[0].id)],
-    });
-    if(Number(cancelled.rowsAffected||0)!==1) throw new Error('account deletion cancellation failed');
-    await transaction.execute(auditStatements({userId:id,
-      eventType:ACCOUNT_DELETION_CANCELLED_AUDIT_EVENT,
-      requestedAt:`${Number(pending.rows[0].requested_at)}`,occurredAt}));
+    await writeDeletionCancellation(transaction,{id,pending:pending.rows[0],nowSeconds});
     await transaction.commit(); finished=true;
     return Object.freeze({ok:true,status:'cancelled',
       scheduled_for:new Date(Number(pending.rows[0].scheduled_for)*1000).toISOString(),
@@ -500,6 +518,46 @@ export async function cancelAccountDeletion(db,{
     if(!finished) await rollback(transaction);
     throw error;
   }
+}
+
+/** The emailed request proof substitutes for recent auth; it only schedules grace. */
+export async function requestAccountDeletionViaEmailToken(db,{
+  token,confirm,nowSeconds=Math.floor(Date.now()/1000),
+}={}){
+  const transaction=await db.transaction('write');
+  try{
+    const proof=await readDeletionToken(transaction,{token,purpose:'request',nowSeconds});
+    const eligible=proof?await transaction.execute({sql:`SELECT account.id FROM auth_accounts account
+      WHERE account.id=? AND ${NO_ACTIVE_MEMBERSHIP_SQL}
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_requests pending WHERE pending.user_id=account.id
+          AND pending.cancelled_at IS NULL AND pending.executed_at IS NULL)`,args:[Number(proof.user_id)]}):null;
+    if(confirm!=='DELETE'||eligible?.rows?.length!==1){await transaction.rollback();return {ok:false,status:'invalid'};}
+    // Resolution 2: with zero active memberships the last-owner/admin gates
+    // are vacuous, including a stale is_admin flag. Signed-in rules stay intact.
+    const result=await writePendingDeletion(transaction,{id:Number(proof.user_id),nowSeconds});
+    if(!result.ok){await transaction.rollback();return {ok:false,status:'invalid'};}
+    await transaction.execute({sql:'UPDATE account_deletion_tokens SET used_at=? WHERE id=?',args:[nowSeconds,proof.id]});
+    await transaction.commit();return Object.freeze(result);
+  }catch(error){try{await transaction.rollback();}catch{}throw error;}
+}
+
+/** Cancel proof grants no membership or session; the pending row is the authority. */
+export async function cancelAccountDeletionViaEmailToken(db,{
+  token,nowSeconds=Math.floor(Date.now()/1000),
+}={}){
+  const transaction=await db.transaction('write');
+  try{
+    const proof=await readDeletionToken(transaction,{token,purpose:'cancel',nowSeconds});
+    const result=proof?await transaction.execute({sql:`SELECT id,requested_at,scheduled_for
+      FROM account_deletion_requests WHERE id=? AND user_id=? AND scheduled_for=?
+        AND scheduled_for>? AND cancelled_at IS NULL AND executed_at IS NULL`,
+      args:[Number(proof.deletion_request_id),Number(proof.user_id),Number(proof.expires_at),nowSeconds]}):null;
+    const pending=result?.rows?.[0];
+    if(!pending){await transaction.rollback();return {ok:false,status:'invalid'};}
+    await transaction.execute({sql:'UPDATE account_deletion_tokens SET used_at=? WHERE id=?',args:[nowSeconds,proof.id]});
+    await writeDeletionCancellation(transaction,{id:Number(proof.user_id),pending,nowSeconds});
+    await transaction.commit();return Object.freeze({ok:true,status:'cancelled'});
+  }catch(error){try{await transaction.rollback();}catch{}throw error;}
 }
 
 // ---------------------------------------------------------------------------

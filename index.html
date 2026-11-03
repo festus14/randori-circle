@@ -6184,6 +6184,7 @@ async function refreshMe(){
   }
 
   async function ensureActiveCircleContext(userId){
+    if(circleContextSwitching) return null;
     if(!authCapabilities.multiCircleControlPlane){
       activeCircleContext=null;
       activeCircleContextUserId=null;
@@ -12558,10 +12559,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       &&requesterId===(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)
       &&guard();
     const operation=(async()=>{ try{
-      const response=await fetch('/api/my-pair',{credentials:'same-origin'});
-      const data=await response.json().catch(()=>({}));
+      const data=await window._randori_auth.api('/api/my-pair',{method:'GET',cache:'no-store'});
       if(!operationGuard()) return false;
-      if(!response.ok) throw new Error(data.error||`pair lookup ${response.status}`);
       let allowed=!!data.paired&&String(data.room_id||'')===room;
       if(!allowed){
         // Historical rooms are absent from /api/my-pair. A private recap is the
@@ -14913,9 +14912,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const controller=new AbortController();
     const timeout=setTimeout(()=>controller.abort(),8000);
     try{
-      const response=await fetch('/api/my-pair',{credentials:'same-origin',signal:controller.signal});
-      const data=await response.json().catch(()=>({}));
-      if(response.ok&&data.paired&&String(data.room_id||'')===room) return true;
+      const data=await window._randori_auth.api('/api/my-pair',{method:'GET',cache:'no-store',signal:controller.signal});
+      if(data.paired&&String(data.room_id||'')===room) return true;
     }catch{} finally{ clearTimeout(timeout); }
     return false;
   }

@@ -67,7 +67,7 @@ separately default-off.
   `SELECTED_CIRCLE_PAIRING.md`, `SECONDARY_SCHEDULING.md`, and
   `SECONDARY_SCHEDULE_NOTIFICATIONS.md`.
 
-- After owner application of breaking migration v24, the independent default-off
+- After owner application of breaking migration v25, the independent default-off
   `SECONDARY_CIRCLE_WORKSPACE_ENABLED` flag adds selected-circle History, chat,
   runs, execution, recap, completion, controls, meeting links, snapshots, code
   documents and video signalling. It requires membership, control-plane,

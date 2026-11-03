@@ -1,6 +1,6 @@
 // Zero-downtime additive release, end to end on real migrated SQLite (ID-87,
-// #371), using the latest real additive migration: v23, the account deletion
-// grace table (#372). Everything is the production code: health, circle pairing,
+// #371), using the latest real additive migration: v24, the account deletion
+// email-token table (#350). Everything is the production code: health, circle pairing,
 // schedule and pairing readiness, admin diagnostics, the schema capability
 // check and the migration runner.
 //
@@ -17,10 +17,10 @@ import { createClient } from '@libsql/client';
 
 import { MIGRATION_PLANS } from '../../db/migration-plan.js';
 
-await import('../support/historical-v23.mjs');
+await import('../support/historical-v24.mjs');
 
 const { MIGRATION_CONTRACTS, validateMigrationContracts }=await import('../../db/migration-contract.js');
-const V23=MIGRATION_PLANS[22];
+const V24=MIGRATION_PLANS[23];
 
 const { readAdminDiagnostics }=await import('../../api/_admin-diagnostics.js');
 const { ensureCirclePairingReadiness }=await import('../../api/_circle-pairing.js');
@@ -42,7 +42,7 @@ const {
 }=await import('../../db/migration-runner.js');
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
-const N=23;
+const N=24;
 const resources=[];
 
 afterEach(async()=>{
@@ -78,10 +78,10 @@ async function readinessCard(db){
 
 test('the additive declaration used here passes the real migration check',()=>{
   assert.equal(validateMigrationContracts(MIGRATION_CONTRACTS),true);
-  assert.deepEqual(inspectMigrationCompatibility({migrations:EXECUTABLE_MIGRATIONS.slice(0,23),contracts:MIGRATION_CONTRACTS}),[]);
+  assert.deepEqual(inspectMigrationCompatibility({migrations:EXECUTABLE_MIGRATIONS.slice(0,24),contracts:MIGRATION_CONTRACTS}),[]);
   assert.equal(pendingAdditiveContract()?.version,N,'production modules see the declaration');
   assert.deepEqual(MIGRATION_CONTRACTS[N-1].introduces,
-    {tables:['account_deletion_requests'],indexes:[...V23.indexes],triggers:[]});
+    {tables:['account_deletion_tokens'],indexes:[...V24.indexes],triggers:[]});
 });
 
 test('code at N stays ready on every surface while the database moves from N-1 to N',async()=>{
@@ -105,9 +105,9 @@ test('code at N stays ready on every surface while the database moves from N-1 t
   assert.equal(await schemaCapabilityAvailable(db,{version:N-1,env}),true);
 
   // 2. The protected cutover applies N through the same runner.
-  const state=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,23)});
+  const state=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,24)});
   assert.deepEqual([state.classification,state.currentVersion,state.ready],['managed',N-1,true]);
-  const applied=await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,23),expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
+  const applied=await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,24),expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
   assert.deepEqual(applied.applied.map(item=>item.version),[N]);
 
   // 3. Still ready, now current; nothing pairing depends on moved.
@@ -132,11 +132,11 @@ test('one additive migration behind is still judged exactly',async()=>{
   assert.equal(await inspectDatabaseReadiness(db),true);
 
   // A half-created introduced table is drift, and grants no capability.
-  const create=V23.operations.find(operation=>operation.operation==='ensure-table').sql;
+  const create=V24.operations.find(operation=>operation.operation==='ensure-table').sql;
   await db.execute(create);
   assert.equal(await inspectDatabaseReadiness(db),false);
   assert.equal(await schemaCapabilityAvailable(db,{version:N,env:{}}),false);
-  await db.execute('DROP TABLE account_deletion_requests');
+  await db.execute('DROP TABLE account_deletion_tokens');
   assert.equal(await inspectDatabaseReadiness(db),true);
 
   // Drift in the existing schema still blocks.

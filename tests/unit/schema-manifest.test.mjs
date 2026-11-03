@@ -32,7 +32,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'circle_pair_schedule_proposals','session_completion_receipts','pair_meeting_links',
     'pair_session_controls','pair_code_documents','invite_requests',
     'feedback_items','feedback_votes','feedback_events',
-    'account_deletion_requests',
+    'account_deletion_requests','account_deletion_tokens',
     'circle_pair_messages',
     'circle_session_runs',
     'circle_pair_room_snapshots',
@@ -81,6 +81,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'idx_feedback_items_closed_retention','uq_feedback_items_author_idempotency',
     'idx_feedback_votes_feedback','idx_feedback_votes_user','idx_feedback_events_feedback',
     'uq_account_deletion_requests_active_user','idx_account_deletion_requests_due',
+    'idx_account_deletion_tokens_expiry',
     'circle_idx_pair_messages_pair',
     'circle_idx_messages_pair_activity',
     'circle_idx_pair_messages_room_cursor',
@@ -190,7 +191,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
 
 test('immutable migration metadata is contiguous and checksum protected',()=>{
   assert.equal(validateMigrationPlans(),true);
-  assert.deepEqual(MIGRATION_PLANS.map(plan=>plan.version),[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24]);
+  assert.deepEqual(MIGRATION_PLANS.map(plan=>plan.version),[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]);
   assert.deepEqual(MIGRATION_PLANS.slice(0,2).map(plan=>({
     version:plan.version,operationsChecksum:plan.operationsChecksum,checksum:plan.checksum,
   })),[{
@@ -376,25 +377,25 @@ test('migration metadata covers every artifact and supports append-only replacem
   assert.throws(()=>validateMigrationPlans(duplicate.map(repin)),/repeats canonical operations/);
 
   const unsupported=repin({
-    version:25,name:'unsupported-operation',description:'Invalid operation example.',
+    version:26,name:'unsupported-operation',description:'Invalid operation example.',
     operations:[{operation:'drop-table',name:'users',sql:'DROP TABLE users'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,unsupported]),/unsupported operation/);
 
   const mislabeled=repin({
-    version:25,name:'mislabeled-table',description:'Invalid table example.',
+    version:26,name:'mislabeled-table',description:'Invalid table example.',
     operations:[{operation:'ensure-table',name:'users',sql:'DROP TABLE users'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,mislabeled]),/non-canonical CREATE TABLE/);
 
   const multipleStatements=repin({
-    version:25,name:'multiple-statements',description:'Invalid SQL example.',
+    version:26,name:'multiple-statements',description:'Invalid SQL example.',
     operations:[{operation:'ensure-table',name:'users',sql:'CREATE TABLE users (id INTEGER); DROP TABLE auth_accounts'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,multipleStatements]),/invalid ensure-table definition/);
 
   const danglingIndex=repin({
-    version:25,name:'dangling-index',description:'Invalid index example.',
+    version:26,name:'dangling-index',description:'Invalid index example.',
     operations:[{
       operation:'ensure-index',name:'idx_video_signals_room',table:'missing_table',
       keyParts:['room_id'],unique:false,where:null,
@@ -404,7 +405,7 @@ test('migration metadata covers every artifact and supports append-only replacem
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,danglingIndex]),/references unknown table/);
 
   const replacement={...MIGRATION_PLANS[0].operations.find(operation=>operation.name==='users'),sql:'CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'};
-  const appended=repin({version:25,name:'future-users-contract',description:'Future replacement example.',operations:[replacement]});
+  const appended=repin({version:26,name:'future-users-contract',description:'Future replacement example.',operations:[replacement]});
   assert.equal(validateMigrationPlans([...MIGRATION_PLANS,appended]),true);
 });
 

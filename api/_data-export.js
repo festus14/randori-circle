@@ -107,6 +107,7 @@ const EXPLICIT_TABLE_COVERAGE=Object.freeze({
   auth_session_circle_contexts:{section:null,included:false,reason:'Ephemeral per-session circle selection; no user content.'},
   auth_provider_identities:{section:'profile',included:true,reason:'Summarised only as profile.google_linked; the Google subject itself is a credential identifier and is not exported.'},
   auth_provider_email_state:{section:null,included:false,reason:'Keyed hash of the Google email for the removed-link check; a credential artefact, not user content.'},
+  account_deletion_tokens:{section:null,included:false,reason:'Deletion request and cancellation token hashes; secrets, not user content.'},
   auth_password_resets:{section:null,included:false,reason:'Token hashes for password recovery; secrets, not user content.'},
   auth_email_activations:{section:null,included:false,reason:'Holds the account-creation password hash and email; a credential artefact, not user content.'},
   auth_identity_audit_events:{section:null,included:false,reason:'Security audit trail of identity changes; ids and codes only, not user content.'},

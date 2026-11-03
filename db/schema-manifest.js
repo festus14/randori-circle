@@ -291,6 +291,12 @@ const PLAN_23_OPERATIONS=Object.freeze([
   index('idx_account_deletion_requests_due','account_deletion_requests',['scheduled_for','id'],{where:'cancelled_at IS NULL AND executed_at IS NULL'}),
 ]);
 
+// Issue #350: purpose-bound email proofs, separate from password recovery.
+const PLAN_24_OPERATIONS=Object.freeze([
+  table('account_deletion_tokens',`CREATE TABLE IF NOT EXISTS account_deletion_tokens (id TEXT PRIMARY KEY NOT NULL CHECK(length(id)=36), user_id INTEGER NOT NULL CHECK(typeof(user_id)='integer' AND user_id>0), purpose TEXT NOT NULL CHECK(purpose IN ('request','cancel')), deletion_request_id INTEGER, email_hash TEXT NOT NULL CHECK(length(email_hash)=64 AND email_hash NOT GLOB '*[^0-9a-f]*'), token_hash TEXT NOT NULL UNIQUE CHECK(length(token_hash)=64 AND token_hash NOT GLOB '*[^0-9a-f]*'), created_at INTEGER NOT NULL CHECK(typeof(created_at)='integer' AND created_at>0), expires_at INTEGER NOT NULL CHECK(typeof(expires_at)='integer' AND expires_at>created_at), last_sent_at INTEGER NOT NULL CHECK(typeof(last_sent_at)='integer' AND last_sent_at>=created_at), send_count INTEGER NOT NULL DEFAULT 1 CHECK(typeof(send_count)='integer' AND send_count BETWEEN 1 AND 5), used_at INTEGER CHECK(used_at IS NULL OR (typeof(used_at)='integer' AND used_at>=created_at)), revoked_at INTEGER CHECK(revoked_at IS NULL OR (typeof(revoked_at)='integer' AND revoked_at>=created_at)), UNIQUE(user_id,purpose), CHECK((purpose='request' AND deletion_request_id IS NULL) OR (purpose='cancel' AND deletion_request_id IS NOT NULL)), CHECK(used_at IS NULL OR revoked_at IS NULL), FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE, FOREIGN KEY(deletion_request_id) REFERENCES account_deletion_requests(id) ON DELETE CASCADE)`),
+  index('idx_account_deletion_tokens_expiry','account_deletion_tokens',['expires_at']),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -387,7 +393,8 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
     version:23,
     operations:PLAN_23_OPERATIONS,
   }),
-  Object.freeze({version:24,operations:SECONDARY_WORKSPACE_OPERATIONS}),
+  Object.freeze({version:24,operations:PLAN_24_OPERATIONS}),
+  Object.freeze({version:25,operations:SECONDARY_WORKSPACE_OPERATIONS}),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -417,7 +424,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM="a6ffce01c504e51770e2eeb341a2896ae618451d8080992a23e625adaa48dd95";
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM="5fffd47acce0f4fb7e0aecde045a735d76e91bdcb2c1acf21d151f3254c7827d";
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

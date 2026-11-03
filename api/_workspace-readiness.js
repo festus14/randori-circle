@@ -12,7 +12,7 @@ const MANIFEST=Object.freeze({...READINESS_SCHEMA_MANIFEST,artifactScope:'owned'
   triggers:READINESS_SCHEMA_MANIFEST.triggers.filter(item=>TABLES.has(item.table)),
 });
 export async function ensureSecondaryWorkspaceReadiness(db){
-  const ledger=await inspectLedgerReadiness(db);if(!ledger.ready||ledger.currentVersion<24)throw new Error('workspace schema unavailable');
+  const ledger=await inspectLedgerReadiness(db);if(!ledger.ready||ledger.currentVersion<25)throw new Error('workspace schema unavailable');
   const schema=await inspectSchema(db,{manifest:MANIFEST,maxSchemaObjects:MAX_READINESS_SCHEMA_OBJECTS});
   if(!schema.ok||schema.warnings.length)throw new Error('workspace schema unavailable');
   return true;

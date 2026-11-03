@@ -8,12 +8,19 @@ workspace. AI, progress, statistics and unscoped operations retain their existin
 
 ## Owner cutover
 
-Migration v24, `circle-owned-workspace`, is **breaking** because completion guards
-and the schedule ownership index are installed on existing secondary tables. Merging this code makes
-readiness fail until the owner applies v24. Production application is a separate
+Migration v25, `circle-owned-workspace`, is **breaking** because completion guards
+are installed on existing secondary tables. The v16 ownership index already
+supports the workspace keys. Merging this code makes
+readiness fail until the owner applies v25. Production application is a separate
 owner operation using the protected migration workflow, its backup and restore
 rehearsal, one-version apply and subsequent status inspection. This PR never
 applies the production migration or enables the workspace flag.
+
+Main's additive v24, `account-deletion-email-tokens` (#451), is unchanged.
+Its executable checksum remains
+`bd19855cc6e4bcdd9fd942c7fc0adee23fb482331ccd1b9668096fe8f52cabdd`.
+The local migration regression applies v24, then v25, checks that v24's ledger
+row and schema are unchanged, and verifies workspace and pairing readiness.
 
 After owner application, rehearse in staging with two circles and a non-member.
 Verify both directions of foreign-room rejection, scoped History, pair and solo

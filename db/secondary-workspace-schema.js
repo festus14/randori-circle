@@ -1,4 +1,4 @@
-// Migration v24: parallel circle-owned workspace and retention.
+// Migration v25: parallel circle-owned workspace and retention.
 // Reuses the v16 group ownership index; production apply is a protected owner cutover.
 export const SECONDARY_WORKSPACE_OPERATIONS=Object.freeze([
   {

@@ -52,6 +52,7 @@ export const ACCOUNT_DATA_INVENTORY=Object.freeze([
   ['auth_session_circle_contexts',['session_hash','user_id','circle_id'],'delete','Per-session circle selection.'],
   ['auth_provider_identities',['subject','user_id'],'delete','Google link removed so the Google account can sign up again as a new member.'],
   ['auth_provider_email_state',['subject','email_hash'],'delete','Keyed hash of the Google email for the removed link.'],
+  ['account_deletion_tokens',['user_id','email_hash','token_hash'],'delete','Pending or used deletion email proofs.'],
   ['auth_password_resets',['user_id','email_hash','token_hash'],'delete','Pending or used reset tokens.'],
   ['auth_email_activations',['email','email_hash','password_hash','display_name','color'],'anonymise',
     'The activation that created the account still held the email, name and password hash. Scrubbed (pending ones revoked); the row stays for its RESTRICT invitation key.'],
@@ -433,7 +434,19 @@ async function workspaceSchemaInstalled(transaction){
   return result.rows?.length===1&&Number(row.version)===contract.version&&row.name===contract.name&&row.checksum===contract.checksum;
 }
 
-function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,nowSeconds,feedback=false,workspace=false,graceExecutedAt=null}){
+async function deletionEmailTokensInstalled(executor){
+  // Lifecycle work also runs on restored prefixes: probe the optional table
+  // directly so an absent v24 schema is safe even without a managed ledger.
+  try{
+    await executor.execute('SELECT id,user_id FROM account_deletion_tokens LIMIT 0');
+    return true;
+  }catch(error){
+    if(/no such table: (?:main\.)?account_deletion_tokens\b/i.test(String(error?.message))) return false;
+    throw error;
+  }
+}
+
+function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,nowSeconds,feedback=false,emailTokens=false,workspace=false,graceExecutedAt=null}){
   const recipientArgs=outboxRecipientArgs(userId,email,emailHash,occurredAt);
   const suppressWhere=`${OUTBOX_ACTIONABLE} AND (${OUTBOX_RECIPIENT_SQL} OR ${OUTBOX_SENT_INVITATION_SQL})`;
   const suppressArgs=[...recipientArgs,userId];
@@ -515,6 +528,7 @@ function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,no
       WHERE identity.issuer=auth_provider_email_state.issuer AND identity.subject=auth_provider_email_state.subject
         AND identity.user_id=?)`,args:[userId]},
     {count:'google_links_removed',sql:`DELETE FROM auth_provider_identities WHERE user_id=?`,args:[userId]},
+    ...(emailTokens?[{sql:`DELETE FROM account_deletion_tokens WHERE user_id=?`,args:[userId]}]:[]),
     {sql:`DELETE FROM auth_password_resets WHERE user_id=?`,args:[userId]},
     {sql:`DELETE FROM pairing_cycle_availability WHERE user_id=?`,args:[userId]},
     {sql:`DELETE FROM user_notification_prefs WHERE user_id=?`,args:[userId]},
@@ -643,8 +657,9 @@ export async function deleteAccount(db,{
       &&Number(feedbackProbe.rows[0].version)===contract.version
       &&String(feedbackProbe.rows[0].name)===contract.name
       &&String(feedbackProbe.rows[0].checksum)===contract.checksum;
+    const emailTokens=await deletionEmailTokensInstalled(transaction);
     const plan=deletionStatements({userId:id,email,emailHash:hashInvitationEmail(email)||null,
-      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback,workspace:await workspaceSchemaInstalled(transaction)});
+      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback,emailTokens,workspace:await workspaceSchemaInstalled(transaction)});
     const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
     const summary={};
     plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });
@@ -733,8 +748,9 @@ export async function executeScheduledAccountDeletion(db,{
       &&Number(feedbackProbe.rows[0].version)===contract.version
       &&String(feedbackProbe.rows[0].name)===contract.name
       &&String(feedbackProbe.rows[0].checksum)===contract.checksum;
+    const emailTokens=await deletionEmailTokensInstalled(transaction);
     const plan=deletionStatements({userId:id,email,emailHash:hashInvitationEmail(email)||null,
-      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback,workspace:await workspaceSchemaInstalled(transaction),graceExecutedAt:nowSeconds});
+      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback,emailTokens,workspace:await workspaceSchemaInstalled(transaction),graceExecutedAt:nowSeconds});
     const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
     const summary={};
     plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });
@@ -917,9 +933,10 @@ export async function reapplyAccountDeletion(db,{
     }
     if(isDeletedAccount(account)) return await stop({ok:true,status:'already_deleted'});
     const email=String(account.email).trim().toLowerCase();
+    const emailTokens=await deletionEmailTokensInstalled(transaction);
     const plan=deletionStatements({userId:parsed.account_id,email,
       emailHash:hashInvitationEmail(email)||null,
-      tombstoneEmail:deletedAccountEmail(parsed.account_id),occurredAt,nowSeconds,workspace:await workspaceSchemaInstalled(transaction)});
+      tombstoneEmail:deletedAccountEmail(parsed.account_id),occurredAt,nowSeconds,emailTokens,workspace:await workspaceSchemaInstalled(transaction)});
     const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
     const summary={};
     plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });

@@ -172,11 +172,23 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     }),
   }),
   Object.freeze({
-  "version": 24,
+    version:24,
+    name:'account-deletion-email-tokens',
+    checksum:'bd19855cc6e4bcdd9fd942c7fc0adee23fb482331ccd1b9668096fe8f52cabdd',
+    compatibility:'additive',
+    introduces:Object.freeze({
+      tables:Object.freeze(['account_deletion_tokens']),
+      indexes:Object.freeze(['idx_account_deletion_tokens_expiry']),
+      triggers:Object.freeze([]),
+    }),
+  }),
+  Object.freeze({
+  "version": 25,
   "name": "circle-owned-workspace",
-  "checksum": "9ea26a3cf6ce073379989ec57b5f5228505acf0a1c0a0318e45d8a21f8aa4eeb",
+  "checksum": "cd6d0de84ca6886367654f32d29951490334c1f08f8c6cda82aa0244df96e618",
   "compatibility": "breaking"
-}),]);
+}),
+]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;
 

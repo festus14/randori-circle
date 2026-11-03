@@ -20,7 +20,7 @@ import { afterEach, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
 
-await import('../support/historical-v23.mjs');
+await import('../support/historical-v24.mjs');
 const {
   applyMigrations,
   inspectMigrationState,
@@ -37,7 +37,7 @@ delete process.env.TURSO_DATABASE_URL;
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const N=MIGRATION_CONTRACTS.length;
-const V23_PLAN=MIGRATION_PLANS[N-1];
+const V24_PLAN=MIGRATION_PLANS[N-1];
 const resources=[];
 
 afterEach(async()=>{
@@ -94,9 +94,9 @@ test('concurrent pending-additive probes coalesce, then the next sequential call
 test('half-created artifact after a cached clean success rejects on the same client',async()=>{
   const db=await databaseAt(N-1);
   assert.equal(await ensureSecondaryScheduleReadiness(db),true);
-  // Only the first v23 operation: the account_deletion_requests table, none
+  // Only the first v24 operation: the account_deletion_tokens table, none
   // of its indexes. The ledger is still at N-1, so this is a half-created table.
-  const create=V23_PLAN.operations.find(operation=>operation.operation==='ensure-table').sql;
+  const create=V24_PLAN.operations.find(operation=>operation.operation==='ensure-table').sql;
   await db.execute(create);
   await assert.rejects(
     ensureSecondaryScheduleReadiness(db),
@@ -104,7 +104,7 @@ test('half-created artifact after a cached clean success rejects on the same cli
   );
   // A rejected probe is not retained either: removing the artifact makes
   // the same client ready again.
-  await db.execute('DROP TABLE account_deletion_requests');
+  await db.execute('DROP TABLE account_deletion_tokens');
   assert.equal(await ensureSecondaryScheduleReadiness(db),true);
 });
 
@@ -133,8 +133,8 @@ test('ledger advancing N-1 to N re-probes, then the current success is cached',a
   assert.equal(await ensureSecondaryScheduleReadiness(client),true);
   const afterPending=reads();
   // The protected cutover applies N through the same runner.
-  const state=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,23)});
-  const applied=await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,23),expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
+  const state=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,24)});
+  const applied=await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,24),expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
   assert.deepEqual(applied.applied.map(item=>item.version),[N]);
   // The N-1 verdict was not retained, so this call re-probes the N schema
   // instead of returning the stale pending_additive success.
