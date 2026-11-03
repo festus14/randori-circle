@@ -468,19 +468,6 @@ run in the order `session_soon`, `agree_time`,
 5. If publication is missing, the owner has one recovery action
    that replays from server state
    ([PAIRING_PUBLICATION_RECOVERY.md](PAIRING_PUBLICATION_RECOVERY.md)).
-6. A cycle with no publication yet is a deliberate empty state,
-   never a stale pair: pairing reads (`/api/my-pair`, `/api/weeks`)
-   answer `unpublished` for that cycle and never fall back to the
-   previous cycle's publication. The client likewise revokes the
-   previous cycle's pair state (pair cache, authorized room,
-   workspace, schedule/chat polling) at the rollover in every view,
-   so a user working in the Code tab at the boundary does not keep
-   seeing last cycle's pair.
-7. The generation token rotates per publication: every cycle's
-   publication carries a fresh UUID generation token (primary:
-   `pairing_week_runs.generation_token`; secondary:
-   `circle_pairing_publications.generation_token`), so a token from
-   one cycle never authorizes the next cycle's schedule identity.
 
 ```mermaid
 sequenceDiagram

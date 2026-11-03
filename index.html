@@ -16571,13 +16571,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       // Abort it immediately; the normal dashboard loader will capture a new
       // account/circle operation after the new availability scope is ready.
       window._randori_journey?.cancelPairRequest?.();
-      // The previous cycle's pair is dead at this boundary in every view,
-      // not only the dashboard: revoke the authorized room, pair cache and
-      // workspace before the refresh below re-establishes the new cycle.
-      // Without this, a user on the Code tab kept seeing last cycle's pair
-      // because the dashboard refetch at the end of this branch is skipped
-      // while the dashboard is hidden.
-      window._randori_journey?.revokeStalePairState?.();
+      // Pairing can report the new current cycle before availability
+      // catches up. Preserve its room when the cached pair ends at the
+      // new upcoming cycle's start; otherwise revoke stale state globally.
+      const cachedPair=window._randori_pair_cache;
+      const cachedCycle=cachedPair?.current_cycle||cachedPair?.cycle;
+      if(Date.parse(cachedCycle?.endsAt)!==Date.parse(rolloverScope.targetCycleStartsAt)){
+        window._randori_journey?.revokeStalePairState?.();
+      }
       reset('cycle');
       queueMicrotask(async()=>{
         try{ await refresh({reason:'cycle',revalidateAvailability:false}); }

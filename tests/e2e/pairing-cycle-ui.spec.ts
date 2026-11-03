@@ -970,3 +970,66 @@ test('a cycle rollover while on the code tab revokes the stale pair room', async
   await page.waitForTimeout(1400);
   expect(workspaceRequests).toBe(settledRequests);
 });
+
+test('availability catching up after joining the new-cycle pair preserves the code room', async ({ page }) => {
+  const current = cycleWindow();
+  let availabilityCycleKey = 'a'.repeat(64);
+  // Pairing already reports this cycle as current; availability still
+  // reports it as upcoming until its later response catches up.
+  let availabilityCycle = { ...current, state: 'upcoming' };
+  await page.route(/^https:\/\//, route => route.abort());
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user },
+    '/api/profile': { ok: true, user },
+    '/api/circle': circle('member'),
+    '/api/my-pair': () => dashboardPair({ cycle: current, weekId: 21, pairId: 31, partnerName: 'New-cycle Partner' }),
+    '/api/settings/availability': () => ({
+      ok: true,
+      availability: {
+        cycle: availabilityCycle, cycleKey: availabilityCycleKey,
+        isAvailable: true, version: 0, source: 'cycle_default',
+        editable: true, updatedAt: null,
+      },
+    }),
+    '/api/messages': request => {
+      const url = new URL(request.url());
+      return { ok: true, room_id: url.searchParams.get('room_id'), messages: [], after: Number(url.searchParams.get('after_id') || 0) };
+    },
+  });
+  await resetClientState(page, true);
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#dashPairArea')).toContainText('New-cycle Partner');
+  await expect.poll(() => page.evaluate(() => (window as any)._randori_onboarding_authority.snapshot.scope?.targetCycleKey)).toBe(availabilityCycleKey);
+  await page.locator('#dashJoinSession').click();
+  await expect(page.locator('#view-code')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as any)._randori_workspace?.room)).toBe('week_21_pair_31');
+  await page.evaluate(() => {
+    const app = window as any;
+    const original = app._randori_workspace.deactivate.bind(app._randori_workspace);
+    app.__testWorkspaceDeactivations = 0;
+    app._randori_workspace.deactivate = (...args: unknown[]) => {
+      app.__testWorkspaceDeactivations += 1;
+      return original(...args);
+    };
+  });
+
+  availabilityCycleKey = 'b'.repeat(64);
+  availabilityCycle = upcomingAfter(current);
+  await page.evaluate(async () => { await (window as any)._randori_availability.refresh(); });
+  await expect.poll(() => page.evaluate(() => (window as any)._randori_onboarding_authority.snapshot.scope?.targetCycleKey)).toBe(availabilityCycleKey);
+  await expect(page.locator('#view-code')).toBeVisible();
+  await expect(page.locator('#roomSelect')).toHaveValue('week_21_pair_31');
+  expect(await page.evaluate(() => {
+    const app = window as any;
+    return {
+      room: app._randori_workspace?.room,
+      authorized: app._randori_authorized_room,
+      cached: app._randori_pair_cache?.room_id,
+      saved: localStorage.getItem('randori-last-room'),
+      deactivations: app.__testWorkspaceDeactivations,
+    };
+  })).toEqual({
+    room: 'week_21_pair_31', authorized: 'week_21_pair_31',
+    cached: 'week_21_pair_31', saved: 'week_21_pair_31', deactivations: 0,
+  });
+});
