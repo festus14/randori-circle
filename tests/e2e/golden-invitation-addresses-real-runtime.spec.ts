@@ -1,0 +1,80 @@
+import {expect,test} from '@playwright/test';
+import {
+  acceptInvitationThroughUi,createInvitationThroughUi,json,newGoldenPage,
+  signInMemberSession,signInOwner,signOutThroughMenu,startGoldenRuntime,withDatabase,
+} from './golden-runtime';
+
+test('only the sending browser can identify a pending invitation after reload',async({browser})=>{
+  test.setTimeout(120_000);
+  const golden=await startGoldenRuntime('randori-invitation-addresses-');
+  const email='private.recipient@example.test';
+  const observations:Record<string,unknown>={};
+  try{
+    const sender=await newGoldenPage(browser,golden);
+    const other=await newGoldenPage(browser,golden);
+    const senderUser=await signInOwner(sender.page,golden);
+    const memberInvite=await createInvitationThroughUi(sender.page,golden,'another.member@example.test');
+    const member=await acceptInvitationThroughUi(other.page,golden,memberInvite.inviteUrl,{
+      email:'another.member@example.test',name:'Another Member',
+    });
+    const pending=await createInvitationThroughUi(sender.page,golden,email);
+    const row=sender.page.locator(`[data-invitation-id="${pending.invitationId}"]`);
+    await expect(row.locator('b')).toHaveText(email);
+    observations.senderImmediately=await row.innerText();
+    await test.info().attach('sender-immediately.png',{body:await sender.page.getByTestId('circle-invites').screenshot(),contentType:'image/png'});
+    const senderList=await json(sender.page,'/api/invitations');
+    expect(senderList.status).toBe(200);
+    expect(JSON.stringify(senderList.body)).not.toContain(email);
+    observations.senderApi=senderList;
+
+    await sender.page.reload({waitUntil:'domcontentloaded'});
+    await sender.page.locator('[data-tab="circle"]').click();
+    await expect(row).toBeVisible();
+    // Baseline reproduction; changed to the required email assertion after fixing.
+    await expect(row.locator('b')).toHaveText('Private invitation');
+    observations.senderAfterReload=await row.innerText();
+    await test.info().attach('sender-after-reload.png',{body:await sender.page.getByTestId('circle-invites').screenshot(),contentType:'image/png'});
+
+    await other.page.locator('[data-tab="circle"]').click();
+    await expect(other.page.locator('#circleOwnerPanel')).toBeHidden();
+    const memberList=await json(other.page,'/api/invitations');
+    expect(memberList).toEqual({status:403,body:{error:'circle owner required'}});
+    observations.ordinaryMember={panel:'hidden',api:memberList};
+    await expect(other.page.locator('body')).not.toContainText(email);
+
+    // A co-owner is allowed to list the same cards, but did not send this one.
+    await withDatabase(golden,db=>db.execute({sql:`UPDATE circle_memberships SET role='owner' WHERE user_id=?`,args:[member.id]}));
+    await other.page.reload({waitUntil:'domcontentloaded'});
+    await other.page.locator('[data-tab="circle"]').click();
+    const otherRow=other.page.locator(`[data-invitation-id="${pending.invitationId}"]`);
+    await expect(otherRow.locator('b')).toHaveText('Private invitation');
+    await expect(other.page.locator('body')).not.toContainText(email);
+    const otherList=await json(other.page,'/api/invitations');
+    expect(otherList.status).toBe(200);
+    expect(JSON.stringify(otherList.body)).not.toContain(email);
+    observations.otherOwner={card:await otherRow.innerText(),api:otherList};
+    await test.info().attach('other-owner.png',{body:await other.page.getByTestId('circle-invites').screenshot(),contentType:'image/png'});
+
+    // Even the sender account in a fresh browser has no local address.
+    const fresh=await newGoldenPage(browser,golden);
+    expect((await signInOwner(fresh.page,golden)).id).toBe(senderUser.id);
+    await fresh.page.locator('[data-tab="circle"]').click();
+    const freshRow=fresh.page.locator(`[data-invitation-id="${pending.invitationId}"]`);
+    await expect(freshRow.locator('b')).toHaveText('Private invitation');
+    await expect(fresh.page.locator('body')).not.toContainText(email);
+    observations.senderFreshBrowser=await freshRow.innerText();
+
+    // A second account in the sending browser must not inherit its labels.
+    await signOutThroughMenu(sender.page);
+    await signInMemberSession(sender.page,golden,member.email);
+    await sender.page.locator('[data-tab="circle"]').click();
+    await expect(row.locator('b')).toHaveText('Private invitation');
+    await expect(sender.page.locator('body')).not.toContainText(email);
+    observations.otherAccountInSendingBrowser=await row.innerText();
+    expect(golden.external).toEqual([]);
+  }finally{
+    await test.info().attach('viewer-evidence.json',{body:JSON.stringify(observations,null,2),contentType:'application/json'});
+    console.log('Invitation viewer evidence:',JSON.stringify(observations));
+    await golden.close();
+  }
+});
