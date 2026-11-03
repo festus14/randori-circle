@@ -735,7 +735,7 @@ function apiRoute(pathname,query){
     query.endpoint=opsEndpoints.get(pathname);
     return 'ops';
   }
-  const aiMatch=pathname.match(/^\/api\/ai\/(analyze|history|feedback)(?:\/([^/]+))?$/);
+  const aiMatch=pathname.match(/^\/api\/ai\/(analyze|consent|history|feedback)(?:\/([^/]+))?$/);
   if(aiMatch){
     query.endpoint=aiMatch[1];
     if(aiMatch[2]!==undefined) query.id=decodeURIComponent(aiMatch[2]);
