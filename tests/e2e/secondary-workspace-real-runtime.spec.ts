@@ -21,6 +21,13 @@ async function select(page:Page,origin:string,publicId:string){
   await page.reload({waitUntil:'domcontentloaded'});
   await expect.poll(()=>page.evaluate(()=>(window as any)._randori_circle_control?.scheduleContext?.()?.circlePublicId)).toBe(publicId);
 }
+async function selectThroughUi(page:Page,publicId:string){
+  await page.locator('[data-tab="circle"]').click();
+  const selector=page.getByTestId('circle-context-select');
+  await expect(selector).toBeVisible();
+  await Promise.all([page.waitForEvent('domcontentloaded'),selector.selectOption(publicId)]);
+  await expect.poll(()=>page.evaluate(()=>(window as any)._randori_circle_control?.scheduleContext?.()?.circlePublicId)).toBe(publicId);
+}
 const reads=['messages','runs','pair-recap','session-completion','meeting-link','session-controls','code-document','video'];
 const writes=['messages','execute','session-completion','meeting-link','session-controls','code-document','video'];
 function resource(path:string,room:string){return `/api/${path}?room_id=${encodeURIComponent(room)}${path==='code-document'?'&question_slug=focus-block-rollup&question_version=1&language=javascript':''}`;}
@@ -147,7 +154,7 @@ test('real runtime: both directions, non-members, scoped History, independent ro
     await signInMemberSession(outsider.page,golden,'outsider438@example.test','outsider-password-438');
     for(const surface of reads)expect((await raw(outsider.page,golden.origin,resource(surface,secondary.room))).status,surface).toBe(404);
     for(const surface of writes)expect((await raw(outsider.page,golden.origin,`/api/${surface}`,'POST',{room_id:secondary.room})).status,surface).toBe(404);
-    expect(golden.external).toEqual([]);expect(transport.external).toEqual([]);
+    expect(golden.external).toEqual([]);expect(transport.unexpectedExternalRequests).toEqual([]);
   }finally{restore();transport.restore();await golden.close();}
 });
 
@@ -179,8 +186,7 @@ test('real runtime: flag-off gates and delayed prior-circle responses, context w
       const response=await route.fetch();started();await gate;await route.fulfill({response}).catch(()=>{});
     },{times:1});
     await owner.locator('[data-tab="history"]').click();await seen;
-    await owner.getByTestId('circle-context-select').selectOption(secondary.publicId);
-    await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_circle_control?.scheduleContext?.()?.circlePublicId)).toBe(secondary.publicId);
+    await selectThroughUi(owner,secondary.publicId);
     release();
     await expect.poll(()=>secondTab.evaluate(()=>(window as any)._randori_circle_control?.scheduleContext?.()?.circlePublicId)).toBe(secondary.publicId);
     await owner.locator('[data-tab="history"]').click();
@@ -209,8 +215,7 @@ test('real runtime: flag-off gates and delayed prior-circle responses, context w
         }).catch(error=>sessionStorage.setItem('_438Delayed',error.name));
       },{surface,room:secondary.room});
       await captured;
-      await owner.getByTestId('circle-context-select').selectOption(primary.public_id);
-      await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_circle_control?.scheduleContext?.()?.circlePublicId)).toBe(primary.public_id);
+      await selectThroughUi(owner,primary.public_id);
       unblock();
       await expect.poll(()=>owner.evaluate(()=>sessionStorage.getItem('_438Delayed'))).toBe('AbortError');
       await expect(owner.locator('#historyPersonal')).not.toContainText('stale private workspace response');
