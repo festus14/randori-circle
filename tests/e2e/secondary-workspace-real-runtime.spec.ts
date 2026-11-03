@@ -1,5 +1,6 @@
 import {expect,Page,test} from '@playwright/test';
 import bcrypt from 'bcryptjs';
+import * as Y from 'yjs';
 import {setCode} from './helpers';
 import {createPairedCircle,startGoldenRuntime,withDatabase,newGoldenPage,signInMemberSession,
   configureExecutionProvider,installDeterministicExecutionTransport,FOCUS_BLOCK_ROLLUP_SOLUTION} from './golden-runtime';
@@ -102,6 +103,18 @@ test('real runtime: both directions, non-members, scoped History, independent ro
     expect(primaryHistory.body.history).toHaveLength(1);
     expect(primaryHistory.body.history[0].circle).toEqual({public_id:primary.public_id,name:primary.name,is_primary:true});
     await select(owner,golden.origin,secondary.publicId);
+    await owner.locator('#tab-home').click();
+    const pairedEntry=await raw(owner,golden.origin,'/api/my-pair');
+    expect(pairedEntry.body).toMatchObject({paired:true,pairing_status:'paired',workspace_available:true,coordination_only:false,room_id:secondary.room});
+    await expect(owner.locator('#dashJoinSession')).toBeVisible();
+    await expect(owner.getByTestId('pair-chat-input')).toBeVisible();
+    await owner.getByTestId('pair-chat-input').fill('Home secondary chat');
+    await owner.getByTestId('pair-chat-send').click();
+    await expect(owner.getByTestId('pair-chat-list')).toContainText('Home secondary chat');
+    await Promise.all([owner.waitForURL(`${golden.origin}/join/${secondary.room}`,{waitUntil:'domcontentloaded'}),owner.locator('#dashJoinSession').click()]);
+    await expect(owner.getByTestId('workspace-circle')).toContainText('In Secondary Dojo');
+    await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_workspace?.hydrated)).toBe(true);
+    await expect(owner.getByTestId('pair-chat-list')).toContainText('Home secondary chat');
     const history=await raw(owner,golden.origin,'/api/history');
     expect(history.body.total).toBe(1);expect(history.body.history).toHaveLength(1);
     expect(history.body.history[0]).toMatchObject({room_id:secondary.room,circle:{public_id:secondary.publicId,name:'Secondary Dojo',is_primary:false}});
@@ -153,6 +166,32 @@ test('real runtime: both directions, non-members, scoped History, independent ro
     expect((await raw(owner,golden.origin,resource('session-completion',pair.room))).body.completion.confirmed_count).toBe(0);
     expect((await raw(owner,golden.origin,resource('messages',pair.room))).body.messages).toHaveLength(0);
     await select(owner,golden.origin,solo.publicId);
+    await owner.goto(`${golden.origin}/?view=dashboard`,{waitUntil:'domcontentloaded'});
+    await owner.locator('#tab-home').click();
+    const soloEntry=await raw(owner,golden.origin,'/api/my-pair');
+    expect(soloEntry.body).toMatchObject({paired:true,pairing_status:'solo',workspace_available:true,coordination_only:false,room_id:solo.room,pair:{solo:true}});
+    await expect(owner.locator('#dashJoinSession')).toHaveText('Open solo practice');
+    await Promise.all([owner.waitForURL(`${golden.origin}/join/${solo.room}`,{waitUntil:'domcontentloaded'}),owner.locator('#dashJoinSession').click()]);
+    await expect(owner.getByTestId('workspace-circle')).toContainText('In Solo Dojo');
+    await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_workspace?.hydrated)).toBe(true);
+    await owner.locator('#questionSelect').selectOption('focus-block-rollup');
+    await owner.locator('#langSelect').selectOption('javascript');
+    await setCode(owner,FOCUS_BLOCK_ROLLUP_SOLUTION);
+    await expect(owner.locator('#runBtn')).toBeEnabled();
+    const soloExecuted=owner.waitForResponse(response=>new URL(response.url()).pathname==='/api/execute'&&response.request().method()==='POST');
+    await owner.locator('#runBtn').click();
+    const soloExecution=await soloExecuted;
+    expect(soloExecution.status()).toBe(200);
+    expect(await soloExecution.json()).toMatchObject({ok:true,passed_count:8,total_count:8});
+    expect(soloExecution.request().postDataJSON()).toMatchObject({room_id:solo.room,code:FOCUS_BLOCK_ROLLUP_SOLUTION});
+    expect(soloExecution.request().postDataJSON()).not.toHaveProperty('document_version');
+    await expect(owner.locator('#pairRunsList')).toContainText('8/8');
+    expect(await owner.evaluate(()=>(window as any)._randori_crdt?.identity)).toBeNull();
+    await withDatabase(golden,async db=>{
+      const run=await db.execute({sql:'SELECT code FROM circle_session_runs WHERE circle_id=? AND group_id=?',args:[solo.circleId,solo.group.id]});
+      expect(run.rows.map(row=>row.code)).toEqual([FOCUS_BLOCK_ROLLUP_SOLUTION]);
+      expect((await db.execute({sql:'SELECT COUNT(*) AS count FROM circle_pair_code_documents WHERE circle_id=?',args:[solo.circleId]})).rows[0].count).toBe(0);
+    });
     const soloState=await raw(owner,golden.origin,resource('session-completion',solo.room));expect(soloState.body.completion.required_count).toBe(1);
     expect(soloState.body.completion.version).not.toBe(completion.body.completion.version);
     const soloDone=await raw(owner,golden.origin,'/api/session-completion','POST',{room_id:solo.room,action:'confirm',base_version:soloState.body.completion.version});
@@ -172,6 +211,39 @@ test('real runtime: both directions, non-members, scoped History, independent ro
     for(const surface of writes)expect((await raw(outsider.page,golden.origin,`/api/${surface}`,'POST',{room_id:secondary.room})).status,surface).toBe(404);
     expect(golden.external).toEqual([]);expect(transport.unexpectedExternalRequests).toEqual([]);
   }finally{restore();transport.restore();await golden.close();}
+});
+
+test('real runtime: a legacy primary queued edit restores and submits with the workspace flag off',async({browser})=>{
+  const golden=await startGoldenRuntime('randori-438-legacy-');
+  const previous=process.env.SECONDARY_CIRCLE_WORKSPACE_ENABLED;
+  try{
+    process.env.SECONDARY_CIRCLE_WORKSPACE_ENABLED='false';
+    const pair=await createPairedCircle(browser,golden),owner=pair.owner.page;
+    const canonical=await raw(owner,golden.origin,resource('code-document',pair.room));
+    expect(canonical.status,canonical.text).toBe(200);
+    const doc=new Y.Doc();Y.applyUpdate(doc,Buffer.from(canonical.body.state,'base64'));
+    const vector=Y.encodeStateVector(doc),saved='// legacy edit recovered after upgrade\n';
+    doc.getText('code').insert(0,saved);
+    const update=Buffer.from(Y.encodeStateAsUpdate(doc,vector)).toString('base64');doc.destroy();
+    const key=JSON.stringify([pair.owner.user.id,pair.room,'focus-block-rollup',1,'javascript']);
+    await owner.evaluate(({key,update})=>{
+      localStorage.setItem('randori-crdt-pending-v1',JSON.stringify({[key]:{updated_at:Date.now(),updates:[update]}}));
+    },{key,update});
+    const submitted=owner.waitForResponse(response=>new URL(response.url()).pathname==='/api/code-document'&&response.request().method()==='POST');
+    await owner.goto(`${golden.origin}/join/${pair.room}`,{waitUntil:'domcontentloaded'});
+    await owner.locator('#questionSelect').selectOption('focus-block-rollup');
+    expect((await submitted).status()).toBe(200);
+    await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_code?.getCode?.()||(document.getElementById('editor') as HTMLTextAreaElement)?.value)).toContain(saved);
+    await expect.poll(()=>owner.evaluate(()=>(window as any)._randori_crdt?.acknowledged)).toBe(true);
+    expect(await owner.evaluate(()=>JSON.parse(localStorage.getItem('randori-crdt-pending-v1')||'{}'))).toEqual({});
+    const persisted=await raw(owner,golden.origin,resource('code-document',pair.room));
+    const stored=new Y.Doc();Y.applyUpdate(stored,Buffer.from(persisted.body.state,'base64'));
+    expect(stored.getText('code').toString()).toContain(saved);stored.destroy();
+    expect(golden.external).toEqual([]);
+  }finally{
+    if(previous===undefined)delete process.env.SECONDARY_CIRCLE_WORKSPACE_ENABLED;else process.env.SECONDARY_CIRCLE_WORKSPACE_ENABLED=previous;
+    await golden.close();
+  }
 });
 
 test('real runtime: flag-off gates and delayed prior-circle responses, context writes and cross-tab switch fencing',async({browser})=>{

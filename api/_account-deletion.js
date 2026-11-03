@@ -428,8 +428,8 @@ function changed(result){
 // invitation ids, primary keys); the outbox and app_logs predicates scan those
 // tables once, bounded by their retention.
 async function workspaceSchemaInstalled(transaction){
-  const contract=MIGRATION_CONTRACTS[23];
-  const result=await transaction.execute({sql:'SELECT version,name,checksum FROM schema_migrations WHERE version=? LIMIT 2',args:[24]});
+  const contract=MIGRATION_CONTRACTS[24];
+  const result=await transaction.execute({sql:'SELECT version,name,checksum FROM schema_migrations WHERE version=? LIMIT 2',args:[25]});
   const row=result.rows?.[0];
   return result.rows?.length===1&&Number(row.version)===contract.version&&row.name===contract.name&&row.checksum===contract.checksum;
 }

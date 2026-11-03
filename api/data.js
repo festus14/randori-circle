@@ -98,11 +98,14 @@ import {
   resolveActiveCircleContext,
   secondaryCircleCoordinationEnabled,
   secondaryCircleSchedulingEnabled,
+  secondaryCircleWorkspaceEnabled,
   sendMultiCircleFeatureUnavailable,
   validateActiveCircleMutationContext,
 } from './_active-circle.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { dispatchWorkspaceData } from './_workspace-router.js';
+import { dispatchWorkspaceData, prepareWorkspaceRequest, sendWorkspaceFailure } from './_workspace-router.js';
+import { parseSecondaryRoomPath, secondaryRoomId, stableWorkspaceRead } from './_workspace-access.js';
+import { pair as authorizedSecondaryPair } from './_secondary-workspace.js';
 import {
   HEALTH_RESPONSE,
   READY_RESPONSE,
@@ -1465,10 +1468,28 @@ async function handleMyPair(req,res){
   const readerAccess=await requireSelectedPairingReader(req,res,db,payload,userId);
   if(!readerAccess) return;
   if(readerAccess.mode==='secondary'){
+    let workspace=null;
+    if(secondaryCircleWorkspaceEnabled()){
+      try{ workspace=await prepareWorkspaceRequest(req,res); }
+      catch(error){ return sendWorkspaceFailure(res,error); }
+    }
     try{
       const read=await readCirclePairing(db,{authority:readerAccess.authority});
-      return res.json(secondaryMyPairResponse(read,readerAccess,userId));
+      const response=secondaryMyPairResponse(read,readerAccess,userId);
+      if(workspace&&response.paired){
+        const group=read.publication.groups.find(item=>item.userAId===userId||item.userBId===userId);
+        const roomId=secondaryRoomId({circleId:read.scope.circleId,publicationId:read.publication.id,groupId:group.id});
+        const room=parseSecondaryRoomPath(`/join/${roomId}`);
+        const authorized=await stableWorkspaceRead(workspace.db,tx=>authorizedSecondaryPair(tx,room));
+        if(!authorized) return res.status(404).json({error:'pair not found'});
+        return res.json({...response,coordination_only:false,workspace_available:true,room_id:roomId,
+          pair:{...response.pair,id:group.id,publication_id:read.publication.id,room_id:roomId,workspace_available:true},
+          message:group.isSolo?'Your private solo workspace is ready.':'Your current pairing workspace is ready.',
+        });
+      }
+      return res.json(response);
     }catch(error){
+      if(workspace) return sendWorkspaceFailure(res,error);
       const failure=circlePairingFailure(error,{
         contextVersion:readerAccess.circleContextVersion,circlePublicId:readerAccess.circlePublicId,
       });

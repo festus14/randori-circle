@@ -9162,6 +9162,22 @@ ${err.toString()}`);
     }
     return compact;
   }
+  function migrateLegacyPrimaryQueue(identity) {
+    if (!/^week_[1-9]\d*_pair_[1-9]\d*$/.test(identity.room) || !state.actorId) return;
+    const key = identityKey(identity, state.actorId);
+    const legacyKey = JSON.stringify([state.actorId, identity.room, identity.questionSlug, identity.questionVersion, identity.language]);
+    try {
+      const all2 = JSON.parse(localStorage.getItem(PENDING_KEY) || "{}");
+      const legacy = all2[legacyKey];
+      if (!legacy || !Array.isArray(legacy.updates) || !Number.isSafeInteger(legacy.updated_at) || Date.now() - legacy.updated_at >= QUEUE_RETENTION_MS) return;
+      const queue = compactQueue([...legacy.updates, ...readQueue(identity)]);
+      all2[key] = { updated_at: Math.max(legacy.updated_at, all2[key]?.updated_at || 0), updates: queue };
+      delete all2[legacyKey];
+      localStorage.setItem(PENDING_KEY, JSON.stringify(all2));
+      memoryQueues.set(key, queue);
+    } catch {
+    }
+  }
   function writeQueue(queue, identity = state.identity) {
     if (!identity || !state.actorId) return false;
     const key = identityKey(identity, state.actorId);
@@ -9446,6 +9462,7 @@ ${err.toString()}`);
         schedule(SEND_DEBOUNCE_MS);
       };
       doc2.on("update", state.updateHandler);
+      migrateLegacyPrimaryQueue(identity);
       for (const pending of readQueue(identity)) applyUpdate(doc2, base64ToBytes(pending), ORIGIN_PENDING);
       const localNow = currentCode();
       if (localNow !== localBefore && localNow !== text2.toString()) replaceText(localNow, "pre-hydration-edit");
@@ -9596,13 +9613,17 @@ ${err.toString()}`);
   }
   function fenceIdentityChange(room = window._randori_authorized_room) {
     room = String(room || "");
-    deactivate({ awaitingRoom: ROOM.test(room) && window._randori_authorized_room === room && !!actorId() });
+    deactivate({ awaitingRoom: ROOM.test(room) && !window.RandoriWorkspaceScope?.isSolo?.(room) && window._randori_authorized_room === room && !!actorId() });
   }
   async function activate() {
+    const room = String(window._randori_authorized_room || "");
+    if (window.RandoriWorkspaceScope?.isSolo?.(room)) {
+      if (state.identity || state.awaitingRoom) deactivate();
+      return false;
+    }
     const identity = selectionIdentity();
     const owner = actorId();
     if (!owner || !identity || window._randori_workspace?.hydrated !== true || window._randori_workspace?.room !== identity.room || window._randori_authorized_room !== identity.room) {
-      const room = String(window._randori_authorized_room || "");
       const awaiting = !!owner && ROOM.test(room);
       deactivate({ awaitingRoom: awaiting });
       if (awaiting) {

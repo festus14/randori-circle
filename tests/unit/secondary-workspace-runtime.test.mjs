@@ -48,6 +48,19 @@ test('HTTP runtime rejects reads, writes and existence leaks between two seconda
   for(const [circle,foreign] of [[f.a,f.b],[f.b,f.a]]){
    await f.select(f.owner,circle);
    const invoke=(p,m='GET',body)=>f.request(f.owner.cookie,p,m,body,f.owner.version);
+   const myPair=await invoke('/api/my-pair');
+   assert.equal(myPair.status,200,myPair.text);
+   assert.equal(myPair.body.room_id,circle.room);
+   assert.equal(myPair.body.pair.room_id,circle.room);
+   assert.equal(myPair.body.workspace_available,true);
+   assert.equal(myPair.body.coordination_only,false);
+   assert.equal(myPair.body.circle.public_id,circle.publicId);
+   process.env.SECONDARY_CIRCLE_WORKSPACE_ENABLED='false';
+   const disabled=await invoke('/api/my-pair');
+   assert.equal(disabled.body.workspace_available,false);
+   assert.equal(disabled.body.coordination_only,true);
+   assert.equal(disabled.body.room_id,undefined);
+   process.env.SECONDARY_CIRCLE_WORKSPACE_ENABLED='true';
    await invoke('/api/messages','POST',{room_id:circle.room,message:`chat ${circle.name}`});
    for(const surface of READS){const denied=await invoke(path(surface,foreign.room)),absent=await invoke(path(surface,ABSENT));assert.deepEqual([denied.status,denied.text],[404,absent.text],surface);assert.deepEqual(denied.body,{error:'pair not found'});}
    const before=(await f.db.execute('SELECT COUNT(*) AS n FROM circle_pair_messages')).rows[0].n;

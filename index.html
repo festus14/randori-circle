@@ -10968,7 +10968,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         document.getElementById('dashScheduleArea')?.replaceChildren();
         document.getElementById('dashChatArea')?.replaceChildren();
       }else{
-        renderSchedule(j);
+        if(window.RandoriWorkspaceScope.secondaryRoom(room)){
+          if(j.schedule_available===true&&window._randori_auth?.capabilities?.secondaryCircleScheduling===true) renderSecondarySchedule(j);
+          else stopSchedulePolling({clear:true});
+        }else renderSchedule(j);
         renderChat(j);
       }
     }catch(e){
@@ -10983,14 +10986,20 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function joinSessionDeterministic(copyOnly=false){
     try{
-      let room=null, weekId=currentWeekId, pg=currentPair;
-      if(weekId && pg){
+      let room=currentPair?.room_id||null, weekId=currentWeekId, pg=currentPair;
+      if(!room&&weekId && pg){
         const pgId=pg.pg_id||pg.id;
         room=`week_${weekId}_pair_${pgId}`;
       }
-      if(!/^week_[1-9]\d*_pair_[1-9]\d*$/.test(String(room||''))||window._randori_authorized_room!==room){
+      if(!canonicalScheduleRoom(room)||window._randori_authorized_room!==room){
         if(typeof toast==='function') toast('You don’t have a pair room this week. Practise solo from the catalogue instead.');
         return null;
+      }
+      if(window.RandoriWorkspaceScope.secondaryRoom(room)){
+        const invite=location.origin+'/join/'+encodeURIComponent(room);
+        if(copyOnly){ navigator.clipboard.writeText(invite).catch(()=>{}); return invite; }
+        location.assign(invite);
+        return room;
       }
       localStorage.setItem('randori-last-room', room);
       // ensure roomSelect has option
@@ -11089,7 +11098,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const ui=homeUi();
     if(!nodes||!ui) return;
     const room=nodes.region.dataset.room||'';
-    const schedule=scheduleState.room===room&&scheduleState.kind==='primary'?scheduleState.schedule:null;
+    const secondary=window.RandoriWorkspaceScope.secondaryRoom(room);
+    if(secondary&&scheduleState.kind!=='secondary'){
+      ui.applyNextStep(nodes,{step:'ready',tone:'action',title:'Your workspace is ready',detail:'Join the room or send your partner a message.',action:{kind:'chat',label:'Send a message'},joinPrimary:true});
+      return;
+    }
+    const schedule=(secondary?scheduleState.kind==='secondary':scheduleState.room===room&&scheduleState.kind==='primary')?scheduleState.schedule:null;
     ui.applyNextStep(nodes,ui.nextStep({
       schedule,meId:scheduleActorId(),partnerName:nodes.region.dataset.partner||'',now:Date.now(),
       chatAvailable:!!document.getElementById('chatIn'),
@@ -11425,7 +11439,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function pairedDashboardRoom(){
     const weekId=Number(currentWeekId);
     const pairId=Number(currentPair?.pg_id||currentPair?.id);
-    const room=`week_${weekId}_pair_${pairId}`;
+    const room=currentPair?.room_id||`week_${weekId}_pair_${pairId}`;
     if(!window._randori_auth?.me||!canonicalScheduleRoom(room)) return null;
     if(window._randori_authorized_room!==room) return null;
     if(!viewDashboard||viewDashboard.style.display==='none'||document.visibilityState!=='visible') return null;
@@ -11963,7 +11977,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function chatArea(room=chatState.room){
-    if(window.RandoriWorkspaceScope.secondaryRoom(room)){
+    if(window.RandoriWorkspaceScope.secondaryRoom(room)&&document.getElementById('view-code')?.style.display!=='none'){
       let host=document.getElementById('workspaceChatArea');
       if(!host){host=document.createElement('div');host.id='workspaceChatArea';document.getElementById('view-code')?.appendChild(host);}
       return host;
@@ -16214,7 +16228,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!Number.isSafeInteger(pairId)||pairId<1) return null;
     const supplied=String(payload.room_id||'');
     const derived=`week_${weekId}_pair_${pairId}`;
-    const roomId=/^week_[1-9]\d*_pair_[1-9]\d*$/.test(supplied)?supplied:
+    const roomId=window.RandoriWorkspaceScope.canonicalRoom(supplied)?supplied:
       (/^week_[1-9]\d*_pair_[1-9]\d*$/.test(derived)?derived:null);
     const workspaceAvailable=payload.workspace_available!==false&&payload.coordination_only!==true&&roomId!==null;
     return {cycle,paired:true,workspaceAvailable,roomId,pairId};

@@ -89,6 +89,23 @@ function compactQueue(queue){
   return compact;
 }
 
+function migrateLegacyPrimaryQueue(identity){
+  if(!/^week_[1-9]\d*_pair_[1-9]\d*$/.test(identity.room)||!state.actorId) return;
+  const key=identityKey(identity,state.actorId);
+  const legacyKey=JSON.stringify([state.actorId,identity.room,identity.questionSlug,identity.questionVersion,identity.language]);
+  try{
+    const all=JSON.parse(localStorage.getItem(PENDING_KEY)||'{}');
+    const legacy=all[legacyKey];
+    if(!legacy||!Array.isArray(legacy.updates)||!Number.isSafeInteger(legacy.updated_at)
+      ||Date.now()-legacy.updated_at>=QUEUE_RETENTION_MS) return;
+    const queue=compactQueue([...legacy.updates,...readQueue(identity)]);
+    all[key]={updated_at:Math.max(legacy.updated_at,all[key]?.updated_at||0),updates:queue};
+    delete all[legacyKey];
+    localStorage.setItem(PENDING_KEY,JSON.stringify(all));
+    memoryQueues.set(key,queue);
+  }catch{}
+}
+
 function writeQueue(queue,identity=state.identity){
   if(!identity||!state.actorId) return false;
   const key=identityKey(identity,state.actorId); const compact=compactQueue(queue);
@@ -339,6 +356,9 @@ async function hydrate(identity,epoch){
       schedule(SEND_DEBOUNCE_MS);
     };
     doc.on('update',state.updateHandler);
+    // The canonical response has authorized this exact primary document.
+    // Only now may its pre-circle queue move into the scoped namespace.
+    migrateLegacyPrimaryQueue(identity);
     for(const pending of readQueue(identity)) Y.applyUpdate(doc,base64ToBytes(pending),ORIGIN_PENDING);
     const localNow=currentCode();
     if(localNow!==localBefore&&localNow!==text.toString()) replaceText(localNow,'pre-hydration-edit');
@@ -431,14 +451,18 @@ function deactivate({keepIdentity=false,awaitingRoom=false}={}){
 
 function fenceIdentityChange(room=window._randori_authorized_room){
   room=String(room||'');
-  deactivate({awaitingRoom:ROOM.test(room)&&window._randori_authorized_room===room&&!!actorId()});
+  deactivate({awaitingRoom:ROOM.test(room)&&!window.RandoriWorkspaceScope?.isSolo?.(room)&&window._randori_authorized_room===room&&!!actorId()});
 }
 
 async function activate(){
+  const room=String(window._randori_authorized_room||'');
+  if(window.RandoriWorkspaceScope?.isSolo?.(room)){
+    if(state.identity||state.awaitingRoom) deactivate();
+    return false;
+  }
   const identity=selectionIdentity(); const owner=actorId();
   if(!owner||!identity||window._randori_workspace?.hydrated!==true
     ||window._randori_workspace?.room!==identity.room||window._randori_authorized_room!==identity.room){
-    const room=String(window._randori_authorized_room||'');
     const awaiting=!!owner&&ROOM.test(room);
     deactivate({awaitingRoom:awaiting});
     // A first-ever room hydrates with no workspace snapshot, so no selection

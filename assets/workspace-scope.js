@@ -80,7 +80,8 @@
       if(enabled()&&body?.ok===true){
         if(!control.matchesPairing(operation,body)) throw new DOMException('circle context changed','AbortError');
         if(body.circle&&canonicalRoom(body.room_id)){
-          rooms.set(body.room_id,{circle:body.circle,generation,solo:body.recap?.pair?body.recap.pair.solo===true:rooms.get(body.room_id)?.solo===true});
+          const pair=body.recap?.pair||body.pair;
+          rooms.set(body.room_id,{circle:body.circle,generation,solo:pair?pair.solo===true:rooms.get(body.room_id)?.solo===true});
           showRoomCircle(body.room_id);
         }
       }
