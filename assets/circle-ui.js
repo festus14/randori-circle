@@ -7,7 +7,8 @@
 //
 // Everything here is presentation: it formats server-provided values into
 // labels, validates response shapes before they reach the DOM, and builds
-// small text-only nodes. It never fetches, authorizes, or stores anything.
+// small text-only nodes. The sender address cache uses caller-provided browser
+// storage; these helpers never fetch or authorize.
 (function installCircleUi(root) {
   'use strict';
 
