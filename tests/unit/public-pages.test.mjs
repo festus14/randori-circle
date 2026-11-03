@@ -283,7 +283,7 @@ test('the privacy policy describes self-service account deletion as available (i
   assert.match(text, /your name shown as “Deleted member”/u);
   assert.match(text, /only owner of a circle, make another member an owner \(or archive the circle\) first; if you are the only app admin, make another member an app admin first/u);
   // People who can't sign in keep the contact and owner route, answered within one month.
-  assert.match(text, /If you can no longer sign in, or would rather ask us, email festusomole14@gmail\.com or ask the owner of your circle/u);
+  assert.match(text, /If you would rather ask us, or cannot use email, email festusomole14@gmail\.com or ask the owner of your circle/u);
   assert.match(text, /will respond within one month and delete your account/u);
   assert.doesNotMatch(text, /There isn’t a delete button yet|Where account deletion is switched on|If the option isn’t switched on|where that option is switched on/u);
 });
@@ -336,4 +336,14 @@ test('the privacy policy describes email-record retention as ID-83 runs it', () 
   ]) {
     assert.match(text, phrase);
   }
+});
+
+
+test('the public deletion form is a separate document with an explicit confirmation and no account details',()=>{
+  assert.equal(publicPageFile('/delete-account'),'delete-account.html');
+  const html=read('delete-account.html');
+  assert.match(html,/<label for="confirm">Type DELETE/);
+  assert.match(html,/does not restore circle membership/);
+  assert.match(html,/<script src="\/assets\/deletion-link.js" defer>/);
+  assert.doesNotMatch(html,/authForm|appMain|user_id|google_sub/);
 });

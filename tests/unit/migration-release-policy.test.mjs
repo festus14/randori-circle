@@ -95,12 +95,12 @@ async function databaseAt(version){
 const ready=async()=>({ready:true,reason:null});
 const N=MIGRATION_CONTRACTS.length;
 
-test('migrations 1-21 stay breaking, and v22/v23 are additive migrations',()=>{
+test('migrations 1-21 stay breaking, and v22/v23/v24 are additive migrations',()=>{
   assert.ok(MIGRATION_CONTRACTS.slice(0,21).every(contract=>contract.compatibility==='breaking'));
   assert.equal(MIGRATION_CONTRACTS[21].compatibility,'additive');
   assert.equal(MIGRATION_CONTRACTS.at(-1).compatibility,'additive');
-  assert.equal(MIGRATION_CONTRACTS.at(-1).version,23);
-  assert.equal(compatibility.pendingAdditiveContract()?.version,23);
+  assert.equal(MIGRATION_CONTRACTS.at(-1).version,24);
+  assert.equal(compatibility.pendingAdditiveContract()?.version,24);
   assert.equal(compatibility.ADDITIVE_READINESS_LAG,1);
 });
 

@@ -3777,11 +3777,11 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
   });
   assert.equal(outboxWorkerCalls.length,1);
   assert.deepEqual(outboxWorkerCalls[0].eventTypes,[
-    'pairing.email.requested','schedule.email.requested','invitation.email.requested',
+    'account.deletion.link','pairing.email.requested','schedule.email.requested','invitation.email.requested',
     'feedback.submitted','reminder.email.requested',
     'account.deletion.confirmation','account.deletion.reminder','account.deletion.blocked',
   ]);
-  assert.equal(outboxWorkerCalls[0].maxClaims,11);
+  assert.equal(outboxWorkerCalls[0].maxClaims,12);
   assert.equal(outboxWorkerCalls[0].finalizationReserveMs,5_000);
   assert.equal(drained.body.outbox.claimed,2);
   assert.deepEqual(drained.body.outbox.types['pairing.email.requested'],{

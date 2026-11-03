@@ -1,0 +1,9 @@
+[hidden]{display:none!important}
+main{max-width:680px;margin:32px auto;padding:0 24px}
+header{max-width:680px;margin:24px auto;padding:0 24px}
+form{display:grid;gap:12px;margin:24px 0}
+input,button{font:inherit;padding:12px;border:1px solid var(--color-border);border-radius:8px;min-height:44px}
+input{color:var(--color-text);background:var(--color-surface)}
+button{color:var(--color-canvas);background:var(--color-action);font-weight:650;cursor:pointer}
+button:disabled{opacity:.6;cursor:default}
+input:focus-visible,button:focus-visible{outline:3px solid var(--color-focus);outline-offset:2px}
