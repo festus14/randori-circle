@@ -8069,6 +8069,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       currentPairingPublicationState=null;
       currentPairingPublicationFence=null;
       updatePairingRunAccess();
+      // The timer also fires at the publication grace expiry while the
+      // cycle is still current; only a cycle that has actually ended
+      // kills the previous cycle's pair. Revocation is global, not gated
+      // on a visible view: a user working in the Code tab at the boundary
+      // otherwise keeps seeing last cycle's pair and room.
+      if(Number.isFinite(Date.parse(state.cycle_ends_at))
+        &&Date.now()>=Date.parse(state.cycle_ends_at)){
+        window._randori_journey?.revokeStalePairState?.();
+      }
       if(document.getElementById('view-pair')?.style.display!=='none') void renderPairs();
       if(document.getElementById('view-dashboard')?.style.display!=='none'){
         void window._randori_journey?.showDashboard?.();
@@ -12935,6 +12944,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // Expose
   window._randori_journey={
     showDashboard,showProfileSetup,routeByAuth,openAuthorizedJoin,openSetupGuide,refreshJoinedLateHero,
+    // Pairing-rollover revocation: drop the previous cycle's pair state
+    // (pair cache, authorized room, workspace, schedule/chat polling) in
+    // every view, not only the dashboard. The old cycle's pair is dead at
+    // the boundary even when the user is working in the Code tab; the
+    // dashboard refetch that follows re-establishes the new cycle. This
+    // deliberately does not touch the profile editor (see resetPairState).
+    revokeStalePairState:resetDashboardPairState,
     get setupStep(){ return viewProfile?.style.display==='none'?null:setupStep; },
     setSetupStep,
     waitForProfileSaveAttempt,
@@ -16555,6 +16571,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       // Abort it immediately; the normal dashboard loader will capture a new
       // account/circle operation after the new availability scope is ready.
       window._randori_journey?.cancelPairRequest?.();
+      // Pairing can report the new current cycle before availability
+      // catches up. Preserve its room when the cached pair ends at the
+      // new upcoming cycle's start; otherwise revoke stale state globally.
+      const cachedPair=window._randori_pair_cache;
+      const cachedCycle=cachedPair?.current_cycle||cachedPair?.cycle;
+      if(Date.parse(cachedCycle?.endsAt)!==Date.parse(rolloverScope.targetCycleStartsAt)){
+        window._randori_journey?.revokeStalePairState?.();
+      }
       reset('cycle');
       queueMicrotask(async()=>{
         try{ await refresh({reason:'cycle',revalidateAvailability:false}); }
