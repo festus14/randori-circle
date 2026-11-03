@@ -60,8 +60,8 @@ without it: the route returns 503 or the capability is not offered.
 | --- | --- | --- | --- | --- | --- |
 | `TURSO_DATABASE_URL` | libSQL URL of the app database (`libsql://…` in production, `file:` locally). Read by `api/_db.js` and the readiness probes; also by `db:status`/`db:plan` and the key-control and chat-retention scripts | Yes | none | Treat as secret | Vercel; secret in GH `credential-key-control` and GH chat-retention env |
 | `TURSO_AUTH_TOKEN` | Database auth token for the URL above. The local runtime refuses to start if it is set | Yes for a remote database | none | Yes | Vercel; secret in GH `credential-key-control` and GH chat-retention env |
-| `DELETION_LEDGER_DATABASE_URL` | libSQL URL of the separate deletion-ledger database (issue #383, ID-89): a second Turso database, not the app database. Every deletion execution writes one minimal entry there (opaque account id, deletion time, account creation time) so a restore from a destroyed source can still re-apply deletions. Read by `api/_deletion-ledger-db.js` (writer) and `scripts/deletion-ledger.mjs` (`init`/`purge`/`destroy`, `--from ledger-db`). With neither ledger var set the writer is a no-op. The production database is provisioned by the owner in #440 and wired in #444; until then the writer is inactive in production | No | none (writer inactive) | Treat as secret | Vercel (after #440/#444); shell or `.env.local` for the operator CLI |
-| `DELETION_LEDGER_AUTH_TOKEN` | Database auth token for the ledger URL above. A token without the URL is a configuration error, not "unconfigured" | With the ledger URL, for a remote database | none | Yes | Vercel (after #440/#444); shell or `.env.local` for the operator CLI |
+| `DELETION_LEDGER_DATABASE_URL` | libSQL URL of the separate deletion-ledger database (issue #383, ID-89). Read by the writer, the operator CLI and the daily deletion-ledger retention workflow (#450); never the app database. Neither ledger variable set makes the writer a no-op; retention fails closed. See [retention operations](ACCOUNT_DELETION.md#daily-deletion-ledger-retention-450) | Required for retention; optional for writer | none | Treat as secret | Vercel; GitHub Actions repository secret of this exact name (owner must add); shell or `.env.local` for the operator CLI |
+| `DELETION_LEDGER_AUTH_TOKEN` | Database auth token for the separate ledger URL above. A token without the URL is a configuration error. The daily retention workflow requires both ledger secrets | With the ledger URL, for a remote database | none | Yes | Vercel; GitHub Actions repository secret of this exact name (owner must add); shell or `.env.local` for the operator CLI |
 | `APP_URL` | Canonical origin used for Google OAuth redirects and for links in emails and pairing publications. Production needs an exact root-level HTTPS origin (`https://randoricircle.com`); `npm run dev` sets its loopback origin itself | Yes | none | No | Vercel; var in GH `production` (outbox dispatcher, watchdog, execution smoke) |
 | `JWT_SECRET` | Signs session JWTs and keys invitation, activation and reset token hashes. Rotating it is an emergency global sign-out: it also invalidates pending invitation, activation and reset links, so revoke and reissue invitations and ask anyone mid-reset to request a new link. If `RUN_ATTESTATION_SECRET` is unset, first set it to the current `JWT_SECRET` (or add the old value to `RUN_ATTESTATION_PREVIOUS_SECRETS`), or past runs show as unverified. Invitation email hashes are re-keyed too, so invite-request checks for "already invited" and "recently declined" stop matching rows stored under the old secret | Yes | none | Yes | Vercel |
 | `CRON_SECRET` | Authenticates every `/api/cron/*` route (`x-cron-secret` header or `Authorization: Bearer`) | Yes | none | Yes | Vercel; secret in GH `production` (must match Vercel) |
@@ -287,6 +287,16 @@ verified commit to `GITHUB_ENV` as `KEY_CONTROL_REPO_COMMIT`,
 run unless it equals the workflow commit. The accepted confirmation phrases
 are in each runbook.
 
+## Daily deletion-ledger retention workflow
+
+See [daily retention](ACCOUNT_DELETION.md#daily-deletion-ledger-retention-450).
+The owner adds the two ledger repository secrets listed in the database table
+above. The workflow computes the following nonsecret input itself:
+
+| Variable | Purpose | Required | Default | Secret | Where set |
+| --- | --- | --- | --- | --- | --- |
+| `DELETION_LEDGER_RETENTION_DRY_RUN` | `true` counts only; `false` purges eligible entries through the fixed retention policy | Yes | `true` for manual dispatch; `false` for schedule | No | Workflow, from the boolean dispatch input; do not configure by hand |
+
 ## Operator scripts run by hand
 
 | Variable | Purpose | Required | Default | Secret | Where set |
@@ -339,7 +349,7 @@ Never set these by hand.
 | `GITHUB_API_URL`, `GITHUB_REPOSITORY`, `GITHUB_REPOSITORY_ID` | GitHub Actions | Repository identity for evidence checks |
 | `GITHUB_EVENT_NAME`, `GITHUB_REF`, `GITHUB_SHA`, `GITHUB_WORKFLOW_REF`, `GITHUB_WORKFLOW_SHA` | GitHub Actions | The protected scripts refuse to run outside `workflow_dispatch` on `main` from the expected workflow |
 | `GITHUB_RUN_ID`, `GITHUB_RUN_ATTEMPT` | GitHub Actions | Bind evidence to one run |
-| `GITHUB_ENV`, `GITHUB_OUTPUT` | GitHub Actions | Step environment and output files |
+| `GITHUB_ENV`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY` | GitHub Actions | Step environment, output and counts-only summary files |
 | `RUNNER_TEMP` | GitHub Actions | Artifact and private-state directory; scripts refuse paths outside it |
 
 ## Test harness only

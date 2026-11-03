@@ -1,0 +1,97 @@
+name: Deletion ledger retention
+
+on:
+  schedule:
+    - cron: '23 4 * * *' # Daily at 04:23 UTC; avoid the busy top of the hour.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Count eligible entries without deleting them
+        required: true
+        default: true
+        type: boolean
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rehearsal:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Test retention safety on disposable local databases
+        run: node --experimental-test-module-mocks --test --test-concurrency=4 tests/unit/deletion-ledger-retention.test.mjs
+      - name: Rehearse the workflow driver without production credentials
+        id: rehearsal
+        run: node scripts/deletion-ledger-retention.mjs --rehearse
+      - name: Upload counts-only rehearsal evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: deletion-ledger-retention-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/deletion-ledger-retention-summary.json
+          retention-days: 30
+          if-no-files-found: error
+
+  retention:
+    if: >-
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      && github.repository == 'festus14/randori-circle'
+      && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: deletion-ledger-retention-production
+      cancel-in-progress: false
+    outputs:
+      eligible: ${{ steps.purge.outputs.eligible }}
+      purged: ${{ steps.purge.outputs.purged }}
+      retained: ${{ steps.purge.outputs.retained }}
+      run_id: ${{ steps.purge.outputs.run_id }}
+      timestamp: ${{ steps.purge.outputs.timestamp }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies without ledger credentials
+        run: npm ci
+      - name: Verify ledger target and apply the bounded retention policy
+        id: purge
+        timeout-minutes: 2
+        env:
+          DELETION_LEDGER_DATABASE_URL: ${{ secrets.DELETION_LEDGER_DATABASE_URL }}
+          DELETION_LEDGER_AUTH_TOKEN: ${{ secrets.DELETION_LEDGER_AUTH_TOKEN }}
+          DELETION_LEDGER_RETENTION_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+        run: node scripts/deletion-ledger-retention.mjs --dry-run "$DELETION_LEDGER_RETENTION_DRY_RUN"
+      - name: Upload counts-only execution evidence
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: deletion-ledger-retention-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/deletion-ledger-retention-summary.json
+          retention-days: 30
+          if-no-files-found: error
+      - name: Alert the accountable owner on failure
+        if: always() && (steps.purge.outcome != 'success' || steps.upload.outcome != 'success')
+        run: |
+          echo "::error title=Deletion ledger retention alert for @festus14::Retention failed. Review the counts-only evidence and ACCOUNT_DELETION runbook before manually re-running. No automatic retry."
+          exit 1

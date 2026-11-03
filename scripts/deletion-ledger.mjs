@@ -81,6 +81,7 @@ import {
   readDeletionLedgerEntries,
 } from '../api/_deletion-ledger-db.js';
 import { hashInvitationEmail } from '../api/_circle-membership.js';
+import { guardedRetentionPurge } from './deletion-ledger-retention-policy.mjs';
 
 // The ledger database's own schema. One table, the minimal ledger
 // shape, nothing else. Versioned by
@@ -101,7 +102,7 @@ function fail(message,code){
   throw Object.assign(new Error(message),{code});
 }
 
-const USAGE='Usage: node scripts/deletion-ledger.mjs <export|reapply|verify|init|purge|destroy> [--out FILE | --ledger FILE | --from source|ledger-db] --restore-point ISO [--before ISO] [--confirm DESTROY_DELETION_LEDGER]';
+const USAGE='Usage: node scripts/deletion-ledger.mjs <export|reapply|verify|init|purge|destroy> [--out FILE | --ledger FILE | --from source|ledger-db] --restore-point ISO [--before ISO] [--retention [--dry-run]] [--confirm DESTROY_DELETION_LEDGER]';
 
 function parseArgs(argv){
   const [command,...rest]=argv;
@@ -109,7 +110,11 @@ function parseArgs(argv){
   const options={};
   for(let index=0;index<rest.length;index+=1){
     const flag=rest[index];
-    if((flag==='--out'||flag==='--ledger'||flag==='--restore-point'||flag==='--from'||flag==='--before'||flag==='--confirm')&&index+1<rest.length){
+    if(flag==='--retention'||flag==='--dry-run'){
+      if(options[flag.slice(2)]!==undefined) fail(USAGE,'DELETION_LEDGER_USAGE');
+      options[flag.slice(2)]=true;
+    }else if((flag==='--out'||flag==='--ledger'||flag==='--restore-point'||flag==='--from'||flag==='--before'||flag==='--confirm')&&index+1<rest.length){
+      if(options[flag.slice(2)]!==undefined) fail(USAGE,'DELETION_LEDGER_USAGE');
       options[flag.slice(2)]=rest[index+1];
       index+=1;
     }else{
@@ -120,6 +125,8 @@ function parseArgs(argv){
     fail(USAGE,'DELETION_LEDGER_USAGE');
   }
   const fromLedgerDb=options.from==='ledger-db';
+  if((options.retention||options['dry-run'])&&command!=='purge') fail(USAGE,'DELETION_LEDGER_USAGE');
+  if(options['dry-run']&&!options.retention) fail(USAGE,'DELETION_LEDGER_USAGE');
   if(command==='export'){
     if(!options.out||options.ledger||options.before||options.confirm) fail(USAGE,'DELETION_LEDGER_USAGE');
   }else if(command==='reapply'||command==='verify'){
@@ -310,7 +317,7 @@ export async function main({
   stdout=process.stdout,
   createDatabaseClient=createClient,
 }={}){
-  const {command,out,ledger:ledgerPath,'restore-point':restorePoint,from,before}=parseArgs(argv);
+  const {command,out,ledger:ledgerPath,'restore-point':restorePoint,from,before,retention,'dry-run':dryRun}=parseArgs(argv);
   const fromLedgerDb=from==='ledger-db';
   const needsAppDb=command==='export'?!fromLedgerDb:(command==='reapply'||command==='verify');
   const needsLedgerDb=fromLedgerDb||['init','purge','destroy'].includes(command);
@@ -328,6 +335,14 @@ export async function main({
       return {result,exitCode:0};
     }
     if(command==='purge'){
+      if(retention){
+        const counts=await guardedRetentionPurge(ledgerClient,{
+          before,dryRun:!!dryRun,expectedSchema:DELETION_LEDGER_DB_SCHEMA,purge:purgeDeletionLedgerOrUsage,
+        });
+        const result={command,...counts};
+        stdout.write(`${JSON.stringify(result)}\n`);
+        return {result,exitCode:0};
+      }
       const purged=await purgeDeletionLedgerOrUsage(ledgerClient,{before});
       const result={command,purged:purged.purged};
       stdout.write(`${JSON.stringify(result)}\n`);
