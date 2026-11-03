@@ -4,6 +4,71 @@ import {
   signInMemberSession,signInOwner,signOutThroughMenu,startGoldenRuntime,withDatabase,
 } from './golden-runtime';
 
+test('a delayed list in another tab preserves a concurrently sent address after reload',async({browser})=>{
+  test.setTimeout(90_000);
+  const golden=await startGoldenRuntime('randori-invitation-address-race-');
+  const email='concurrent.recipient@example.test';
+  let releaseStaleResponse:()=>void=()=>{};
+  const release=new Promise<void>(resolve=>{releaseStaleResponse=resolve;});
+  let recordStaleResponse:(body:any)=>void=()=>{};
+  const staleResponse=new Promise<any>(resolve=>{recordStaleResponse=resolve;});
+  const observations:Record<string,unknown>={};
+  try{
+    const sender=await newGoldenPage(browser,golden);
+    await signInOwner(sender.page,golden);
+    await sender.page.locator('[data-tab="circle"]').click();
+    await expect(sender.page.getByTestId('circle-invites')).toContainText('No invitations yet.');
+
+    // Both tabs share the sender's real session and localStorage. Fetch the
+    // real list before the send, then hold its response at Tab B's boundary.
+    const tabB=await sender.context.newPage();
+    let delayed=false;
+    await tabB.route('**/api/invitations',async route=>{
+      if(route.request().method()!=='GET'||delayed) return route.continue();
+      delayed=true;
+      const response=await route.fetch();
+      expect(response.status()).toBe(200);
+      recordStaleResponse(await response.json());
+      await release;
+      await route.fulfill({response});
+    });
+    await tabB.goto(golden.url,{waitUntil:'domcontentloaded'});
+    await tabB.locator('[data-tab="circle"]').click();
+    const staleList=await staleResponse;
+    expect(staleList.invitations).toEqual([]);
+    await expect(tabB.locator('#circleInvitesMeta')).toHaveText('Loading…');
+
+    const pending=await createInvitationThroughUi(sender.page,golden,email);
+    const row=sender.page.locator(`[data-invitation-id="${pending.invitationId}"]`);
+    await expect(row.locator('b')).toHaveText(email);
+    observations.senderBeforeRelease=await row.innerText();
+    observations.staleList=staleList;
+    expect(staleList.invitations.some((invite:any)=>invite.id===pending.invitationId)).toBe(false);
+    releaseStaleResponse();
+    // Wait for B to apply the stale list, including its cache cleanup.
+    await expect(tabB.getByTestId('circle-invites')).toContainText('No invitations yet.');
+    await expect(tabB.locator('#circleInvitesMeta')).not.toHaveText('Loading…');
+
+    await sender.page.reload({waitUntil:'domcontentloaded'});
+    await sender.page.locator('[data-tab="circle"]').click();
+    await expect(row.locator('b')).toHaveText(email);
+    await expect(row).toContainText('Pending');
+    observations.senderAfterReload=await row.innerText();
+    const currentList=await json(sender.page,'/api/invitations');
+    expect(currentList.status).toBe(200);
+    expect(currentList.body.invitations.some((invite:any)=>invite.id===pending.invitationId&&invite.status==='pending')).toBe(true);
+    expect(JSON.stringify(currentList.body)).not.toContain(email);
+    observations.currentList=currentList;
+    await test.info().attach('two-tab-sender-after-reload.png',{body:await sender.page.getByTestId('circle-invites').screenshot(),contentType:'image/png'});
+    expect(golden.external).toEqual([]);
+  }finally{
+    releaseStaleResponse();
+    await test.info().attach('two-tab-race-evidence.json',{body:JSON.stringify(observations,null,2),contentType:'application/json'});
+    console.log('Two-tab invitation race evidence:',JSON.stringify(observations));
+    await golden.close();
+  }
+});
+
 test('only the sending browser can identify a pending invitation after reload',async({browser})=>{
   test.setTimeout(120_000);
   const golden=await startGoldenRuntime('randori-invitation-addresses-');

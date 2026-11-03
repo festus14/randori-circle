@@ -6611,11 +6611,13 @@ async function refreshMe(){
       circleInvites.appendChild(loading);
     }
     try{
+      const emailScope=invitationEmailScope();
+      const emailSnapshot=circleInviteEmails.snapshot(emailScope);
       const result=await api('/api/invitations',{method:'GET'});
       if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId
         ||!circleControlOperationMatches(operation,result)) return;
       const invitations=Array.isArray(result?.invitations)?result.invitations:[];
-      circleInviteEmails.retainListed(invitationEmailScope(),invitations);
+      circleInviteEmails.retainListed(emailScope,invitations,emailSnapshot);
       renderInvitationRows(invitations);
       if(circleInvitesMeta) circleInvitesMeta.textContent=circleUi.invitationSummary(invitations).replace(/\.$/,'');
     }catch{

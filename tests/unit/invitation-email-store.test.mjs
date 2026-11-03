@@ -45,22 +45,56 @@ test('addresses expire after seven days while accepted and revoked sender labels
   for(const status of ['used','revoked']){
     const store=f.store();
     store.remember(sender,id,email);
-    store.retainListed(sender,[{id,status}]);
+    store.retainListed(sender,[{id,status}],store.snapshot(sender));
     assert.equal(describeInvitation({id,status},{knownEmail:store.get(sender,id)}).title,email);
-    store.retainListed(sender,[]);
+    store.retainListed(sender,[],store.snapshot(sender));
     assert.equal(store.get(sender,id),null);
     assert.equal(f.data.size,0);
   }
   const expired=f.store();
   expired.remember(sender,id,email);
-  expired.retainListed(sender,[{id,status:'expired'}]);
+  expired.retainListed(sender,[{id,status:'expired'}],expired.snapshot(sender));
   assert.equal(expired.get(sender,id),null);
   const store=f.store();
   store.remember(sender,id,email);
-  store.retainListed(sender,[{id,status:'pending'}]);
+  store.retainListed(sender,[{id,status:'pending'}],store.snapshot(sender));
   assert.equal(store.get(sender,id),email);
-  store.retainListed(sender,[]);
+  store.retainListed(sender,[],store.snapshot(sender));
   assert.equal(store.get(sender,id),null);
+});
+
+test('a stale list only prunes unchanged snapshot entries, preserving another tab\'s concurrent send after reload',()=>{
+  const f=fixture();
+  const tabA=f.store();
+  const tabB=f.store();
+  const newId='7c9e6679-7425-40de-944b-e07fc1f90ae7';
+  tabA.remember(sender,id,'unlisted.recipient@example.test');
+  const snapshot=tabB.snapshot(sender); // B starts a list request before A sends.
+  tabA.remember(sender,newId,email);
+  assert.equal(describeInvitation({id:newId,status:'pending'},{knownEmail:tabA.get(sender,newId)}).title,email);
+  tabB.retainListed(sender,[],snapshot); // Release B's older, empty response.
+  assert.equal(f.store().get(sender,id),null); // Unchanged, unlisted entries are still removed.
+  const reloaded=f.store();
+  assert.equal(describeInvitation({id:newId,status:'pending'},{knownEmail:reloaded.get(sender,newId)}).title,email);
+  assert.deepEqual([...snapshot.keys()],[id]);
+});
+
+test('stale list cleanup preserves snapshot entries updated while the request is in flight',()=>{
+  for(const changedEmail of [email,'updated.recipient@example.test']){
+    const f=fixture();
+    const tabA=f.store();
+    const tabB=f.store();
+    tabA.remember(sender,id,email);
+    const snapshot=tabB.snapshot(sender);
+    // Renewing the same email changes its expiry; changing the address also
+    // counts as an update. Neither may be deleted by an older list response.
+    if(changedEmail===email) f.advance(1);
+    tabA.remember(sender,id,changedEmail);
+    tabB.retainListed(sender,[{id,status:'expired'}],snapshot);
+    assert.equal(f.store().get(sender,id),changedEmail);
+    tabB.retainListed(sender,[],tabB.snapshot(sender));
+    assert.equal(f.store().get(sender,id),null);
+  }
 });
 
 test('blocked or corrupt storage preserves only valid sender addresses in the current tab',()=>{
@@ -84,7 +118,7 @@ test('blocked or corrupt storage preserves only valid sender addresses in the cu
   valid.remember({userId:1,circlePublicId:'../other'},id,email);
   valid.remember(sender,'bad',email);
   valid.remember(sender,id,'x'.repeat(255));
-  valid.retainListed(null,[]);
+  valid.retainListed(null,[],valid.snapshot(null));
   assert.equal(f.data.size,0);
 });
 

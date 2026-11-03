@@ -170,12 +170,22 @@
         save(scopeKey, entries);
         return entries.get(id)?.email || null;
       },
-      retainListed(scope, invitations) {
+      snapshot(scope) {
+        const scopeKey = key(scope);
+        return scopeKey ? new Map(load(scopeKey)) : new Map();
+      },
+      retainListed(scope, invitations, snapshot) {
         const scopeKey = key(scope);
         if (!scopeKey) return;
         const listed = new Set(invitations.filter(invitation => invitation.status !== 'expired').map(invitation => invitation.id));
         const entries = load(scopeKey);
-        for (const id of entries.keys()) if (!listed.has(id)) entries.delete(id);
+        // An older list must not delete addresses another tab sent or updated
+        // while its request was in flight. Prune only unchanged snapshot rows.
+        for (const [id, previous] of snapshot) {
+          const current = entries.get(id);
+          if (!listed.has(id) && current?.email === previous.email
+            && current?.expiresAt === previous.expiresAt) entries.delete(id);
+        }
         save(scopeKey, entries);
       },
       clear() { memory.clear(); },
