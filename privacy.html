@@ -63,7 +63,7 @@
   <h3 id="circle">Your circle</h3>
   <ul>
     <li>Which circles you belong to, your role (owner or member), who invited you, when you joined, and whether your membership is active.</li>
-    <li><strong>Invitations.</strong> When an owner invites someone, we store the invited email address only as a one-way fingerprint (a hash), plus an encrypted copy used to send the invitation email. The encrypted copy is kept with our email records while the invitation can still be used, and is then removed on the same schedule as other email records (see <a href="#retention">How long we keep it</a>). Invitation links expire after 7 days.</li>
+    <li><strong>Invitations.</strong> When an owner invites someone, our server stores the invited email address only as a one-way fingerprint (a hash), plus an encrypted copy used to send the invitation email. The encrypted copy is kept with our email records while the invitation can still be used, and is then removed on the same schedule as other email records (see <a href="#retention">How long we keep it</a>). Invitation links expire after 7 days. The browser that sends an invitation remembers its address in local storage for up to 7 days, so your account can identify the pending invitation after a reload. Other accounts and browsers do not see that address in the invitations list; clearing browser storage removes the remembered address.</li>
     <li><strong>Requests to join.</strong> If you ask for an invite on our home page, the circle owners see your name, email and note so they can decide.</li>
   </ul>
 
