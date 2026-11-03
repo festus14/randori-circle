@@ -30,7 +30,7 @@ export default defineConfig({
   retries: 0,
   // Real-runtime journeys each own a private server and database, so they
   // parallelize safely; the hosted Linux runner has four vCPUs.
-  workers: process.env.CI ? 3 : undefined,
+  workers: process.env.CI ? 3 : 4,
   reporter: process.env.CI
     ? [['github'], ['html', { open: 'never' }]]
     : [['list'], ['html', { open: 'never' }]],

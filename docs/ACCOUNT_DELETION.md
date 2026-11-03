@@ -437,18 +437,98 @@ entry, for a verified cutover past the backup window or for retiring
 the ledger database. The ledger is never committed to the repo and
 never uploaded as a GitHub artifact. `privacy.html` (Backups bullet)
 states this retention: the minimal record, bounded by the backup
-window for entries with a known deletion time (purge is a manual
-operator step), with unknown-time entries held until the operator
-resolves them.
+window for entries with a known deletion time, with unknown-time entries
+held until the operator resolves them. The scheduled retention process
+below implements the owner's daily-cadence decision in #450.
 
-**Production status.** The code above is merged, but the writer is
-inactive in production until the owner provisions the second
-production Turso database and wires its credentials (#440, owner-only;
-config-only wiring follows in #444). Until then, no production
-deletion writes a ledger entry, and a restore from a destroyed
-production source still cannot re-apply deletions — the residual risk
-below remains open in production until #440/#444 land. Owner
-confirmation of the production Turso plan tier is #384.
+**Production status.** #444 verified the separate ledger schema and saved
+credentials, plus the destroyed-source restore on disposable databases.
+The subsequent production deploys from #449/#451 consumed the writer
+configuration; no further redeploy is needed for #450. Writing on the next
+genuine deletion still needs observation. Do not manufacture a production
+deletion to obtain evidence. Retention is not operationally verified until
+the workflow has a successful production execution artifact. Keep #450
+open for the finisher to assess that evidence. The credential rotation
+deadline recorded by #444 is **2026-12-03 01:20 UTC**; this job neither
+rotates credentials nor extends their lifetime.
+
+### Daily deletion-ledger retention (#450)
+
+[`deletion-ledger-retention.yml`](../.github/workflows/deletion-ledger-retention.yml)
+runs daily at **04:23 UTC** (`23 4 * * *`) from `main`. Its driver calls the
+existing `scripts/deletion-ledger.mjs purge --before <cutoff> --retention`
+path. The cutoff is the execution timestamp minus **24 hours**, matching
+the current Free-tier backup window. The strict comparison preserves an
+entry exactly at the cutoff; younger entries and **null `deleted_at`**
+entries are retained. Unknown-time entries require operator resolution.
+The daily cadence means eligible entries are removed at the next successful
+run, potentially almost another day after becoming eligible; GitHub schedule
+delays or failures can extend that lag. The 24-hour window is the eligibility
+threshold, not a guarantee that physical removal occurs exactly at age 24h.
+Changing provider tiers requires reviewing this fixed window before use.
+
+The owner must add these two **GitHub Actions repository secrets**, using
+the existing production ledger configuration held in Vercel:
+
+- `DELETION_LEDGER_DATABASE_URL`
+- `DELETION_LEDGER_AUTH_TOKEN`
+
+Both must be for the **separate ledger database**. Do not use app credentials.
+No secret values belong in an issue, PR, artifact or log. Credentials are
+exposed only to the purge step, after dependency installation. There is no
+fallback to `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN`, no schema initialization
+and no provider configuration call. The workflow and driver reject runs from
+other branches or event types; scheduled and manual executions share a lock
+with `cancel-in-progress: false`.
+
+**Safety.** Before counting or deleting, the driver requires the database's
+sole application schema object to be the exact operator-initialized ledger
+v1 table. App databases, altered schemas, views and triggers are refused.
+Noncanonical timestamps are refused. Schema verification, eligible count
+and the existing purge statement share a write transaction, preventing a
+concurrent writer from invalidating the count. More than **10,000 eligible
+entries** aborts the entire run (including a dry-run); the cap cannot be
+overridden by dispatch. A count mismatch rolls back. Missing credentials,
+target ambiguity and provider errors fail closed with fixed error categories.
+There is **no automatic retry** of a failed purge.
+
+**Evidence and alerts.** The step output, job outputs and workflow summary
+contain counts (`eligible`, `purged`, `retained`), target-verification result,
+dry-run mode, cutoff, timestamp, run ID/attempt, window, cap and outcome.
+Download the artifact **`deletion-ledger-retention-<run>-<attempt>`** from
+the Actions run; its only file is `deletion-ledger-retention-summary.json`,
+retained **30 days**. This is execution metadata, never a ledger export.
+No tokens, database names/IDs/hosts/URLs, SQL, row values or raw provider
+errors are emitted. Failed execution or evidence upload produces an error
+annotation for `@festus14` and a failed workflow. The owner should subscribe
+to repository Actions failure notifications and inspect missed daily runs.
+If a connection or commit failed, counts may be `null`: the result is
+unconfirmed, and no automatic retry is attempted. Review the summary and
+target configuration before manually re-running; investigate an exceeded
+cap without increasing it or bypassing verification.
+
+**Manual dry-run.** In **Actions → Deletion ledger retention → Run workflow**,
+select **`main`** and leave **`dry_run` checked** (the default). It verifies
+the target and reports eligible/retained counts through a read transaction;
+it makes no deletions. An operator can uncheck `dry_run` for a manual purge
+after reviewing a failure. Implementation validation must use disposable
+databases and must not dispatch this workflow against production, including
+in dry-run mode.
+
+**Disposable CI rehearsal.** Pull requests and pushes to `main` run a separate
+job without production secrets. It tests refusal of a migrated app database,
+the one-day boundary, null timestamps, cap and read-only dry-run behavior on
+temporary local libSQL databases, then runs the same driver in a self-contained
+dry-run rehearsal. Its counts-only artifact is
+`deletion-ledger-retention-rehearsal-<run>-<attempt>` (30 days). All temporary
+database files are removed. For the same local proof:
+
+```bash
+node --experimental-test-module-mocks --test --test-concurrency=4 tests/unit/deletion-ledger-retention.test.mjs
+node scripts/deletion-ledger-retention.mjs --rehearse
+```
+
+A disposable rehearsal does not prove production execution or close #450.
 
 ## Limits and follow-ups
 

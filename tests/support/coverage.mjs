@@ -53,12 +53,8 @@ export const EXCLUDE = [
   'scripts/ui-screenshots.mjs', // Playwright browser capture of production and a local runtime
 ];
 const MOCK_PARAM = 'node-test-mock';
-// node --test defaults to availableParallelism() - 1 files at once, which is 3
-// on the 4-vCPU CI runner. Many files spend part of their time waiting on
-// timers, child processes and local servers, so a few extra workers help:
-// in a 4-CPU container this step took 122 s at 3, 89 s at 6. Larger machines
-// keep the default.
-const TEST_CONCURRENCY = Math.max(availableParallelism() - 1, 6);
+// Owner capacity rule: never start more than four test workers, including CI.
+const TEST_CONCURRENCY = Math.min(4, Math.max(1, availableParallelism() - 1));
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);
