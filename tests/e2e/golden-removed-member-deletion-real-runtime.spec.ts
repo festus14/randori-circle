@@ -54,7 +54,8 @@ for(const google of [false,true])test(`removed ${google?'Google-only':'password'
     const link=await requestLink(page,golden,pair.member.email);
     await followAndConfirm(page,link);
     expect(await context.cookies()).toEqual([],'email proof creates no session');
-    const locked=await json(pair.member.page,'/api/auth/me');expect([401,403]).toContain(locked.status);
+    const locked=await json(pair.member.page,'/api/auth/me');
+    expect(locked.status).toBe(409);expect(locked.body.code).toBe('deletion_pending');
     const roster=await json(owner,'/api/members');
     expect(roster.body.members.find((row:any)=>row.id===userId)?.deletion_pending).toBe(true);
     const confirmations=(await drain(page)).account_deletion_confirmation_delivery?.captured as Mail[];
