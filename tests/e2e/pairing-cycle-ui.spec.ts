@@ -907,3 +907,66 @@ test('dashboard rollover stops old workspace and video activity before showing n
   await page.waitForTimeout(1400);
   expect(workspaceRequests).toBe(settledRequests);
 });
+
+test('a cycle rollover while on the code tab revokes the stale pair room', async ({ page }) => {
+  // The previous cycle's pair was authorized while the dashboard was
+  // visible. The user then works in the Code tab; the availability
+  // rollover is observed there, with the dashboard hidden. The old
+  // pair/room must die at the boundary in every view — the dashboard
+  // refetch that used to be the only revocation path is skipped while
+  // the dashboard is hidden, which previously left last cycle's pair
+  // (room, partner cache, workspace) on screen.
+  const current = cycleWindow();
+  const upcoming = upcomingAfter(current);
+  let availabilityCycleKey = 'a'.repeat(64);
+  let availabilityCycle = upcoming;
+  let workspaceRequests = 0;
+  await page.route(/^https:\/\//, route => route.abort());
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user },
+    '/api/profile': { ok: true, user },
+    '/api/circle': circle('member'),
+    '/api/my-pair': () => dashboardPair(),
+    '/api/settings/availability': () => ({
+      ok: true,
+      availability: {
+        cycle: availabilityCycle,
+        cycleKey: availabilityCycleKey,
+        isAvailable: true,
+        version: 0,
+        source: 'cycle_default',
+        editable: true,
+        updatedAt: null,
+      },
+    }),
+    '/api/messages': request => {
+      const url = new URL(request.url());
+      return { ok: true, room_id: url.searchParams.get('room_id'), messages: [], after: Number(url.searchParams.get('after_id') || 0) };
+    },
+    '/api/video/signal': () => { workspaceRequests += 1; return { ok: true, revision: 0, snapshot: null }; },
+  });
+  await resetClientState(page, true);
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#dashJoinSession')).toBeVisible();
+  await page.locator('#dashJoinSession').click();
+  await expect(page.locator('#view-code')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { _randori_workspace?: { room?: string } })._randori_workspace?.room || null)).toBe('week_20_pair_30');
+  expect(await page.evaluate(() => (window as typeof window & { _randori_pair_cache?: { partner?: { name?: string } } | null })._randori_pair_cache?.partner?.name || null)).toBe('Current Partner');
+  expect(await page.evaluate(() => (window as typeof window & { _randori_authorized_room?: string | null })._randori_authorized_room || null)).toBe('week_20_pair_30');
+
+  // The Sunday boundary passes: the upcoming availability cycle rolls on.
+  // The dashboard stays hidden throughout, so no dashboard refetch runs.
+  availabilityCycleKey = 'b'.repeat(64);
+  availabilityCycle = upcomingAfter(upcoming);
+  await page.evaluate(async () => { await (window as typeof window & { _randori_availability: { refresh: () => Promise<unknown> } })._randori_availability.refresh(); });
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { _randori_workspace?: { room?: string | null } })._randori_workspace?.room || null)).toBeNull();
+  expect(await page.evaluate(() => (window as typeof window & { _randori_authorized_room?: string | null })._randori_authorized_room || null)).toBeNull();
+  expect(await page.evaluate(() => (window as typeof window & { _randori_pair_cache?: unknown })._randori_pair_cache || null)).toBeNull();
+  await expect(page.locator('#roomSelect')).toHaveValue('');
+  await expect(page.locator('#roomSelect')).toContainText('No current-cycle room');
+  // The stale workspace stops polling the old room.
+  await page.waitForTimeout(200);
+  const settledRequests = workspaceRequests;
+  await page.waitForTimeout(1400);
+  expect(workspaceRequests).toBe(settledRequests);
+});
