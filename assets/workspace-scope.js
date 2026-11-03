@@ -30,6 +30,8 @@
     root._randori_workspace?.deactivate?.();
     root._randori_authorized_room=null;
     root._randori_join_room=null;
+    if(root._randori_code) root._randori_code.currentRoom=null;
+    const selector=document.getElementById('roomSelect');if(selector) selector.value='';
     document.getElementById('workspaceCircleBadge')?.remove();
     root.dispatchEvent(new CustomEvent('randori:workspace-scope-reset'));
   }

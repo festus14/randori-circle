@@ -10,7 +10,7 @@ class Node{
 }
 async function fixture({enabled=true,body=null}={}){
   const previous=new Map(['window','document','localStorage'].map(key=>[key,globalThis[key]])),nodes=new Map();
-  const host=new Node('section');nodes.set('view-code',host);nodes.set('editor',new Node('textarea'));
+  const host=new Node('section');nodes.set('view-code',host);nodes.set('editor',new Node('textarea'));nodes.set('roomSelect',new Node('select'));
   const store=new Map([['randori-code','private'],['randori-theme','dark'],['randori-board:week_1_pair_2','private']]);
   const storage={get length(){return store.size;},key:index=>[...store.keys()][index],removeItem:key=>store.delete(key)};
   let epoch=1,version=7,publicId='dojo-20',actor=1;
@@ -45,11 +45,13 @@ test('workspace fetch fences all pollers and preserves unrelated requests',async
 });
 test('switch drops even a response whose HTTP request already completed, clears private caches and stops media',async()=>{
   const f=await fixture();try{
+    f.root._randori_code.currentRoom='circle_20_publication_3_group_4';f.nodes.get('roomSelect').value=f.root._randori_code.currentRoom;
     const response=await f.root.fetch('/api/history');f.switch();
     await assert.rejects(response.json(),{name:'AbortError'});
     assert.equal(f.store.has('randori-code'),false);assert.equal(f.store.has('randori-board:week_1_pair_2'),false);assert.equal(f.store.get('randori-theme'),'dark');
     for(const surface of ['workspace','video','crdt','code'])assert.ok(f.stopped.includes(surface));
     assert.ok(f.events.includes('randori:workspace-scope-reset'));assert.equal(f.root._randori_authorized_room,null);
+    assert.equal(f.root._randori_code.currentRoom,null);assert.equal(f.nodes.get('roomSelect').value,'');
   }finally{f.close();}
 });
 test('old responses consumed as text and clones cannot cross the switch',async()=>{
