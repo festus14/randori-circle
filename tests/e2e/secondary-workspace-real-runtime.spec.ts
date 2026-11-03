@@ -81,7 +81,10 @@ test('real runtime: both directions, non-members, scoped History, independent ro
     const signal=await raw(owner,golden.origin,'/api/video','POST',{room_id:secondary.room,from_id:'owner_peer',type:'join',payload:{name:'Owner'}});
     expect(signal.status,signal.text).toBe(200);
     expect((await raw(partner,golden.origin,resource('video',secondary.room))).body.signals).toHaveLength(1);
-    const doc=new Y.Doc();doc.getText('code').insert(0,FOCUS_BLOCK_ROLLUP_SOLUTION);
+    const canonical=await raw(owner,golden.origin,resource('code-document',secondary.room));
+    expect(canonical.status,canonical.text).toBe(200);
+    const doc=new Y.Doc();Y.applyUpdate(doc,Buffer.from(canonical.body.state,'base64'));
+    doc.getText('code').delete(0,doc.getText('code').length);doc.getText('code').insert(0,FOCUS_BLOCK_ROLLUP_SOLUTION);
     const update=Buffer.from(Y.encodeStateAsUpdate(doc)).toString('base64');doc.destroy();
     const merged=await raw(owner,golden.origin,'/api/code-document','POST',{room_id:secondary.room,question_slug:'focus-block-rollup',question_version:1,language:'javascript',client_id:'browser_438_owner',client_seq:1,update});
     expect(merged.status,merged.text).toBe(200);
@@ -135,7 +138,10 @@ test('real runtime: flag-off gates and delayed prior-circle responses, context w
       const response=await raw(owner,golden.origin,resource(surface,secondary.room),surface==='execute'?'POST':'GET',surface==='execute'?{room_id:secondary.room}:undefined);
       expect([response.status,response.body],surface).toEqual([409,unavailable]);
     }
-    for(const surface of ['meeting-link','session-controls'])expect((await raw(owner,golden.origin,resource(surface,secondary.room))).status).toBe(404);
+    for(const surface of ['meeting-link','session-controls']){
+      const response=await raw(owner,golden.origin,resource(surface,secondary.room));
+      expect([response.status,response.body],surface).toEqual([400,{error:'canonical room_id required'}]);
+    }
     process.env.SECONDARY_CIRCLE_WORKSPACE_ENABLED='true';await select(owner,golden.origin,primary.public_id);
     const before=(await (await owner.request.get(`${golden.origin}/api/circles`)).json()).context_version;
     const secondTab=await pair.owner.context.newPage();await secondTab.goto(golden.url,{waitUntil:'domcontentloaded'});
