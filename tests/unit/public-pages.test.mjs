@@ -305,8 +305,12 @@ test('the privacy policy no longer calls the switched-on features off', () => {
   assert.doesNotMatch(text, /If it is turned on|if they are turned on/iu);
   assert.doesNotMatch(text, /switched on/iu);
   assert.doesNotMatch(text, /These records are not deleted automatically/u);
-  // AI feedback (AI_ENABLED) really is still off.
-  assert.match(text, /would provide optional AI feedback on a practice session\. This feature is off\./u);
+  // #398 describes optional, consent-gated AI use, including withdrawal.
+  assert.match(text, /provides optional AI feedback on a practice session/u);
+  assert.match(text, /not your chat messages or whiteboard/u);
+  assert.match(text, /notes, code and feedback are kept while your account exists/u);
+  assert.match(text, /Withdrawing stops future AI use; past feedback stays available/u);
+  assert.doesNotMatch(text, /This feature is off/u);
 });
 
 test('the privacy policy says which reminder emails members get and how to stop them (issue #287)', () => {

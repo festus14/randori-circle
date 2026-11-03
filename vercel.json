@@ -279,6 +279,10 @@
       "destination": "/api/ops?endpoint=demo-reset"
     },
     {
+      "source": "/api/ai/consent",
+      "destination": "/api/ai?endpoint=consent"
+    },
+    {
       "source": "/api/ai/analyze",
       "destination": "/api/ai?endpoint=analyze"
     },

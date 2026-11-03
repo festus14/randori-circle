@@ -4,7 +4,8 @@ import { appLogClientFields } from './_log-privacy.js';
 import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
-import { ensureAiAnalyzeReadiness, ensureAiFeedbackReadiness, ensureAiHistoryReadiness, ensureAiLogReadiness } from './_ai-readiness.js';
+import { ensureAiConsentReadiness, ensureAiConsentRoomReadiness, ensureAiAnalyzeReadiness, ensureAiFeedbackReadiness, ensureAiHistoryReadiness, ensureAiLogReadiness } from './_ai-readiness.js';
+import {normalizeAnalysisPayload} from '../assets/ai-consent.js';
 
 initSentry();
 
@@ -19,7 +20,7 @@ function getEndpoint(req){
     if (idParam) return 'feedback';
     const parts = u.pathname.split('/').filter(Boolean);
     const last = parts.pop()?.toLowerCase()||'';
-    if (['analyze','feedback','history'].includes(last)) return last;
+    if (['analyze','consent','feedback','history'].includes(last)) return last;
     return last;
   }catch{ return (req.url||'').split('?')[0].split('/').filter(Boolean).pop()?.toLowerCase()||''; }
 }
@@ -74,6 +75,7 @@ const MODELS = {
   fast: { name:'llama-3.1-8b-instant', price_in_per_mtok:0.05, price_out_per_mtok:0.08, context:131072 },
   balanced: { name:'llama-3.3-70b-versatile', price_in_per_mtok:0.59, price_out_per_mtok:0.79, context:131072 },
 };
+// Bump whenever the consent terms, provider list, or data sent change.
 const AI_CONSENT_POLICY_VERSION='2026-09-17';
 
 class AiPairAccessError extends Error{
@@ -132,14 +134,15 @@ function pickModel({ transcript, code, role, durationSec, interviewerQuestions, 
 }
 
 function buildPrompt({ role, transcript, code, interviewerQuestions, durationSec, pairLabel }){
+  const input=normalizeAnalysisPayload({transcript,code,interviewer_questions:interviewerQuestions});
   return `You are Randori AI staff interview coach.
 Session: ${pairLabel||'mock'} duration ${durationSec? Math.round(durationSec/60)+' min':'?'} role ${role||'both'}
 TRANSCRIPT:
-${(transcript||'(none)').slice(0,18000)}
+${input.transcript||'(none)'}
 CODE:
-${(typeof code==='string'?code:JSON.stringify(code||'')).slice(0,12000)}
+${input.code}
 INTERVIEWER QS:
-${(interviewerQuestions||'(none)').slice(0,4000)}
+${input.interviewer_questions||'(none)'}
 Produce STRICT JSON only:
 {
  "candidate":{"strengths":[{"point":"..","evidence":"verbatim substring","confidence":0-1}], "improvements":[{"point":"..","evidence":"..","suggestion":".."}]},
@@ -312,28 +315,144 @@ async function resolveAnalysisRoom(db, roomId, userId){
   };
 }
 
-async function recordAndVerifyRoomConsent(db, userId, room, participantIds){
+// Only the explicit consent endpoint can restore a revoked or lapsed choice.
+// Analyze may create a never-consented caller's row as a backstop, but never
+// changes an existing row (including its policy version and consent date).
+async function writeRoomConsent(db,userId,room,{backstop=false}={}){
   await db.execute({
     sql:`INSERT INTO ai_consents (user_id,consented_at,revoked_at,policy_version)
       SELECT ?,datetime('now'),NULL,?
       WHERE EXISTS (${authOnlyPairAccessSql()})
-      ON CONFLICT(user_id) DO UPDATE SET
-        consented_at=datetime('now'),revoked_at=NULL,policy_version=excluded.policy_version`,
+      ON CONFLICT(user_id) DO ${backstop?'NOTHING':`UPDATE SET
+        consented_at=datetime('now'),revoked_at=NULL,policy_version=excluded.policy_version`}`,
     args:[userId,AI_CONSENT_POLICY_VERSION,...pairAccessArgs(userId,room)],
   });
-  const placeholders=participantIds.map(()=>'?').join(',');
+}
+
+async function verifyRoomConsent(db,userId,room){
+  // Read the current canonical participants, including a third participant;
+  // no participant ids or individual choices leave this endpoint.
   const result=await db.execute({
-    sql:`WITH access AS (${authOnlyPairAccessSql()}), consented AS (
-        SELECT user_id FROM ai_consents
-        WHERE user_id IN (${placeholders}) AND revoked_at IS NULL AND policy_version=?
+    sql:`WITH access AS (${authOnlyPairAccessSql()}), participants AS (
+        SELECT user_a_id AS user_id FROM access
+        UNION SELECT user_b_id FROM access
+        UNION SELECT user_c_id FROM access WHERE user_c_id IS NOT NULL
       )
-      SELECT consented.user_id
-      FROM access LEFT JOIN consented ON 1=1`,
-    args:[...pairAccessArgs(userId,room),...participantIds,AI_CONSENT_POLICY_VERSION],
+      SELECT participant.user_id,consent.user_id AS consented_user_id
+      FROM participants participant LEFT JOIN ai_consents consent
+        ON consent.user_id=participant.user_id AND consent.revoked_at IS NULL
+          AND consent.policy_version=?`,
+    args:[...pairAccessArgs(userId,room),AI_CONSENT_POLICY_VERSION],
   });
   if(!result.rows?.length) throw new AiPairAccessError();
-  const consented=new Set(result.rows.map(row=>Number(row.user_id)).filter(Number.isSafeInteger));
-  return participantIds.filter(id=>!consented.has(Number(id)));
+  return result.rows.filter(row=>row.consented_user_id==null).map(row=>Number(row.user_id));
+}
+
+async function recordAndVerifyRoomConsent(db,userId,room){
+  await writeRoomConsent(db,userId,room,{backstop:true});
+  return verifyRoomConsent(db,userId,room);
+}
+
+// Used inside the feedback INSERT itself so a revocation cannot race a
+// separate read. Membership and the consent of every current participant
+// are checked in the same statement as the write.
+function roomConsentGuardSql(){
+  return `NOT EXISTS (
+    SELECT 1 FROM (${authOnlyPairAccessSql()}) consent_room
+    WHERE NOT EXISTS (SELECT 1 FROM ai_consents WHERE user_id=consent_room.user_a_id AND revoked_at IS NULL AND policy_version=?)
+       OR NOT EXISTS (SELECT 1 FROM ai_consents WHERE user_id=consent_room.user_b_id AND revoked_at IS NULL AND policy_version=?)
+       OR (consent_room.user_c_id IS NOT NULL AND NOT EXISTS
+         (SELECT 1 FROM ai_consents WHERE user_id=consent_room.user_c_id AND revoked_at IS NULL AND policy_version=?))
+  )`;
+}
+
+class AiConsentError extends Error{
+  constructor(count){ super('AI consent required from every room participant'); this.pendingCount=count; }
+}
+
+async function ownConsentState(db,userId){
+  const result=await db.execute({sql:`SELECT consented_at,revoked_at,policy_version FROM ai_consents WHERE user_id=?`,args:[userId]});
+  const row=result.rows?.[0];
+  return {
+    consented:!!row && row.revoked_at==null && row.policy_version===AI_CONSENT_POLICY_VERSION,
+    policy_version:AI_CONSENT_POLICY_VERSION,
+    consented_at:row?.consented_at??null,
+    available:process.env.AI_ENABLED==='true',
+  };
+}
+
+async function handleConsent(req,res){
+  if(!['GET','POST'].includes(req.method)) return res.status(405).json({error:'GET or POST only'});
+  const auth=await tryAuth(req);
+  const userId=Number(auth.userId);
+  if(!auth.authed||!Number.isSafeInteger(userId)||userId<1) return res.status(401).json({error:'authentication required'});
+  const body=req.method==='POST'?await parseBody(req):null;
+  const roomRequest=body?.feedback_requested===true && body.ai_consent===undefined;
+  if(body && !roomRequest && body.ai_consent!==true && body.ai_consent!==false) return res.status(400).json({error:'ai_consent must be true or false'});
+  if((roomRequest||body?.ai_consent===true) && process.env.AI_ENABLED!=='true') return res.status(503).json({error:'AI coaching is not enabled for this release'});
+  const roomId=roomRequest||body?.ai_consent===true?body.room_id:
+    req.method==='GET'?(req.query?.room_id||new URL(req.url,'http://localhost').searchParams.get('room_id')):null;
+  if(roomId && !canonicalAnalysisRoom(roomId)) return res.status(403).json({error:'trusted room membership required'});
+  if((roomRequest||body?.ai_consent===true) && !roomId) return res.status(403).json({error:'trusted room membership required'});
+  let db;
+  try{
+    db=getClient();
+    await ensureAiConsentReadiness(db);
+    if(roomId && process.env.AI_ENABLED==='true'){
+      await ensureAiConsentRoomReadiness(db);
+      await ensureAiLogReadiness(db);
+    }
+  }catch{ return res.status(503).json({error:'AI service temporarily unavailable'}); }
+  let room=null;
+  if(roomId && process.env.AI_ENABLED==='true'){
+    room=await resolveAnalysisRoom(db,roomId,userId);
+    if(!room || !room.participantIds.includes(userId) || (room.participantIds.length===1&&!room.singleUser)){
+      return res.status(403).json({error:'trusted room membership required'});
+    }
+  }
+  if(body?.ai_consent===false){
+    // Withdrawal works even while AI is disabled, and touches only the caller.
+    await db.execute({sql:`UPDATE ai_consents SET revoked_at=datetime('now') WHERE user_id=?`,args:[userId]});
+  }else if(body?.ai_consent===true){
+    await writeRoomConsent(db,userId,room);
+  }
+  const state=await ownConsentState(db,userId);
+  if(roomRequest){
+    if(!state.consented) return res.status(403).json({error:'explicit AI processing consent required'});
+    // Existing, retained event storage: only the canonical room and policy,
+    // never session contents. A consent-only write is not a room request.
+    const requested=await db.execute({
+      sql:`INSERT INTO app_logs (level,source,event,message,user_id,route,meta_json)
+        SELECT 'info','server-ai','ai_feedback_requested','AI feedback requested',?,?,?
+        WHERE EXISTS (${authOnlyPairAccessSql()})
+          AND EXISTS (SELECT 1 FROM ai_consents WHERE user_id=? AND revoked_at IS NULL AND policy_version=?)
+        RETURNING id`,
+      args:[userId,`/join/${room.roomId}`,JSON.stringify(AI_CONSENT_POLICY_VERSION),
+        ...pairAccessArgs(userId,room),userId,AI_CONSENT_POLICY_VERSION],
+    });
+    if(!requested.rows?.length) return res.status(403).json({error:'explicit AI processing consent required'});
+  }
+  if(room){
+    try{
+      const missing=await verifyRoomConsent(db,userId,room);
+      state.pending_participant_count=missing.length;
+      const requested=await db.execute({
+        sql:`SELECT 1 FROM app_logs request JOIN ai_consents consent ON consent.user_id=request.user_id
+          WHERE request.source='server-ai' AND request.event='ai_feedback_requested'
+            AND request.route=? AND request.meta_json=?
+            AND request.user_id IN (?,?,?) AND request.user_id<>?
+            AND consent.revoked_at IS NULL AND consent.policy_version=?
+            AND request.created_at>=consent.consented_at LIMIT 1`,
+        args:[`/join/${room.roomId}`,JSON.stringify(AI_CONSENT_POLICY_VERSION),
+          ...[0,1,2].map(index=>room.participantIds[index]??null),userId,AI_CONSENT_POLICY_VERSION],
+      });
+      state.feedback_requested=!!requested.rows?.length;
+    }catch(error){
+      if(error instanceof AiPairAccessError) return res.status(403).json({error:'trusted room membership required'});
+      throw error;
+    }
+  }
+  return res.json(state);
 }
 
 async function createAuthorizedSession(db,{room,userId,pairLabel,transcript,code,questions,durationSec,reservationId}){
@@ -377,13 +496,18 @@ async function createAuthorizedFeedback(db,{room,userId,sessionId,role,feedback,
           estimated_cost_cents,confidence
         )
         SELECT ?,?,?,?,?,?,?,?
-        WHERE EXISTS (${authOnlyPairAccessSql()}) AND ${sessionGuard}
+        WHERE EXISTS (${authOnlyPairAccessSql()}) AND ${sessionGuard} AND ${roomConsentGuardSql()}
         RETURNING id`,
       args:[sessionId,role||'both',JSON.stringify(feedback||{}),JSON.stringify({validation:verification,combined_len:combinedLength}),modelUsed,reason,costCents,verification.score,
-        ...accessArgs,sessionId,room.roomId,userId],
+        ...accessArgs,sessionId,room.roomId,userId,...accessArgs,
+        AI_CONSENT_POLICY_VERSION,AI_CONSENT_POLICY_VERSION,AI_CONSENT_POLICY_VERSION],
     });
   const feedbackId=Number(inserted.rows?.[0]?.id);
-  if(!Number.isSafeInteger(feedbackId)||feedbackId<1) throw new AiPairAccessError();
+  if(!Number.isSafeInteger(feedbackId)||feedbackId<1){
+    const missing=await verifyRoomConsent(db,userId,room);
+    if(missing.length) throw new AiConsentError(missing.length);
+    throw new AiPairAccessError();
+  }
   return feedbackId;
 }
 
@@ -701,7 +825,7 @@ async function handleAnalyze(req,res){
     const prompt=buildPrompt({ role, transcript:transStr, code:codeFlat, interviewerQuestions:iq, durationSec:duration_sec, pairLabel:pair_label });
     let groqRes=await callGroq({ modelName:picking.model.name, prompt });
     if(groqRes.error && !groqRes.content && picking.model.name!==MODELS.fast.name){
-      const retry=await callGroq({ modelName:MODELS.fast.name, prompt:buildPrompt({ role, transcript:transStr.slice(0,8000), code:String(codeFlat).slice(0,6000), interviewerQuestions:iq, durationSec:duration_sec, pairLabel:pair_label })});
+      const retry=await callGroq({ modelName:MODELS.fast.name, prompt });
       if(retry.content){ modelUsed=MODELS.fast.name; reason+=` | primary failed (${groqRes.error.slice(0,80)}), fallback fast`; groqRes=retry; } else {
         reason+=` | primary and fast Groq failed`;
         groqRes=retry;
@@ -752,6 +876,7 @@ async function handleAnalyze(req,res){
     });
   }catch(error){
     if(error instanceof AiPairAccessError) return res.status(403).json({error:'trusted room membership required'});
+    if(error instanceof AiConsentError) return res.status(403).json({error:error.message,pending_participant_count:error.pendingCount,processing_started:true});
     await logServer('error','ai_feedback_insert_fail',String(error?.message||error).slice(0,300),{room_id,session_id:sessId},{req,db,source:'server-ai'});
     return res.status(500).json({error:'feedback create failed'});
   }
@@ -858,6 +983,9 @@ export default async function handler(req,res){
   try{
     if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
     initSentry();
+    const epRaw=getEndpoint(req);
+    // Personal status and withdrawal remain available independently of rooms.
+    if(epRaw==='consent' && (req.method==='GET'||req.body?.ai_consent===false)) return await handleConsent(req,res);
     if(multiCircleControlPlaneEnabled()){
       try{
         const payload=await verifyRequestAuth(req);
@@ -868,14 +996,14 @@ export default async function handler(req,res){
         }
       }catch{ return res.status(503).json({error:'circle context unavailable'}); }
     }
-    const epRaw=getEndpoint(req);
     const ep=epRaw.replace('feedback/','feedback ').split(' ')[0];
     const path=(req.url||'').toLowerCase();
+    if (ep==='consent') return await handleConsent(req,res);
     if (ep==='analyze' || path.includes('/analyze')) return await handleAnalyze(req,res);
     if (ep.startsWith('feedback') || ep==='feedback' || path.includes('/feedback')) return await handleFeedback(req,res);
     if (ep==='history' || path.includes('/history')) return await handleHistory(req,res);
     if (req.method==='POST') return await handleAnalyze(req,res);
-    return res.status(400).json({ error:'ai route required: analyze|feedback/:id|history', got:ep, available:['analyze','feedback','history'] });
+    return res.status(400).json({ error:'ai route required: analyze|consent|feedback/:id|history', got:ep, available:['analyze','consent','feedback','history'] });
   }catch(e){
     try{ await logServer('error','api_unhandled', String(e && e.message||e).slice(0,500), {stack: e && e.stack ? String(e.stack).slice(0,2000):'', url: req && req.url}, {req, source:'server-ai', route:req && req.url, skipSentry:true}); }catch{}
     captureSentryException(e, {tags:{event:'api_unhandled', source:'server-ai'}, extra:{route:req && req.url}});
