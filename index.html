@@ -8748,7 +8748,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const view=circleUi.historyRowView(item);
     if(!view||!window.RandoriWorkspaceScope.canonicalRoom(view.room)) return null;
     const room=view.room;
-    const row=document.createElement('li'); row.className='circle-row history-row'; row.dataset.testid='pair-history-row'; row.dataset.roomId=room;
+    const row=document.createElement('li'); row.className='circle-row history-row'; row.dataset.testid=fromHome?'home-current-pair':'pair-history-row'; row.dataset.roomId=room;
     if(pairRecapState.room===room) row.setAttribute('aria-current','true');
     const avatar=circleUi.avatarNode(document,{label:view.partnerInitials});
     const main=document.createElement('div'); main.className='circle-row-main';
@@ -8759,7 +8759,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const circleBadge=circleUi.circleBadgeNode(document,item.circle); if(circleBadge) main.appendChild(circleBadge);
     const completion=normalizeHistoryCompletion(item?.completion,item?.is_ai||item?.solo?1:2);
     if(completion){ const badges=document.createElement('div'); badges.className='circle-row-badges'; badges.appendChild(completionBadge(completion)); main.appendChild(badges); }
-    const button=document.createElement('button'); button.type='button'; button.className='btn secondary sm'; button.dataset.testid='pair-history-view-recap'; button.dataset.roomId=room; button.textContent='View recap'; button.setAttribute('aria-label',`View recap for ${view.week} with ${view.partner}`); button.addEventListener('click',()=>{ if(fromHome) document.querySelector('[data-tab="history"]')?.click(); fetchPairRecap(room); });
+    const button=document.createElement('button'); button.type='button'; button.className='btn secondary sm'; button.dataset.testid=fromHome?'home-current-pair-recap':'pair-history-view-recap'; button.dataset.roomId=room; button.textContent='View recap'; button.setAttribute('aria-label',`View recap for ${view.week} with ${view.partner}`); button.addEventListener('click',()=>{ if(fromHome) document.querySelector('[data-tab="history"]')?.click(); fetchPairRecap(room); });
     const actions=document.createElement('div'); actions.className='circle-row-actions'; actions.appendChild(button);
     row.append(avatar,main,actions);
     return row;
