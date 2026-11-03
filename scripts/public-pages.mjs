@@ -12,6 +12,10 @@ export const PUBLIC_PAGES = Object.freeze({
   '/terms': 'terms.html',
 });
 
+// Public forms use JavaScript; legal-page smoke checks remain script-free.
+export const PUBLIC_FORM_PAGES=Object.freeze({'/delete-account':'delete-account.html'});
+export const PUBLIC_FORM_PAGE_FILES=Object.freeze(Object.values(PUBLIC_FORM_PAGES));
+
 export const PUBLIC_PAGE_PATHS = Object.freeze(Object.keys(PUBLIC_PAGES));
 export const PUBLIC_PAGE_FILES = Object.freeze(Object.values(PUBLIC_PAGES));
 
@@ -20,5 +24,5 @@ export const PUBLIC_PAGE_FILES = Object.freeze(Object.values(PUBLIC_PAGES));
 export function publicPageFile(pathname) {
   return typeof pathname === 'string' && Object.hasOwn(PUBLIC_PAGES, pathname)
     ? PUBLIC_PAGES[pathname]
-    : null;
+    : typeof pathname==='string'&&Object.hasOwn(PUBLIC_FORM_PAGES,pathname)?PUBLIC_FORM_PAGES[pathname]:null;
 }

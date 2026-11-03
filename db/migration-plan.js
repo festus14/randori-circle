@@ -162,6 +162,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'cc7386d7f60a8bb939a63b9498142d10543ad8bc5a62c5314e1538b7980efaab',
     checksum:'3d6e50ab71308d53b9ea22c391dd48b630162eb613696891e68060aa205cc75b',
   }),
+  Object.freeze({
+    version:24,
+    name:'account-deletion-email-tokens',
+    description:'Purpose-bound, hashed one-time request and cancellation proofs for removed-member deletion (#350).',
+    operationsChecksum:'c9a0d70df41d5a3d5caa846894a27771f066aa29be3f6c758e9ff22f5485cfb9',
+    checksum:'b94e7c23b91e0fbcc7b7e79ee7d0783865a4c624afe3ecd58772b93391466177',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

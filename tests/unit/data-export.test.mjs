@@ -165,6 +165,7 @@ const EXPECTED_TABLE_COVERAGE=[
   {table:'auth_session_circle_contexts',section:null,included:false},
   {table:'auth_provider_identities',section:'profile',included:true},
   {table:'auth_provider_email_state',section:null,included:false},
+  {table:'account_deletion_tokens',section:null,included:false},
   {table:'auth_password_resets',section:null,included:false},
   {table:'auth_email_activations',section:null,included:false},
   {table:'auth_identity_audit_events',section:null,included:false},
@@ -211,8 +212,8 @@ const EXPECTED_TABLE_COVERAGE=[
 ];
 
 test('every inventory table has explicit export coverage',()=>{
-  assert.equal(EXPECTED_TABLE_COVERAGE.length,49);
-  assert.equal(ACCOUNT_DATA_INVENTORY.length,49);
+  assert.equal(EXPECTED_TABLE_COVERAGE.length,50);
+  assert.equal(ACCOUNT_DATA_INVENTORY.length,50);
   assert.deepEqual(
     DATA_EXPORT_TABLE_COVERAGE.map(entry=>({table:entry.table,section:entry.section,included:entry.included})),
     EXPECTED_TABLE_COVERAGE);
