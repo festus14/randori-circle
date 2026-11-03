@@ -237,7 +237,7 @@ test('the policy is 7 days for delivered and suppressed mail, 30 for dead letter
   assert.equal(OUTBOX_PII_RETENTION_FLAG, 'OUTBOX_PII_RETENTION_ENABLED');
   // The literals stay in step with the producers.
   assert.deepEqual(OUTBOX_PII_EVENT_TYPES, [PAIRING_EMAIL_EVENT_TYPE, INVITATION_EMAIL_EVENT_TYPE,
-    EMAIL_ACTIVATION_EVENT_TYPE, PASSWORD_RESET_EVENT_TYPE, FEEDBACK_SUBMITTED_EVENT_TYPE]);
+    EMAIL_ACTIVATION_EVENT_TYPE, 'account.deletion.link', 'account.deletion.confirmation', 'account.deletion.reminder', PASSWORD_RESET_EVENT_TYPE, FEEDBACK_SUBMITTED_EVENT_TYPE]);
   assert.deepEqual(OUTBOX_PII_FIELDS, ['recipient_email', 'credential_envelope', 'token_envelope', 'email_hash', 'token_hash', 'title']);
   assert.equal(outboxRedactedSql(), "json_type(payload_json,'$.retention_redacted') IS NOT NULL");
   assert.equal(outboxNotRedactedSql('event.payload_json'), "json_type(event.payload_json,'$.retention_redacted') IS NULL");

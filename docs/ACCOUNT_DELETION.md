@@ -10,6 +10,62 @@ Issue #372, decision ID-93, adds a **14-day cancellable grace period** behind
 schedules it 14 days out instead of deleting straight away; with the flag
 off the original immediate flow runs unchanged.
 
+## Removed members: emailed proof (issue #350, Option A)
+
+Owner approval on 2026-11-03 includes additive migration v24
+(`account_deletion_tokens`), a 24-hour request-token TTL, and cancel links for
+**all** pending accounts. The production apply is a separate owner-run protected
+cutover. This PR must not auto-merge or apply a production migration.
+
+The public [delete-account page](../delete-account.html) has no account details and
+needs no session or password, including for Google-only accounts:
+
+1. `POST /api/auth/account/delete/link {email}` always answers the same `202`
+   with “If that account can request deletion, a confirmation email will arrive
+   shortly.” Only live, non-demo accounts with **no active membership in any
+   unarchived circle**, and no active pending request, get a token and email.
+   Unknown, active, pending and tombstoned accounts get no email or token row.
+2. The emailed link asks for `DELETE`. `POST
+   /api/auth/account/delete/confirm-token {token,confirm:"DELETE"}` hashes and
+   validates a single-use, purpose-bound, 24-hour proof, and re-checks eligibility
+   inside the write transaction. `requestAccountDeletionViaEmailToken` substitutes
+   the email proof for the signed-in path's 10-minute recent-auth proof, then
+   uses the same pending insert, 14-day schedule, session revocation, audit and
+   confirmation email. It creates no session and cannot delete immediately.
+3. Confirmation and ~48-hour reminder emails carry single-use cancel links,
+   valid until `scheduled_for`. `POST
+   /api/auth/account/delete/cancel-token {token}` uses the same cancellation
+   mutation and audit, without a session. A newer email supersedes the old cancel
+   token; retrying delivery keeps the same token and provider idempotency key.
+   Cancellation and execution invalidate the proofs. Cancel **does not restore
+   membership**: removed accounts stay removed and need an invitation to sign in.
+
+The request mirrors password-reset limits: secret-keyed IP 10 and email 5 per
+15 minutes, 60-second resend cooldown, five sends per token window. Consumption
+has the same IP 10-per-15-minute budget as deletion-link requests. All account states
+share the reset's 350 ms response floor and generic body. Invalid, expired,
+used, wrong-purpose and ineligible credentials share `409 {ok:false,status:"invalid"}`
+and the same floor. Delivery starts only after the request response. Token
+hashes stay in the dedicated table; encrypted, purpose-bound envelopes use the
+shared credential-envelope helpers in the outbox. Hash and encryption domains
+are separate and depend on `JWT_SECRET`; rotating it invalidates outstanding
+links. Tokens are removed in the tombstone transaction and outbox credentials
+follow existing deletion scrubbing and PII retention.
+
+New request/confirm endpoints answer like unknown endpoints while either
+`ACCOUNT_DELETION_ENABLED` or `ACCOUNT_DELETION_GRACE_ENABLED` is off, or before
+v24 is installed. Cancellation and cron execution remain available regardless
+of those flags for existing pending rows (durable promise).
+
+**Resolution 2:** with zero active memberships, last-owner and last-admin gates
+are vacuous, even if `is_admin=1` remains after removal. The signed-in eligibility
+rules are unchanged. Execution preserves the existing skip-if-no-active-membership
+rule; if an account is reactivated during grace, current last-owner/admin rules
+are checked and a blocked execution stays locked and notifies admins once.
+Owner removal already refuses deactivating a sole owner (`_member-lifecycle.js`);
+#350 does not change that guard. Unauthenticated export remains out of scope;
+removed members use the existing manual data-request route.
+
 ## What a member sees
 
 **Edit profile** (account menu) gains a **Delete account** card that lists what
@@ -107,8 +163,8 @@ at most one active request per account):
   `account.deletion_cancelled` audit event per circle, and restores the
   account exactly as it was: the request changed nothing else, so there is
   nothing to restore. An expired invitation is **not** reopened, and no
-  membership is restored — a member an owner removed during the grace
-  period cannot cancel and is still deleted on schedule. A deletion
+  membership is restored. A member removed during grace can still cancel
+  through the emailed link, and stays removed after cancelling. A deletion
   requested again after cancelling starts a new 14 days. A password reset
   cannot run during the grace period — the request, the delivery handler
   and the consume step all refuse a pending account — so cancelling
@@ -124,8 +180,8 @@ at most one active request per account):
   handler re-checks the pending request, so each is sent once.
 - **Deletion.** After 14 days, the outbox cron (every 5 minutes) runs the
   bounded, idempotent grace job (`runAccountDeletionGraceJobs`, at most 10
-  executions per run): it re-checks the pending row and the last-owner /
-  last-admin rules inside the same transaction as the existing deletion
+  executions per run): it re-checks the pending row and, only if active
+  memberships remain, the last-owner / last-admin rules inside the existing deletion
   (`executeScheduledAccountDeletion`), marks the request executed, and
   tombstones the account exactly as an immediate deletion would.
 - **Blocked execution.** If the account is the last owner or last admin
@@ -209,6 +265,7 @@ account reaches nothing.
 | `auth_session_circle_contexts` | `session_hash`, `user_id`, `circle_id` | Delete | Per-session circle selection. |
 | `auth_provider_identities` | `subject`, `user_id` | Delete | Google link removed so the Google account can sign up again as a new member. |
 | `auth_provider_email_state` | `subject`, `email_hash` | Delete | Keyed hash of the Google email for the removed link. |
+| `account_deletion_tokens` | `user_id`, `email_hash`, `token_hash` | Delete | Request and cancel proofs, including used tokens. |
 | `auth_password_resets` | `user_id`, `email_hash`, `token_hash` | Delete | Pending or used reset tokens. |
 | `auth_email_activations` | `email`, `email_hash`, `password_hash`, `display_name`, `color` | Anonymise | The activation that created the account still held the email, name and password hash. Scrubbed (pending ones revoked); the row stays for its RESTRICT invitation key. |
 | `account_deletion_requests` | `user_id`, `requested_at`, `scheduled_for`, `cancelled_at`, `executed_at` | Keep | Grace-period request history: opaque ids and timestamps only. The executed row is the audit trail of a deletion; cancelled rows prove a request was withdrawn. |
@@ -253,7 +310,17 @@ account reaches nothing.
 | `pairing_email_outbox` | `user_id`, `recipient_email` | Anonymise | Legacy queue rows to them are cancelled and the address replaced. |
 | `users` | `name` | Keep | Legacy pre-membership roster keyed by name only; it cannot be attributed to the account without risking another member's row. |
 
-Tables with no personal data: `ai_usage`, `chat_retention_audit_events`, `chat_retention_control`, `chat_retention_legal_holds`, `chat_retention_runs`, `chat_retention_scopes`, `circle_membership_rollout`, `circle_pairing_publications`, `credential_key_controls`, `pairing_cycles`, `pairing_weeks`, `questions`.
+| `circle_pair_messages` | `sender_id`, `message` | Anonymise | Their secondary messages become Message deleted; partner conversation order is preserved. |
+| `circle_session_runs` | `user_id`, `code`, `test_cases_snapshot`, `results_json` | Anonymise | Secondary solo runs are deleted; shared attested pair code stays with the partner. |
+| `circle_pair_code_documents` | `last_actor_id`, `y_state_base64` | Keep | Joint secondary pair document; retained for the partner with the existing 90-day expiry. |
+| `circle_pair_room_snapshots` | `updated_by`, `code` | Keep | Shared secondary workspace; retained for the partner. Solo snapshots are deleted. |
+| `circle_session_completion_receipts` | `user_id` | Keep | Immutable secondary completion evidence for the partner. |
+| `circle_pair_session_controls` | `candidate_user_id`, `updated_by` | Keep | Secondary interview roles; actor ids resolve to the tombstone. |
+| `circle_pair_meeting_links` | `updated_by`, `meeting_url` | Delete | Their secondary meeting URL may identify a personal meeting room. |
+| `circle_video_signals` | `from_id`, `to_id`, `payload` | Keep | Random peer ids; bounded secondary signalling expires after one hour. |
+| `circle_chat_retention_scopes` | `group_user_a_id`, `group_user_b_id` | Keep | Immutable group-owner ids allow retention to sweep the partner conversation after deletion. |
+
+Tables with no personal data: `ai_usage`, `chat_retention_audit_events`, `chat_retention_control`, `chat_retention_legal_holds`, `chat_retention_runs`, `chat_retention_scopes`, `circle_membership_rollout`, `circle_pairing_publications`, `credential_key_controls`, `pairing_cycles`, `pairing_weeks`, `questions`, `circle_chat_retention_control`, `circle_chat_retention_runs`, `circle_chat_retention_legal_holds`, `circle_chat_retention_audit_events`.
 
 `tests/unit/account-deletion.test.mjs` fails if a table is added to the schema
 manifest without being placed in one of these lists, and asserts every listed
@@ -393,8 +460,8 @@ confirmation of the production Turso plan tier is #384.
 - AI sessions a partner started keep their transcript (AI is off in production).
 - A log line written by a request that was already running when the deletion
   committed can still carry the opaque account id (no name or email).
-- Follow-up: a member an owner removed (or who left every circle) can no longer
-  sign in, so cannot delete their own account; they still need to ask an owner.
+- Closed by #350: removed members and people who left every circle can
+  request deletion and cancel with emailed links, without signing in.
 - Pre-existing, not changed here: a member who leaves or is removed mid-cycle
   still makes the current primary pairing unavailable until the next cycle.
 
@@ -422,3 +489,15 @@ the #371 zero-downtime release order in
 Rollback: set the flag to `false` first — new requests go back to
 immediate deletion, and pending requests still cancel and execute on
 schedule. PITR only if needed, per the runbook.
+
+### Removed-member rollout (issue #350)
+
+Before merging, the owner must confirm v23 is installed: readiness tolerates
+only one additive migration behind. Merge the code; v23 remains ready with v24
+pending. A v22 database must receive v23 before this release.
+Request/confirm paths stay hidden until v24 is recorded with its exact checksum.
+Run rehearsal → status → apply v24 through the protected migration workflow
+(owner only), then enable the deletion and grace flags. Existing v23 pending
+requests gain cancel links on delivery after v24 is installed. Disabling either
+flag hides new emailed requests while pending cancellations and cron executions
+continue. No production migration, deployment, or flag change is agent-run.

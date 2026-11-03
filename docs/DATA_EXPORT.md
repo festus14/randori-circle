@@ -28,6 +28,10 @@ own data:
   receipts and the timer / interview-role controls for their pair groups.
 - `messages` — only messages the member sent.
 - `code_runs` — the member's own code runs, solo and in pair rooms.
+- `secondary_workspace` — own secondary messages, code runs and completion
+  receipts, plus controls and meeting links visible in the member's rooms.
+  Each row carries circle, publication and group IDs; actors appear by display
+  name. Its capped sections have counts and truncation markers.
 - `notification_preferences`, `custom_questions` (authored by the member),
   `invitations` (sent, accepted, and received — pending, unexpired
   invitations addressed to the member, matched by email hash),
@@ -51,7 +55,7 @@ Partners appear by display name only, the same rule as the member's history
 views: no partner ids, emails, phones, hashes or tokens anywhere in the
 archive. A partner's chat messages are the partner's data and are never
 exported, even though both partners see the conversation in the room.
-Shared pair workspaces (`pair_code_documents`, `pair_room_snapshots`) are
+Shared primary and secondary pair documents and room snapshots are
 not exported, because they hold the partner's contributions too.
 
 Schedule proposals are projected, not copied: stored
@@ -95,7 +99,7 @@ The excluded classes are:
 A future inventory table with no explicit coverage entry is excluded at
 runtime ("not yet reviewed") and `tests/unit/data-export.test.mjs`
 asserts that no coverage entry carries that fallback reason and that the
-coverage list deep-equals a hard-coded list of the 48 expected tables
+coverage list deep-equals a hard-coded list of the 58 expected tables
 (table, section, included) — so adding a table to the inventory,
 removing one, or deleting an explicit entry all fail the test until an
 explicit entry is written.
@@ -188,7 +192,7 @@ name only.
 ## Tests
 
 - `tests/unit/data-export.test.mjs` — the builder on a migrated database:
-  every inventory table covered (hard-coded 48-table coverage list, with
+  every inventory table covered (hard-coded 58-table coverage list, with
   the three mutation checks), partner privacy (no partner ids/emails/
   messages in the archive, including a modern partner schedule proposal),
   received invitations and created circles, feedback included from the

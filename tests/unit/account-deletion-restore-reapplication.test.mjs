@@ -26,7 +26,8 @@ import {
 } from '../../api/_account-deletion.js';
 import { hashInvitationEmail } from '../../api/_circle-membership.js';
 import { issueSession, verifyRequestAuth } from '../../api/_db.js';
-import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { createMigratedDatabase } from '../support/migrated-db.mjs';
 
 const JWT_SECRET='account-deletion-restore-test-secret-at-least-32-bytes';
@@ -45,14 +46,37 @@ afterEach(async()=>{
   if(originalSecret===undefined) delete process.env.JWT_SECRET; else process.env.JWT_SECRET=originalSecret;
 });
 
-async function database(){
-  const {directory,url}=await createMigratedDatabase({prefix:'randori-account-deletion-restore-'});
+async function database({version}={}){
+  const directory=version?mkdtempSync(join(tmpdir(),'randori-account-deletion-prefix-')):null;
+  const fixture=version?{directory,url:`file:${join(directory,'restored.sqlite')}`}:await createMigratedDatabase({prefix:'randori-account-deletion-restore-'});
+  const {url}=fixture;
   const db=createClient({url});
-  resources.push(async()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
+  resources.push(async()=>{ db.close(); rmSync(fixture.directory,{recursive:true,force:true}); });
   await prepareMigrationConnection(db);
+  if(version){
+    const migrations=EXECUTABLE_MIGRATIONS.slice(0,version);
+    const state=await inspectMigrationState(db,{migrations});
+    await applyMigrations(db,{migrations,expectedStateFingerprint:state.stateFingerprint,retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
+  }
   process.env.JWT_SECRET=JWT_SECRET;
   return db;
 }
+
+test('deletion replay succeeds on real restored v23, v24 and v25 migration prefixes',async t=>{
+  for(const version of [23,24,25]) await t.test(`v${version}`,async()=>{
+    const db=await database({version});
+    await seed(db);
+    assert.equal((await one(db,'SELECT MAX(version) AS version FROM schema_migrations')).version,version);
+    assert.equal((await one(db,"SELECT COUNT(*) AS count FROM sqlite_schema WHERE name='circle_pair_messages'")).count,version===25?1:0);
+    const entry={account_id:2,created_at:BEFORE,deleted_at:DELETED_AT};
+    const applied=await reapplyAccountDeletion(db,{entry,restorePoint:RESTORE_POINT,hashInvitationEmail,nowSeconds:NOW});
+    assert.equal(applied.status,'reapplied');
+    assert.equal(isDeletedAccount(await member(db)),true);
+    assert.equal((await one(db,'SELECT message FROM pair_messages WHERE id=1')).message,DELETED_MESSAGE_TEXT);
+    assert.deepEqual(await verifyDeletionLedger(db,{ledger:[entry],restorePoint:RESTORE_POINT}),{ok:true,checked:1,missing:[]});
+    assert.equal((await reapplyAccountDeletion(db,{entry,restorePoint:RESTORE_POINT,hashInvitationEmail,nowSeconds:NOW})).status,'already_deleted');
+  });
+});
 
 // Owner 1, member 2 (the account that will be deleted), partner 3. Member 2
 // has a chat message, a live session, an availability decision, notification

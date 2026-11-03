@@ -59,6 +59,9 @@ export const OUTBOX_PII_EVENT_TYPES=Object.freeze([
   'pairing.email.requested', // v1 recipient_email; v2 (secondary) carries ids only
   'invitation.email.requested', // credential_envelope seals {email, token}; email_hash, token_hash
   'auth.emailverification.requested', // recipient_email, token_envelope
+  'account.deletion.link', // sealed request proof
+  'account.deletion.confirmation', // sealed cancel proof added at delivery
+  'account.deletion.reminder', // sealed cancel proof added at delivery
   'auth.passwordreset.requested', // recipient_email, token_envelope
   'feedback.submitted', // title is the author's own (redacted) words
 ]);
@@ -74,8 +77,6 @@ export const OUTBOX_PII_FREE_EVENT_TYPES=Object.freeze([
   'schedule.email.requested', // v1 ids + instants; v2 opaque schedule id + fingerprint
   'inviterequest.email.requested', // circle_id, owner_user_id, digest_hour
   'reminder.email.requested', // ids + cycle key or instant fingerprint
-  'account.deletion.confirmation', // ids + scheduled_for; the handler reads the address from the account
-  'account.deletion.reminder', // ids + scheduled_for; the handler reads the address from the account
   'account.deletion.blocked', // ids + scheduled_for + reason; the handler reads the address from the account
 ]);
 const INVITATION_EVENT_TYPE='invitation.email.requested';

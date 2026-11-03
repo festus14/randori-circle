@@ -524,11 +524,13 @@ sequenceDiagram
 
 Every flag the code checks is listed in
 [ENVIRONMENT.md](ENVIRONMENT.md#feature-flags), with production state
-as observed on 2026-10-22. This table mirrors that source; if the two
-disagree, `ENVIRONMENT.md` wins. `*_ENABLED` flags are on only for
-the exact string `true`.
+as of 2026-11-03 (`FEEDBACK_ENABLED` re-verified and
+`ACCOUNT_DELETION_GRACE_ENABLED` enabled by the owner on that date;
+other flags retain the evidence recorded in `ENVIRONMENT.md`).
+This table mirrors that source; if the two disagree, `ENVIRONMENT.md`
+wins. `*_ENABLED` flags are on only for the exact string `true`.
 
-| Flag | Gates | Production (2026-10-22, per ENVIRONMENT.md) |
+| Flag | Gates | Production (as of 2026-11-03, per ENVIRONMENT.md) |
 | --- | --- | --- |
 | `CIRCLE_MEMBERSHIP_ENABLED` | Invitation-gated primary-circle membership; everything below that depends on it | On |
 | `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` | Creating / selecting / archiving secondary circles | Off |
@@ -549,9 +551,10 @@ the exact string `true`.
 | `CIRCLE_HEALTH_ENABLED` | Owner-only Circle health card | On |
 | `ADMIN_DIAGNOSTICS_ENABLED` | Read-only admin Diagnostics | On |
 | `ACCOUNT_DELETION_ENABLED` | Self-service Delete account | On |
+| `ACCOUNT_DELETION_GRACE_ENABLED` | 14-day cancellable account-deletion grace period; requires `ACCOUNT_DELETION_ENABLED` and migration v23 applied | On (owner, 2026-11-03; [#372 rollout](https://github.com/festus14/randori-circle/issues/372#issuecomment-6592907408)) |
 | `DATA_EXPORT_ENABLED` | Download my data in Edit profile (`GET /api/auth/account/export`): JSON archive of the member's own data | Off |
 | `OUTBOX_PII_RETENTION_ENABLED` | Outbox PII redaction after 7 / 30 days | On (owner) |
-| `FEEDBACK_ENABLED` | Product feedback endpoints + admin `feedback.submitted` notification | Off |
+| `FEEDBACK_ENABLED` | Product feedback endpoints + admin `feedback.submitted` notification | On (owner, 2026-11-03; [#353 verification](https://github.com/festus14/randori-circle/issues/353#issuecomment-6592408169)) |
 | `AI_ENABLED` | Consent-gated AI coaching feedback | Off |
 | `ALLOW_OPEN_SIGNUP` | Open password signup for development; ignored in production | Ignored in production |
 | `OUTBOX_IMMEDIATE_DELIVERY` | Send mail right after commit (three-state; on when `VERCEL=1`) | On (expected unset) |
@@ -839,11 +842,13 @@ sequenceDiagram
     Outbox->>DB: delivered / suppressed (FEEDBACK_DISABLED)
 ```
 
-Notes: `FEEDBACK_ENABLED` is off in production, so today these
-endpoints answer 404; the diagram shows the wired behaviour when
-the flag and migration v22 are on. No triage UI exists yet: items
-stay `open` until a later issue adds status changes. Closed items
-are deleted 12 months after closing.
+Notes: `FEEDBACK_ENABLED=true` is live in production as of 2026-11-03
+([owner verification on #353](https://github.com/festus14/randori-circle/issues/353#issuecomment-6592408169));
+migration v22 was applied on 2026-10-28. The owner verified
+unauthenticated `GET /api/feedback/mine` → 401 and
+`POST /api/feedback` → 400 validation, confirming the endpoints are live.
+No triage UI exists yet: items stay `open` until a later issue adds status
+changes. Closed items are deleted 12 months after closing.
 
 ### 11.5 Outbox delivery
 

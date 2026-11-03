@@ -91,6 +91,18 @@
       "destination": "/api/auth?endpoint=logout-all"
     },
     {
+      "source": "/api/auth/account/delete/link",
+      "destination": "/api/auth?endpoint=account-delete-link-request"
+    },
+    {
+      "source": "/api/auth/account/delete/confirm-token",
+      "destination": "/api/auth?endpoint=account-delete-confirm-token"
+    },
+    {
+      "source": "/api/auth/account/delete/cancel-token",
+      "destination": "/api/auth?endpoint=account-delete-cancel-token"
+    },
+    {
       "source": "/api/auth/account/delete/cancel",
       "destination": "/api/auth?endpoint=account-delete-cancel"
     },
@@ -277,6 +289,10 @@
     {
       "source": "/api/admin/demo-reset",
       "destination": "/api/ops?endpoint=demo-reset"
+    },
+    {
+      "source": "/api/ai/consent",
+      "destination": "/api/ai?endpoint=consent"
     },
     {
       "source": "/api/ai/analyze",

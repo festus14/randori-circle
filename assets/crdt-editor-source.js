@@ -10,7 +10,7 @@ const RETRY_MAX_MS=8000;
 const QUEUE_RETENTION_MS=90*24*60*60*1000;
 const MAX_UPDATE_BYTES=64*1024;
 const VERSION=/^[a-f0-9]{64}$/;
-const ROOM=/^week_[1-9]\d*_pair_[1-9]\d*$/;
+const ROOM={test:room=>window.RandoriWorkspaceScope?.canonicalRoom?.(room)===true};
 const ORIGIN_REMOTE=Symbol('remote');
 const ORIGIN_PENDING=Symbol('pending');
 const memoryQueues=new Map();
@@ -25,20 +25,21 @@ function actorId(){
 }
 
 function selectionIdentity(room=window._randori_workspace?.room){
+  if(window.RandoriWorkspaceScope?.isSolo?.(room)) return null;
   const selection=window._randori_questions?.selectedIdentity?.();
   const version=Number(selection?.version);
   const language=String(document.getElementById('langSelect')?.value||'');
   if(!ROOM.test(String(room||''))||typeof selection?.slug!=='string'||!selection.slug
     ||!Number.isSafeInteger(version)||version<1||!['javascript','python'].includes(language)) return null;
-  return {room:String(room),questionSlug:selection.slug,questionVersion:version,language};
+  return {room:String(room),circlePublicId:window._randori_circle_control?.scheduleContext?.()?.circlePublicId||null,questionSlug:selection.slug,questionVersion:version,language};
 }
 
 function identityKey(identity,owner=actorId()){
-  return JSON.stringify([owner,identity.room,identity.questionSlug,identity.questionVersion,identity.language]);
+  return JSON.stringify([owner,identity.circlePublicId,identity.room,identity.questionSlug,identity.questionVersion,identity.language]);
 }
 
 function sameIdentity(left,right){
-  return !!left&&!!right&&left.room===right.room&&left.questionSlug===right.questionSlug
+  return !!left&&!!right&&left.room===right.room&&left.circlePublicId===right.circlePublicId&&left.questionSlug===right.questionSlug
     &&left.questionVersion===right.questionVersion&&left.language===right.language;
 }
 
@@ -86,6 +87,23 @@ function compactQueue(queue){
     compact.push(encoded);
   }
   return compact;
+}
+
+function migrateLegacyPrimaryQueue(identity){
+  if(!/^week_[1-9]\d*_pair_[1-9]\d*$/.test(identity.room)||!state.actorId) return;
+  const key=identityKey(identity,state.actorId);
+  const legacyKey=JSON.stringify([state.actorId,identity.room,identity.questionSlug,identity.questionVersion,identity.language]);
+  try{
+    const all=JSON.parse(localStorage.getItem(PENDING_KEY)||'{}');
+    const legacy=all[legacyKey];
+    if(!legacy||!Array.isArray(legacy.updates)||!Number.isSafeInteger(legacy.updated_at)
+      ||Date.now()-legacy.updated_at>=QUEUE_RETENTION_MS) return;
+    const queue=compactQueue([...legacy.updates,...readQueue(identity)]);
+    all[key]={updated_at:Math.max(legacy.updated_at,all[key]?.updated_at||0),updates:queue};
+    delete all[legacyKey];
+    localStorage.setItem(PENDING_KEY,JSON.stringify(all));
+    memoryQueues.set(key,queue);
+  }catch{}
 }
 
 function writeQueue(queue,identity=state.identity){
@@ -338,6 +356,9 @@ async function hydrate(identity,epoch){
       schedule(SEND_DEBOUNCE_MS);
     };
     doc.on('update',state.updateHandler);
+    // The canonical response has authorized this exact primary document.
+    // Only now may its pre-circle queue move into the scoped namespace.
+    migrateLegacyPrimaryQueue(identity);
     for(const pending of readQueue(identity)) Y.applyUpdate(doc,base64ToBytes(pending),ORIGIN_PENDING);
     const localNow=currentCode();
     if(localNow!==localBefore&&localNow!==text.toString()) replaceText(localNow,'pre-hydration-edit');
@@ -430,14 +451,18 @@ function deactivate({keepIdentity=false,awaitingRoom=false}={}){
 
 function fenceIdentityChange(room=window._randori_authorized_room){
   room=String(room||'');
-  deactivate({awaitingRoom:ROOM.test(room)&&window._randori_authorized_room===room&&!!actorId()});
+  deactivate({awaitingRoom:ROOM.test(room)&&!window.RandoriWorkspaceScope?.isSolo?.(room)&&window._randori_authorized_room===room&&!!actorId()});
 }
 
 async function activate(){
+  const room=String(window._randori_authorized_room||'');
+  if(window.RandoriWorkspaceScope?.isSolo?.(room)){
+    if(state.identity||state.awaitingRoom) deactivate();
+    return false;
+  }
   const identity=selectionIdentity(); const owner=actorId();
   if(!owner||!identity||window._randori_workspace?.hydrated!==true
     ||window._randori_workspace?.room!==identity.room||window._randori_authorized_room!==identity.room){
-    const room=String(window._randori_authorized_room||'');
     const awaiting=!!owner&&ROOM.test(room);
     deactivate({awaitingRoom:awaiting});
     // A first-ever room hydrates with no workspace snapshot, so no selection
@@ -533,6 +558,8 @@ document.addEventListener('click',event=>{
 
 if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',scheduleActivation,{once:true});
 else scheduleActivation();
+
+window.addEventListener('randori:workspace-scope-reset',()=>{ clearActorQueue(state.actorId); memoryQueues.clear(); deactivate(); });
 
 window._randori_crdt={activate,deactivate,poll,flush,fence:fenceIdentityChange,
   ownsCodeFor(room){ return !!state.identity&&state.identity.room===room; },

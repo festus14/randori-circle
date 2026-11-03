@@ -7,7 +7,8 @@
 //
 // Everything here is presentation: it formats server-provided values into
 // labels, validates response shapes before they reach the DOM, and builds
-// small text-only nodes. It never fetches, authorizes, or stores anything.
+// small text-only nodes. The sender address cache uses caller-provided browser
+// storage; these helpers never fetch or authorize.
 (function installCircleUi(root) {
   'use strict';
 
@@ -105,6 +106,90 @@
       ? [Array.from(words[0])[0], Array.from(words[1])[0]]
       : Array.from(words[0]).slice(0, 2);
     return letters.join('').toUpperCase();
+  }
+
+  // Only addresses supplied by this account in this browser are remembered.
+  // The list API never supplies addresses. Scope by account and circle so a
+  // shared browser cannot render a previous sender's address for another user.
+  function createInvitationEmailStore({ storage, now = Date.now } = {}) {
+    const memory = new Map();
+    let storageUnavailable = false;
+    const prefix = 'randori-invitation-emails-v1:';
+    function key(scope) {
+      const userId = scope?.userId;
+      const circle = scope?.circlePublicId;
+      return Number.isSafeInteger(userId) && userId > 0
+        && typeof circle === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(circle)
+        ? `${prefix}${userId}:${circle}` : null;
+    }
+    function save(scopeKey, entries) {
+      try {
+        if (storageUnavailable) return;
+        const target = storage?.();
+        if (!target) { storageUnavailable = true; return; }
+        if (entries.size) target?.setItem(scopeKey, JSON.stringify([...entries.values()]));
+        else target?.removeItem(scopeKey);
+      } catch { storageUnavailable = true; /* Keep the current tab usable. */ }
+    }
+    function load(scopeKey) {
+      let entries = memory.get(scopeKey) || new Map();
+      // Read the current browser value so another sending tab's addresses
+      // survive when this tab remembers a different invitation.
+      try {
+        const values = storageUnavailable ? null : JSON.parse(storage?.()?.getItem(scopeKey) || '[]');
+        if (storage && !storageUnavailable) {
+          entries = new Map();
+          if (Array.isArray(values)) for (const value of values.slice(-200)) {
+            const email = boundedText(value?.email, 254);
+            if (UUID_PATTERN.test(value?.id) && email
+              && Number.isFinite(value?.expiresAt) && value.expiresAt > now()
+              && value.expiresAt <= now() + 7 * DAY) {
+              entries.set(value.id, { id: value.id, email, expiresAt: value.expiresAt });
+            }
+          }
+        }
+      } catch { /* Keep tab memory if browser storage is corrupt or blocked. */ }
+      memory.set(scopeKey, entries);
+      for (const [id, entry] of entries) if (entry.expiresAt <= now()) entries.delete(id);
+      return entries;
+    }
+    return Object.freeze({
+      remember(scope, id, email) {
+        const scopeKey = key(scope);
+        const address = boundedText(email, 254);
+        if (!scopeKey || !UUID_PATTERN.test(id) || !address) return;
+        const entries = load(scopeKey);
+        entries.set(id, { id, email: address, expiresAt: now() + 7 * DAY });
+        while (entries.size > 200) entries.delete(entries.keys().next().value);
+        save(scopeKey, entries);
+      },
+      get(scope, id) {
+        const scopeKey = key(scope);
+        if (!scopeKey) return null;
+        const entries = load(scopeKey);
+        save(scopeKey, entries);
+        return entries.get(id)?.email || null;
+      },
+      snapshot(scope) {
+        const scopeKey = key(scope);
+        return scopeKey ? new Map(load(scopeKey)) : new Map();
+      },
+      retainListed(scope, invitations, snapshot) {
+        const scopeKey = key(scope);
+        if (!scopeKey) return;
+        const listed = new Set(invitations.filter(invitation => invitation.status !== 'expired').map(invitation => invitation.id));
+        const entries = load(scopeKey);
+        // An older list must not delete addresses another tab sent or updated
+        // while its request was in flight. Prune only unchanged snapshot rows.
+        for (const [id, previous] of snapshot) {
+          const current = entries.get(id);
+          if (!listed.has(id) && current?.email === previous.email
+            && current?.expiresAt === previous.expiresAt) entries.delete(id);
+        }
+        save(scopeKey, entries);
+      },
+      clear() { memory.clear(); },
+    });
   }
 
   function describeInvitation(invitation, { now = Date.now(), knownEmail = null, locale } = {}) {
@@ -424,21 +509,38 @@
   }
 
   function historyRowView(item, options) {
-    const week = Number(item?.week_id);
-    const pair = Number(item?.pg_id);
+    const secondary = item?.circle?.is_primary === false;
+    const week = Number(secondary ? item?.publication_id : item?.week_id);
+    const pair = Number(secondary ? item?.group_id : item?.pg_id);
     if (!Number.isSafeInteger(week) || week < 1 || !Number.isSafeInteger(pair) || pair < 1) return null;
+    const roomMatch=secondary?String(item?.room_id||'').match(/^circle_([1-9]\d*)_publication_([1-9]\d*)_group_([1-9]\d*)$/):null;
+    if(secondary&&(!roomMatch||!roomMatch.slice(1).every(id=>Number.isSafeInteger(Number(id)))||Number(roomMatch[2])!==week||Number(roomMatch[3])!==pair)) return null;
     const partner = boundedText(item?.partner_name, 240) || 'Pair member';
     const weekLabel = pairingWeekLabel(item, options);
     const kind = boundedText(item?.topic_kind, 160);
     const topic = boundedText(item?.topic, 160) || (kind && (focusLabel(kind) || kind));
     return Object.freeze({
-      room: `week_${week}_pair_${pair}`,
+      room: secondary ? item.room_id : `week_${week}_pair_${pair}`,
       partner,
       partnerInitials: item?.is_ai === true ? 'AI' : initials(partner),
       week: weekLabel,
       topic,
       meta: topic ? `${weekLabel} · ${topic}` : weekLabel,
     });
+  }
+
+  function circleBadgeNode(doc, circle) {
+    if (!circle || typeof circle.public_id !== 'string' || !circle.public_id
+      || typeof circle.is_primary !== 'boolean') return null;
+    const name = boundedText(circle.name, 120);
+    if (!name) return null;
+    const node = doc.createElement('span'); node.className = 'circle-workspace-context';
+    node.dataset.testid = 'circle-attribution';
+    const label = doc.createElement('span'); label.textContent = `In ${name}`;
+    const badge = doc.createElement('span'); badge.className = 'kbd';
+    badge.textContent = circle.is_primary ? 'Primary' : 'Secondary';
+    node.append(label, ' ', badge);
+    return node;
   }
 
   function languageLabel(language) {
@@ -542,12 +644,14 @@
     absoluteDate,
     avatarNode,
     badgeNode,
+    createInvitationEmailStore,
     describeInvitation,
     durationLabel,
     exerciseLabel,
     focusLabel,
     historyCountLabel,
     historyRowView,
+    circleBadgeNode,
     iconNode,
     initials,
     invitationEmailRejectedHint,

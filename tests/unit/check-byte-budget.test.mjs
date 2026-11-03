@@ -42,8 +42,8 @@ test('the current tree passes the adopted #412 thresholds', () => {
   assert.ok(measurement.jsInitial <= BYTE_BUDGET_THRESHOLDS.jsInitial);
   assert.ok(measurement.jsTotal <= BYTE_BUDGET_THRESHOLDS.jsTotal);
   assert.deepEqual(measurement.linkedStylesheets, ['assets/circle-history.css']);
-  assert.equal(measurement.assetJsFiles, 22);
-  assert.equal(measurement.assetCssFiles, 2);
+  assert.equal(measurement.assetJsFiles, 26);
+  assert.equal(measurement.assetCssFiles, 3);
 });
 
 test('slices separate initial-load from totals and ignore external references', () => {

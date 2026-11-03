@@ -120,3 +120,19 @@ export function ensureAiHistoryReadiness(db){
 export function ensureAiLogReadiness(db){
   return ensureReadiness(db,'log',probeLogSchema);
 }
+
+// Personal consent does not depend on session, feedback, quota, or log tables.
+export function ensureAiConsentReadiness(db){
+  return ensureReadiness(db,'consent',async client=>{
+    await client.execute(`SELECT user_id,consented_at,revoked_at,policy_version FROM ai_consents LIMIT 0`);
+    requirePrimaryKey(await client.execute(`SELECT name,pk FROM pragma_table_info('ai_consents') WHERE pk>0 ORDER BY pk`),['user_id']);
+    return true;
+  });
+}
+
+export function ensureAiConsentRoomReadiness(db){
+  return ensureReadiness(db,'consent-room',async client=>{
+    await probePairAccessSchema(client,{includeWeek:true});
+    return true;
+  });
+}

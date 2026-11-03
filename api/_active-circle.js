@@ -30,6 +30,11 @@ export function secondaryCircleSchedulingEnabled(){
     &&process.env.SECONDARY_CIRCLE_SCHEDULING_ENABLED==='true';
 }
 
+export function secondaryCircleWorkspaceEnabled(){
+  return secondaryCircleCoordinationEnabled()
+    &&process.env.SECONDARY_CIRCLE_WORKSPACE_ENABLED==='true';
+}
+
 export function secondaryCircleScheduleEmailEnabled(){
   return secondaryCircleSchedulingEnabled()
     &&process.env.SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED==='true';

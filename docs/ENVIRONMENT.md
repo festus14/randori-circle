@@ -13,6 +13,15 @@ its production state.
   [PR #352](https://github.com/festus14/randori-circle/pull/352). Values set
   in Vercel are not visible from the repository, so anything else is marked
   as not observable.
+- The owner re-verified `FEEDBACK_ENABLED=true` in production on
+  2026-11-03: [#353 verification](https://github.com/festus14/randori-circle/issues/353#issuecomment-6592408169)
+  records migration v22 applied on 2026-10-28, unauthenticated
+  `GET /api/feedback/mine` → 401 and `POST /api/feedback` → 400 validation.
+- The owner recorded `ACCOUNT_DELETION_GRACE_ENABLED=true` in Vercel
+  production on 2026-11-03: [#372 rollout](https://github.com/festus14/randori-circle/issues/372#issuecomment-6592907408).
+  The [v23 apply artifact](https://github.com/festus14/randori-circle/actions/runs/41558187005)
+  records `appliedVersions: [23]`; the [post-apply status artifact](https://github.com/festus14/randori-circle/actions/runs/41559246678)
+  records `currentVersion: 23`, `pendingVersions: []` and `nextVersion: null`.
 - [`.env.example`](../.env.example) is the copy-and-fill template. It names
   every variable on this page. Variables you should never set by hand appear
   there only as comments.
@@ -349,13 +358,15 @@ shell's values.
 
 ## Feature flags
 
-Every flag the code checks. Production state is as of 2026-10-22:
+Every flag the code checks. Production state is as of 2026-11-03, with
+`FEEDBACK_ENABLED` re-verified and `ACCOUNT_DELETION_GRACE_ENABLED` enabled
+by the owner on that date; other rows retain their recorded evidence:
 
 - **On (observed):** advertised by the public `/api/auth/capabilities`
   response.
-- **On (owner):** switched on by the owner with the
-  [PR #352](https://github.com/festus14/randori-circle/pull/352) deploy. It has
-  no public signal.
+- **On (owner):** switched on by the owner, as recorded in
+  [PR #352](https://github.com/festus14/randori-circle/pull/352) or the linked
+  feedback verification and deletion-grace rollout records.
 - **Off (observed):** its capability is absent.
 - **Not observable:** check Vercel.
 
@@ -365,12 +376,13 @@ them off cannot undo.
 
 ### Application flags (Vercel)
 
-| Flag | What it gates | Default | Production (2026-10-22) | Depends on | Decision | Turning it off safely |
+| Flag | What it gates | Default | Production (as of 2026-11-03) | Depends on | Decision | Turning it off safely |
 | --- | --- | --- | --- | --- | --- | --- |
 | `CIRCLE_MEMBERSHIP_ENABLED` | Invitation-gated primary-circle membership: owner invitations, roster, member lifecycle, membership checks on every private route | off | On (observed: `verified_invite` mode, `accountDeletion` and `circleHealth` all require it) | Migrations current, then the data-only admin `POST /api/init` cutover | ID-12, ID-21, ID-39 ([admin data initialization](ADMIN_DATA_INITIALIZATION.md)) | Restores legacy roster behaviour and keeps membership data, but does **not** reopen registration once the cutover latch has closed. It also switches off everything below that depends on it. Avoid in production |
 | `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` | Creating, selecting and archiving secondary circles; circle-scoped roster and invitations | off | Off (observed: no `multiCircleControlPlane`) | `CIRCLE_MEMBERSHIP_ENABLED`; managed ledger through v16 | ID-21, ID-29, ID-38 ([active circle](ACTIVE_CIRCLE_CONTEXT.md)) | Turn off the dependent flags first. Context, cycle, archive and schedule rows remain and no membership data is deleted; never clear an archive marker as a rollback |
 | `MULTI_CIRCLE_AVAILABILITY_ENABLED` | Dated availability in the selected active circle | off | Off in effect (parent off) | `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` | ID-24 | Restores the legacy availability gate; rows remain |
 | `SECONDARY_CIRCLE_COORDINATION_ENABLED` | Weekly pairing and coordination in a selected secondary circle | off | Off in effect | `MULTI_CIRCLE_AVAILABILITY_ENABLED` | ID-26 ([selected-circle pairing](SELECTED_CIRCLE_PAIRING.md)) | Also disables the three flags below |
+| `SECONDARY_CIRCLE_WORKSPACE_ENABLED` | Room, chat, execution, recap, completion, code documents, video and active-circle History for secondary circles | off | Off pending owner cutover | `SECONDARY_CIRCLE_COORDINATION_ENABLED`; owner-applied breaking migration v25 | Issue #438 ([secondary workspace](SECONDARY_WORKSPACE.md)) | Disable the flag to restore unavailable gates; retain parallel workspace and retention rows. Code merge makes readiness fail until v25 is applied |
 | `SECONDARY_CIRCLE_SCHEDULING_ENABLED` | Propose, accept and clear a time for a secondary pair | off | Off in effect | `SECONDARY_CIRCLE_COORDINATION_ENABLED`; migration v16 | ID-33 ([secondary scheduling](SECONDARY_SCHEDULING.md)) | Schedules are kept; writes stop |
 | `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED` | Queues dashboard-only pairing emails for secondary publications | off | Off in effect | `SECONDARY_CIRCLE_COORDINATION_ENABLED`; sender canary | ID-32 | New intents stop; already-queued mail is suppressed at send time |
 | `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` | Queues dashboard-only schedule emails for secondary schedules | off | Off in effect | `SECONDARY_CIRCLE_SCHEDULING_ENABLED` | ID-34 ([notifications](SECONDARY_SCHEDULE_NOTIFICATIONS.md)) | As above |
@@ -379,7 +391,7 @@ them off cannot undo.
 | `IDENTITY_MANAGEMENT_ENABLED` | Account security: link or remove Google and password sign-in | off | On (observed: `identityManagement`) | `IDENTITY_EMAIL_HASH_*` ring with an accepted control (without it Google sign-in fails closed); migration v9 | ID-13, ID-14 | Account security is hidden; Google and password sign-in keep working; existing links stay |
 | `INVITATION_EMAIL_DELIVERY_ENABLED` | Emailing owner-created invitation links | off | Not observable (bootstrap guide §10 turns it on for the MVP) | `CIRCLE_MEMBERSHIP_ENABLED`; `INVITATION_EMAIL_*` ring; Resend; `APP_URL` | ID-25 ([invitation email](INVITATION_EMAIL_DELIVERY.md)) | Invitations are still created with the copy-link fallback. Queued invitation mail stays `pending` until the flag is back on, and the outbox watchdog reports `delivery_stale` after 15 minutes; expect that alert or turn it off with an empty queue ([held mail](#held-mail-and-the-outbox-watchdog)) |
 | `INVITE_REQUESTS_ENABLED` | Public "Request an invite" form, owner review API, `inviteRequests` capability | off | On (observed: `inviteRequests`) | `CIRCLE_MEMBERSHIP_ENABLED`; migration v21; Resend and `APP_URL` for the owner digest | ID-66 ([invite requests](INVITE_REQUESTS.md)) | Endpoints return 404 and the form disappears; stored requests still expire and purge weekly. Pending owner-digest emails are held the same way: they stay `pending` until the flag is back on, and the outbox watchdog reports `delivery_stale` after 15 minutes; expect that alert or turn it off with an empty queue ([held mail](#held-mail-and-the-outbox-watchdog)) |
-| `FEEDBACK_ENABLED` | Product feedback from members: `POST /api/feedback` and `GET /api/feedback/mine`, plus the admin `feedback.submitted` notification | off | Off | `CIRCLE_MEMBERSHIP_ENABLED`; migration v22; Resend and `APP_URL` for the admin notification | ID-91 ([feedback](FEEDBACK.md)) | Endpoints return 404 and nothing is advertised. Closed-item retention and account-deletion handling of feedback keep running with the flag off (they check the v22 schema, not the flag). Queued admin notifications drain to `suppressed` (`FEEDBACK_DISABLED`) while the flag is off, so they never age into an outbox-watchdog `delivery_stale` alert ([held mail](#held-mail-and-the-outbox-watchdog)) |
+| `FEEDBACK_ENABLED` | Product feedback from members: `POST /api/feedback` and `GET /api/feedback/mine`, plus the admin `feedback.submitted` notification | off | On (owner, 2026-11-03; [#353 verification](https://github.com/festus14/randori-circle/issues/353#issuecomment-6592408169)) | `CIRCLE_MEMBERSHIP_ENABLED`; migration v22; Resend and `APP_URL` for the admin notification | ID-91 ([feedback](FEEDBACK.md)) | Endpoints return 404 and nothing is advertised. Closed-item retention and account-deletion handling of feedback keep running with the flag off (they check the v22 schema, not the flag). Queued admin notifications drain to `suppressed` (`FEEDBACK_DISABLED`) while the flag is off, so they never age into an outbox-watchdog `delivery_stale` alert ([held mail](#held-mail-and-the-outbox-watchdog)) |
 | `REMINDERS_ENABLED` | Availability-cutoff reminder and agree-a-time nudge from the outbox cron | off | On (owner) | Resend; the outbox scheduler | ID-71 ([reminders](REMINDERS.md)) | Queued reminders drain as `suppressed` |
 | `REMINDERS_SESSION_SOON_ENABLED` | One-hour session reminder | off | On (owner) | `REMINDERS_ENABLED` | ID-71 | As above |
 | `PROGRESS_DASHBOARD_ENABLED` | "Your progress" in History and `GET /api/progress` | off | On (owner) | none | ID-76 ([progress dashboard](PROGRESS_DASHBOARD.md)) | Safe; nothing is stored |
@@ -387,7 +399,7 @@ them off cannot undo.
 | `CIRCLE_HEALTH_ENABLED` | Owner-only Circle health card and `GET /api/circle/health` | off | On (observed: `circleHealth`) | `CIRCLE_MEMBERSHIP_ENABLED` | ID-78 ([circle health](CIRCLE_HEALTH.md)) | Safe; nothing is stored |
 | `ADMIN_DIAGNOSTICS_ENABLED` | Read-only admin Diagnostics in the Circle view | off | On (observed: `adminDiagnostics`) | none (still admin-only) | ID-73 | Safe; nothing is stored |
 | `ACCOUNT_DELETION_ENABLED` | Self-service Delete account in Edit profile (`POST /api/auth/account/delete`) | off | On (observed: `accountDeletion`) | `CIRCLE_MEMBERSHIP_ENABLED` | ID-81 ([account deletion](ACCOUNT_DELETION.md)) | Hides the endpoint and UI. **Irreversible:** accounts already deleted stay deleted |
-| `ACCOUNT_DELETION_GRACE_ENABLED` | 14-day cancellable grace period for account deletion: request locks the account and schedules deletion, sign-in leads to a cancel screen, the outbox cron executes it (`POST /api/auth/account/delete/cancel`) | off | Off (observed: no `accountDeletionGrace`) | `ACCOUNT_DELETION_ENABLED`, migration v23 applied | ID-93 ([account deletion](ACCOUNT_DELETION.md)) | Turning it off stops new grace requests (they delete immediately); pending requests still cancel and execute on schedule |
+| `ACCOUNT_DELETION_GRACE_ENABLED` | 14-day cancellable grace period for account deletion: request locks the account and schedules deletion, sign-in leads to a cancel screen, the outbox cron executes it (`POST /api/auth/account/delete/cancel`) | off | On (owner, 2026-11-03; [#372 rollout](https://github.com/festus14/randori-circle/issues/372#issuecomment-6592907408)) | `ACCOUNT_DELETION_ENABLED`, migration v23 applied | ID-93 ([account deletion](ACCOUNT_DELETION.md)) | Turning it off stops new grace requests (they delete immediately); pending requests still cancel and execute on schedule |
 | `DATA_EXPORT_ENABLED` | Download my data in Edit profile (`GET /api/auth/account/export`): a JSON archive of the member's own data, partners by display name only | off | Off (observed: no `dataExport`) | none | ID-90 ([data export](DATA_EXPORT.md)) | Safe; nothing is stored. Turning it off hides the endpoint, the capability and the UI |
 | `OUTBOX_PII_RETENTION_ENABLED` | Hourly removal of recipient addresses and sealed links from delivered or suppressed outbox rows after 7 days and from dead letters after 30 | off | On (owner) | The matching privacy policy text (live since 2026-10-22) | ID-83 | Stops further redaction. **Irreversible:** redacted rows cannot be restored and redacted dead letters stay non-replayable |
 | `AI_ENABLED` | Consent-gated AI feedback in `api/ai.js` | off | Off (privacy policy says AI is off) | `GROQ_API_KEY` or `OPENAI_API_KEY`; privacy and consent review ([#7](https://github.com/festus14/randori-circle/issues/7)) | ID-41 | AI routes return 503 |

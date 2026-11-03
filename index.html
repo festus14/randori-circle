@@ -1966,6 +1966,12 @@ a.btn{text-decoration:none}
 </script>
 
 <link rel="stylesheet" href="/assets/circle-history.css"/>
+<style>
+  .ai-consent-dialog { width:min(540px,calc(100% - 32px)); padding:24px; color:var(--color-text); background:var(--color-surface); border:1px solid var(--color-control-border); }
+  .ai-consent-dialog::backdrop { background:rgba(0,0,0,.5); }
+  #aiAnalysisConfirm, #aiPartnerConsent { padding:16px; }
+  #aiAnalysisConfirm[hidden], #aiPartnerConsent[hidden] { display:none; }
+</style>
 </head>
 <body>
 <a class="skip-link" href="#appMain">Skip to main content</a>
@@ -2249,6 +2255,8 @@ a.btn{text-decoration:none}
           </div>
         </div>
 
+        <section id="aiConsentProfile" class="card onboarding-step onboarding-edit-only" hidden></section>
+
         <!-- Issue #339: account deletion (ACCOUNT_DELETION_ENABLED), filled by assets/account-deletion.js. Visual design is provisional. -->
         <section id="accountDeletion" class="card onboarding-step onboarding-edit-only" data-testid="account-deletion" hidden></section>
 
@@ -2381,7 +2389,7 @@ a.btn{text-decoration:none}
           <section id="circleOwnerPanel" class="card circle-card" hidden aria-labelledby="circleInvitesTitle" style="display:none">
             <div class="card-h"><h3 id="circleInvitesTitle" class="circle-card-title">Invitations</h3><span id="circleInvitesMeta" class="circle-card-meta"></span></div>
             <div class="card-b circle-card-body">
-              <p class="small muted circle-help">Each invitation works once, only for the email you enter, and expires after 7 days. For privacy, the address is shown only in the browser that sent it.</p>
+              <p class="small muted circle-help">Each invitation works once, only for the email you enter, and expires after 7 days. For privacy, the address is shown only to your account in the browser that sent it, until the invitation expires.</p>
               <form id="circleInviteForm" class="circle-invite-form" novalidate>
                 <label class="small muted circle-field">Email address
                   <input id="circleInviteEmail" data-testid="circle-invite-email" class="input" type="email" autocomplete="email" spellcheck="false" maxlength="254" required placeholder="teammate@example.com" aria-describedby="circleInviteEmailError" />
@@ -2776,13 +2784,17 @@ a.btn{text-decoration:none}
                   </label>
                   <p id="aiFeedbackHint" class="small muted">Off. Turn it on to record code snapshots and request AI feedback on this session.</p>
                 </div>
+                <p class="small muted">This switch only hides the tools in this browser. It does not allow AI processing or withdraw consent.</p>
+                <div id="aiConsentStatus" class="small muted" role="status" aria-live="polite"></div>
+                <section id="aiPartnerConsent" class="card" hidden></section>
                 <div id="aiFeedbackTools" class="ai-tools" hidden>
                   <div class="row ai-actions">
                     <button id="aiRecordBtn" class="btn secondary sm" type="button" aria-pressed="false" disabled>Record</button>
                     <button id="aiAnalyzeBtn" class="btn sm" type="button" disabled>Get feedback</button>
                     <button id="aiHistoryBtn" class="btn ghost sm" type="button" disabled>Past feedback</button>
                   </div>
-                  <div id="aiStatus" class="small muted" role="status" aria-live="polite">Feedback needs a signed-in account. Nothing is sent until you choose Get feedback.</div>
+                  <section id="aiAnalysisConfirm" class="card" hidden></section>
+                  <div id="aiStatus" class="small muted" role="status" aria-live="polite">Feedback needs a signed-in account. Nothing is sent until you confirm Send to AI.</div>
                   <div id="aiRouterDebug" class="small ai-debug" style="display:none"></div>
                   <div id="aiFeedback" class="ai-feedback"></div>
                 </div>
@@ -2861,6 +2873,7 @@ a.btn{text-decoration:none}
       </div>
     </section>
     <script src="/assets/circle-ui.js"></script>
+    <script src="/assets/workspace-scope.js"></script>
     <script type="module" src="/assets/email-validation.js"></script>
     <script type="module" src="/assets/bulk-invite.js"></script>
   </main>
@@ -2994,7 +3007,7 @@ a.btn{text-decoration:none}
   let authRefreshSequence=0;
   let authIdentityHydrated=false;
   let authIdentityHydrationUnavailable=false;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,multiCircleAvailability:false,secondaryCircleCoordination:false,secondaryCircleScheduling:false,inviteRequests:false,circleHealth:false,registrationMode:'private_beta'});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,multiCircleAvailability:false,secondaryCircleCoordination:false,secondaryCircleScheduling:false,secondaryCircleWorkspace:false,inviteRequests:false,circleHealth:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -3653,7 +3666,7 @@ async function refreshMe(){
         invalidatePreparedInvite('auth_changed');
         renderInviteGateState();
       }
-      resetCircleControlForIdentityChange({preserveLifecycleRecentAction:true});
+      resetCircleControlForIdentityChange({preserveLifecycleRecentAction:true,preserveWorkspaceDrafts:!identityWasHydrated&&!!refreshedUserId});
     }
     if(availabilityState.userId!==null
       &&(!Number.isSafeInteger(refreshedUserId)||refreshedUserId<1
@@ -4307,6 +4320,7 @@ async function refreshMe(){
       ||(capabilities.multiCircleAvailability!==undefined&&typeof capabilities.multiCircleAvailability!=='boolean')
       ||(capabilities.secondaryCircleCoordination!==undefined&&typeof capabilities.secondaryCircleCoordination!=='boolean')
       ||(capabilities.secondaryCircleScheduling!==undefined&&typeof capabilities.secondaryCircleScheduling!=='boolean')
+      ||(capabilities.secondaryCircleWorkspace!==undefined&&typeof capabilities.secondaryCircleWorkspace!=='boolean')
       ||(capabilities.inviteRequests!==undefined&&typeof capabilities.inviteRequests!=='boolean')
       ||(capabilities.circleHealth!==undefined&&typeof capabilities.circleHealth!=='boolean')
       ||(capabilities.adminDiagnostics!==undefined&&typeof capabilities.adminDiagnostics!=='boolean')
@@ -4326,6 +4340,7 @@ async function refreshMe(){
       multiCircleAvailability:capabilities.multiCircleAvailability===true,
       secondaryCircleCoordination:capabilities.secondaryCircleCoordination===true,
       secondaryCircleScheduling:capabilities.secondaryCircleScheduling===true,
+      secondaryCircleWorkspace:capabilities.secondaryCircleWorkspace===true,
       inviteRequests:capabilities.inviteRequests===true,
       circleHealth:capabilities.circleHealth===true,
       adminDiagnostics:capabilities.adminDiagnostics===true,
@@ -5978,11 +5993,17 @@ async function refreshMe(){
   const inviteRequestsStatus=document.getElementById('circleInviteRequestsStatus');
   const inviteRequestsCount=document.getElementById('circleInviteRequestsCount');
   const inviteRequestsMore=document.getElementById('circleInviteRequestsMore');
-  // Addresses the owner typed (or approved) in this tab, keyed by invitation
-  // id. The server only returns an email fingerprint, so this lets the owner
-  // recognise invitations they just sent. Memory only; cleared on any circle
-  // or identity change.
-  const circleInviteEmails=new Map();
+  // Sender-only addresses survive reloads in this browser for up to 7 days.
+  // Invitation links remain in tab memory; only addresses are cached.
+  const circleInviteEmails=circleUi.createInvitationEmailStore({storage:()=>localStorage});
+  function invitationEmailScope(){
+    const operation=captureCircleControlOperation();
+    return activeCircleRole==='owner'&&circleControlOperationMatches(operation)
+      ?{userId:operation.userId,circlePublicId:authCapabilities.multiCircleControlPlane?operation.circlePublicId:'primary'}:null;
+  }
+  function rememberInvitationEmail(id,email){
+    circleInviteEmails.remember(invitationEmailScope(),String(id).toLowerCase(),email);
+  }
   // Bulk invite controller (assets/bulk-invite.js); mounted further below.
   let bulkInviteController=null;
   // Circle health controller (assets/circle-health.js, issue #292); imported on demand further below.
@@ -6028,7 +6049,7 @@ async function refreshMe(){
     }
   }
 
-  function resetPrivateCircleControl({switching,preserveLifecycleRecentAction=false}){
+  function resetPrivateCircleControl({switching,preserveLifecycleRecentAction=false,preserveWorkspaceDrafts=false}){
     window._randori_onboarding_authority?.invalidate?.('circle');
     clearAvailability();
     circleCreateAbort?.abort();
@@ -6039,6 +6060,7 @@ async function refreshMe(){
     if(switching) setCircleContextState('switching','Switching circle…');
     else circleContextErrorLatched=false;
     circleControlEpoch+=1;
+    window.RandoriWorkspaceScope?.reset?.({preserveDrafts:preserveWorkspaceDrafts});
     circleRenderEpoch+=1;
     pairingRenderEpoch+=1;
     pairingPublicationAbort?.abort();
@@ -6093,11 +6115,11 @@ async function refreshMe(){
     return resetPrivateCircleControl({switching:true});
   }
 
-  function resetCircleControlForIdentityChange({preserveLifecycleRecentAction=false}={}){
+  function resetCircleControlForIdentityChange({preserveLifecycleRecentAction=false,preserveWorkspaceDrafts=false}={}){
     circleCreatePending=false;
     circleCreateAttempt=null;
     setCircleCreateState('idle','');
-    return resetPrivateCircleControl({switching:false,preserveLifecycleRecentAction});
+    return resetPrivateCircleControl({switching:false,preserveLifecycleRecentAction,preserveWorkspaceDrafts});
   }
 
   function renderCircleContextSelector(context){
@@ -6126,7 +6148,7 @@ async function refreshMe(){
       ?'Choose which circle to manage and view.'
       :(circles.length>1
         ?(authCapabilities.secondaryCircleCoordination
-          ?'Availability and weekly pairing follow this circle. Secondary circles are coordination-only. Workspaces are not enabled.'
+          ?(authCapabilities.secondaryCircleWorkspace?'Availability, pairing and workspace follow the selected circle.':'Availability and weekly pairing follow this circle. Secondary circles are coordination-only. Workspaces are not enabled.')
           :(authCapabilities.multiCircleAvailability
           ?'Circle-specific availability and member controls are active. Pairing is not enabled yet.'
           :'Circle-specific member and invitation controls are active. Pairing remains unavailable for this account.')
@@ -6168,6 +6190,7 @@ async function refreshMe(){
   }
 
   async function ensureActiveCircleContext(userId){
+    if(circleContextSwitching) return null;
     if(!authCapabilities.multiCircleControlPlane){
       activeCircleContext=null;
       activeCircleContextUserId=null;
@@ -6213,6 +6236,7 @@ async function refreshMe(){
     matchesScheduleResponse(result){ return pairingResponseMatchesContext(result); },
     async capturePairing(userId){
       await authCapabilitiesPromise;
+      if(circleContextSwitching) return captureCircleControlOperation();
       if(authCapabilities.multiCircleControlPlane&&userId&&!activeCircleContext){
         await ensureActiveCircleContext(userId);
       }
@@ -6517,7 +6541,7 @@ async function refreshMe(){
   }
 
   function invitationRow(invitation){
-    const view=circleUi.describeInvitation(invitation,{knownEmail:circleInviteEmails.get(String(invitation?.id||'').toLowerCase())||null});
+    const view=circleUi.describeInvitation(invitation,{knownEmail:circleInviteEmails.get(invitationEmailScope(),String(invitation?.id||'').toLowerCase())||null});
     if(!view) return null;
     const row=document.createElement('li'); row.className='circle-row circle-invite-row';
     row.dataset.invitationId=view.id; row.dataset.invitationStatus=view.status;
@@ -6593,10 +6617,13 @@ async function refreshMe(){
       circleInvites.appendChild(loading);
     }
     try{
+      const emailScope=invitationEmailScope();
+      const emailSnapshot=circleInviteEmails.snapshot(emailScope);
       const result=await api('/api/invitations',{method:'GET'});
       if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId
         ||!circleControlOperationMatches(operation,result)) return;
       const invitations=Array.isArray(result?.invitations)?result.invitations:[];
+      circleInviteEmails.retainListed(emailScope,invitations,emailSnapshot);
       renderInvitationRows(invitations);
       if(circleInvitesMeta) circleInvitesMeta.textContent=circleUi.invitationSummary(invitations).replace(/\.$/,'');
     }catch{
@@ -6748,7 +6775,7 @@ async function refreshMe(){
       if(Number(me?.id||me?.uid)!==userId||!circleControlOperationMatches(operation)) return false;
       const outcome=circleUi.inviteRequestDecisionOutcome(decision,result,request);
       if(!outcome) throw new Error('invalid invite request decision response');
-      if(outcome.invitation?.id&&outcome.invitation.email) circleInviteEmails.set(outcome.invitation.id,outcome.invitation.email);
+      if(outcome.invitation?.id&&outcome.invitation.email) rememberInvitationEmail(outcome.invitation.id,outcome.invitation.email);
       if(outcome.invitation?.inviteUrl){
         const absolute=new URL(outcome.invitation.inviteUrl,window.location.origin);
         if(absolute.origin===window.location.origin&&absolute.pathname==='/invite'&&!absolute.search){
@@ -7484,7 +7511,7 @@ async function refreshMe(){
       latestInviteUrl=absoluteInviteUrl.href;
       latestInviteId=invitationId;
       latestInviteOwnerId=userId;
-      circleInviteEmails.set(invitationId,email);
+      rememberInvitationEmail(invitationId,email);
       if(input) input.value='';
       if(circleInviteLink) circleInviteLink.hidden=false;
       if(circleInviteStatus) circleInviteStatus.textContent=result?.email_delivery?.queued===true
@@ -7524,7 +7551,7 @@ async function refreshMe(){
       matches:(operation,result)=>circleControlOperationMatches(operation,result),
       createMany:emails=>api('/api/invitations',{method:'POST',body:{emails}}),
       resend:id=>api(`/api/invitations/${encodeURIComponent(id)}`,{method:'POST',body:{action:'resend'}}),
-      rememberEmail:(id,email)=>{ if(id&&email) circleInviteEmails.set(String(id).toLowerCase(),email); },
+      rememberEmail:(id,email)=>{ if(id&&email) rememberInvitationEmail(id,email); },
       refresh:()=>activeCircleRole==='owner'?loadOwnerInvitations(circleRenderEpoch):Promise.resolve(),
       copy:text=>navigator.clipboard.writeText(text),
     }});
@@ -8506,12 +8533,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function normalizePairRecap(raw,room){
     if(!raw||typeof raw!=='object'||Array.isArray(raw)) return null;
-    const pairId=Number(raw.pair?.id),weekId=Number(raw.pair?.week_id);
-    if(!Number.isSafeInteger(pairId)||pairId<1||!Number.isSafeInteger(weekId)||weekId<1||canonicalHistoryRoom(weekId,pairId)!==room) return null;
+    const secondary=raw.circle?.is_primary===false;
+    const pairId=Number(raw.pair?.id),weekId=Number(secondary?raw.pair?.publication_id:raw.pair?.week_id);
+    if(!Number.isSafeInteger(pairId)||pairId<1||!Number.isSafeInteger(weekId)||weekId<1||(secondary?raw.pair?.room_id:canonicalHistoryRoom(weekId,pairId))!==room) return null;
     const weekLabel=historyText(raw.pair.week_label,80),weekStart=historyInstant(raw.pair.week_start);
     const topic=raw.pair.topic==null?null:historyText(raw.pair.topic,200);
     const topicKind=raw.pair.topic_kind==null?null:historyText(raw.pair.topic_kind,80);
-    if(!weekLabel||!weekStart||(raw.pair.topic!=null&&!topic)||(raw.pair.topic_kind!=null&&!topicKind)||typeof raw.pair.is_ai!=='boolean'||!Array.isArray(raw.pair.members)||raw.pair.members.length<2||raw.pair.members.length>3) return null;
+    if(!weekLabel||!weekStart||(raw.pair.topic!=null&&!topic)||(raw.pair.topic_kind!=null&&!topicKind)||(!secondary&&typeof raw.pair.is_ai!=='boolean')||!Array.isArray(raw.pair.members)||raw.pair.members.length<(secondary&&raw.pair.solo===true?1:2)||raw.pair.members.length>3) return null;
     const members=raw.pair.members.map(member=>{
       const isAi=member?.is_ai===true;
       const id=member?.id==null&&isAi?null:Number(member?.id);
@@ -8525,7 +8553,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const meMembers=members.filter(member=>member.is_me);
     if(new Set(humanIds).size!==humanIds.length||meMembers.length!==1||meMembers[0].is_ai
       ||meMembers[0].id!==currentHistoryUserId()
-      ||raw.pair.is_ai!==(aiMembers.length===1)
+      ||(!secondary&&raw.pair.is_ai!==(aiMembers.length===1))
+      ||(secondary&&(aiMembers.length||raw.pair.solo===true&&humanIds.length!==1||raw.pair.solo!==true&&humanIds.length!==2))
       ||raw.pair.is_ai&&(aiMembers.length!==1||humanIds.length!==1)
       ||!raw.pair.is_ai&&aiMembers.length){
       return null;
@@ -8567,7 +8596,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     const completion=normalizeHistoryCompletion(raw.completion,humanIds.length);
     if(!completion) return null;
-    return {pair:{id:pairId,week_id:weekId,week_label:weekLabel,week_start:weekStart,topic,topic_kind:topicKind,is_ai:raw.pair.is_ai===true,members},schedule,activity,workspace,completion};
+    return {circle:raw.circle,pair:{id:pairId,...(secondary?{publication_id:weekId,room_id:room,solo:raw.pair.solo===true}:{week_id:weekId}),week_label:weekLabel,week_start:weekStart,topic,topic_kind:topicKind,is_ai:raw.pair.is_ai===true,members},schedule,activity,workspace,completion};
   }
 
   function recapSection(testid,label,title){
@@ -8600,11 +8629,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const actions=document.createElement('div'); actions.className='circle-row-actions';
     const refresh=document.createElement('button'); refresh.type='button'; refresh.className='btn ghost sm'; refresh.dataset.testid='pair-recap-refresh'; refresh.appendChild(circleUi.iconNode(document,'i-retry')); refresh.append('Refresh'); refresh.addEventListener('click',()=>{ fetchPairRecap(room); });
     actions.appendChild(refresh);
-    if(recap.workspace.artifact_available){
+    if(recap.workspace.artifact_available||recap.circle?.is_primary===false){
       const reopen=document.createElement('button'); reopen.type='button'; reopen.className='btn sm'; reopen.dataset.testid='pair-recap-reopen'; reopen.textContent='Reopen workspace'; reopen.addEventListener('click',()=>{ reopenPairWorkspace(room); });
       actions.appendChild(reopen);
     }
-    head.append(heading,actions); card.appendChild(head);
+    head.append(heading,actions);
+    const circleBadge=circleUi.circleBadgeNode(document,recap.circle); if(circleBadge) head.appendChild(circleBadge);
+    card.appendChild(head);
     const body=document.createElement('div'); body.className='card-b recap-body';
     const status=document.createElement('div'); status.className='small muted'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); status.textContent='Recap loaded'; body.appendChild(status);
 
@@ -8688,8 +8719,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   async function fetchPairRecap(room){
     room=String(room||'');
     const userId=currentHistoryUserId();
-    const roomMatch=room.match(/^week_([1-9]\d*)_pair_([1-9]\d*)$/);
-    if(!roomMatch||canonicalHistoryRoom(roomMatch[1],roomMatch[2])!==room||!userId||!historyViewVisible()) return false;
+    if(!window.RandoriWorkspaceScope.canonicalRoom(room)||!userId||!historyViewVisible()) return false;
     const epoch=++pairRecapState.epoch;
     const prior=pairRecapState.abort; prior?.abort();
     const controller=new AbortController(); pairRecapState.abort=controller; pairRecapState.userId=userId;
@@ -8699,7 +8729,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const response=await fetch(url,{credentials:'same-origin',cache:'no-store',signal:controller.signal});
       const data=await response.json().catch(()=>({}));
       if(pairRecapState.epoch!==epoch||pairRecapState.room!==room||currentHistoryUserId()!==userId||!historyViewVisible()) return false;
-      if(!response.ok||data.ok!==true||data.room_id!==room) throw new Error('recap unavailable');
+      if(!response.ok||data.ok!==true||data.room_id!==room) throw data;
       const recap=normalizePairRecap(data.recap,room);
       if(!recap) throw new Error('invalid recap response');
       pairRecapState.recap=recap;
@@ -8709,7 +8739,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(controller.signal.aborted||pairRecapState.epoch!==epoch||pairRecapState.room!==room||currentHistoryUserId()!==userId||!historyViewVisible()) return false;
       pairRecapState.recap=null; pairRecapState.status='error';
       const area=document.getElementById('pairRecapArea'); if(area) area.replaceChildren();
-      const status=document.createElement('div'); status.className='small muted'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.textContent='Pairing recap unavailable — try again.';
+      const status=document.createElement('div'); status.className='small muted'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.textContent=error?.code==='circle_feature_unavailable'?'Workspace is not available in this circle yet.':'Pairing recap unavailable — try again.';
       const retry=document.createElement('button'); retry.type='button'; retry.className='btn secondary sm'; retry.dataset.testid='pair-recap-refresh'; retry.textContent='Retry'; retry.addEventListener('click',()=>{ fetchPairRecap(room); });
       area?.append(status,retry);
       return false;
@@ -8718,7 +8748,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   async function reopenPairWorkspace(room){
     const recap=pairRecapState.recap,userId=currentHistoryUserId();
-    if(!recap?.workspace?.artifact_available||room!==pairRecapState.room||userId!==pairRecapState.userId||!historyViewVisible()) return false;
+    if(!(recap?.workspace?.artifact_available||recap?.circle?.is_primary===false)||room!==pairRecapState.room||userId!==pairRecapState.userId||!historyViewVisible()) return false;
     const opener=window._randori_journey?.openAuthorizedJoin;
     if(typeof opener!=='function'){ setPairRecapStatus('Workspace could not be reopened.'); return false; }
     setPairRecapStatus('Checking workspace access…');
@@ -8734,11 +8764,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return true;
   }
 
-  function historyRow(item){
+  function historyRow(item,{fromHome=false}={}){
     const view=circleUi.historyRowView(item);
-    if(!view||canonicalHistoryRoom(item?.week_id,item?.pg_id)!==view.room) return null;
+    if(!view||!window.RandoriWorkspaceScope.canonicalRoom(view.room)) return null;
     const room=view.room;
-    const row=document.createElement('li'); row.className='circle-row history-row'; row.dataset.testid='pair-history-row'; row.dataset.roomId=room;
+    const row=document.createElement('li'); row.className='circle-row history-row'; row.dataset.testid=fromHome?'home-current-pair':'pair-history-row'; row.dataset.roomId=room;
     if(pairRecapState.room===room) row.setAttribute('aria-current','true');
     const avatar=circleUi.avatarNode(document,{label:view.partnerInitials});
     const main=document.createElement('div'); main.className='circle-row-main';
@@ -8746,13 +8776,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const partner=document.createElement('b'); partner.textContent=`With ${view.partner}`; title.appendChild(partner);
     const meta=document.createElement('div'); meta.className='small muted history-row-meta'; meta.textContent=view.meta;
     main.append(title,meta);
-    const completion=normalizeHistoryCompletion(item?.completion,item?.is_ai?1:2);
+    const circleBadge=circleUi.circleBadgeNode(document,item.circle); if(circleBadge) main.appendChild(circleBadge);
+    const completion=normalizeHistoryCompletion(item?.completion,item?.is_ai||item?.solo?1:2);
     if(completion){ const badges=document.createElement('div'); badges.className='circle-row-badges'; badges.appendChild(completionBadge(completion)); main.appendChild(badges); }
-    const button=document.createElement('button'); button.type='button'; button.className='btn secondary sm'; button.dataset.testid='pair-history-view-recap'; button.dataset.roomId=room; button.textContent='View recap'; button.setAttribute('aria-label',`View recap for ${view.week} with ${view.partner}`); button.addEventListener('click',()=>{ fetchPairRecap(room); });
+    const button=document.createElement('button'); button.type='button'; button.className='btn secondary sm'; button.dataset.testid=fromHome?'home-current-pair-recap':'pair-history-view-recap'; button.dataset.roomId=room; button.textContent='View recap'; button.setAttribute('aria-label',`View recap for ${view.week} with ${view.partner}`); button.addEventListener('click',()=>{ if(fromHome) document.querySelector('[data-tab="history"]')?.click(); fetchPairRecap(room); });
     const actions=document.createElement('div'); actions.className='circle-row-actions'; actions.appendChild(button);
     row.append(avatar,main,actions);
     return row;
   }
+
+  window._randori_history_row=historyRow;
 
   async function renderPersonalHistory(){
     const cont=document.getElementById('historyPersonal'); if(!cont) return false;
@@ -8777,19 +8810,20 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const response=await fetch('/api/history',{credentials:'same-origin',cache:'no-store',signal:controller.signal});
       const data=await response.json().catch(()=>({}));
       if(pairRecapState.historyEpoch!==epoch||currentHistoryUserId()!==userId||!historyViewVisible()) return false;
-      if(!response.ok||data.ok!==true||Number(data.user?.id)!==userId||!Array.isArray(data.history)) throw new Error('history unavailable');
+      if(!response.ok||data.ok!==true||Number(data.user?.id)!==userId||!Array.isArray(data.history)) throw data;
       const rows=data.history.slice(0,100).map(historyRow).filter(Boolean);
       cont.replaceChildren(); cont.setAttribute('aria-busy','false');
       const status=document.createElement('div'); status.className=rows.length?'sr-only':'small muted circle-empty'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent=rows.length?`${rows.length} pairing${rows.length===1?'':'s'} loaded`:'No pairings yet. Your first pairing appears here after the weekly shuffle.'; cont.appendChild(status);
       if(rows.length){ const list=document.createElement('ol'); list.className='people history-list'; list.setAttribute('aria-label','Your pairings, newest first'); rows.forEach(row=>list.appendChild(row)); cont.appendChild(list); }
-      const count=document.getElementById('historyCount'); if(count) count.textContent=circleUi.historyCountLabel(rows.length);
+      const circleBadge=circleUi.circleBadgeNode(document,data.circle); if(circleBadge) cont.prepend(circleBadge);
+      const count=document.getElementById('historyCount'); if(count) count.textContent=circleUi.historyCountLabel(data.total);
       const hint=document.getElementById('historyAuthHint'); if(hint) hint.textContent=rows.length?'Your past pairings. Open one to see its recap.':'Your past pairings will appear here.';
       showProgress(data.progress?.enabled===true);
       return true;
     }catch(error){
       if(controller.signal.aborted||pairRecapState.historyEpoch!==epoch||currentHistoryUserId()!==userId||!historyViewVisible()) return false;
       cont.replaceChildren(); cont.setAttribute('aria-busy','false');
-      const status=document.createElement('div'); status.className='small muted'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent='Pairing history unavailable right now.'; cont.appendChild(status);
+      const status=document.createElement('div'); status.className='small muted'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent=error?.code==='circle_feature_unavailable'?'Workspace is not available in this circle yet.':'Pairing history unavailable right now.'; cont.appendChild(status);
       const retry=document.createElement('button'); retry.type='button'; retry.className='btn secondary sm'; retry.textContent='Retry'; retry.addEventListener('click',()=>{ void renderPersonalHistory(); }); cont.appendChild(retry);
       const count=document.getElementById('historyCount'); if(count) count.textContent='Unavailable';
       showProgress(false);
@@ -9230,7 +9264,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     try{ return window._randori_code?.currentRoom||window.currentRoom||null; }
     catch{ return null; }
   }
-  function canonicalBoardRoom(room){ return /^week_[1-9]\d*_pair_[1-9]\d*$/.test(String(room||'')); }
+  function canonicalBoardRoom(room){ return window.RandoriWorkspaceScope.canonicalRoom(room); }
   function getBoardRoomKey(room=activeBoardRoom()){
     return room ? BOARD_KEY+':'+String(room).slice(0,80) : BOARD_KEY;
   }
@@ -9612,12 +9646,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function getVideoRoomId(){
     const room=String(currentRoom||document.getElementById('roomSelect')?.value||'');
-    return /^week_[1-9]\d*_pair_[1-9]\d*$/.test(room)&&window._randori_authorized_room===room?room:'';
+    return window.RandoriWorkspaceScope.canonicalRoom(room)&&window._randori_authorized_room===room?room:'';
   }
 
   function _isSoloPair(){
     const current=window._randori_pair_cache;
-    return !!current&&(current.pairing_status==='solo'||current.pair?.solo_practice===true);
+    return window.RandoriWorkspaceScope.isSolo(getVideoRoomId())||!!current&&(current.pairing_status==='solo'||current.pair?.solo_practice===true);
   }
 
   async function ensureLocalStream(needCam = true,expectedEpoch=videoSessionEpoch){
@@ -10004,6 +10038,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     get initiatePending(){return videoInitiateTimer!==null},
     get roomSwitchPending(){return videoRoomSwitchTimer!==null},
     joinVideo,
+    disposeForScopeChange:disposeVideoForAuthoritativeSignOut,
     leaveVideo,
     sendSignal,
   };
@@ -10042,7 +10077,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(['pair','code','board','history'].includes(id)){
         try{
           const url=new URL(window.location.href);
-          if((id==='pair'||id==='history')&&/^\/join\/week_[1-9]\d*_pair_[1-9]\d*$/.test(url.pathname)) url.pathname='/';
+          if((id==='pair'||id==='history')&&url.pathname.startsWith('/join/')&&window.RandoriWorkspaceScope.canonicalRoom(url.pathname.slice(6))) url.pathname='/';
           url.searchParams.delete('tab');
           url.searchParams.set('view',id);
           if(url.hash.includes('code')) url.hash='';
@@ -10143,94 +10178,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if (aiCodeSnaps.length>6) aiCodeSnaps = aiCodeSnaps.slice(-6);
   }
 
-  async function aiAnalyze(){
-    const room = document.getElementById('roomSelect')?.value || currentRoom || 'manual';
-    const pairLabel = document.getElementById('roomLabel')?.textContent || room;
-    const transcript = aiTranscript?.value?.trim() || '';
-    const iq = aiInterviewerQs?.value?.trim() || '';
-    const editorCode = document.getElementById('editor')?.value || '';
-    const combinedCode = aiCodeSnaps.length ? JSON.stringify(aiCodeSnaps).slice(0,12000) + '\nLATEST:\n'+editorCode.slice(0,8000) : editorCode;
-    const durationSec = aiStartTime ? Math.round((Date.now()-aiStartTime)/1000) : (timerSec ? (25*60 - timerSec) : 0);
-
-    if (!transcript && !combinedCode) { toast('Add transcript or have code to analyze'); return; }
-    if (!me) { toast('Sign in to request AI feedback'); return; }
-
-    aiSetStatus('Requesting AI feedback…');
-    if (aiAnalyzeBtn) { aiAnalyzeBtn.disabled = true; aiAnalyzeBtn.textContent = 'Requesting feedback…'; }
-    if (aiDebug&&window._randori_logs?.isAdmin) { aiDebug.style.display='block'; aiDebug.innerHTML = '⏳ picking model: short→8b-instant, long/system-design→70b-versatile, respecting free-tier…'; }
-    if (aiFeedbackEl) aiFeedbackEl.innerHTML = '';
-
-    try {
-      const j = await api('/api/ai/analyze', { method:'POST', body:{ room_id: room, pair_label: pairLabel, transcript, code: combinedCode, interviewer_questions: iq, duration_sec: durationSec, role: role||'both', started_at: aiStartTime? new Date(aiStartTime).toISOString(): null } });
-      const fb = j.feedback;
-      const model = j.model_used;
-      const reason = j.reason_for_pick;
-      const cost = j.estimated_cost;
-      const ev = j.evidence_validated;
-      const dbg = j.debug;
-
-      if (aiDebug&&window._randori_logs?.isAdmin) {
-        aiDebug.innerHTML = `<b>Model:</b> ${escapeHtml(model)}<br><b>Why:</b> ${escapeHtml(reason)}<br><b>Cost:</b> $${escapeHtml(cost?.usd||'0.0000')} (${escapeHtml(cost?.tokens_in||'?')} in / ${escapeHtml(cost?.tokens_out||'?')} out)${cost?.groq_usage? ' — Groq usage '+escapeHtml(JSON.stringify(cost.groq_usage)): ''}<br><b>Evidence:</b> ${escapeHtml(ev.validated)}/${escapeHtml(ev.total)} validated (${escapeHtml(Math.round((ev.score||0)*100))}%) ${ev.loweredConfidence?' — some lowered confidence due to no direct quote':''}<br><b>Free-tier:</b> ${escapeHtml(dbg?.groq_router?.free_tier_calls_today||0)}/14400 today • ${escapeHtml(dbg?.groq_router?.alternatives?.join(' vs ')||'')}<br>${j.mocked?'<span style="color:var(--color-warning)">Mocked — set GROQ_API_KEY in Vercel env to get real Groq</span>':''}`;
-      }
-
-      if (!fb) throw { error:'no feedback returned' };
-
-      const c = fb.candidate||{strengths:[],improvements:[]};
-      const iv = fb.interviewer||{strengths:[],improvements:[]};
-
-      function chipForEvidence(ev){
-        if (!ev || ev==='no direct quote' || ev.includes('no direct')) return `<span class="kbd status-chip status-warning">no direct quote</span>`;
-        const safe=escapeHtml(ev);
-        return `<span class="kbd status-chip status-success" title="${safe}">“${safe.slice(0,80)}${safe.length>80?'…':''}”</span>`;
-      }
-
-      const html = `
-        <div class="card" style="border-color:var(--color-success)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb.overall_score? `<span class="kbd">${escapeHtml(fb.overall_score)}/10</span>` : ''}</h3></div>
-          <div class="card-b" style="display:grid;gap:8px">
-            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(c.strengths||[]).map(s=>`<div class="test" style="border-color:var(--color-success)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)} ${s.confidence? `<span class="kbd">${escapeHtml(Math.round((s.confidence||0.8)*100))}%</span>`:''}</div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
-            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(c.improvements||[]).map(s=>`<div class="test" style="border-color:var(--color-danger)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
-          </div>
-        </div>
-        <div class="card" style="border-color:var(--color-action)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3></div>
-          <div class="card-b" style="display:grid;gap:8px">
-            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(iv.strengths||[]).map(s=>`<div class="test"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)}</div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
-            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(iv.improvements||[]).map(s=>`<div class="test"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)}<div class="small muted">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
-          </div>
-        </div>
-        <div class="card" style="border-style:dashed"><div class="card-h"><h3 style="font-size:13px">Next time checklist</h3><span class="kbd">overall ${escapeHtml(fb.overall_score||'-')}/10</span></div><div class="card-b small">${(fb.next_time_checklist||[]).map(x=>`• ${escapeHtml(x)}`).join('<br>')||'no checklist'}</div></div>
-      `;
-
-      if (aiFeedbackEl) aiFeedbackEl.innerHTML = html;
-      aiSetStatus('AI feedback ready.');
-      toast('AI feedback ready');
-
-    } catch(e){
-      const msg = e.error || e.message || (e.raw?.slice?.(0,200)) || 'analyze failed';
-      aiSetStatus('AI feedback is not available right now. Try again later.', true);
-      if (aiDebug&&window._randori_logs?.isAdmin) aiDebug.innerHTML += `<br><span style="color:var(--color-danger)">Error: ${escapeHtml(msg)}</span>`;
-      toast(`AI: ${msg}`);
-    } finally {
-      if (aiAnalyzeBtn) { aiAnalyzeBtn.disabled = false; aiAnalyzeBtn.textContent = 'Get feedback'; }
-    }
-  }
-
-  async function aiLoadHistory(){
-    if (!me) { toast('Sign in for AI history'); return; }
-    try{
-      const j = await api('/api/ai/history', {method:'GET'});
-      const list = j.feedbacks||[];
-      if (!list.length) { aiSetStatus('No AI feedback yet — run one above'); return; }
-      const html = `<div class="small muted">${escapeHtml(list.length)} past feedback session${list.length===1?'':'s'}</div><div style="display:grid;gap:6px;margin-top:6px">${list.slice(0,8).map(r=>`<div class="test"><div class="small"><span class="kbd">#${escapeHtml(r.session_id)}</span> ${escapeHtml(r.pair_label||r.room_id||'room')} — <span class="kbd">${escapeHtml(r.model_used?.slice(0,18)||'model')}</span> ${r.duration_sec? `• ${escapeHtml(Math.round(r.duration_sec/60))}m`:''} <span class="kbd" style="float:right">${escapeHtml(new Date(r.created_at).toLocaleString())}</span></div></div>`).join('')}</div>`;
-      if (aiFeedbackEl) aiFeedbackEl.innerHTML = html;
-      aiSetStatus(`Showing ${list.length} past feedback session${list.length===1?'':'s'}.`);
-    }catch(e){ toast('Past feedback could not load. Try again.'); }
-  }
-
-  if (aiAnalyzeBtn) aiAnalyzeBtn.onclick = aiAnalyze;
-  if (aiHistoryBtn) aiHistoryBtn.onclick = aiLoadHistory;
-
-  // tiny hook for parallel video subagent: expose ai globals
-  window._randori_ai = { get recording(){return aiRecording}, get snaps(){return aiCodeSnaps}, analyze: aiAnalyze };
+  // Recording stays local. The single consent-aware analysis handler below
+  // owns every Get feedback entry point.
+  window._randori_ai = { get recording(){return aiRecording}, get snaps(){return aiCodeSnaps}, get _startTime(){return aiStartTime} };
 
   // ---------- Setup guide (WP-O) ----------
   // The welcome banner and the modal tour are gone: first-run setup is one
@@ -10627,7 +10577,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     viewProfile.style.display='block';
     setSetupStep(step);
     // Issue #339: Edit profile re-reads whether the account can be deleted.
-    if(setupMode==='edit') window._randori_refresh_account_deletion?.();
+    if(setupMode==='edit'){ window._randori_refresh_account_deletion?.(); window._randori_ai_consent?.refreshProfile(); }
     if(prefill){
       fillProfileForm(prefill);
       setProfileSaveState('idle','');
@@ -11027,7 +10977,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         document.getElementById('dashScheduleArea')?.replaceChildren();
         document.getElementById('dashChatArea')?.replaceChildren();
       }else{
-        renderSchedule(j);
+        if(window.RandoriWorkspaceScope.secondaryRoom(room)){
+          if(j.schedule_available===true&&window._randori_auth?.capabilities?.secondaryCircleScheduling===true) renderSecondarySchedule(j);
+          else stopSchedulePolling({clear:true});
+        }else renderSchedule(j);
         renderChat(j);
       }
     }catch(e){
@@ -11042,14 +10995,20 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function joinSessionDeterministic(copyOnly=false){
     try{
-      let room=null, weekId=currentWeekId, pg=currentPair;
-      if(weekId && pg){
+      let room=currentPair?.room_id||null, weekId=currentWeekId, pg=currentPair;
+      if(!room&&weekId && pg){
         const pgId=pg.pg_id||pg.id;
         room=`week_${weekId}_pair_${pgId}`;
       }
-      if(!/^week_[1-9]\d*_pair_[1-9]\d*$/.test(String(room||''))||window._randori_authorized_room!==room){
+      if(!canonicalScheduleRoom(room)||window._randori_authorized_room!==room){
         if(typeof toast==='function') toast('You don’t have a pair room this week. Practise solo from the catalogue instead.');
         return null;
+      }
+      if(window.RandoriWorkspaceScope.secondaryRoom(room)){
+        const invite=location.origin+'/join/'+encodeURIComponent(room);
+        if(copyOnly){ navigator.clipboard.writeText(invite).catch(()=>{}); return invite; }
+        location.assign(invite);
+        return room;
       }
       localStorage.setItem('randori-last-room', room);
       // ensure roomSelect has option
@@ -11148,7 +11107,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const ui=homeUi();
     if(!nodes||!ui) return;
     const room=nodes.region.dataset.room||'';
-    const schedule=scheduleState.room===room&&scheduleState.kind==='primary'?scheduleState.schedule:null;
+    const secondary=window.RandoriWorkspaceScope.secondaryRoom(room);
+    if(secondary&&scheduleState.kind!=='secondary'){
+      ui.applyNextStep(nodes,{step:'ready',tone:'action',title:'Your workspace is ready',detail:'Join the room or send your partner a message.',action:{kind:'chat',label:'Send a message'},joinPrimary:true});
+      return;
+    }
+    const schedule=(secondary?scheduleState.kind==='secondary':scheduleState.room===room&&scheduleState.kind==='primary')?scheduleState.schedule:null;
     ui.applyNextStep(nodes,ui.nextStep({
       schedule,meId:scheduleActorId(),partnerName:nodes.region.dataset.partner||'',now:Date.now(),
       chatAvailable:!!document.getElementById('chatIn'),
@@ -11280,8 +11244,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function canonicalScheduleRoom(value){
-    const match=/^week_([1-9]\d*)_pair_([1-9]\d*)$/.exec(String(value||''));
-    return !!match&&Number.isSafeInteger(Number(match[1]))&&Number.isSafeInteger(Number(match[2]));
+    return window.RandoriWorkspaceScope.canonicalRoom(value);
   }
 
   function scheduleRoomFromPair(data){
@@ -11485,7 +11448,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function pairedDashboardRoom(){
     const weekId=Number(currentWeekId);
     const pairId=Number(currentPair?.pg_id||currentPair?.id);
-    const room=`week_${weekId}_pair_${pairId}`;
+    const room=currentPair?.room_id||`week_${weekId}_pair_${pairId}`;
     if(!window._randori_auth?.me||!canonicalScheduleRoom(room)) return null;
     if(window._randori_authorized_room!==room) return null;
     if(!viewDashboard||viewDashboard.style.display==='none'||document.visibilityState!=='visible') return null;
@@ -12022,6 +11985,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return Number.isSafeInteger(value)&&value>0?value:null;
   }
 
+  function chatArea(room=chatState.room){
+    if(window.RandoriWorkspaceScope.secondaryRoom(room)&&document.getElementById('view-code')?.style.display!=='none'){
+      let host=document.getElementById('workspaceChatArea');
+      if(!host){host=document.createElement('div');host.id='workspaceChatArea';document.getElementById('view-code')?.appendChild(host);}
+      return host;
+    }
+    return document.getElementById('dashChatArea');
+  }
+
   function canonicalChatRoom(value){ return canonicalScheduleRoom(value); }
 
   function chatRoomFromPair(data){
@@ -12150,6 +12122,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       chatState.room=null; chatState.userId=null; chatState.after=0; chatState.messages.clear();
       chatState.status=''; chatState.loaded=false;
       document.getElementById('dashChatArea')?.replaceChildren();
+      document.getElementById('workspaceChatArea')?.replaceChildren();
     }
   }
 
@@ -12165,7 +12138,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(window._randori_pair_cache?.room_id===room) window._randori_pair_cache=null;
     currentPair=null; currentWeekId=null;
     stopSchedulePolling({clear:true});
-    const area=document.getElementById('dashChatArea');
+    const area=chatArea();
     if(area){
       const status=chatNode('div',{className:'small muted',text:'Pair room no longer available — refresh dashboard',testId:'pair-chat-status'});
       status.setAttribute('role','status');
@@ -12175,7 +12148,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function eligibleChatRoom(){
-    const room=pairedDashboardRoom();
+    const workspace=window._randori_workspace;
+    const secondary=window.RandoriWorkspaceScope.secondaryRoom(workspace?.room)&&window._randori_authorized_room===workspace.room
+      &&document.getElementById('view-code')?.style.display!=='none'&&window.RandoriWorkspaceScope.enabled()?workspace.room:null;
+    const room=secondary||pairedDashboardRoom();
     return room
       && room===chatState.room
       && chatState.userId===chatUserId()
@@ -12294,7 +12270,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function renderChatView(room){
-    const area=document.getElementById('dashChatArea');
+    const area=chatArea();
     if(!area) return;
     const box=chatNode('section',{className:'chat-box home-chat',testId:'pair-chat'});
     box.setAttribute('role','region'); box.setAttribute('aria-labelledby','pairChatTitle'); box.setAttribute('aria-busy','false');
@@ -12523,6 +12499,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   window._randori_chat={
     refresh:pollChat,
+    mountSecondary(room){ if(window.RandoriWorkspaceScope.secondaryRoom(room)&&window._randori_authorized_room===room&&window.RandoriWorkspaceScope.enabled())return renderChat({room_id:room});return false; },
     stop:stopChatPolling,
     get room(){ return chatState.room; },
     get epoch(){ return chatState.epoch; },
@@ -12533,6 +12510,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   };
   if(!window._randori_chat_initialized){
     window._randori_chat_initialized=true;
+    window.addEventListener('randori:workspace-scope-reset',()=>stopChatPolling({clear:true,discardDraft:true}));
     window.addEventListener('randori:room-change',()=>{ stopChatPolling({clear:true}); });
     document.querySelector('.tabs')?.addEventListener('click',()=>{ stopChatPolling({clear:true}); });
     document.addEventListener('visibilitychange',()=>{
@@ -12550,11 +12528,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function canonicalJoinRoom(){
-    try{
-      const match=(window.location.pathname||'').match(/^\/join\/(week_([1-9]\d*)_pair_([1-9]\d*))$/);
-      if(!match||!Number.isSafeInteger(Number(match[2]))||!Number.isSafeInteger(Number(match[3]))) return null;
-      return match[1];
-    }catch{ return null; }
+    const room=location.pathname.startsWith('/join/')?location.pathname.slice(6):'';
+    return window.RandoriWorkspaceScope.canonicalRoom(room)?room:null;
   }
   let joinDecision=null;
   let joinRequest=null;
@@ -12594,6 +12569,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     window._randori_pair_recap?.stop?.({clear:false});
     document.querySelectorAll('.view').forEach(view=>view.style.display='none');
     document.getElementById('view-code').style.display='block';
+    window.RandoriWorkspaceScope.showRoomCircle(room);
+    window._randori_chat?.mountSecondary?.(room);
     document.querySelectorAll('.tab').forEach(tab=>tab.classList.remove('active'));
     document.querySelector('[data-tab="code"]')?.classList.add('active');
     return true;
@@ -12614,10 +12591,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       &&requesterId===(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)
       &&guard();
     const operation=(async()=>{ try{
-      const response=await fetch('/api/my-pair',{credentials:'same-origin'});
-      const data=await response.json().catch(()=>({}));
+      const data=await window._randori_auth.api('/api/my-pair',{method:'GET',cache:'no-store'});
       if(!operationGuard()) return false;
-      if(!response.ok) throw new Error(data.error||`pair lookup ${response.status}`);
       let allowed=!!data.paired&&String(data.room_id||'')===room;
       if(!allowed){
         // Historical rooms are absent from /api/my-pair. A private recap is the
@@ -12630,7 +12605,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         allowed=recapResponse.ok
           &&recapData.ok===true
           &&String(recapData.room_id||'')===room
-          &&recapData.recap?.workspace?.artifact_available===true;
+          &&(window.RandoriWorkspaceScope.secondaryRoom(room)||recapData.recap?.workspace?.artifact_available===true);
       }
       if(!allowed){
         joinDecision={room,status:'denied'};
@@ -13718,8 +13693,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const pairRunsState={room:null,epoch:0,after:0,items:[],abort:null,inFlight:false,blocked:false,refreshQueued:false};
 
   function canonicalPairRunRoom(room){
-    const match=/^week_([1-9]\d*)_pair_([1-9]\d*)$/.exec(String(room||''));
-    return !!match&&Number.isSafeInteger(Number(match[1]))&&Number.isSafeInteger(Number(match[2]));
+    return window.RandoriWorkspaceScope.canonicalRoom(room);
   }
   function authorizedPairExecutionRoom(){
     const room=String(activeRoom()||'');
@@ -14210,29 +14184,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!j.history || !j.history.length){ listEl.replaceChildren(); const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No pairings yet — your first pairing will appear after a cycle is published.'; listEl.appendChild(empty); return; }
       const last5=j.history.slice(0,5);
       listEl.replaceChildren();
-      last5.forEach(item=>{
-        const row=document.createElement('div'); row.className='row'; row.style.cssText='justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px dashed var(--color-border)';
-        const summary=document.createElement('span');
-        const label=document.createElement('span'); label.className='kbd'; label.style.fontSize='10px'; label.textContent=window.RandoriCircleUI?.pairingWeekLabel?.(item)||'Pairing';
-        summary.append(label,` × ${String(item?.partner_name||'Pair member').slice(0,240)}`);
-        if(item?.is_ai){ const solo=document.createElement('span'); solo.className='kbd'; solo.style.cssText='color:var(--color-action);margin-left:6px'; solo.textContent='solo'; summary.appendChild(solo); }
-        const completion=typeof normalizeHistoryCompletion==='function'
-          ?normalizeHistoryCompletion(item?.completion,item?.is_ai?1:2):null;
-        if(completion&&typeof completionBadge==='function') summary.appendChild(completionBadge(completion));
-        row.appendChild(summary);
-        const room=window._randori_pair_recap?.roomFor?.(item?.week_id,item?.pg_id);
-        if(room){
-          const button=document.createElement('button'); button.type='button'; button.className='btn ghost sm'; button.dataset.testid='pair-history-view-recap'; button.dataset.roomId=room; button.textContent='View recap';
-          button.setAttribute('aria-label',`View recap for ${window.RandoriCircleUI?.pairingWeekLabel?.(item)||'pairing'} with ${String(item?.partner_name||'pair member').slice(0,240)}`);
-          button.addEventListener('click',()=>{ document.querySelector('[data-tab="history"]')?.click(); window._randori_pair_recap?.open?.(room); });
-          row.appendChild(button);
-        }
-        listEl.appendChild(row);
-      });
+      const circleBadge=window.RandoriCircleUI.circleBadgeNode(document,j.circle); if(circleBadge) listEl.appendChild(circleBadge);
+      const rows=document.createElement('ol'); rows.className='people history-list';
+      last5.forEach(item=>{ const row=window._randori_history_row?.(item,{fromHome:true}); if(row) rows.appendChild(row); });
+      listEl.appendChild(rows);
       const total=document.createElement('div'); total.className='small muted'; total.style.marginTop='8px'; total.textContent=`Total pairings: ${Number.isSafeInteger(Number(j.total))?Number(j.total):last5.length}`; listEl.appendChild(total);
     }catch(e){
       if(seq!==dashboardHistorySeq||userId!==(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)||document.getElementById('view-dashboard')?.style.display==='none') return;
-      listEl.replaceChildren(); const error=document.createElement('div'); error.className='small muted'; error.textContent='Recent pairings could not load. Open History to try again.'; listEl.appendChild(error);
+      listEl.replaceChildren(); const error=document.createElement('div'); error.className='small muted'; error.textContent=e?.code==='circle_feature_unavailable'?'Workspace is not available in this circle yet.':'Recent pairings could not load. Open History to try again.'; listEl.appendChild(error);
     }
   }
 
@@ -14865,272 +14824,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 <script type="module" src="/assets/calendar-export.js"></script>
 <script type="module" src="/assets/app-shell.js"></script>
 <script type="module" src="/assets/room-layout.js"></script>
-<script type="module">
-// --- Pillar 3 Fix: rewired AI frontend (Groq router + anon demo + quota + loader/toast) ---
-(function(){
-  function authHeaders(extra={}){
-    return {'content-type':'application/json', ...extra};
-  }
-  // Members see plain status copy. Model routing, token cost and quota
-  // details stay in the admin-only debug panel.
-  function aiDebugPanel(){
-    const el=document.getElementById('aiRouterDebug');
-    if(!el) return null;
-    if(window._randori_logs?.isAdmin) return el;
-    el.style.display='none'; el.replaceChildren();
-    return null;
-  }
-  function aiErrorText(status){
-    if(status===401||status===403) return 'Sign in to request AI feedback.';
-    if(status===429) return 'You have reached the AI feedback limit for now. Try again later.';
-    return 'AI feedback is not available right now. Try again later.';
-  }
-  function showLoader(el){
-    try{ if(window._randori_ui && window._randori_ui.showLoader){ return window._randori_ui.showLoader(el); } }catch{}
-    if(!el) return null;
-    const s=document.createElement('div'); s.className='spinner spinner-sm'; s.textContent=''; el.prepend(s); return s;
-  }
-  function hideLoader(el){
-    try{ if(window._randori_ui && window._randori_ui.hideLoader){ window._randori_ui.hideLoader(el); return; } }catch{}
-    if(!el) return; el.querySelectorAll('.spinner').forEach(x=>x.remove());
-  }
-  function getRoom(){
-    try{
-      return (window._randori_code && window._randori_code.currentRoom) || window.currentRoom || document.getElementById('roomSelect')?.value || localStorage.getItem('randori-last-room') || 'manual';
-    }catch{ return 'manual'; }
-  }
-  function getPairLabel(){
-    try{ return document.getElementById('roomLabel')?.textContent || document.getElementById('videoRoomLabel')?.textContent || getRoom(); }catch{ return getRoom(); }
-  }
-  function collectPayload(roomOverride, extra){
-    const room = roomOverride && typeof roomOverride==='string' ? roomOverride : getRoom();
-    const transcriptEl=document.getElementById('aiTranscript');
-    const iqEl=document.getElementById('aiInterviewerQs');
-    const editor = document.getElementById('editor');
-    let codeW=''; 
-    try{
-      if(window._randori_code && typeof window._randori_code.getCode==='function'){ codeW=window._randori_code.getCode(); }
-      else if(window._randori_monaco && window._randori_monaco.editor) { codeW=window._randori_monaco.editor.getValue(); }
-      else if(editor) codeW=editor.value||'';
-    }catch{}
-    // if snaps present use them
-    let snaps=[]; try{ snaps = (window._randori_ai && window._randori_ai._snapsRaw) || window._randori_ai?.snaps || []; }catch{}
-    if(!snaps.length){ try{ snaps=window._randori_ai?.snaps||[] }catch{} }
-    const transcript = (extra && extra.transcript) || transcriptEl?.value?.trim() || '';
-    const interviewerQs = (extra && extra.interviewer_questions) || (extra && extra.interviewerQuestions) || iqEl?.value?.trim() || '';
-    const duration = (extra && (extra.duration_sec||extra.duration)) || (window._randori_ai && window._randori_ai._startTime ? Math.round((Date.now()-window._randori_ai._startTime)/1000) : 0);
-    const roleEl = document.getElementById('roleToggle'); const role = (extra && extra.role) || (roleEl?.textContent?.toLowerCase?.().includes('interviewer') ? 'interviewer' : 'both');
-    let combinedCode = codeW;
-    if(snaps && snaps.length){ try{ combinedCode = JSON.stringify(snaps).slice(0,12000) + '\nLATEST:\n' + String(codeW).slice(0,8000); }catch{ combinedCode=codeW; } }
-    if(extra && extra.code) combinedCode = extra.code;
-    return {
-      room_id: room,
-      pair_label: getPairLabel(),
-      transcript,
-      code: combinedCode,
-      code_snapshots: snaps.length ? snaps : undefined,
-      interviewer_questions: interviewerQs,
-      duration_sec: duration,
-      role
-    };
-  }
-
-  // Enhanced internal state mirror if previous recording vars exist
-  let recording=false; let startT=0; let snapsCache=[]; let timer=null;
-
-  // Rewire legacy elements if already present
-  function ensureFeedbackListAlias(){
-    const fb=document.getElementById('aiFeedback');
-    let list=document.getElementById('aiFeedbackList');
-    if(!list && fb){
-      list=document.createElement('div'); list.id='aiFeedbackList'; list.style.display='grid'; list.style.gap='10px';
-      // insert after feedback or clone content migration
-      fb.parentElement?.appendChild(list);
-    }
-    return list;
-  }
-
-  async function analyze(roomIdOrPayload, maybePayload){
-    let payload;
-    if(typeof roomIdOrPayload==='object' && roomIdOrPayload!==null && !maybePayload){
-      payload = roomIdOrPayload;
-      roomIdOrPayload = payload.room_id || getRoom();
-    }else{
-      payload = collectPayload(roomIdOrPayload, maybePayload);
-      if(typeof roomIdOrPayload==='string') payload.room_id = roomIdOrPayload;
-      if(maybePayload && typeof maybePayload==='object'){
-        Object.assign(payload, maybePayload);
-      }
-    }
-    // clean undefined
-    Object.keys(payload).forEach(k=>{ if(payload[k]===undefined) delete payload[k]; });
-
-    const aiPanel=document.getElementById('aiPanel');
-    const fbEl=document.getElementById('aiFeedback') || document.getElementById('aiFeedbackList');
-    const dbgEl=aiDebugPanel();
-    const statusEl=document.getElementById('aiStatus');
-    const listAlias=ensureFeedbackListAlias();
-
-    // loader
-    let loaderTarget = fbEl || aiPanel;
-    const spin=showLoader(loaderTarget);
-    if(statusEl) statusEl.textContent='Requesting AI feedback…';
-    if(dbgEl){ dbgEl.style.display='block'; dbgEl.innerHTML='⏳ picking model: short→8b-instant, long/system-design→70b-versatile, respecting free-tier…'; }
-
-    if(fbEl) fbEl.innerHTML=''; if(listAlias) listAlias.innerHTML='';
-
-    try{
-      const headers=authHeaders();
-      const res=await fetch('/api/ai/analyze', { method:'POST', headers, body: JSON.stringify(payload) });
-      const j=await res.json().catch(()=>({ok:false, error:'bad json'}));
-      if(!res.ok){
-        if(statusEl){ statusEl.textContent=aiErrorText(res.status); statusEl.style.color='var(--color-danger)'; }
-        try{ window._randori_ui && window._randori_ui.hideLoader && window._randori_ui.hideLoader(loaderTarget); }catch{}
-        try{ window.toast && window.toast(aiErrorText(res.status)); }catch{}
-        if(dbgEl) dbgEl.innerHTML+=`<br><span style="color:var(--color-danger)">Error ${escapeHtml(res.status)}: ${escapeHtml((j.error||j.reason||'').slice(0,300))} ${j.count? '('+escapeHtml(j.count)+'/'+escapeHtml(j.limit)+')':''}</span>`;
-        if(res.status===429){
-          try{ window._randori_log && window._randori_log.warn('ai_quota', `blocked ${j.reason||j.error}`, {status:res.status, count:j.count, limit:j.limit}); }catch{}
-        }
-        throw {...j, http_status:res.status};
-      }
-
-      // success render (reuse existing render logic if available, else custom minimal)
-      const fb=j.feedback; const model=j.model_used; const reason=j.reason_for_pick; const cost=j.estimated_cost; const ev=j.evidence_validated; const quota=j.quota;
-      if(dbgEl){
-        dbgEl.innerHTML=`<b>Model:</b> ${escapeHtml(model)}<br><b>Why:</b> ${escapeHtml(reason)}<br><b>Cost:</b> $${escapeHtml(cost?.usd||'0.0000')} (${escapeHtml(cost?.tokens_in||0)} in / ${escapeHtml(cost?.tokens_out||0)} out)${cost?.groq_usage? ' — Groq '+escapeHtml(JSON.stringify(cost.groq_usage)):''}<br><b>Evidence:</b> ${escapeHtml(ev?.validated||0)}/${escapeHtml(ev?.total||0)} validated (${escapeHtml(Math.round((ev?.score||0)*100))}%) ${ev?.loweredConfidence?'— some lowered confidence':''}<br><b>Anon:</b> ${j.anon?'yes (demo mocked)':'no'} ${j.mocked?'— <span style="color:var(--color-warning)">Mocked — set GROQ_API_KEY</span>':''} ${j.openaiFallback?'— OpenAI fallback':''}${quota? '<br><b>Month:</b> '+escapeHtml(quota.count||0)+'/'+escapeHtml(quota.limit||100)+' '+(quota.demo?' (demo)':'') : ''}`;
-      }
-
-      function chip(evTxt){
-        if(!evTxt || evTxt==='no direct quote' || String(evTxt).includes('no direct')) return `<span class="kbd status-chip status-warning">no direct quote</span>`;
-        const safe=escapeHtml(evTxt);
-        return `<span class="kbd status-chip status-success" title="${safe}">“${safe.slice(0,80)}${safe.length>80?'…':''}”</span>`;
-      }
-
-      const candidate=fb?.candidate||{strengths:[], improvements:[]};
-      const interviewer=fb?.interviewer||{strengths:[], improvements:[]};
-      const html=`
-        <div class="card" style="border-color:var(--color-success)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb?.overall_score? `<span class="kbd">${escapeHtml(fb.overall_score)}/10</span>`:''}</h3></div>
-          <div class="card-b" style="display:grid;gap:8px">
-            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.strengths||[]).map(s=>`<div class="test" style="border-color:var(--color-success)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)} ${s.confidence? `<span class="kbd">${escapeHtml(Math.round((s.confidence||0.8)*100))}%</span>`:''}</div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
-            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.improvements||[]).map(s=>`<div class="test" style="border-color:var(--color-danger)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
-          </div>
-        </div>
-        <div class="card" style="border-color:var(--color-action)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3></div>
-          <div class="card-b" style="display:grid;gap:8px">
-            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(interviewer.strengths||[]).map(s=>`<div class="test"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)}</div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
-            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(interviewer.improvements||[]).map(s=>`<div class="test"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)}<div class="small muted">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
-          </div>
-        </div>
-        <div class="card" style="border-style:dashed"><div class="card-h"><h3 style="font-size:13px">Next time checklist</h3><span class="kbd">overall ${escapeHtml(fb?.overall_score||'-')}/10</span></div><div class="card-b small">${(fb?.next_time_checklist||[]).map(x=>`• ${escapeHtml(x)}`).join('<br>')||'no checklist'}</div></div>
-      `;
-
-      if(fbEl) fbEl.innerHTML=html;
-      if(listAlias && listAlias!==fbEl) listAlias.innerHTML=html;
-      if(statusEl){ statusEl.textContent=`AI feedback ready${j.anon?' (demo)':''}.`; statusEl.style.color='var(--color-success)'; }
-      try{ window.toast && window.toast('AI feedback ready'); }catch{}
-      try{ window._randori_log && window._randori_log.success && window._randori_log.success('ai_feedback_ready', `ready ${model} ${ev?.validated||0}/${ev?.total||0}`, {model, room:payload.room_id}); }catch{}
-
-      // populate history widget recently
-      return { ok:true, ...j };
-
-    }catch(e){
-      const msg=e.error||e.reason||e.message||'analyze failed';
-      if(statusEl){ statusEl.textContent=aiErrorText(Number(e?.http_status)||0); statusEl.style.color='var(--color-danger)'; }
-      try{ console.warn('[ai analyze fail]', e); }catch{}
-      return { ok:false, error:msg };
-    }finally{
-      hideLoader(loaderTarget);
-      const btn=document.getElementById('aiAnalyzeBtn'); if(btn){ btn.disabled=false; btn.textContent='Get feedback'; }
-    }
-  }
-
-  async function getFeedback(id){
-    if(!id) return {ok:false, error:'id required'};
-    const headers=authHeaders();
-    const res=await fetch(`/api/ai/feedback/${encodeURIComponent(id)}`, {headers});
-    const j=await res.json().catch(()=>({}));
-    if(!res.ok) return {ok:false, error:j.error||String(res.status), detail:j};
-    // render if fb element present and caller expects UI
-    try{
-      const fbEl=document.getElementById('aiFeedback')||document.getElementById('aiFeedbackList');
-      if(fbEl && j.feedback){
-        // reuse analyze render minimal (just show overall)
-        fbEl.innerHTML=`<div class="card"><div class="card-h"><h3>Feedback #${escapeHtml(id)}</h3><span class="kbd">${escapeHtml(j.model_used||'model')}</span></div><div class="card-b"><pre style="white-space:pre-wrap;font-size:12px">${escapeHtml(JSON.stringify(j.feedback,null,2).slice(0,3000))}</pre></div></div>`;
-      }
-    }catch{}
-    return j;
-  }
-
-  async function listHistory(){
-    const headers=authHeaders();
-    const res=await fetch('/api/ai/history', {headers});
-    const j=await res.json().catch(()=>({feedbacks:[]}));
-    const fbEl=document.getElementById('aiFeedback');
-    const listEl=document.getElementById('aiFeedbackList');
-    if(!res.ok){
-      try{ window.toast && window.toast('Past feedback could not load. Try again.'); }catch{}
-      return j;
-    }
-    const list=j.feedbacks||[];
-    const html=`<div class="small muted">${escapeHtml(list.length)} past feedback session${list.length===1?'':'s'}${j.monthly? ' · '+escapeHtml(j.monthly.count)+' of '+escapeHtml(j.monthly.limit)+' used this month'+(j.monthly.demo?' (demo)':''):''}</div><div style="display:grid;gap:6px;margin-top:6px">${list.slice(0,10).map(r=>`<div class="test ai-feedback-history-item" data-feedback-id="${escapeHtml(r.session_id||r.id)}" style="cursor:pointer"><div class="small">${escapeHtml(r.pair_label||'Practice session')} ${r.duration_sec? '• '+escapeHtml(Math.round(r.duration_sec/60))+'m':''} <span class="kbd" style="float:right">${escapeHtml(new Date(r.created_at).toLocaleString())}</span></div></div>`).join('')||'<span class="small muted">No history yet — run an analysis above</span>'}</div>`;
-    const target = fbEl || listEl;
-    if(target){ target.innerHTML=html; }
-    if(listEl && listEl!==fbEl){ listEl.innerHTML=html; }
-    document.querySelectorAll('.ai-feedback-history-item').forEach(el=>el.addEventListener('click', ()=>getFeedback(el.dataset.feedbackId)));
-    const statusEl=document.getElementById('aiStatus'); if(statusEl) statusEl.textContent=`Showing ${list.length} past feedback session${list.length===1?'':'s'}.`;
-    return j;
-  }
-
-  // extend / override global
-  const prev=window._randori_ai||{};
-  const enhanced={
-    get recording(){ try{ return prev.recording; }catch{ return recording; } },
-    get snaps(){ try{ const s=prev.snaps||[]; if(s.length) return s; }catch{} return snapsCache; },
-    get _snapsRaw(){ return snapsCache; },
-    get _startTime(){ return startT; },
-    analyze,
-    getFeedback,
-    get_feedback:getFeedback,
-    listHistory,
-    get history(){ return listHistory; },
-    analyzeRoom: analyze,
-    // compat wrappers
-    record: prev.analyze ? ()=>{ try{ prev.analyze && prev.analyze(); }catch{} } : undefined
-  };
-
-  window._randori_ai = new Proxy(enhanced, {
-    get(t,p){ if(p in t) return t[p]; if(p in prev) return prev[p]; return undefined; },
-    set(t,p,v){ t[p]=v; return true; }
-  });
-
-  // Wire buttons robustly (override previous onclick)
-  const ab=document.getElementById('aiAnalyzeBtn');
-  const hb=document.getElementById('aiHistoryBtn');
-  if(ab) ab.onclick=()=>analyze();
-  if(hb) hb.onclick=()=>listHistory();
-
-  // Record button sync — keep existing behavior but also cache snaps
-  try{
-    const rb=document.getElementById('aiRecordBtn');
-    if(rb && !rb._enhancedWired){
-      rb._enhancedWired=true;
-      const origClick=rb.onclick;
-      rb.addEventListener('click', ()=>{
-        setTimeout(()=>{
-          try{
-            recording = !!(window._randori_ai && window._randori_ai.recording);
-            if(recording){ startT=Date.now(); snapsCache=[]; }
-            else { snapsCache = (window._randori_ai && window._randori_ai.snaps) || snapsCache; }
-          }catch{}
-        }, 50);
-      });
-    }
-  }catch{}
-
-  // expose helper for debug console
-  window._randori_ai_debug={ analyze, getFeedback, listHistory, getRoom, collectPayload };
-})();
-</script>
+<script type="module" src="/assets/ai-feedback.js"></script>
 
 <script>
 // Authenticated, revisioned pair-room workspace synchronization.
@@ -15146,8 +14840,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function signedIn(){ return !!(window._randori_auth&&window._randori_auth.me); }
   function canonical(room){
-    const match=/^week_([1-9]\d*)_pair_([1-9]\d*)$/.exec(String(room||''));
-    return !!match&&Number.isSafeInteger(Number(match[1]))&&Number.isSafeInteger(Number(match[2]));
+    return window.RandoriWorkspaceScope.canonicalRoom(room);
   }
   function activeRoom(){ return window._randori_code?.currentRoom||window.currentRoom||document.getElementById('roomSelect')?.value||null; }
   function crdtOwnsCode(room=state.room){ return window._randori_crdt?.ownsCodeFor?.(room)===true; }
@@ -15258,9 +14951,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const controller=new AbortController();
     const timeout=setTimeout(()=>controller.abort(),8000);
     try{
-      const response=await fetch('/api/my-pair',{credentials:'same-origin',signal:controller.signal});
-      const data=await response.json().catch(()=>({}));
-      if(response.ok&&data.paired&&String(data.room_id||'')===room) return true;
+      const data=await window._randori_auth.api('/api/my-pair',{method:'GET',cache:'no-store',signal:controller.signal});
+      if(data.paired&&String(data.room_id||'')===room) return true;
     }catch{} finally{ clearTimeout(timeout); }
     return false;
   }
@@ -15587,8 +15279,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return Number.isSafeInteger(value)&&value>0?value:null;
   }
   function canonicalRoom(value){
-    const match=/^week_([1-9]\d*)_pair_([1-9]\d*)$/.exec(String(value||''));
-    return !!match&&Number.isSafeInteger(Number(match[1]))&&Number.isSafeInteger(Number(match[2]));
+    return window.RandoriWorkspaceScope.canonicalRoom(value);
   }
   function cycleToken(room){
     const pair=window._randori_pair_cache;
@@ -15604,7 +15295,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!id||!canonicalRoom(room)||window._randori_authorized_room!==room
       ||workspace?.room!==room||workspace?.hydrated!==true) return null;
     const selected=window._randori_circle_control?.scheduleContext?.()||null;
-    if(window._randori_auth?.capabilities?.multiCircleControlPlane===true&&(!selected||selected.isPrimary!==true)) return null;
+    if(window._randori_auth?.capabilities?.multiCircleControlPlane===true&&(!selected||selected.isPrimary!==true&&!window.RandoriWorkspaceScope.enabled())) return null;
     return Object.freeze({
       epoch:state.epoch,room,actorId:id,
       circlePublicId:selected?String(selected.circlePublicId||''):null,
@@ -15775,6 +15466,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   document.addEventListener('click',event=>{
     if(event.target?.closest?.('#signOutBtn,#dashSignOut,#psSignOut,#meSignOut,#meSignOutAll')) reset();
   },{capture:true});
+  window.addEventListener('randori:workspace-scope-reset',()=>reset());
   window._randori_session_completion={load,mutate,reset,normalize:normalizeCompletion,get room(){ return state.room; },get completion(){ return state.completion?{...state.completion}:null; }};
 })();
 </script>
@@ -15807,11 +15499,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const value=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0);
     return Number.isSafeInteger(value)&&value>0?value:null;
   }
-  function canonicalRoom(value){ return /^week_[1-9]\d*_pair_[1-9]\d*$/.test(String(value||'')); }
+  function canonicalRoom(value){ return window.RandoriWorkspaceScope.canonicalRoom(value); }
   function currentCircle(){
     const selected=window._randori_circle_control?.scheduleContext?.()||null;
     if(window._randori_auth?.capabilities?.multiCircleControlPlane!==true) return {publicId:null,version:null};
-    if(!selected||selected.isPrimary!==true) return null;
+    if(!selected||selected.isPrimary!==true&&!window.RandoriWorkspaceScope.enabled()) return null;
     return {publicId:String(selected.circlePublicId||''),
       version:Number.isSafeInteger(Number(selected.contextVersion))?Number(selected.contextVersion):null};
   }
@@ -16145,6 +15837,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(event.target?.closest?.('#signOutBtn,#dashSignOut,#psSignOut,#meSignOut,#meSignOutAll')) reset();
   },{capture:true});
   hide();
+  window.addEventListener('randori:workspace-scope-reset',()=>reset());
   window._randori_session_controls={load,mutate,reset,normalize,toggleTimer,toggleCandidate,
     get room(){return state.room;},get controls(){return state.controls?{...state.controls}:null;},
     get remainingMs(){return effectiveRemaining();}};
@@ -16169,13 +15862,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const value=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0);
     return Number.isSafeInteger(value)&&value>0?value:null;
   }
-  function canonicalRoom(value){ return /^week_[1-9]\d*_pair_[1-9]\d*$/.test(String(value||'')); }
+  function canonicalRoom(value){ return window.RandoriWorkspaceScope.canonicalRoom(value); }
   function currentCircle(){
     const selected=window._randori_circle_control?.scheduleContext?.()||null;
     if(window._randori_auth?.capabilities?.multiCircleControlPlane!==true){
       return {publicId:null,version:null};
     }
-    if(!selected||selected.isPrimary!==true) return null;
+    if(!selected||selected.isPrimary!==true&&!window.RandoriWorkspaceScope.enabled()) return null;
     return {
       publicId:String(selected.circlePublicId||''),
       version:Number.isSafeInteger(Number(selected.contextVersion))?Number(selected.contextVersion):null,
@@ -16434,7 +16127,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   function observeSchedule(detail){
     if(!detail?.room){ if(state.room) reset(); return; }
-    if(detail.kind!=='primary'||!canonicalRoom(detail.room)){ if(state.room) reset(); return; }
+    if((detail.kind!=='primary'&&!(detail.kind==='secondary'&&window.RandoriWorkspaceScope.enabled()))||!canonicalRoom(detail.room)){ if(state.room) reset(); return; }
     if(!adoptRoom(detail.room)){ reset(); return; }
     const nextVersion=VERSION.test(String(detail.scheduleVersion||''))?String(detail.scheduleVersion):null;
     const nextAccepted=detail.agreedTime?validInstant(detail.agreedTime):null;
@@ -16476,6 +16169,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   document.addEventListener('click',event=>{
     if(event.target?.closest?.('#signOutBtn,#dashSignOut,#psSignOut,#meSignOut,#meSignOutAll')) reset();
   },{capture:true});
+  window.addEventListener('randori:workspace-scope-reset',()=>reset());
   window._randori_meeting_link={load,mutate,reset,mount:render,observeSchedule,observeCompletion,
     normalize,get room(){return state.room;},get meeting(){return state.meeting?{...state.meeting}:null;}};
 })();
@@ -16550,7 +16244,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!Number.isSafeInteger(pairId)||pairId<1) return null;
     const supplied=String(payload.room_id||'');
     const derived=`week_${weekId}_pair_${pairId}`;
-    const roomId=/^week_[1-9]\d*_pair_[1-9]\d*$/.test(supplied)?supplied:
+    const roomId=window.RandoriWorkspaceScope.canonicalRoom(supplied)?supplied:
       (/^week_[1-9]\d*_pair_[1-9]\d*$/.test(derived)?derived:null);
     const workspaceAvailable=payload.workspace_available!==false&&payload.coordination_only!==true&&roomId!==null;
     return {cycle,paired:true,workspaceAvailable,roomId,pairId};

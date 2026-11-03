@@ -670,6 +670,9 @@ function apiRoute(pathname,query){
   const authEndpoints=new Map([
     ['/api/auth/capabilities','capabilities'],['/api/auth/signup','signup'],['/api/auth/login','login'],
     ['/api/auth/activation/resend','activation-resend'],['/api/auth/activation/verify','activation-verify'],
+    ['/api/auth/account/delete/link','account-delete-link-request'],
+    ['/api/auth/account/delete/confirm-token','account-delete-confirm-token'],
+    ['/api/auth/account/delete/cancel-token','account-delete-cancel-token'],
     ['/api/auth/password-reset/request','password-reset-request'],
     ['/api/auth/password-reset/consume','password-reset-consume'],['/api/auth/recent-auth','recent-auth'],
     ['/api/auth/identities','identities'],['/api/auth/identities/password','identity-password'],
@@ -732,7 +735,7 @@ function apiRoute(pathname,query){
     query.endpoint=opsEndpoints.get(pathname);
     return 'ops';
   }
-  const aiMatch=pathname.match(/^\/api\/ai\/(analyze|history|feedback)(?:\/([^/]+))?$/);
+  const aiMatch=pathname.match(/^\/api\/ai\/(analyze|consent|history|feedback)(?:\/([^/]+))?$/);
   if(aiMatch){
     query.endpoint=aiMatch[1];
     if(aiMatch[2]!==undefined) query.id=decodeURIComponent(aiMatch[2]);

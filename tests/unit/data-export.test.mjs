@@ -165,6 +165,7 @@ const EXPECTED_TABLE_COVERAGE=[
   {table:'auth_session_circle_contexts',section:null,included:false},
   {table:'auth_provider_identities',section:'profile',included:true},
   {table:'auth_provider_email_state',section:null,included:false},
+  {table:'account_deletion_tokens',section:null,included:false},
   {table:'auth_password_resets',section:null,included:false},
   {table:'auth_email_activations',section:null,included:false},
   {table:'auth_identity_audit_events',section:null,included:false},
@@ -197,6 +198,15 @@ const EXPECTED_TABLE_COVERAGE=[
   {table:'pair_room_snapshots',section:null,included:false},
   {table:'pair_meeting_links',section:'schedules',included:true},
   {table:'video_signals',section:null,included:false},
+  {table:'circle_pair_messages',section:'secondary_workspace',included:true},
+  {table:'circle_session_runs',section:'secondary_workspace',included:true},
+  {table:'circle_pair_code_documents',section:null,included:false},
+  {table:'circle_pair_room_snapshots',section:null,included:false},
+  {table:'circle_session_completion_receipts',section:'secondary_workspace',included:true},
+  {table:'circle_pair_session_controls',section:'secondary_workspace',included:true},
+  {table:'circle_pair_meeting_links',section:'secondary_workspace',included:true},
+  {table:'circle_video_signals',section:null,included:false},
+  {table:'circle_chat_retention_scopes',section:null,included:false},
   {table:'ai_sessions',section:'ai',included:true},
   {table:'ai_feedback',section:'ai',included:true},
   {table:'ai_consents',section:'ai',included:true},
@@ -211,8 +221,8 @@ const EXPECTED_TABLE_COVERAGE=[
 ];
 
 test('every inventory table has explicit export coverage',()=>{
-  assert.equal(EXPECTED_TABLE_COVERAGE.length,49);
-  assert.equal(ACCOUNT_DATA_INVENTORY.length,49);
+  assert.equal(EXPECTED_TABLE_COVERAGE.length,59);
+  assert.equal(ACCOUNT_DATA_INVENTORY.length,59);
   assert.deepEqual(
     DATA_EXPORT_TABLE_COVERAGE.map(entry=>({table:entry.table,section:entry.section,included:entry.included})),
     EXPECTED_TABLE_COVERAGE);

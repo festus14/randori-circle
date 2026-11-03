@@ -703,7 +703,9 @@ test('the migration ledger summary reports missing, behind, pending additive, ah
   assert.equal(current.latest.appliedAt, '2026-10-01T10:00:00.000Z');
   const pending = await readMigrationLedgerSummary(ledgerDb(all.slice(0, -1)));
   assert.deepEqual([pending.state, pending.currentVersion, pending.pendingVersion],
-    ['pending_additive', LATEST_MIGRATION_VERSION - 1, LATEST_MIGRATION_VERSION]);
+    ['behind', LATEST_MIGRATION_VERSION - 1, null]);
+  const historical=await readMigrationLedgerSummary(ledgerDb(all.slice(0,22)),{contracts:MIGRATION_CONTRACTS.slice(0,23)});
+  assert.deepEqual([historical.state,historical.currentVersion,historical.pendingVersion],['pending_additive',22,23]);
   const behind = await readMigrationLedgerSummary(ledgerDb(all.slice(0, -2)));
   assert.deepEqual([behind.state, behind.currentVersion], ['behind', LATEST_MIGRATION_VERSION - 2]);
   const ahead = await readMigrationLedgerSummary(ledgerDb([...all, { ...all.at(-1), version: LATEST_MIGRATION_VERSION + 1, name: 'future' }]));

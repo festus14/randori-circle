@@ -1,0 +1,115 @@
+import {expect,test} from '@playwright/test';
+import {openRoomPanel,setCode} from './helpers';
+import {createPairedCircle,json,pathIs,startGoldenRuntime,waitForWorkspace} from './golden-runtime';
+
+test('requester consent and confirmation, partner banner, sticky withdrawal, and retained feedback/export',async({browser})=>{
+  test.setTimeout(150_000);
+  const golden=await startGoldenRuntime('randori-ai-consent-');
+  try{
+    // Only the isolated loopback runtime is enabled; no hosted provider keys.
+    process.env.AI_ENABLED='true';
+    process.env.DATA_EXPORT_ENABLED='true';
+    const pair=await createPairedCircle(browser,golden);
+    const owner=pair.owner.page,partner=pair.member.page;
+    for(const page of [owner,partner]){
+      await page.goto(`${golden.url}/join/${pair.room}`,{waitUntil:'domcontentloaded'});
+      await waitForWorkspace(page,pair.room);
+      await openRoomPanel(page,'notes');
+    }
+    await owner.locator('#aiFeedbackToggle').check();
+    await owner.locator('#aiTranscript').fill('We explained a bounded solution.');
+    await owner.locator('#aiInterviewerQs').fill('What is the time complexity?');
+    await setCode(owner,'function solve() { return 1; }');
+    let analyzeCalls=0;
+    owner.on('request',request=>{if(new URL(request.url()).pathname==='/api/ai/analyze') analyzeCalls++;});
+    await owner.locator('#aiAnalyzeBtn').click();
+    const dialog=owner.getByRole('dialog',{name:'Allow AI feedback on this session?'});
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('Groq (with OpenAI as a backup)');
+    await expect(dialog).toContainText('name or email, or your chat messages or whiteboard');
+    await expect(dialog).toContainText('notes, code and feedback will be kept while your account exists');
+    await expect(dialog.getByRole('button',{name:'Not now'})).toBeFocused();
+    await owner.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    expect(analyzeCalls).toBe(0);
+    await expect(owner.locator('#aiAnalyzeBtn')).toBeFocused();
+    await owner.locator('#aiAnalyzeBtn').click();
+    const granted=owner.waitForResponse(pathIs('/api/ai/consent','POST'));
+    await owner.getByRole('dialog',{name:'Allow AI feedback on this session?'}).getByRole('button',{name:'Allow AI feedback',exact:true}).click();
+    expect((await granted).status()).toBe(200);
+    const confirm=owner.locator('#aiAnalysisConfirm');
+    await expect(confirm).toContainText('notes (32 characters), code (0 snapshots + latest code, 30 characters) and interviewer questions (28 characters) to Groq / OpenAI');
+    await expect(confirm).toContainText('Waiting for 1 participant');
+    await expect(confirm).toContainText('name, email, chat messages and whiteboard are not sent');
+    expect(analyzeCalls).toBe(0);
+    const blocked=owner.waitForResponse(pathIs('/api/ai/analyze','POST'));
+    await confirm.getByRole('button',{name:'Send to AI'}).click();
+    const response=await blocked;
+    expect(response.status()).toBe(403);
+    expect(response.request().postDataJSON()).toMatchObject({ai_consent:true,room_id:pair.room,transcript:'We explained a bounded solution.',interviewer_questions:'What is the time complexity?'});
+    expect(Object.keys(response.request().postDataJSON()).sort()).toEqual(['ai_consent','code','duration_sec','interviewer_questions','pair_label','role','room_id','transcript']);
+    await expect(owner.locator('#aiStatus')).toContainText('Nothing was sent to the AI provider and no feedback was created.');
+    const before=await json(owner,'/api/auth/account/export');
+    expect(before.status).toBe(200);
+    expect(before.body.ai.sessions).toHaveLength(0);
+    expect(before.body.ai.feedback).toHaveLength(0);
+    // Opening the room teaches the partner about consent even with tools off.
+    await partner.reload({waitUntil:'domcontentloaded'});
+    await waitForWorkspace(partner,pair.room);
+    await openRoomPanel(partner,'notes');
+    await expect(partner.locator('#aiPartnerConsent')).toContainText('Your partner asked for AI feedback on this session.');
+    await expect(partner.locator('#aiFeedbackToggle')).not.toBeChecked();
+    const partnerConsent=partner.waitForResponse(pathIs('/api/ai/consent','POST'));
+    await partner.locator('#aiPartnerAllow').click();
+    expect((await partnerConsent).status()).toBe(200);
+    await owner.locator('#aiAnalyzeBtn').click();
+    await expect(owner.getByRole('dialog')).toHaveCount(0);
+    await expect(confirm).toContainText('Your partner has allowed AI feedback.');
+    const completed=owner.waitForResponse(pathIs('/api/ai/analyze','POST'));
+    await confirm.getByRole('button',{name:'Send to AI'}).click();
+    const past=await (await completed).json();
+    expect(past.ok).toBe(true);
+    await expect(owner.locator('#aiStatus')).toHaveText('AI feedback ready.');
+    // Hiding the tools is not withdrawal.
+    await owner.locator('#aiFeedbackToggle').uncheck();
+    expect((await json(owner,'/api/ai/consent')).body.consented).toBe(true);
+    await owner.locator('#aiFeedbackToggle').check();
+    await owner.locator('#aiAnalyzeBtn').click();
+    await expect(confirm).toBeVisible();
+    const callsBeforeWithdrawal=analyzeCalls;
+    await owner.locator('#aiConsentStatus a').click();
+    await expect(confirm).toBeHidden();
+    await expect(owner.locator('#aiConsentProfile')).toContainText('You allowed AI feedback on');
+    await owner.locator('#aiWithdrawConsent').click();
+    const withdraw=owner.getByRole('dialog',{name:'Withdraw AI feedback consent?'});
+    await expect(withdraw).toContainText('Past feedback stays available unless you delete your account.');
+    await expect(withdraw.getByRole('button',{name:'Keep consent'})).toBeFocused();
+    const revoked=owner.waitForResponse(pathIs('/api/ai/consent','POST'));
+    await withdraw.getByRole('button',{name:'Withdraw',exact:true}).click();
+    expect((await revoked).status()).toBe(200);
+    expect(analyzeCalls).toBe(callsBeforeWithdrawal);
+    const future=await json(owner,'/api/ai/analyze','POST',{ai_consent:true,room_id:pair.room,transcript:'must not process'});
+    expect(future.status).toBe(403);
+    expect((await json(partner,'/api/ai/analyze','POST',{ai_consent:true,room_id:pair.room,transcript:'must not process partner'})).status).toBe(403);
+    expect((await json(owner,`/api/ai/feedback/${past.feedback_id}`)).status).toBe(200);
+    const exported=await json(owner,'/api/auth/account/export');
+    expect(exported.status).toBe(200);
+    expect(exported.body.ai.sessions).toHaveLength(1);
+    expect(exported.body.ai.feedback).toHaveLength(1);
+    expect(exported.body.ai.consents.revoked_at).toBeTruthy();
+    await owner.goto(`${golden.url}/join/${pair.room}`,{waitUntil:'domcontentloaded'});
+    await waitForWorkspace(owner,pair.room); await openRoomPanel(owner,'notes');
+    await owner.locator('#aiAnalyzeBtn').click();
+    await expect(owner.getByRole('dialog',{name:'Allow AI feedback on this session?'})).toBeVisible();
+    await owner.getByRole('dialog',{name:'Allow AI feedback on this session?'}).getByRole('button',{name:'Allow AI feedback',exact:true}).click();
+    await expect(owner.locator('#aiAnalysisConfirm')).toBeVisible();
+    expect((await json(owner,'/api/ai/consent')).body.consented).toBe(true);
+    await owner.locator('#aiAnalysisConfirm').getByRole('button',{name:'Cancel'}).click();
+    // Feature off means no collection and no prompt, while history still works.
+    process.env.AI_ENABLED='false';
+    await owner.locator('#aiAnalyzeBtn').click();
+    await expect(owner.locator('#aiConsentStatus')).toHaveText('AI feedback is unavailable');
+    await expect(owner.getByRole('dialog')).toHaveCount(0);
+    expect(golden.external).toEqual([]);
+  }finally{ delete process.env.DATA_EXPORT_ENABLED; await golden.close(); }
+});

@@ -91,6 +91,7 @@ mock.module('../../api/_circle-membership.js',{exports:{
   createPasswordAccountFromPreparedInvitation:(...a)=>S.membership.createPassword(...a),
   ensureCircleMembershipReadiness:(...a)=>S.membership.ready(...a),
   hashInvitationEmail:()=>null,
+  normalizeInvitationEmail:()=>null,
   hasActiveCircleMembership:(...a)=>S.membership.hasActive(...a),
   hasActivePrimaryCircleMembership:(...a)=>S.membership.hasPrimary(...a),
   readBoundInviteClaim:(...a)=>S.membership.boundClaim(...a),
@@ -103,6 +104,7 @@ mock.module('../../api/_active-circle.js',{exports:{
   multiCircleControlPlaneEnabled:()=>S.flags.controlPlane,
   secondaryCircleCoordinationEnabled:()=>S.flags.coordination,
   secondaryCircleSchedulingEnabled:()=>S.flags.scheduling,
+  secondaryCircleWorkspaceEnabled:()=>false,
 }});
 mock.module('../../api/_local-runtime.js',{exports:{
   localIdentityAdapterEnabled:()=>S.localIdentity,

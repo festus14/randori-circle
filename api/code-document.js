@@ -2,9 +2,12 @@ import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import {
   canUseLegacySinglePrimaryCircleFeatures,
   multiCircleControlPlaneEnabled,
+  secondaryCircleWorkspaceEnabled,
   sendMultiCircleFeatureUnavailable,
 } from './_active-circle.js';
 import { ensureCodeDocumentReadiness } from './_data-readiness.js';
+import { parseCanonicalRoomPath } from './_pairing.js';
+import { getAuthenticatedPairAccess } from './_pair-access.js';
 import {
   CodeDocumentDataError,
   CodeDocumentInputError,
@@ -60,17 +63,30 @@ export default async function handler(req,res){
   if(!viewerId) return res.status(401).json({ok:false,error:'authentication required'});
   let db;
   try{
+    const router=secondaryCircleWorkspaceEnabled()?await import('./_workspace-router.js'):null;
+    const selected=router?await router.prepareWorkspaceRequest(req,res):null;
+    if(selected?.mode==='secondary')return await router.dispatchWorkspaceCodeDocument(req,res,selected);
     db=getClient();
+    if(selected){
+      db=selected.db;
+      const raw=req.method==='GET'?(req.query?.room_id??new URL(req.url,'http://localhost').searchParams.get('room_id')):req.body?.room_id;
+      const room=typeof raw==='string'?parseCanonicalRoomPath(`/join/${raw}`):null;
+      if(!room||!await getAuthenticatedPairAccess(db,{userId:viewerId,weekId:room.weekId,pairGroupId:room.pairGroupId}))
+        return res.status(404).json({error:'pair not found'});
+    }
     await ensureCodeDocumentReadiness(db);
-    if(multiCircleControlPlaneEnabled()&&!(await canUseLegacySinglePrimaryCircleFeatures(db,auth))){
+    if(!selected&&multiCircleControlPlaneEnabled()&&!(await canUseLegacySinglePrimaryCircleFeatures(db,auth))){
       return sendMultiCircleFeatureUnavailable(res);
     }
-  }catch{ return res.status(503).json({ok:false,error:'code document unavailable'}); }
+  }catch(error){ if(secondaryCircleWorkspaceEnabled())return (await import('./_workspace-router.js')).sendWorkspaceFailure(res,error);return res.status(503).json({ok:false,error:'code document unavailable'}); }
 
   try{
     if(req.method==='GET'){
       const input=parseCodeDocumentQuery(req);
       const result=await getAuthorizedCodeDocument(db,{viewerId,...input});
+      // Owner resolution #438: an authorized primary member's own room keeps
+      // the legacy code-document 404 (including an unsupported solo/triad).
+      // Foreign/nonexistent workspace requests use the uniform pair 404.
       if(!result) return res.status(404).json({ok:false,error:'code document not found'});
       return res.json(codeDocumentResponse(result,{afterRevision:input.afterRevision}));
     }
@@ -79,5 +95,5 @@ export default async function handler(req,res){
     if(!result) return res.status(404).json({ok:false,error:'code document not found'});
     if(result.terminal) return res.status(409).json({ok:false,code:'session_completed',error:'session is completed'});
     return res.json({...codeDocumentResponse(result),idempotent:result.idempotent});
-  }catch(error){ return sendFailure(res,error); }
+  }catch(error){ return req.workspace?(await import('./_workspace-router.js')).sendWorkspaceFailure(res,error):sendFailure(res,error); }
 }

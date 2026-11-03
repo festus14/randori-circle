@@ -95,10 +95,18 @@ async function requestDeletionByKeyboard(page:Page,userId:number){
   await expect(page.getByTestId('account-deletion-confirm')).toBeFocused();
   const requested=page.waitForResponse(pathIs('/api/auth/account/delete','POST'));
   const reloaded=page.waitForEvent('domcontentloaded');
+  let body:{status?:string;scheduled_for?:string}={};
+  // The app reloads as soon as it consumes the deletion response. Read the
+  // real server body before delivering it, so Chromium cannot discard it
+  // during navigation while the test is still trying to read it (#454).
+  await page.route('**/api/auth/account/delete',async route=>{
+    const response=await route.fetch();
+    body=await response.json();
+    await route.fulfill({response});
+  },{times:1});
   await page.keyboard.press('Enter');
   const response=await requested;
   expect(response.status()).toBe(200);
-  const body=await response.json();
   expect(body.status).toBe('pending_deletion');
   expect(typeof body.scheduled_for).toBe('string');
   await reloaded;
