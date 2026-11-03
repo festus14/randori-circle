@@ -22,7 +22,7 @@ export async function verifyRetentionTarget(client,expectedSchema){
   // application schema object to be the exact operator-initialized v1 table.
   // This also excludes views, extra columns, indexes and DELETE triggers.
   const {rows}=await client.execute({
-    sql:"SELECT type,name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
+    sql:"SELECT type,name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
     args:[],
   });
   if(rows.length!==1||rows[0].type!=='table'||rows[0].name!=='deletion_ledger'

@@ -106,6 +106,48 @@ test('fails closed on empty DB, wrong columns, extra schema objects and destruct
   }
 });
 
+for(const [label,extraTable,trigger] of [
+  ['table',true,false],['trigger',false,true],['table and destructive trigger',true,true],
+]){
+  test(`sqliteX application ${label} refuses retention before any deletion in both modes`,async t=>{
+    const f=await fixture(t);
+    await seed(f.client);
+    if(extraTable){
+      await f.client.execute('CREATE TABLE sqliteX_app(value TEXT)');
+      await f.client.execute("INSERT INTO sqliteX_app VALUES ('protected')");
+    }
+    if(trigger){
+      await f.client.execute(`CREATE TRIGGER sqliteX_cleanup AFTER DELETE ON deletion_ledger
+        BEGIN DELETE FROM deletion_ledger; ${extraTable?'DELETE FROM sqliteX_app;':''} END;`);
+    }
+    const ledgerBefore=(await f.client.execute('SELECT * FROM deletion_ledger ORDER BY account_id')).rows;
+    for(const dryRun of [true,false]){
+      const statements=[];
+      let commits=0;
+      const createDatabaseClient=config=>{
+        const client=createClient(config);
+        return {close:()=>client.close(),transaction:async mode=>{
+          const tx=await client.transaction(mode);
+          return {execute:stmt=>{statements.push(stmt.sql);return tx.execute(stmt);},
+            commit:()=>{commits++;return tx.commit();},rollback:()=>tx.rollback(),
+            get closed(){return tx.closed;},close:()=>tx.close()};
+        }};
+      };
+      const result=await f.run({dryRun,createDatabaseClient});
+      assert.equal(result.exitCode,1);
+      assert.equal(result.evidence.category,'RETENTION_TARGET_REFUSED');
+      assert.equal(result.evidence.target_verified,false);
+      assert.ok(statements.length>0);
+      assert.ok(statements.every(sql=>/^SELECT\b/.test(sql)),'refusal must occur before any DELETE');
+      assert.equal(commits,0);
+      assert.deepEqual((await f.client.execute('SELECT * FROM deletion_ledger ORDER BY account_id')).rows,ledgerBefore);
+      if(extraTable){
+        assert.deepEqual((await f.client.execute('SELECT value FROM sqliteX_app')).rows.map(r=>r.value),['protected']);
+      }
+    }
+  });
+}
+
 test('cap refuses 10,001 eligible entries without writes in both modes; exactly 10,000 can purge',async t=>{
   const f=await fixture(t);
   await f.client.execute({sql:`WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10001)
