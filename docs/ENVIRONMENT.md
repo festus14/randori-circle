@@ -13,6 +13,10 @@ its production state.
   [PR #352](https://github.com/festus14/randori-circle/pull/352). Values set
   in Vercel are not visible from the repository, so anything else is marked
   as not observable.
+- The owner re-verified `FEEDBACK_ENABLED=true` in production on
+  2026-11-03: [#353 verification](https://github.com/festus14/randori-circle/issues/353#issuecomment-6592408169)
+  records migration v22 applied on 2026-10-28, unauthenticated
+  `GET /api/feedback/mine` → 401 and `POST /api/feedback` → 400 validation.
 - [`.env.example`](../.env.example) is the copy-and-fill template. It names
   every variable on this page. Variables you should never set by hand appear
   there only as comments.
@@ -349,13 +353,15 @@ shell's values.
 
 ## Feature flags
 
-Every flag the code checks. Production state is as of 2026-10-22:
+Every flag the code checks. Production state is as of 2026-11-03, with
+`FEEDBACK_ENABLED` re-verified on that date; other rows retain their recorded
+evidence:
 
 - **On (observed):** advertised by the public `/api/auth/capabilities`
   response.
-- **On (owner):** switched on by the owner with the
-  [PR #352](https://github.com/festus14/randori-circle/pull/352) deploy. It has
-  no public signal.
+- **On (owner):** switched on by the owner, as recorded in
+  [PR #352](https://github.com/festus14/randori-circle/pull/352) or the linked
+  feedback verification above.
 - **Off (observed):** its capability is absent.
 - **Not observable:** check Vercel.
 
@@ -365,7 +371,7 @@ them off cannot undo.
 
 ### Application flags (Vercel)
 
-| Flag | What it gates | Default | Production (2026-10-22) | Depends on | Decision | Turning it off safely |
+| Flag | What it gates | Default | Production (as of 2026-11-03) | Depends on | Decision | Turning it off safely |
 | --- | --- | --- | --- | --- | --- | --- |
 | `CIRCLE_MEMBERSHIP_ENABLED` | Invitation-gated primary-circle membership: owner invitations, roster, member lifecycle, membership checks on every private route | off | On (observed: `verified_invite` mode, `accountDeletion` and `circleHealth` all require it) | Migrations current, then the data-only admin `POST /api/init` cutover | ID-12, ID-21, ID-39 ([admin data initialization](ADMIN_DATA_INITIALIZATION.md)) | Restores legacy roster behaviour and keeps membership data, but does **not** reopen registration once the cutover latch has closed. It also switches off everything below that depends on it. Avoid in production |
 | `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` | Creating, selecting and archiving secondary circles; circle-scoped roster and invitations | off | Off (observed: no `multiCircleControlPlane`) | `CIRCLE_MEMBERSHIP_ENABLED`; managed ledger through v16 | ID-21, ID-29, ID-38 ([active circle](ACTIVE_CIRCLE_CONTEXT.md)) | Turn off the dependent flags first. Context, cycle, archive and schedule rows remain and no membership data is deleted; never clear an archive marker as a rollback |
@@ -379,7 +385,7 @@ them off cannot undo.
 | `IDENTITY_MANAGEMENT_ENABLED` | Account security: link or remove Google and password sign-in | off | On (observed: `identityManagement`) | `IDENTITY_EMAIL_HASH_*` ring with an accepted control (without it Google sign-in fails closed); migration v9 | ID-13, ID-14 | Account security is hidden; Google and password sign-in keep working; existing links stay |
 | `INVITATION_EMAIL_DELIVERY_ENABLED` | Emailing owner-created invitation links | off | Not observable (bootstrap guide §10 turns it on for the MVP) | `CIRCLE_MEMBERSHIP_ENABLED`; `INVITATION_EMAIL_*` ring; Resend; `APP_URL` | ID-25 ([invitation email](INVITATION_EMAIL_DELIVERY.md)) | Invitations are still created with the copy-link fallback. Queued invitation mail stays `pending` until the flag is back on, and the outbox watchdog reports `delivery_stale` after 15 minutes; expect that alert or turn it off with an empty queue ([held mail](#held-mail-and-the-outbox-watchdog)) |
 | `INVITE_REQUESTS_ENABLED` | Public "Request an invite" form, owner review API, `inviteRequests` capability | off | On (observed: `inviteRequests`) | `CIRCLE_MEMBERSHIP_ENABLED`; migration v21; Resend and `APP_URL` for the owner digest | ID-66 ([invite requests](INVITE_REQUESTS.md)) | Endpoints return 404 and the form disappears; stored requests still expire and purge weekly. Pending owner-digest emails are held the same way: they stay `pending` until the flag is back on, and the outbox watchdog reports `delivery_stale` after 15 minutes; expect that alert or turn it off with an empty queue ([held mail](#held-mail-and-the-outbox-watchdog)) |
-| `FEEDBACK_ENABLED` | Product feedback from members: `POST /api/feedback` and `GET /api/feedback/mine`, plus the admin `feedback.submitted` notification | off | Off | `CIRCLE_MEMBERSHIP_ENABLED`; migration v22; Resend and `APP_URL` for the admin notification | ID-91 ([feedback](FEEDBACK.md)) | Endpoints return 404 and nothing is advertised. Closed-item retention and account-deletion handling of feedback keep running with the flag off (they check the v22 schema, not the flag). Queued admin notifications drain to `suppressed` (`FEEDBACK_DISABLED`) while the flag is off, so they never age into an outbox-watchdog `delivery_stale` alert ([held mail](#held-mail-and-the-outbox-watchdog)) |
+| `FEEDBACK_ENABLED` | Product feedback from members: `POST /api/feedback` and `GET /api/feedback/mine`, plus the admin `feedback.submitted` notification | off | On (owner, 2026-11-03; [#353 verification](https://github.com/festus14/randori-circle/issues/353#issuecomment-6592408169)) | `CIRCLE_MEMBERSHIP_ENABLED`; migration v22; Resend and `APP_URL` for the admin notification | ID-91 ([feedback](FEEDBACK.md)) | Endpoints return 404 and nothing is advertised. Closed-item retention and account-deletion handling of feedback keep running with the flag off (they check the v22 schema, not the flag). Queued admin notifications drain to `suppressed` (`FEEDBACK_DISABLED`) while the flag is off, so they never age into an outbox-watchdog `delivery_stale` alert ([held mail](#held-mail-and-the-outbox-watchdog)) |
 | `REMINDERS_ENABLED` | Availability-cutoff reminder and agree-a-time nudge from the outbox cron | off | On (owner) | Resend; the outbox scheduler | ID-71 ([reminders](REMINDERS.md)) | Queued reminders drain as `suppressed` |
 | `REMINDERS_SESSION_SOON_ENABLED` | One-hour session reminder | off | On (owner) | `REMINDERS_ENABLED` | ID-71 | As above |
 | `PROGRESS_DASHBOARD_ENABLED` | "Your progress" in History and `GET /api/progress` | off | On (owner) | none | ID-76 ([progress dashboard](PROGRESS_DASHBOARD.md)) | Safe; nothing is stored |
