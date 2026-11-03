@@ -31,7 +31,7 @@ async function fixture({enabled=true,body=null}={}){
 }
 test('workspace fetch fences all pollers and preserves unrelated requests',async()=>{
   const f=await fixture();try{
-    for(const endpoint of ['history','messages','runs','execute','pair-recap','session-completion','session-controls','meeting-link','code-document','video/poll','ai/history']){
+    for(const endpoint of ['history','messages','runs','execute','my-pair','pair-recap','session-completion','session-controls','meeting-link','code-document','video/poll','ai/history']){
       const response=await f.root.fetch(`/api/${endpoint}`,{method:'GET'});assert.equal((await response.json()).ok,true);
       assert.equal(f.sent.at(-1).options.headers.get('X-Randori-Circle-Context-Version'),'7');
     }

@@ -56,7 +56,7 @@
     if(!notice&&host){ notice=document.createElement('p'); notice.id='workspaceCircleUnavailable'; notice.setAttribute('role','status'); host.prepend(notice); }
     if(notice) notice.textContent='Workspace is not available in this circle yet.';
   }
-  const WORKSPACE=/^\/api\/(?:history|messages|runs|execute|pair-recap|session-completion|session-controls|meeting-link|code-document|video(?:\/.*)?|ai(?:\/.*)?)$/;
+  const WORKSPACE=/^\/api\/(?:history|messages|runs|execute|my-pair|pair-recap|session-completion|session-controls|meeting-link|code-document|video(?:\/.*)?|ai(?:\/.*)?)$/;
   root.fetch=async function workspaceFetch(input,options={}){
     const url=new URL(typeof input==='string'||input instanceof URL?String(input):input.url,root.location.origin);
     const control=root._randori_circle_control;

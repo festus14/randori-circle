@@ -122,9 +122,10 @@ test('real runtime: both directions, non-members, scoped History, independent ro
 
 test('real runtime: flag-off gates and delayed prior-circle responses, context writes and cross-tab switch fencing',async({browser})=>{
   const golden=await startGoldenRuntime('randori-438-switch-');let restore=()=>{};
+  const previousProgress=process.env.PROGRESS_DASHBOARD_ENABLED;
   try{
     const pair=await createPairedCircle(browser,golden),owner=pair.owner.page;
-    restore=enableWorkspace();
+    restore=enableWorkspace();process.env.PROGRESS_DASHBOARD_ENABLED='true';
     const primary=(await (await owner.request.get(`${golden.origin}/api/circles`)).json()).circles[0];
     const secondary=await withDatabase(golden,db=>seedSecondaryCircle(db,{users:[pair.owner.user.id,pair.member.user.id]}));
     await select(owner,golden.origin,secondary.publicId);
@@ -192,5 +193,5 @@ test('real runtime: flag-off gates and delayed prior-circle responses, context w
     await expect(owner.locator('#workspaceChatArea [data-testid="pair-chat-input"]')).toHaveCount(0);
     expect(await owner.evaluate(()=>localStorage.getItem('randori-code'))).toBeNull();
     await secondTab.close();
-  }finally{restore();await golden.close();}
+  }finally{restore();if(previousProgress===undefined)delete process.env.PROGRESS_DASHBOARD_ENABLED;else process.env.PROGRESS_DASHBOARD_ENABLED=previousProgress;await golden.close();}
 });
