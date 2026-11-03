@@ -98,10 +98,10 @@ import {
 
 export const OUTBOX_CRON_BUDGET_MS=45_000;
 export const OUTBOX_CRON_FINALIZATION_RESERVE_MS=5_000;
-// Issue #372: eleven registered delivery types (eight before the grace
-// period added confirmation, reminder and blocked), so the cap must cover
+// Issues #372/#350: twelve registered delivery types, including grace
+// confirmation, reminder, blocked and the request link; the cap covers
 // one first-round claim per type.
-export const OUTBOX_CRON_MAX_CLAIMS=11;
+export const OUTBOX_CRON_MAX_CLAIMS=12;
 // Issue #287: the reminder due-check gets its own slice of the preparation
 // window so a slow query can never hold back the delivery rounds.
 export const OUTBOX_REMINDER_DUE_CHECK_BUDGET_MS=5_000;

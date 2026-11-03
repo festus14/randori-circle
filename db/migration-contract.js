@@ -171,6 +171,17 @@ export const MIGRATION_CONTRACTS=Object.freeze([
       triggers:Object.freeze([]),
     }),
   }),
+  Object.freeze({
+    version:24,
+    name:'account-deletion-email-tokens',
+    checksum:'bd19855cc6e4bcdd9fd942c7fc0adee23fb482331ccd1b9668096fe8f52cabdd',
+    compatibility:'additive',
+    introduces:Object.freeze({
+      tables:Object.freeze(['account_deletion_tokens']),
+      indexes:Object.freeze(['idx_account_deletion_tokens_expiry']),
+      triggers:Object.freeze([]),
+    }),
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

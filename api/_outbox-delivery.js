@@ -42,12 +42,14 @@ import {
   ACCOUNT_DELETION_REMINDER_EVENT_TYPE,
   createAccountDeletionEmailHandler,
 } from './_account-deletion-grace.js';
+import { DELETION_LINK_EVENT_TYPE, createAccountDeletionLinkEmailHandler } from './_account-deletion-tokens.js';
 import { localIdentityAdapterEnabled, strictLocalPairingRuntime } from './_local-runtime.js';
 
 // Single registry of outbox delivery adapters. Both the scheduled worker
 // (`/api/cron/outbox`) and the post-commit immediate attempt build handlers
 // here so the two paths can never diverge in provider, template, or policy.
 export const OUTBOX_DELIVERY_TYPES=Object.freeze([
+  Object.freeze({type:DELETION_LINK_EVENT_TYPE,key:'account_deletion_link_delivery',label:'account deletion link'}),
   Object.freeze({type:PAIRING_EMAIL_EVENT_TYPE,key:'email_delivery',label:'email reminder'}),
   Object.freeze({type:SCHEDULE_EMAIL_EVENT_TYPE,key:'schedule_delivery',label:'schedule email'}),
   Object.freeze({type:INVITATION_EMAIL_EVENT_TYPE,key:'invitation_delivery',label:'invitation email'}),
@@ -92,6 +94,7 @@ function localCaptureSender(captured,type){
         ?String(message.kind):(String(message.subject).includes('missed')?'unavailable':'paired'))
       :type===SCHEDULE_EMAIL_EVENT_TYPE?'schedule'
         :type===INVITATION_EMAIL_EVENT_TYPE?'invitation'
+          :type===DELETION_LINK_EVENT_TYPE?'account-deletion-link'
           :type===PASSWORD_RESET_EVENT_TYPE?'password-reset'
             :type===INVITE_REQUEST_EVENT_TYPE?'invite-request'
               :type===FEEDBACK_SUBMITTED_EVENT_TYPE?'feedback'
@@ -126,6 +129,9 @@ export async function outboxDeliveryPlan(db,baseUrl,req,{types=null}={}){
   }
   const sender=type=>local?localCaptureSender(captured,type):sharedSend;
   const handlers=new Map();
+  if(include(DELETION_LINK_EVENT_TYPE)&&sender(DELETION_LINK_EVENT_TYPE)){
+    handlers.set(DELETION_LINK_EVENT_TYPE,createAccountDeletionLinkEmailHandler({db,baseUrl,send:sender(DELETION_LINK_EVENT_TYPE)}));
+  }
   const pairingSend=sender(PAIRING_EMAIL_EVENT_TYPE);
   const scheduleSend=sender(SCHEDULE_EMAIL_EVENT_TYPE);
   const invitationSend=sender(INVITATION_EMAIL_EVENT_TYPE);
