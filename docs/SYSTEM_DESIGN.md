@@ -511,8 +511,9 @@ sequenceDiagram
 
 Every flag the code checks is listed in
 [ENVIRONMENT.md](ENVIRONMENT.md#feature-flags), with production state
-as of 2026-11-03 (`FEEDBACK_ENABLED` re-verified by the owner on that
-date; other flags retain the evidence recorded in `ENVIRONMENT.md`).
+as of 2026-11-03 (`FEEDBACK_ENABLED` re-verified and
+`ACCOUNT_DELETION_GRACE_ENABLED` enabled by the owner on that date;
+other flags retain the evidence recorded in `ENVIRONMENT.md`).
 This table mirrors that source; if the two disagree, `ENVIRONMENT.md`
 wins. `*_ENABLED` flags are on only for the exact string `true`.
 
@@ -537,7 +538,7 @@ wins. `*_ENABLED` flags are on only for the exact string `true`.
 | `CIRCLE_HEALTH_ENABLED` | Owner-only Circle health card | On |
 | `ADMIN_DIAGNOSTICS_ENABLED` | Read-only admin Diagnostics | On |
 | `ACCOUNT_DELETION_ENABLED` | Self-service Delete account | On |
-| `ACCOUNT_DELETION_GRACE_ENABLED` | 14-day cancellable account-deletion grace period; requires `ACCOUNT_DELETION_ENABLED` and migration v23 applied | Off (observed: no `accountDeletionGrace`) |
+| `ACCOUNT_DELETION_GRACE_ENABLED` | 14-day cancellable account-deletion grace period; requires `ACCOUNT_DELETION_ENABLED` and migration v23 applied | On (owner, 2026-11-03; [#372 rollout](https://github.com/festus14/randori-circle/issues/372#issuecomment-6592907408)) |
 | `DATA_EXPORT_ENABLED` | Download my data in Edit profile (`GET /api/auth/account/export`): JSON archive of the member's own data | Off |
 | `OUTBOX_PII_RETENTION_ENABLED` | Outbox PII redaction after 7 / 30 days | On (owner) |
 | `FEEDBACK_ENABLED` | Product feedback endpoints + admin `feedback.submitted` notification | On (owner, 2026-11-03; [#353 verification](https://github.com/festus14/randori-circle/issues/353#issuecomment-6592408169)) |

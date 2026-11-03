@@ -17,6 +17,11 @@ its production state.
   2026-11-03: [#353 verification](https://github.com/festus14/randori-circle/issues/353#issuecomment-6592408169)
   records migration v22 applied on 2026-10-28, unauthenticated
   `GET /api/feedback/mine` → 401 and `POST /api/feedback` → 400 validation.
+- The owner recorded `ACCOUNT_DELETION_GRACE_ENABLED=true` in Vercel
+  production on 2026-11-03: [#372 rollout](https://github.com/festus14/randori-circle/issues/372#issuecomment-6592907408).
+  The [v23 apply artifact](https://github.com/festus14/randori-circle/actions/runs/41558187005)
+  records `appliedVersions: [23]`; the [post-apply status artifact](https://github.com/festus14/randori-circle/actions/runs/41559246678)
+  records `currentVersion: 23`, `pendingVersions: []` and `nextVersion: null`.
 - [`.env.example`](../.env.example) is the copy-and-fill template. It names
   every variable on this page. Variables you should never set by hand appear
   there only as comments.
@@ -354,14 +359,14 @@ shell's values.
 ## Feature flags
 
 Every flag the code checks. Production state is as of 2026-11-03, with
-`FEEDBACK_ENABLED` re-verified on that date; other rows retain their recorded
-evidence:
+`FEEDBACK_ENABLED` re-verified and `ACCOUNT_DELETION_GRACE_ENABLED` enabled
+by the owner on that date; other rows retain their recorded evidence:
 
 - **On (observed):** advertised by the public `/api/auth/capabilities`
   response.
 - **On (owner):** switched on by the owner, as recorded in
   [PR #352](https://github.com/festus14/randori-circle/pull/352) or the linked
-  feedback verification above.
+  feedback verification and deletion-grace rollout records.
 - **Off (observed):** its capability is absent.
 - **Not observable:** check Vercel.
 
@@ -393,7 +398,7 @@ them off cannot undo.
 | `CIRCLE_HEALTH_ENABLED` | Owner-only Circle health card and `GET /api/circle/health` | off | On (observed: `circleHealth`) | `CIRCLE_MEMBERSHIP_ENABLED` | ID-78 ([circle health](CIRCLE_HEALTH.md)) | Safe; nothing is stored |
 | `ADMIN_DIAGNOSTICS_ENABLED` | Read-only admin Diagnostics in the Circle view | off | On (observed: `adminDiagnostics`) | none (still admin-only) | ID-73 | Safe; nothing is stored |
 | `ACCOUNT_DELETION_ENABLED` | Self-service Delete account in Edit profile (`POST /api/auth/account/delete`) | off | On (observed: `accountDeletion`) | `CIRCLE_MEMBERSHIP_ENABLED` | ID-81 ([account deletion](ACCOUNT_DELETION.md)) | Hides the endpoint and UI. **Irreversible:** accounts already deleted stay deleted |
-| `ACCOUNT_DELETION_GRACE_ENABLED` | 14-day cancellable grace period for account deletion: request locks the account and schedules deletion, sign-in leads to a cancel screen, the outbox cron executes it (`POST /api/auth/account/delete/cancel`) | off | Off (observed: no `accountDeletionGrace`) | `ACCOUNT_DELETION_ENABLED`, migration v23 applied | ID-93 ([account deletion](ACCOUNT_DELETION.md)) | Turning it off stops new grace requests (they delete immediately); pending requests still cancel and execute on schedule |
+| `ACCOUNT_DELETION_GRACE_ENABLED` | 14-day cancellable grace period for account deletion: request locks the account and schedules deletion, sign-in leads to a cancel screen, the outbox cron executes it (`POST /api/auth/account/delete/cancel`) | off | On (owner, 2026-11-03; [#372 rollout](https://github.com/festus14/randori-circle/issues/372#issuecomment-6592907408)) | `ACCOUNT_DELETION_ENABLED`, migration v23 applied | ID-93 ([account deletion](ACCOUNT_DELETION.md)) | Turning it off stops new grace requests (they delete immediately); pending requests still cancel and execute on schedule |
 | `DATA_EXPORT_ENABLED` | Download my data in Edit profile (`GET /api/auth/account/export`): a JSON archive of the member's own data, partners by display name only | off | Off (observed: no `dataExport`) | none | ID-90 ([data export](DATA_EXPORT.md)) | Safe; nothing is stored. Turning it off hides the endpoint, the capability and the UI |
 | `OUTBOX_PII_RETENTION_ENABLED` | Hourly removal of recipient addresses and sealed links from delivered or suppressed outbox rows after 7 days and from dead letters after 30 | off | On (owner) | The matching privacy policy text (live since 2026-10-22) | ID-83 | Stops further redaction. **Irreversible:** redacted rows cannot be restored and redacted dead letters stay non-replayable |
 | `AI_ENABLED` | Consent-gated AI feedback in `api/ai.js` | off | Off (privacy policy says AI is off) | `GROQ_API_KEY` or `OPENAI_API_KEY`; privacy and consent review ([#7](https://github.com/festus14/randori-circle/issues/7)) | ID-41 | AI routes return 503 |
