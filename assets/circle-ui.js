@@ -170,12 +170,12 @@
         save(scopeKey, entries);
         return entries.get(id)?.email || null;
       },
-      retainPending(scope, invitations) {
+      retainListed(scope, invitations) {
         const scopeKey = key(scope);
         if (!scopeKey) return;
-        const pending = new Set(invitations.filter(invitation => invitation.status === 'pending').map(invitation => invitation.id));
+        const listed = new Set(invitations.filter(invitation => invitation.status !== 'expired').map(invitation => invitation.id));
         const entries = load(scopeKey);
-        for (const id of entries.keys()) if (!pending.has(id)) entries.delete(id);
+        for (const id of entries.keys()) if (!listed.has(id)) entries.delete(id);
         save(scopeKey, entries);
       },
       clear() { memory.clear(); },

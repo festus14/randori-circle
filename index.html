@@ -6603,7 +6603,7 @@ async function refreshMe(){
       if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId
         ||!circleControlOperationMatches(operation,result)) return;
       const invitations=Array.isArray(result?.invitations)?result.invitations:[];
-      circleInviteEmails.retainPending(invitationEmailScope(),invitations);
+      circleInviteEmails.retainListed(invitationEmailScope(),invitations);
       renderInvitationRows(invitations);
       if(circleInvitesMeta) circleInvitesMeta.textContent=circleUi.invitationSummary(invitations).replace(/\.$/,'');
     }catch{

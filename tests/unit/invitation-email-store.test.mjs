@@ -34,7 +34,7 @@ test('sender cards keep the full address across reload and circle changes, with 
   assert.deepEqual(JSON.parse([...f.data.values()][0]).map(row=>Object.keys(row).sort()),[['email','expiresAt','id'],['email','expiresAt','id']]);
 });
 
-test('addresses stop rendering at seven days and are removed when no longer pending',()=>{
+test('addresses expire after seven days while accepted and revoked sender labels stay unchanged',()=>{
   const f=fixture();
   f.store().remember(sender,id,email);
   f.advance(7*day-1);
@@ -42,18 +42,24 @@ test('addresses stop rendering at seven days and are removed when no longer pend
   f.advance(1);
   assert.equal(f.store().get(sender,id),null);
   assert.equal(f.data.size,0);
-  for(const status of ['used','revoked','expired']){
+  for(const status of ['used','revoked']){
     const store=f.store();
     store.remember(sender,id,email);
-    store.retainPending(sender,[{id,status}]);
+    store.retainListed(sender,[{id,status}]);
+    assert.equal(describeInvitation({id,status},{knownEmail:store.get(sender,id)}).title,email);
+    store.retainListed(sender,[]);
     assert.equal(store.get(sender,id),null);
     assert.equal(f.data.size,0);
   }
+  const expired=f.store();
+  expired.remember(sender,id,email);
+  expired.retainListed(sender,[{id,status:'expired'}]);
+  assert.equal(expired.get(sender,id),null);
   const store=f.store();
   store.remember(sender,id,email);
-  store.retainPending(sender,[{id,status:'pending'}]);
+  store.retainListed(sender,[{id,status:'pending'}]);
   assert.equal(store.get(sender,id),email);
-  store.retainPending(sender,[]);
+  store.retainListed(sender,[]);
   assert.equal(store.get(sender,id),null);
 });
 
@@ -78,7 +84,7 @@ test('blocked or corrupt storage preserves only valid sender addresses in the cu
   valid.remember({userId:1,circlePublicId:'../other'},id,email);
   valid.remember(sender,'bad',email);
   valid.remember(sender,id,'x'.repeat(255));
-  valid.retainPending(null,[]);
+  valid.retainListed(null,[]);
   assert.equal(f.data.size,0);
 });
 
