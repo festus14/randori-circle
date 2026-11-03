@@ -1,3 +1,35 @@
+// Shared with the server so confirmation describes the provider input.
+export const AI_INPUT_LIMITS=Object.freeze({transcript:18000,code:12000,questions:4000});
+const LATEST='\nLATEST:\n';
+const text=value=>typeof value==='string'?value:JSON.stringify(value||'');
+
+export function codeContents(code){
+  const value=text(code),split=value.indexOf(LATEST);
+  if(split>=0){
+    try{
+      const snapshots=JSON.parse(value.slice(0,split));
+      if(Array.isArray(snapshots)) return {snapshots,latest:value.slice(split+LATEST.length)};
+    }catch{}
+  }
+  return {snapshots:[],latest:value};
+}
+
+export function normalizeAnalysisPayload(payload){
+  const {snapshots,latest}=codeContents(payload.code);
+  let code=latest.slice(0,AI_INPUT_LIMITS.code);
+  if(snapshots.length){
+    // Reserve latest code first; include only complete snapshots that fit.
+    const suffix=LATEST+latest.slice(0,AI_INPUT_LIMITS.code-LATEST.length-2);
+    const kept=[];
+    for(const snapshot of snapshots){
+      if(JSON.stringify([...kept,snapshot]).length+suffix.length<=AI_INPUT_LIMITS.code) kept.push(snapshot);
+    }
+    if(kept.length) code=JSON.stringify(kept)+suffix;
+  }
+  return {...payload,transcript:text(payload.transcript).slice(0,AI_INPUT_LIMITS.transcript),code,
+    interviewer_questions:text(payload.interviewer_questions).slice(0,AI_INPUT_LIMITS.questions)};
+}
+
 // Personal consent is server-authoritative. The room-layout localStorage
 // preference only hides tools and never grants or withdraws this choice.
 export const COPY=Object.freeze({
@@ -14,8 +46,9 @@ export const COPY=Object.freeze({
   excluded:'OpenAI is a backup to Groq. Your name, email, chat messages and whiteboard are not sent.',
 });
 
-export function confirmationText(payload,snapshotCount){
-  return `Send this session's notes (${payload.transcript.length} characters), code (${snapshotCount} snapshots + latest code) and interviewer questions to Groq / OpenAI for feedback?`;
+export function confirmationText(payload){
+  const {snapshots,latest}=codeContents(payload.code);
+  return `Send this session's notes (${payload.transcript.length} characters), code (${snapshots.length} snapshots + latest code, ${latest.length} characters) and interviewer questions (${payload.interviewer_questions.length} characters) to Groq / OpenAI for feedback?`;
 }
 
 export function partnerState(count){
@@ -48,14 +81,14 @@ export function mountAiConsent({doc,win,host}){
   const banner=doc.getElementById('aiPartnerConsent');
   const inline=doc.getElementById('aiAnalysisConfirm');
   const profile=doc.getElementById('aiConsentProfile');
-  let generation=0,sequence=0,busy=false,state=null,cancelAsk=null,dismissedRoom=null;
+  let generation=0,sequence=0,busy=false,preparing=false,state=null,cancelAsk=null,dismissedRoom=null;
   const actor=()=>host.userId();
   const room=()=>host.roomId();
   const identity=()=>`${actor()||''}:${room()||''}:${generation}`;
 
   function setStatus(text){ if(status) status.textContent=text; }
   function reset(){
-    generation+=1; sequence+=1; state=null; busy=false; dismissedRoom=null;
+    generation+=1; sequence+=1; state=null; busy=false; preparing=false; dismissedRoom=null;
     cancelAsk?.(); cancelAsk=null;
     banner.hidden=true; inline.hidden=true; profile.hidden=!actor();
     setStatus('');
@@ -73,7 +106,10 @@ export function mountAiConsent({doc,win,host}){
       const no=button(doc,cancel),yes=button(doc,allow); yes.className='btn sm';
       no.autofocus=true; actions.append(no,yes); container.append(actions);
       const prior=doc.activeElement;
+      let finished=false;
       const finish=answer=>{
+        if(finished) return;
+        finished=true;
         cancelAsk=null;
         if(inlineConfirm){ container.hidden=true; }
         else { container.close(); container.remove(); }
@@ -134,6 +170,12 @@ export function mountAiConsent({doc,win,host}){
     }catch(error){ if(key===identity()&&!busy){ banner.hidden=true; setStatus(aiErrorText(error.http_status,error)); } }
   }
   async function refreshProfile(){
+    // Edit profile cancels the analysis, including its pending confirmation.
+    // Fence its continuation before releasing busy for withdrawal.
+    if(preparing){
+      generation+=1; sequence+=1; preparing=false; busy=false;
+      cancelAsk?.(); cancelAsk=null;
+    }
     if(!actor()){ profile.hidden=true; return; }
     const key=identity();
     try{ const value=await read(false); if(key===identity()) renderProfile(value); }
@@ -165,7 +207,7 @@ export function mountAiConsent({doc,win,host}){
   async function prepare(collect){
     if(busy) return null;
     if(!actor()){ setStatus('Sign in to request AI feedback.'); return null; }
-    busy=true; const key=identity();
+    busy=true; preparing=true; const key=identity();
     try{
       let value=await read(true);
       if(key!==identity()) return null;
@@ -176,15 +218,18 @@ export function mountAiConsent({doc,win,host}){
         value=await host.request('/api/ai/consent',{ai_consent:true,room_id:room()});
         if(key!==identity()) return null;
       }
+      // A request belongs to this room; an account-wide consent is not one.
+      value=await host.request('/api/ai/consent',{feedback_requested:true,room_id:room()});
+      if(key!==identity()) return null;
       render(value);
-      const {payload,snapshotCount}=collect();
-      const yes=await ask({title:confirmationText(payload,snapshotCount),paragraphs:[partnerState(value.pending_participant_count),COPY.excluded],allow:'Send to AI',cancel:'Cancel',inlineConfirm:true});
+      const payload=normalizeAnalysisPayload(collect());
+      const yes=await ask({title:confirmationText(payload),paragraphs:[partnerState(value.pending_participant_count),COPY.excluded],allow:'Send to AI',cancel:'Cancel',inlineConfirm:true});
       if(!yes||key!==identity()) return null;
       // Never upsert consent here: a withdrawal on another device between
       // the status read and Send must stick at the analyze backstop.
       return {...payload,ai_consent:true};
     }catch(error){ if(key===identity()) setStatus(aiErrorText(error.http_status,error)); return null; }
-    finally{ if(key===identity()) busy=false; }
+    finally{ if(key===identity()){ busy=false; preparing=false; } }
   }
   win.addEventListener('randori:room-change',reset);
   win.addEventListener('randori:auth-refreshed',reset);

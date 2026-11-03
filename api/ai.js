@@ -5,6 +5,7 @@ import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
 import { ensureAiConsentReadiness, ensureAiConsentRoomReadiness, ensureAiAnalyzeReadiness, ensureAiFeedbackReadiness, ensureAiHistoryReadiness, ensureAiLogReadiness } from './_ai-readiness.js';
+import {normalizeAnalysisPayload} from '../assets/ai-consent.js';
 
 initSentry();
 
@@ -133,14 +134,15 @@ function pickModel({ transcript, code, role, durationSec, interviewerQuestions, 
 }
 
 function buildPrompt({ role, transcript, code, interviewerQuestions, durationSec, pairLabel }){
+  const input=normalizeAnalysisPayload({transcript,code,interviewer_questions:interviewerQuestions});
   return `You are Randori AI staff interview coach.
 Session: ${pairLabel||'mock'} duration ${durationSec? Math.round(durationSec/60)+' min':'?'} role ${role||'both'}
 TRANSCRIPT:
-${(transcript||'(none)').slice(0,18000)}
+${input.transcript||'(none)'}
 CODE:
-${(typeof code==='string'?code:JSON.stringify(code||'')).slice(0,12000)}
+${input.code}
 INTERVIEWER QS:
-${(interviewerQuestions||'(none)').slice(0,4000)}
+${input.interviewer_questions||'(none)'}
 Produce STRICT JSON only:
 {
  "candidate":{"strengths":[{"point":"..","evidence":"verbatim substring","confidence":0-1}], "improvements":[{"point":"..","evidence":"..","suggestion":".."}]},
@@ -385,17 +387,21 @@ async function handleConsent(req,res){
   const userId=Number(auth.userId);
   if(!auth.authed||!Number.isSafeInteger(userId)||userId<1) return res.status(401).json({error:'authentication required'});
   const body=req.method==='POST'?await parseBody(req):null;
-  if(body && body.ai_consent!==true && body.ai_consent!==false) return res.status(400).json({error:'ai_consent must be true or false'});
-  if(body?.ai_consent===true && process.env.AI_ENABLED!=='true') return res.status(503).json({error:'AI coaching is not enabled for this release'});
-  const roomId=body?.ai_consent===true?body.room_id:
+  const roomRequest=body?.feedback_requested===true && body.ai_consent===undefined;
+  if(body && !roomRequest && body.ai_consent!==true && body.ai_consent!==false) return res.status(400).json({error:'ai_consent must be true or false'});
+  if((roomRequest||body?.ai_consent===true) && process.env.AI_ENABLED!=='true') return res.status(503).json({error:'AI coaching is not enabled for this release'});
+  const roomId=roomRequest||body?.ai_consent===true?body.room_id:
     req.method==='GET'?(req.query?.room_id||new URL(req.url,'http://localhost').searchParams.get('room_id')):null;
   if(roomId && !canonicalAnalysisRoom(roomId)) return res.status(403).json({error:'trusted room membership required'});
-  if(body?.ai_consent===true && !roomId) return res.status(403).json({error:'trusted room membership required'});
+  if((roomRequest||body?.ai_consent===true) && !roomId) return res.status(403).json({error:'trusted room membership required'});
   let db;
   try{
     db=getClient();
     await ensureAiConsentReadiness(db);
-    if(roomId && process.env.AI_ENABLED==='true') await ensureAiConsentRoomReadiness(db);
+    if(roomId && process.env.AI_ENABLED==='true'){
+      await ensureAiConsentRoomReadiness(db);
+      await ensureAiLogReadiness(db);
+    }
   }catch{ return res.status(503).json({error:'AI service temporarily unavailable'}); }
   let room=null;
   if(roomId && process.env.AI_ENABLED==='true'){
@@ -411,13 +417,36 @@ async function handleConsent(req,res){
     await writeRoomConsent(db,userId,room);
   }
   const state=await ownConsentState(db,userId);
+  if(roomRequest){
+    if(!state.consented) return res.status(403).json({error:'explicit AI processing consent required'});
+    // Existing, retained event storage: only the canonical room and policy,
+    // never session contents. A consent-only write is not a room request.
+    const requested=await db.execute({
+      sql:`INSERT INTO app_logs (level,source,event,message,user_id,route,meta_json)
+        SELECT 'info','server-ai','ai_feedback_requested','AI feedback requested',?,?,?
+        WHERE EXISTS (${authOnlyPairAccessSql()})
+          AND EXISTS (SELECT 1 FROM ai_consents WHERE user_id=? AND revoked_at IS NULL AND policy_version=?)
+        RETURNING id`,
+      args:[userId,`/join/${room.roomId}`,JSON.stringify(AI_CONSENT_POLICY_VERSION),
+        ...pairAccessArgs(userId,room),userId,AI_CONSENT_POLICY_VERSION],
+    });
+    if(!requested.rows?.length) return res.status(403).json({error:'explicit AI processing consent required'});
+  }
   if(room){
     try{
       const missing=await verifyRoomConsent(db,userId,room);
       state.pending_participant_count=missing.length;
-      // A partner's affirmative consent is the existing durable request signal.
-      // No room-request table, notification, or individual consent is exposed.
-      state.feedback_requested=room.participantIds.some(id=>id!==userId&&!missing.includes(id));
+      const requested=await db.execute({
+        sql:`SELECT 1 FROM app_logs request JOIN ai_consents consent ON consent.user_id=request.user_id
+          WHERE request.source='server-ai' AND request.event='ai_feedback_requested'
+            AND request.route=? AND request.meta_json=?
+            AND request.user_id IN (?,?,?) AND request.user_id<>?
+            AND consent.revoked_at IS NULL AND consent.policy_version=?
+            AND request.created_at>=consent.consented_at LIMIT 1`,
+        args:[`/join/${room.roomId}`,JSON.stringify(AI_CONSENT_POLICY_VERSION),
+          ...[0,1,2].map(index=>room.participantIds[index]??null),userId,AI_CONSENT_POLICY_VERSION],
+      });
+      state.feedback_requested=!!requested.rows?.length;
     }catch(error){
       if(error instanceof AiPairAccessError) return res.status(403).json({error:'trusted room membership required'});
       throw error;
@@ -796,7 +825,7 @@ async function handleAnalyze(req,res){
     const prompt=buildPrompt({ role, transcript:transStr, code:codeFlat, interviewerQuestions:iq, durationSec:duration_sec, pairLabel:pair_label });
     let groqRes=await callGroq({ modelName:picking.model.name, prompt });
     if(groqRes.error && !groqRes.content && picking.model.name!==MODELS.fast.name){
-      const retry=await callGroq({ modelName:MODELS.fast.name, prompt:buildPrompt({ role, transcript:transStr.slice(0,8000), code:String(codeFlat).slice(0,6000), interviewerQuestions:iq, durationSec:duration_sec, pairLabel:pair_label })});
+      const retry=await callGroq({ modelName:MODELS.fast.name, prompt });
       if(retry.content){ modelUsed=MODELS.fast.name; reason+=` | primary failed (${groqRes.error.slice(0,80)}), fallback fast`; groqRes=retry; } else {
         reason+=` | primary and fast Groq failed`;
         groqRes=retry;

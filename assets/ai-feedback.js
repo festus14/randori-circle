@@ -95,7 +95,7 @@ import {mountAiConsent,aiErrorText} from '/assets/ai-consent.js';
   async function analyze(){
     if(analyzing) return {ok:false,cancelled:true};
     analyzing=true;
-    const payload=await consent.prepare(()=>({payload:collectPayload(),snapshotCount:window._randori_ai?.snaps?.length||0}));
+    const payload=await consent.prepare(()=>collectPayload());
     if(!payload){ analyzing=false; return {ok:false,cancelled:true}; }
 
     const aiPanel=document.getElementById('aiPanel');

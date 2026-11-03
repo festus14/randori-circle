@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { afterEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
+import {confirmationText,mountAiConsent} from '../../assets/ai-consent.js';
+import {normalizeAnalysisPayload} from '../../assets/ai-consent.js';
+import {consentDocument,consentWindow,until} from '../support/ai-consent-dom.mjs';
 
 let activeDb=null;
 const realFetch=globalThis.fetch;
@@ -158,6 +161,17 @@ afterEach(()=>{
 function consentRequest(userId,body,roomId){
   return invoke({method:body?'POST':'GET',url:'/api/ai/consent',query:{endpoint:'consent',...(roomId?{room_id:roomId}:{})},headers:{'x-test-user':String(userId)},body:body||{}});
 }
+function consentController(doc,responses=[]){
+  return mountAiConsent({doc,win:consentWindow,host:{
+    userId:()=>2,roomId:()=> 'week_10_pair_21',editProfile(){},
+    async request(path,body){
+      const response=await consentRequest(2,body,new URL(path,'http://localhost').searchParams.get('room_id'));
+      responses.push(response);
+      if(response.status!==200) throw {...response.body,http_status:response.status};
+      return response.body;
+    },
+  }});
+}
 async function ready(){
   process.env.AI_ENABLED='true';
   const client=await createDatabase();
@@ -186,7 +200,10 @@ test('consent endpoint is caller-only, explicit, authenticated, and has no analy
   assert.equal(other.body.consented,false); assert.equal(other.body.consented_at,null);
   assert.deepEqual(Object.keys(other.body).sort(),['available','consented','consented_at','policy_version']);
   const banner=await consentRequest(3,null,'week_10_pair_22');
-  assert.equal(banner.body.feedback_requested,true); assert.equal(banner.body.pending_participant_count,1);
+  assert.equal(banner.body.feedback_requested,false); assert.equal(banner.body.pending_participant_count,1);
+  const requested=await consentRequest(2,{feedback_requested:true,room_id:'week_10_pair_22'});
+  assert.equal(requested.status,200);
+  assert.equal((await consentRequest(3,null,'week_10_pair_22')).body.feedback_requested,true);
   assert.equal('participant_ids' in banner.body,false);
   await consentRequest(3,{ai_consent:false,user_id:2});
   assert.equal((await consentRequest(2)).body.consented,true,'a partner cannot withdraw the caller consent');
@@ -258,12 +275,98 @@ test('policy-version lapse requires the endpoint, and disabled AI collects no co
 test('revocation retains past feedback in detail and history',async()=>{
   const client=await ready();
   const past=await analysisRequest('week_10_pair_21');
-  await consentRequest(2,{ai_consent:false});
+  assert.equal(past.status,200);
+  const withdrawn=await consentRequest(2,{ai_consent:false});
+  assert.equal(withdrawn.status,200);
+  assert.equal(withdrawn.body.consented,false);
+  assert.ok((await client.execute('SELECT revoked_at FROM ai_consents WHERE user_id=2')).rows[0].revoked_at);
   assert.equal((await invoke({url:'/api/ai/feedback',query:{endpoint:'feedback',id:past.body.feedback_id},headers:{'x-test-user':'2'}})).status,200);
   const history=await invoke({url:'/api/ai/history',query:{endpoint:'history'},headers:{'x-test-user':'2'}});
   assert.equal(history.status,200); assert.equal(history.body.feedbacks.length,1);
   assert.deepEqual(await counts(client),[1,1,1,1]);
 
+});
+
+test('consent and explicit feedback requests in room A do not leak into untouched room B',async()=>{
+  const client=await ready();
+  await client.execute(`INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,is_ai_pair) VALUES (23,10,2,3,0)`);
+  assert.equal((await consentRequest(2,{ai_consent:true,room_id:'week_10_pair_22'})).status,200);
+  for(const room of ['week_10_pair_22','week_10_pair_23']){
+    const status=await consentRequest(3,null,room);
+    assert.equal(status.status,200); assert.equal(status.body.feedback_requested,false);
+  }
+  assert.equal((await consentRequest(3,{feedback_requested:true,room_id:'week_10_pair_22'})).status,403,'consent is required to request');
+  assert.equal((await consentRequest(2,{feedback_requested:true,room_id:'week_10_pair_22'})).status,200);
+  assert.equal((await consentRequest(3,null,'week_10_pair_22')).body.feedback_requested,true);
+  assert.equal((await consentRequest(3,null,'week_10_pair_23')).body.feedback_requested,false);
+  assert.deepEqual(await counts(client),[1,0,0,0]);
+  assert.equal((await consentRequest(2,{ai_consent:false})).status,200);
+  assert.equal((await consentRequest(3,null,'week_10_pair_22')).body.feedback_requested,false);
+});
+
+test('Edit profile cancels a pending analysis confirmation so withdrawal revokes and the next analyze fails',async()=>{
+  const client=await ready();
+  assert.equal((await consentRequest(2,{ai_consent:true,room_id:'week_10_pair_21'})).status,200);
+  const doc=consentDocument(),responses=[];
+  const controller=consentController(doc,responses);
+  const pending=controller.prepare(()=>({transcript:'not sent',code:'latest',interviewer_questions:''}));
+  await until(()=>!doc.getElementById('aiAnalysisConfirm').hidden);
+  const staleSend=doc.button('Send to AI');
+  await controller.refreshProfile();
+  assert.equal(await pending,null);
+  assert.equal(doc.getElementById('aiAnalysisConfirm').hidden,true);
+  doc.getElementById('aiWithdrawConsent').click();
+  await until(()=>doc.button('Withdraw'));
+  staleSend.click(); // A cancelled confirmation cannot clear the withdrawal.
+  doc.button('Withdraw').click();
+  await until(()=>doc.getElementById('aiConsentStatus').textContent.includes('consent withdrawn'));
+  assert.equal(responses.at(-1).status,200);
+  assert.equal(responses.at(-1).body.consented,false);
+  assert.ok((await client.execute('SELECT revoked_at FROM ai_consents WHERE user_id=2')).rows[0].revoked_at);
+  assert.equal((await analysisRequest('week_10_pair_21')).status,403);
+  assert.deepEqual(await counts(client),[1,0,0,0]);
+});
+
+test('confirmation counts match every captured Groq/OpenAI payload, including retries, and latest code survives',async()=>{
+  const raw={transcript:'notes '.repeat(5000),code:JSON.stringify(Array.from({length:6},(_,i)=>({marker:`snapshot-${i}`,code:'x'.repeat(3500)})))+'\nLATEST:\n'+'latest-code-marker\n'+'y'.repeat(6500),interviewer_questions:'questions '.repeat(600)};
+  const payload=normalizeAnalysisPayload(raw),confirmation=confirmationText(payload);
+  const disclosed=confirmation.match(/notes \((\d+) characters\), code \((\d+) snapshots \+ latest code, (\d+) characters\) and interviewer questions \((\d+) characters\)/).slice(1).map(Number);
+  assert.ok(disclosed[1]>0 && disclosed[1]<6);
+  for(const mode of ['groq','openai','retry','fallback']){
+    const client=await ready();
+    assert.equal((await consentRequest(2,{ai_consent:true,room_id:'week_10_pair_21'})).status,200);
+    const doc=consentDocument(),controller=consentController(doc);
+    const pending=controller.prepare(()=>raw);
+    await until(()=>!doc.getElementById('aiAnalysisConfirm').hidden);
+    assert.ok(doc.getElementById('aiAnalysisConfirm').textContent.startsWith(confirmation));
+    doc.button('Send to AI').click();
+    const confirmed=await pending;
+    assert.deepEqual(confirmed,{...payload,ai_consent:true});
+    if(mode!=='openai') process.env.GROQ_API_KEY='test';
+    if(mode==='openai'||mode==='fallback') process.env.OPENAI_API_KEY='test';
+    const captured=[];
+    globalThis.fetch=async(url,options)=>{
+      const prompt=JSON.parse(options.body).messages.at(-1).content;
+      captured.push(prompt);
+      if((mode==='retry'&&captured.length===1)||(mode==='fallback'&&String(url).includes('groq'))) return new Response('{}',{status:503});
+      return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({candidate:{strengths:[],improvements:[]},interviewer:{strengths:[],improvements:[]},overall_score:7,next_time_checklist:[]})}}]}));
+    };
+    const result=await invoke({method:'POST',url:'/api/ai/analyze',headers:{'x-test-user':'2'},body:{...confirmed,room_id:'week_10_pair_21'}});
+    assert.equal(result.status,200,mode);
+    assert.equal(captured.length,{groq:1,openai:1,retry:2,fallback:3}[mode]);
+    for(const prompt of captured){
+      const notes=prompt.split('TRANSCRIPT:\n')[1].split('\nCODE:\n')[0];
+      const code=prompt.split('\nCODE:\n')[1].split('\nINTERVIEWER QS:\n')[0];
+      const questions=prompt.split('\nINTERVIEWER QS:\n')[1].split('\nProduce STRICT JSON only:')[0];
+      const [snapshots,latest]=code.split('\nLATEST:\n');
+      assert.deepEqual([notes.length,JSON.parse(snapshots).length,latest.length,questions.length],disclosed,mode);
+      assert.equal(code,payload.code,mode);
+      assert.ok(latest.startsWith('latest-code-marker\n'),mode);
+      assert.ok(latest.endsWith('y'.repeat(6500)),mode);
+    }
+    client.close(); activeDb=null;
+    delete process.env.GROQ_API_KEY; delete process.env.OPENAI_API_KEY;
+  }
 });
 
 test('atomic feedback insert refuses caller or partner consent revoked during provider work, keeping quota consumed',async()=>{

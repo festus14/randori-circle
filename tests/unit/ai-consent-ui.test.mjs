@@ -2,15 +2,27 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import {COPY,confirmationText,partnerState,aiErrorText} from '../../assets/ai-consent.js';
+import {normalizeAnalysisPayload} from '../../assets/ai-consent.js';
 
 test('per-analysis disclosure counts the payload and identifies providers and excluded data',()=>{
-  assert.equal(confirmationText({transcript:'session notes'},3),"Send this session's notes (13 characters), code (3 snapshots + latest code) and interviewer questions to Groq / OpenAI for feedback?");
+  assert.equal(confirmationText({transcript:'session notes',code:JSON.stringify(['a','b','c'])+'\nLATEST:\nlatest',interviewer_questions:'why?'}),"Send this session's notes (13 characters), code (3 snapshots + latest code, 6 characters) and interviewer questions (4 characters) to Groq / OpenAI for feedback?");
   assert.equal(partnerState(0),'Your partner has allowed AI feedback.');
   assert.equal(partnerState(1),'Waiting for 1 participant to allow AI feedback…');
   assert.equal(partnerState(2),'Waiting for 2 participants to allow AI feedback…');
   assert.match(COPY.personal,/name or email, or your chat messages or whiteboard/);
   assert.match(COPY.personal,/notes, code and feedback will be kept while your account exists/);
   assert.match(COPY.excluded,/OpenAI is a backup to Groq/);
+});
+
+test('provider normalization keeps latest code, complete escaped snapshots, and is idempotent at the limits',()=>{
+  for(const latest of ['latest', 'x'.repeat(11990), 'x'.repeat(13000)]){
+    const normalized=normalizeAnalysisPayload({transcript:'n'.repeat(19000),code:JSON.stringify([{code:'"\\\n'.repeat(2000)},{code:'small'}])+'\nLATEST:\n'+latest,interviewer_questions:'q'.repeat(5000)});
+    assert.ok(normalized.code.length<=12000);
+    assert.ok(normalized.code.includes(latest.slice(0,11989)));
+    assert.equal(normalized.transcript.length,18000);
+    assert.equal(normalized.interviewer_questions.length,4000);
+    assert.deepEqual(normalizeAnalysisPayload(normalized),normalized);
+  }
 });
 
 test('consent error mapping distinguishes pending, unavailable, membership, quota and in-flight withdrawal',()=>{

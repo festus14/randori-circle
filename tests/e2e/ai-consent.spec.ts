@@ -38,7 +38,7 @@ test('requester consent and confirmation, partner banner, sticky withdrawal, and
     await owner.getByRole('dialog',{name:'Allow AI feedback on this session?'}).getByRole('button',{name:'Allow AI feedback',exact:true}).click();
     expect((await granted).status()).toBe(200);
     const confirm=owner.locator('#aiAnalysisConfirm');
-    await expect(confirm).toContainText('notes (32 characters), code (0 snapshots + latest code) and interviewer questions to Groq / OpenAI');
+    await expect(confirm).toContainText('notes (32 characters), code (0 snapshots + latest code, 30 characters) and interviewer questions (28 characters) to Groq / OpenAI');
     await expect(confirm).toContainText('Waiting for 1 participant');
     await expect(confirm).toContainText('name, email, chat messages and whiteboard are not sent');
     expect(analyzeCalls).toBe(0);
@@ -74,7 +74,11 @@ test('requester consent and confirmation, partner banner, sticky withdrawal, and
     await owner.locator('#aiFeedbackToggle').uncheck();
     expect((await json(owner,'/api/ai/consent')).body.consented).toBe(true);
     await owner.locator('#aiFeedbackToggle').check();
+    await owner.locator('#aiAnalyzeBtn').click();
+    await expect(confirm).toBeVisible();
+    const callsBeforeWithdrawal=analyzeCalls;
     await owner.locator('#aiConsentStatus a').click();
+    await expect(confirm).toBeHidden();
     await expect(owner.locator('#aiConsentProfile')).toContainText('You allowed AI feedback on');
     await owner.locator('#aiWithdrawConsent').click();
     const withdraw=owner.getByRole('dialog',{name:'Withdraw AI feedback consent?'});
@@ -83,6 +87,7 @@ test('requester consent and confirmation, partner banner, sticky withdrawal, and
     const revoked=owner.waitForResponse(pathIs('/api/ai/consent','POST'));
     await withdraw.getByRole('button',{name:'Withdraw',exact:true}).click();
     expect((await revoked).status()).toBe(200);
+    expect(analyzeCalls).toBe(callsBeforeWithdrawal);
     const future=await json(owner,'/api/ai/analyze','POST',{ai_consent:true,room_id:pair.room,transcript:'must not process'});
     expect(future.status).toBe(403);
     expect((await json(partner,'/api/ai/analyze','POST',{ai_consent:true,room_id:pair.room,transcript:'must not process partner'})).status).toBe(403);
