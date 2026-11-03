@@ -35,7 +35,7 @@ test('requester consent and confirmation, partner banner, sticky withdrawal, and
     await expect(owner.locator('#aiAnalyzeBtn')).toBeFocused();
     await owner.locator('#aiAnalyzeBtn').click();
     const granted=owner.waitForResponse(pathIs('/api/ai/consent','POST'));
-    await owner.getByRole('button',{name:'Allow AI feedback',exact:true}).click();
+    await owner.getByRole('dialog',{name:'Allow AI feedback on this session?'}).getByRole('button',{name:'Allow AI feedback',exact:true}).click();
     expect((await granted).status()).toBe(200);
     const confirm=owner.locator('#aiAnalysisConfirm');
     await expect(confirm).toContainText('notes (32 characters), code (0 snapshots + latest code) and interviewer questions to Groq / OpenAI');
@@ -96,7 +96,7 @@ test('requester consent and confirmation, partner banner, sticky withdrawal, and
     await waitForWorkspace(owner,pair.room); await openRoomPanel(owner,'notes');
     await owner.locator('#aiAnalyzeBtn').click();
     await expect(owner.getByRole('dialog',{name:'Allow AI feedback on this session?'})).toBeVisible();
-    await owner.getByRole('button',{name:'Allow AI feedback',exact:true}).click();
+    await owner.getByRole('dialog',{name:'Allow AI feedback on this session?'}).getByRole('button',{name:'Allow AI feedback',exact:true}).click();
     await expect(owner.locator('#aiAnalysisConfirm')).toBeVisible();
     expect((await json(owner,'/api/ai/consent')).body.consented).toBe(true);
     await owner.locator('#aiAnalysisConfirm').getByRole('button',{name:'Cancel'}).click();
