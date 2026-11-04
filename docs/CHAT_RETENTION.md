@@ -176,9 +176,13 @@ workflow (configure protected environments named exactly `staging` and
 | `staging_rehearsal_sha` | Owner-accepted commit SHA for the completed staging purge/restore rehearsal |
 | `production_dry_run_sha` | Owner-accepted commit SHA for the production read-only counts/timings artifact |
 
-The workflow supplies `--release-sha` from `github.sha` after its
-latest-default-branch check, `--target-stage` from the protected environment,
-and `--staging-rehearsal-sha` / `--production-dry-run-sha` from those inputs.
+The workflow pins checkout to the dispatch-time `github.sha`, verifies that
+checkout equals both that SHA and freshly fetched latest `main`, and supplies
+the verified checkout SHA as `--release-sha`. It takes `--target-stage` from the
+protected environment and `--staging-rehearsal-sha` / `--production-dry-run-sha`
+from those inputs.
+If `main` advances while protected-environment approval is pending, the run
+refuses execution. Obtain accepted evidence for the new release and redispatch.
 Both accepted evidence SHAs must match that exact
 reviewed release for a production purge; missing, stale, or malformed values
 fail before enqueue/claim. A new release requires new accepted evidence. Leave
