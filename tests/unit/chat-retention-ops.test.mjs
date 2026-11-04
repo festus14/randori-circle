@@ -23,6 +23,13 @@ test('the protected retention workflow is manual, serialized, latest-main only, 
   assert.match(workflow,/test "\$\(git rev-parse HEAD\)" = "\$\(git rev-parse "origin\/\$\{DEFAULT_BRANCH\}"\)"/);
   assert.match(workflow,/PURGE_EXPIRED_CHAT/);
   assert.match(workflow,/CHAT_RETENTION_ENABLED: \$\{\{ vars\.CHAT_RETENTION_ENABLED \}\}/);
+  assert.match(workflow,/inputs\.operation == 'dry-run' && 'dry_run'/);
+  assert.match(workflow,/retention_release_sha: \$\{\{ github\.sha \}\}/);
+  assert.match(workflow,/retention_target_stage: \$\{\{ inputs\.environment \}\}/);
+  assert.match(workflow,/retention_staging_rehearsal_sha: \$\{\{ inputs\.staging_rehearsal_sha \}\}/);
+  assert.match(workflow,/retention_production_dry_run_sha: \$\{\{ inputs\.production_dry_run_sha \}\}/);
+  assert.match(workflow,/--staging-rehearsal-sha "\$\{retention_staging_rehearsal_sha\}"/);
+  assert.match(workflow,/--production-dry-run-sha "\$\{retention_production_dry_run_sha\}"/);
   assert.match(workflow,/CHAT_RETENTION_SCOPE_KEY: \$\{\{ secrets\.CHAT_RETENTION_SCOPE_KEY \}\}/);
   assert.match(workflow,/CHAT_RETENTION_BACKUP_SOURCE_MAX_MESSAGE_ID: \$\{\{ secrets\./);
   assert.match(workflow,/CHAT_RETENTION_EXPORT_SOURCE_MAX_MESSAGE_ID: \$\{\{ secrets\./);

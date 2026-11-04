@@ -35,6 +35,14 @@ on:
         description: Exact operation confirmation phrase from the runbook
         required: true
         type: string
+      staging_rehearsal_sha:
+        description: Owner-accepted staging purge/restore commit SHA (required for production purge)
+        required: false
+        type: string
+      production_dry_run_sha:
+        description: Owner-accepted counts/timings production dry-run commit SHA (required for production purge)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -98,9 +106,13 @@ jobs:
         id: retention
         shell: bash
         env:
-          CHAT_RETENTION_ACTION: ${{ inputs.operation == 'dry-run' && 'run' || inputs.operation == 'purge' && 'run' || inputs.operation }}
+          CHAT_RETENTION_ACTION: ${{ inputs.operation == 'dry-run' && 'dry_run' || inputs.operation == 'purge' && 'run' || inputs.operation }}
           CHAT_RETENTION_MODE: ${{ inputs.operation == 'purge' && 'purge' || 'dry_run' }}
           CHAT_RETENTION_ENABLED: ${{ vars.CHAT_RETENTION_ENABLED }}
+          retention_target_stage: ${{ inputs.environment }}
+          retention_release_sha: ${{ github.sha }}
+          retention_staging_rehearsal_sha: ${{ inputs.staging_rehearsal_sha }}
+          retention_production_dry_run_sha: ${{ inputs.production_dry_run_sha }}
           CHAT_RETENTION_EXPECTED_GENERATION: ${{ vars.CHAT_RETENTION_EXPECTED_GENERATION }}
           CHAT_RETENTION_SCOPE_KEY: ${{ secrets.CHAT_RETENTION_SCOPE_KEY }}
           CHAT_RETENTION_CIRCLE_ID: ${{ secrets.CHAT_RETENTION_CIRCLE_ID }}
@@ -124,7 +136,11 @@ jobs:
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/chat-retention"
           timeout --signal=TERM --kill-after=30s 10m \
-            node scripts/chat-retention.mjs ${{ inputs.storage == 'secondary' && '--secondary-workspace' || '' }} > "${RUNNER_TEMP}/chat-retention/result.json"
+            node scripts/chat-retention.mjs ${{ inputs.storage == 'secondary' && '--secondary-workspace' || '' }} \
+              --target-stage "${retention_target_stage}" --release-sha "${retention_release_sha}" \
+              --staging-rehearsal-sha "${retention_staging_rehearsal_sha}" \
+              --production-dry-run-sha "${retention_production_dry_run_sha}" \
+              > "${RUNNER_TEMP}/chat-retention/result.json"
           cat "${RUNNER_TEMP}/chat-retention/result.json"
 
       - name: Upload count-only retention evidence

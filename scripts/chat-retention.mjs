@@ -1,10 +1,12 @@
 import { createClient } from '@libsql/client';
 import { pathToFileURL } from 'node:url';
+import { parseArgs } from 'node:util';
 
 import {
   adoptChatRetentionScope,
   chatRetentionRuntimeConfig,
   ChatRetentionError,
+  dryRunChatRetention,
   enqueueNextChatRetentionRun,
   ensureChatRetentionReadiness,
   placeChatRetentionHold,
@@ -19,8 +21,17 @@ import { inspectMigrationState, prepareMigrationConnection } from '../db/migrati
 import { secondaryChatRetentionClient } from '../api/_secondary-chat-retention.js';
 
 const ACTIONS=new Set([
-  'status','run','enable','disable','adopt_scope','hold_tenant','hold_room','release_tenant','release_room','replay',
+  'status','dry_run','run','enable','disable','adopt_scope','hold_tenant','hold_room','release_tenant','release_room','replay',
 ]);
+
+function requirePurgeGates({targetStage,releaseSha,stagingRehearsalSha,productionDryRunSha}={}){
+  if(targetStage==='staging') return;
+  const release=String(releaseSha||'');
+  if(targetStage!=='production'||!/^[a-f0-9]{40}$/.test(release)
+    ||stagingRehearsalSha!==release||productionDryRunSha!==release){
+    throw new ChatRetentionError('RETENTION_REHEARSAL_GATE_REQUIRED');
+  }
+}
 
 function positiveInteger(value,label,{allowZero=false}={}){
   const number=Number(value);
@@ -75,7 +86,8 @@ function publicError(error){
   return /^[A-Z][A-Z0-9_]{0,63}$/.test(code)?code:'RETENTION_COMMAND_FAILED';
 }
 
-export async function runChatRetentionCli({env=process.env,createDatabase=createClient,secondaryWorkspace=false}={}){
+export async function runChatRetentionCli({env=process.env,createDatabase=createClient,
+  secondaryWorkspace=false,purgeGates}={}){
   const action=String(env.CHAT_RETENTION_ACTION||'status').trim().toLowerCase().replaceAll('-','_');
   if(!ACTIONS.has(action)) throw new TypeError('invalid retention action');
   const url=required(env.TURSO_DATABASE_URL,'database URL');
@@ -91,6 +103,13 @@ export async function runChatRetentionCli({env=process.env,createDatabase=create
     if(secondaryWorkspace)db=secondaryChatRetentionClient(rawDb);
     await ensureChatRetentionReadiness(db);
     if(action==='status') return Object.freeze({ok:true,action,metrics:await readChatRetentionMetrics(db)});
+    if(action==='dry_run'){
+      return Object.freeze({ok:true,action,mode:'dry_run',enqueued:false,
+        preview:await dryRunChatRetention(db,{
+          scope:scopeFromEnvironment(env),...gateFromEnvironment(env),
+        }),
+      });
+    }
     if(action==='enable'||action==='disable'){
       const result=await setChatRetentionControl(db,{
         enabled:action==='enable',
@@ -138,11 +157,13 @@ export async function runChatRetentionCli({env=process.env,createDatabase=create
       });
     }
     const gate=gateFromEnvironment(env);
+    const requestedScope=scopeFromEnvironment(env);
+    if(config.mode==='purge') requirePurgeGates(purgeGates);
     const enqueued=await enqueueNextChatRetentionRun(db,{
-      mode:config.mode,scope:scopeFromEnvironment(env),...gate,
+      mode:config.mode,scope:requestedScope,...gate,
     });
     const worker=await runChatRetentionWorker({
-      db,workerId:'retention-worker',enabled:config.enabled,mode:config.mode,
+      db,workerId:'retention-worker',enabled:config.enabled,mode:config.mode,scope:requestedScope,
     });
     return Object.freeze({
       ok:true,action,mode:config.mode,enqueued:enqueued.created,
@@ -155,7 +176,15 @@ export async function runChatRetentionCli({env=process.env,createDatabase=create
 
 async function main(){
   try{
-    const result=await runChatRetentionCli({secondaryWorkspace:process.argv.includes('--secondary-workspace')});
+    const {values}=parseArgs({options:{
+      'secondary-workspace':{type:'boolean',default:false},
+      'target-stage':{type:'string'},'release-sha':{type:'string'},
+      'staging-rehearsal-sha':{type:'string'},'production-dry-run-sha':{type:'string'},
+    }});
+    const result=await runChatRetentionCli({secondaryWorkspace:values['secondary-workspace'],purgeGates:{
+      targetStage:values['target-stage'],releaseSha:values['release-sha'],
+      stagingRehearsalSha:values['staging-rehearsal-sha'],productionDryRunSha:values['production-dry-run-sha'],
+    }});
     process.stdout.write(`${JSON.stringify(result)}\n`);
   }catch(error){
     process.stderr.write(`${JSON.stringify({ok:false,error_code:publicError(error)})}\n`);

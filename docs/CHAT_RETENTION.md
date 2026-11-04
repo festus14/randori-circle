@@ -8,6 +8,12 @@ Escalation: database reliability and privacy/legal
 
 Policy: `private-beta-v1`, 90 days
 
+Owner decision (4 November 2026): build the #53 bounded workflow with the
+approved 90-day window, replacing #407's blunt purge. Keep purging disabled.
+This is app-database chat retention, independent of #450/#457's 24-hour
+deletion-ledger retention job. This change reuses the existing v11 (primary)
+and secondary retention schema; it introduces no migration.
+
 ## User-facing policy
 
 Pair-chat content is retained in the active database for 90 days from its
@@ -17,6 +23,11 @@ cutoff; a message exactly on the cutoff remains. Invalid or future timestamps,
 unmapped legacy rooms, and rooms under an active tenant or room hold are
 preserved and surfaced only as aggregate anomaly counts. The existing
 10,000-message room cap remains in force, including for held content.
+
+The cutoff is midnight UTC 90 days before the database's current date. Rounding
+down preserves a partial day's messages conservatively and gives a stable daily
+run identity; an 89-day-old row stays, a 91-day-old row is eligible. Worker host
+time cannot advance expiry.
 
 This policy covers pair-chat messages only. Workspace snapshots, run history,
 email events, provider backups, and private exports keep their separate
@@ -69,9 +80,26 @@ failures use bounded backoff; corrupt scope/timestamp/evidence state dead-letter
 with a fixed reason code. Replay is explicit, reason-coded, and rechecks every
 current safety gate.
 
+The operator CLI also binds the worker's claim to the requested tenant and
+session, so an older queued job in another room cannot be processed by that
+dispatch. Repeating a completed run with the same evidence is a no-op, and
+audit counts remain intact. `status` includes aggregate dead-letter counts by
+fixed error code; identifying a run for explicit replay stays a private operator
+database operation, never a public artifact.
+
 Dry run is a separate read/update path and never executes message deletion. It
 uses the same chronological eligibility, ownership, hold, and fixed-cutoff
 conditions, scans at most 100 rows per batch, and records count-only progress.
+
+The explicit `dry-run` workflow operation / `CHAT_RETENTION_ACTION=dry_run`
+instead uses a read-only snapshot and works with both retention switches off.
+It validates the same room, evidence high-water, cutoff, timestamps, and holds,
+then scans at most the existing room cap plus one overflow sentinel. Overflow
+fails closed. It returns only eligible/scanned/held/deleted counts, status, and
+elapsed milliseconds, with `deleted=0`. It does not enqueue, claim, update
+checkpoints, enable control, or alter audit rows. Repeating it reports the same
+counts for unchanged data. The older `run` action remains the durable worker
+path and requires enabled control even in its `dry_run` mode.
 
 ## Backup and export ordering
 
@@ -124,7 +152,11 @@ Before the first destructive production run:
    timestamp anomaly.
 4. Create synthetic staging rooms containing boundary, held, unmapped, and
    multi-batch data. Complete a private export, then a provider backup. Run
-   `dry-run` and require the reviewed count to match an independent read.
+   `dry-run` with both switches still off and require the reviewed count to match
+   an independent read. Verify messages, control, runs, holds, and audit rows
+   before/after: the rehearsal must change none of them. Held rooms report zero
+   eligible rows; mismatched evidence, unmapped rooms, invalid/future timestamps,
+   and room-cap overflow fail closed.
 5. Enable the database control with the expected generation, set the deployment
    switch, rerun the staging dry run, then purge only synthetic staging data.
    Verify message counts, unchanged held/unmapped rows, lease/audit state, and
@@ -133,6 +165,46 @@ Before the first destructive production run:
    Record the sanitized artifact and obtain the issue owner acknowledgement
    before a separately dispatched bounded purge. Automation/cadence remains off
    until this first evidence is accepted.
+
+Production purge additionally requires these inputs on the protected manual
+workflow (configure protected environments named exactly `staging` and
+`production`):
+
+| Workflow input | Value |
+| --- | --- |
+| `environment` | `staging` for synthetic staging runs; `production` for production |
+| `staging_rehearsal_sha` | Owner-accepted commit SHA for the completed staging purge/restore rehearsal |
+| `production_dry_run_sha` | Owner-accepted commit SHA for the production read-only counts/timings artifact |
+
+The workflow supplies `--release-sha` from `github.sha` after its
+latest-default-branch check, `--target-stage` from the protected environment,
+and `--staging-rehearsal-sha` / `--production-dry-run-sha` from those inputs.
+Both accepted evidence SHAs must match that exact
+reviewed release for a production purge; missing, stale, or malformed values
+fail before enqueue/claim. A new release requires new accepted evidence. Leave
+these acceptance inputs empty until the owner reviews the actual artifacts.
+Acceptance does not enable either kill switch. Status and explicit read-only
+dry runs do not require acceptance or enabled switches.
+
+For a private operator shell configured with an **isolated synthetic staging**
+database and scope/evidence variables, the equivalent inspection command is:
+
+```sh
+CHAT_RETENTION_ACTION=dry_run CHAT_RETENTION_ENABLED=false \
+  node scripts/chat-retention.mjs
+```
+
+Use `--secondary-workspace` for the secondary storage family; primary and
+secondary runs/control/holds/audit remain independent. Never copy content,
+scope identifiers, evidence envelopes, credentials, or SQL into GitHub artifacts.
+After a staging purge, independently reconcile the deleted count with the
+durable audit sum, repeat the worker and require zero extra deletes, and restore
+the pre-purge recovery point into another isolated database. Verify the original
+message count privately, overlay current holds, and follow restore reconciliation
+below. Record only counts, timings, statuses, and fixed codes for owner review.
+
+No production rehearsal or purge was dispatched by this implementation change.
+The production dry run is an owner-operated gate after staging acceptance.
 
 Required environment configuration is documented in `.env.example`. The
 workflow confirmation phrases are intentionally distinct for inspection,

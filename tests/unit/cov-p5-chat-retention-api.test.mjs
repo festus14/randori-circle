@@ -15,6 +15,7 @@ import {
   chatRetentionScopeRegistrationAvailable,
   chatRetentionScopeRegistrationStatement,
   claimChatRetentionRun,
+  dryRunChatRetention,
   enqueueNextChatRetentionRun,
   ensureChatRetentionReadiness,
   heartbeatChatRetentionLease,
@@ -671,6 +672,7 @@ test('metrics tolerate missing result rows and report defaults',async()=>{
   const metrics=await readChatRetentionMetrics(empty);
   assert.deepEqual(metrics.runs,[]);
   assert.deepEqual(metrics.holds,[]);
+  assert.deepEqual(metrics.deadLetters,[]);
   assert.equal(metrics.control.present,false);
   assert.deepEqual(metrics.anomalies,{
     unmappedCount:0,unmappedCountCapped:false,invalidTimestampCount:0,invalidTimestampCountCapped:false,
@@ -684,4 +686,50 @@ test('metrics tolerate missing result rows and report defaults',async()=>{
   assert.equal(cappedMetrics.anomalies.futureTimestampCountCapped,true);
   assert.deepEqual(cappedMetrics.runs,[{mode:'purge',status:'completed',count:1,eligibleCount:0,deletedCount:0,
     oldestCreatedAt:''}]);
+});
+
+test('read-only rehearsal fails closed on missing ownership, source anchors and incomplete database results',async()=>{
+  await withFixture(async db=>{
+    const {request}=await seedRoom(db);
+    const before=(await db.execute('SELECT * FROM pair_messages')).rows;
+    for(const [fragment,code] of [
+      ['FROM chat_retention_scopes','RETENTION_SCOPE_CHANGED'],
+      ['FROM pair_messages WHERE id=','RETENTION_EVIDENCE_SOURCE_MISMATCH'],
+      ['AS scanned','RETENTION_RUN_INTEGRITY'],
+      ['AS active','RETENTION_RUN_INTEGRITY'],
+    ]){
+      const missing=faultDb(db,{tx:sql=>sql.includes(fragment)?{rows:[]}:undefined});
+      await assert.rejects(()=>dryRunChatRetention(missing,request),isCode(code));
+    }
+    assert.deepEqual((await db.execute('SELECT * FROM pair_messages')).rows,before);
+    assert.equal((await db.execute('SELECT COUNT(*) AS count FROM chat_retention_runs')).rows[0].count,0);
+    assert.equal((await db.execute('SELECT COUNT(*) AS count FROM chat_retention_control')).rows[0].count,0);
+  });
+});
+
+test('a rehearsal detects real room-cap overflow without truncating counts or authorizing a purge',async()=>{
+  await withFixture(async db=>{
+    const {dbClock}=await seedRoom(db);
+    // Exercise the cap against real SQLite rows in one statement, with no
+    // worker fan-out and no application content reads.
+    await db.execute({
+      sql:`WITH RECURSIVE ids(id) AS (SELECT 2 UNION ALL SELECT id+1 FROM ids WHERE id<10001)
+        INSERT INTO pair_messages (id,week_id,pair_group_id,sender_id,message,created_at)
+        SELECT id,10,20,2,'synthetic-cap-fixture',? FROM ids`,args:[dbClock.cutoff],
+    });
+    await assert.rejects(()=>dryRunChatRetention(db,evidenceFor(SCOPE,dbClock,10001)),
+      isCode('RETENTION_ROOM_CAP_EXCEEDED'));
+    assert.equal(await messageCount(db),10001);
+    assert.equal((await db.execute('SELECT COUNT(*) AS count FROM chat_retention_audit_events')).rows[0].count,0);
+  });
+});
+
+test('dead-letter metrics allow only fixed reason codes, never private raw error text',async()=>{
+  await withFixture(async db=>{
+    await enqueued(db);
+    await db.execute(`UPDATE chat_retention_runs SET status='dead_letter',last_error_code='PRIVATE_ERROR_CONTENT'`);
+    const metrics=await readChatRetentionMetrics(db);
+    assert.deepEqual(metrics.deadLetters,[{reasonCode:'RETENTION_FAILED',count:1}]);
+    assert.doesNotMatch(JSON.stringify(metrics),/PRIVATE_ERROR_CONTENT|private-1|circle:/);
+  });
 });
