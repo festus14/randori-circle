@@ -201,13 +201,19 @@ From `vercel.json`, applied to `/(.*)`:
 
 ### 3.4 Active-circle context
 
-With the multi-circle flags off in production, every private route
+With the multi-circle flags off, every private route
 operates on the single primary circle. When
 `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` is on, a session carries a
 circle context (`auth_session_circle_contexts`, at most
 `MAX_CIRCLES_PER_ACCOUNT = 100` circles per account) and routes
 validate that context before touching circle-scoped data. See
 [ACTIVE_CIRCLE_CONTEXT.md](ACTIVE_CIRCLE_CONTEXT.md).
+`SECONDARY_CIRCLE_WORKSPACE_ENABLED=true` is configured On, owner-confirmed; effectively disabled by prerequisites
+(2026-11-04). The owner confirmed the configuration after v25 application;
+the independent reviewer's capabilities probe omitted the prerequisite and
+workspace capabilities. Secondary rooms, video and execution remain disabled;
+readiness HTTP 200 does not establish operational go-live. See the
+[configuration and effective-gate record](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04).
 
 ### 3.5 Authorization patterns
 
@@ -511,18 +517,23 @@ sequenceDiagram
 
 Every flag the code checks is listed in
 [ENVIRONMENT.md](ENVIRONMENT.md#feature-flags), with production state
-as of 2026-11-03 (`FEEDBACK_ENABLED` re-verified and
-`ACCOUNT_DELETION_GRACE_ENABLED` enabled by the owner on that date;
-other flags retain the evidence recorded in `ENVIRONMENT.md`).
+in a snapshot updated on 2026-11-04 for the owner-confirmed
+`SECONDARY_CIRCLE_WORKSPACE_ENABLED` configuration: configured On, owner-confirmed; effectively disabled by prerequisites.
+The independent reviewer's capabilities probe corroborated the recorded disabled
+control-plane, availability and coordination gates. `FEEDBACK_ENABLED` was re-verified
+and `ACCOUNT_DELETION_GRACE_ENABLED` enabled by the owner on 2026-11-03;
+other flags retain their older evidence recorded in `ENVIRONMENT.md` and were
+not re-verified by this update.
 This table mirrors that source; if the two disagree, `ENVIRONMENT.md`
 wins. `*_ENABLED` flags are on only for the exact string `true`.
 
-| Flag | Gates | Production (as of 2026-11-03, per ENVIRONMENT.md) |
+| Flag | Gates | Production (snapshot updated 2026-11-04, per ENVIRONMENT.md) |
 | --- | --- | --- |
 | `CIRCLE_MEMBERSHIP_ENABLED` | Invitation-gated primary-circle membership; everything below that depends on it | On |
 | `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` | Creating / selecting / archiving secondary circles | Off |
 | `MULTI_CIRCLE_AVAILABILITY_ENABLED` | Dated availability in the selected active circle | Off in effect |
 | `SECONDARY_CIRCLE_COORDINATION_ENABLED` | Weekly pairing in a selected secondary circle | Off in effect |
+| `SECONDARY_CIRCLE_WORKSPACE_ENABLED` | Room, chat, execution, recap, completion, code documents, video and active-circle History for secondary circles; requires coordination and applied v25 | configured On, owner-confirmed; effectively disabled by prerequisites (2026-11-04; [configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)) |
 | `SECONDARY_CIRCLE_SCHEDULING_ENABLED` | Propose / accept / clear a time for a secondary pair | Off in effect |
 | `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED` | Dashboard-only pairing emails for secondary publications | Off in effect |
 | `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` | Dashboard-only schedule emails for secondary schedules | Off in effect |

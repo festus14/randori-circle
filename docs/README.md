@@ -56,9 +56,9 @@ rings are under [Operations runbooks](#operations-runbooks).
 | [MEMBER_LIFECYCLE.md](MEMBER_LIFECYCLE.md) | Leaving, deactivation, reactivation, ownership transfer, co-owners and app admins (ID-12, ID-69) |
 | [INVITE_REQUESTS.md](INVITE_REQUESTS.md) | Public "Request an invite" intake and owner review, without enumeration (migration v21, ID-66) |
 | [FEEDBACK.md](FEEDBACK.md) | Product feedback from members to the people running Randori: bug reports, feature requests and general feedback (migration v22, ID-91) |
-| [ACTIVE_CIRCLE_CONTEXT.md](ACTIVE_CIRCLE_CONTEXT.md) | The selected-circle control plane and its rollout and rollback order (ID-21). Behind flags that are off in production |
-| [CIRCLE_CREATION.md](CIRCLE_CREATION.md) | Creating and selecting a secondary circle as one idempotent operation (ID-29). Off in production |
-| [CIRCLE_ARCHIVE.md](CIRCLE_ARCHIVE.md) | Soft-archiving a secondary circle with recent auth and safe fallback (ID-38). Off in production |
+| [ACTIVE_CIRCLE_CONTEXT.md](ACTIVE_CIRCLE_CONTEXT.md) | The selected-circle control plane and its rollout and rollback order (ID-21). Production flag provenance is in [ENVIRONMENT.md](ENVIRONMENT.md#feature-flags) |
+| [CIRCLE_CREATION.md](CIRCLE_CREATION.md) | Creating and selecting a secondary circle as one idempotent operation (ID-29). Production flag provenance is in [ENVIRONMENT.md](ENVIRONMENT.md#feature-flags) |
+| [CIRCLE_ARCHIVE.md](CIRCLE_ARCHIVE.md) | Soft-archiving a secondary circle with recent auth and safe fallback (ID-38). Production flag provenance is in [ENVIRONMENT.md](ENVIRONMENT.md#feature-flags) |
 
 ## Pairing
 
@@ -67,7 +67,7 @@ rings are under [Operations runbooks](#operations-runbooks).
 | [EXPLICIT_CYCLE_AVAILABILITY.md](EXPLICIT_CYCLE_AVAILABILITY.md) | The explicit "Available" or "Skip this cycle" decision for the upcoming cycle (ID-56) |
 | [PAIRING_PUBLICATION_TOTALITY.md](PAIRING_PUBLICATION_TOTALITY.md) | Weekly publication admitted only on Sunday 08:00 to 10:00 UTC by database time (ID-50) |
 | [PAIRING_PUBLICATION_RECOVERY.md](PAIRING_PUBLICATION_RECOVERY.md) | Showing a missing weekly pairing from server state and the owner's one recovery action (ID-51) |
-| [SELECTED_CIRCLE_PAIRING.md](SELECTED_CIRCLE_PAIRING.md) | Pairing coordination in a selected secondary circle without workspace access (ID-26). Off in production |
+| [SELECTED_CIRCLE_PAIRING.md](SELECTED_CIRCLE_PAIRING.md) | Pairing coordination in a selected secondary circle (ID-26); the separate workspace flag is configured On, owner-confirmed; effectively disabled by prerequisites ([configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)) |
 
 ## Scheduling
 
@@ -198,4 +198,4 @@ exists, so they could not be regenerated verifiably.
 | --- | --- |
 | [PRODUCTION_ARCHITECTURE_PLAN.md](PRODUCTION_ARCHITECTURE_PLAN.md) | A possible Next.js/PostgreSQL end state and delivery plan. **Note:** a proposal, not the current runtime (Vercel functions plus Turso). Superseded for current-runtime questions by [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) |
 
-- [Secondary circle workspace and owner cutover](SECONDARY_WORKSPACE.md) — issue #438, breaking v25, scoped room and History, parallel retention.
+- [Secondary circle workspace and owner cutover](SECONDARY_WORKSPACE.md) — issue #438, v25 applied; workspace flag configured On, owner-confirmed; effectively disabled by prerequisites (2026-11-04), scoped room and History implementation, parallel retention.

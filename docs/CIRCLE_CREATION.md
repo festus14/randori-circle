@@ -105,5 +105,7 @@ legacy tables.
 - Audit dedupe alone cannot bind the exact name, session, and returned context.
 - Eager availability/pairing defaults conflict with the existing lazy cycle
   contract and would create unnecessary data.
-- Full secondary workspace creation remains deferred until every workspace
-  table and authorization edge is canonically circle-owned.
+- Secondary workspace storage and authorization are now circle-owned in parallel
+  tables under v25; the separate workspace flag is configured On, owner-confirmed; effectively disabled by prerequisites
+  (2026-11-04; [configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)). Circle creation
+  still follows the lazy-cycle contract above.
