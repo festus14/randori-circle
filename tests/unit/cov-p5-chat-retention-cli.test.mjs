@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { createClient } from '@libsql/client';
 
-import { chatRetentionEvidenceBindingDigest } from '../../api/_chat-retention.js';
+import { chatRetentionEvidenceBindingDigest, enqueueNextChatRetentionRun,
+  setChatRetentionControl } from '../../api/_chat-retention.js';
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { runChatRetentionCli } from '../../scripts/chat-retention.mjs';
 import { copyMigratedDatabase } from '../support/migrated-db.mjs';
@@ -38,7 +39,7 @@ async function fixture({migrate=true}={}){
   };
   return {
     db,url,opened,
-    cli:(env)=>runChatRetentionCli({env:{TURSO_DATABASE_URL:url,...env},createDatabase}),
+    cli:(env,purgeGates)=>runChatRetentionCli({env:{TURSO_DATABASE_URL:url,...env},createDatabase,purgeGates}),
     close(){ db.close(); rmSync(directory,{recursive:true,force:true}); },
   };
 }
@@ -216,7 +217,8 @@ test('an enabled run demands complete backup and export evidence, then enqueues 
       sql:`INSERT INTO pair_messages (id,week_id,pair_group_id,sender_id,message,created_at) VALUES (1,10,20,2,'old-private',?)`,
       args:[new Date(Date.parse(cutoff)-1000).toISOString()],
     });
-    const run={CHAT_RETENTION_ACTION:'run',CHAT_RETENTION_ENABLED:'true',CHAT_RETENTION_MODE:'purge',...SCOPE_ENV};
+    const run={CHAT_RETENTION_ACTION:'run',CHAT_RETENTION_ENABLED:'true',CHAT_RETENTION_MODE:'purge',
+      ...SCOPE_ENV};
     for(const [name,pattern] of [
       ['CHAT_RETENTION_BACKUP_EVIDENCE_DIGEST',/missing backup evidence digest/],
       ['CHAT_RETENTION_BACKUP_SCOPE_BINDING_DIGEST',/missing backup scope binding digest/],
@@ -236,7 +238,7 @@ test('an enabled run demands complete backup and export evidence, then enqueues 
     await assert.rejects(()=>item.cli({...gate,...run,CHAT_RETENTION_SCOPE_KEY:''}),isType(/missing retention scope/));
     assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM pair_messages`)).rows[0].count),1);
 
-    const result=await item.cli({...run,...gate});
+    const result=await item.cli({...run,...gate},{targetStage:'staging'});
     assert.equal(result.enqueued,true);
     assert.equal(result.mode,'purge');
     assert.deepEqual({status:result.worker.status,deleted:result.worker.deleted},{status:'completed',deleted:1});
@@ -256,4 +258,94 @@ test('the CLI entry point prints a fixed domain error code without leaking the d
     assert.deepEqual(JSON.parse(result.stderr),{ok:false,error_code:'RETENTION_SCHEMA_UNAVAILABLE'});
     assert.doesNotMatch(result.stderr,/cli\.sqlite|randori-cov/);
   },{migrate:false});
+});
+
+test('explicit dry-run reports scoped counts while both switches are off and creates no job or audit',async()=>{
+  await withFixture(async item=>{
+    await seedPairing(item.db);
+    await item.cli(LOCAL_ADOPT);
+    const {cutoff,env:gate}=await gateEnv(item.db);
+    await item.db.execute({
+      sql:`INSERT INTO pair_messages (id,week_id,pair_group_id,sender_id,message,created_at)
+        VALUES (1,10,20,2,'private-rehearsal',?)`,args:[new Date(Date.parse(cutoff)-1000).toISOString()],
+    });
+    const env={CHAT_RETENTION_ACTION:'dry-run',...SCOPE_ENV,...gate};
+    const before=(await item.db.execute('SELECT * FROM pair_messages')).rows;
+    for(let attempt=0;attempt<2;attempt+=1){
+      const result=await item.cli(env);
+      assert.equal(result.enqueued,false);
+      assert.equal(result.preview.eligible,1);
+      assert.equal(result.preview.deleted,0);
+      assert.equal(result.preview.status,'completed');
+      assert.ok(Number.isSafeInteger(result.preview.durationMs));
+      assert.doesNotMatch(JSON.stringify(result),/private-rehearsal|local|file:|scope|week|pair/i);
+    }
+    assert.deepEqual((await item.db.execute('SELECT * FROM pair_messages')).rows,before);
+    for(const table of ['chat_retention_control','chat_retention_runs','chat_retention_audit_events']){
+      assert.equal((await item.db.execute(`SELECT COUNT(*) AS count FROM ${table}`)).rows[0].count,0);
+    }
+    await assert.rejects(()=>item.cli({...env,CHAT_RETENTION_BACKUP_EVIDENCE_DIGEST:''}),isType(/missing backup/));
+  });
+});
+
+test('production purge requires accepted staging and dry-run evidence for the reviewed release SHA',async()=>{
+  await withFixture(async item=>{
+    await seedPairing(item.db);
+    await item.cli(LOCAL_ADOPT);
+    await item.cli({CHAT_RETENTION_ACTION:'enable',CHAT_RETENTION_EXPECTED_GENERATION:'0'});
+    const {cutoff,env:gate}=await gateEnv(item.db);
+    await item.db.execute({
+      sql:`INSERT INTO pair_messages (id,week_id,pair_group_id,sender_id,message,created_at)
+        VALUES (1,10,20,2,'private-production-fixture',?)`,args:[new Date(Date.parse(cutoff)-1000).toISOString()],
+    });
+    const release='c'.repeat(40);
+    const run={CHAT_RETENTION_ACTION:'run',CHAT_RETENTION_ENABLED:'true',CHAT_RETENTION_MODE:'purge',
+      ...SCOPE_ENV,...gate};
+    const accepted={targetStage:'production',releaseSha:release,stagingRehearsalSha:release,productionDryRunSha:release};
+    await assert.rejects(()=>item.cli(run),{code:'RETENTION_REHEARSAL_GATE_REQUIRED'});
+    for(const changed of [
+      {targetStage:undefined},{targetStage:'prod'},
+      {releaseSha:''},{releaseSha:'not-a-sha'},
+      {stagingRehearsalSha:undefined},{stagingRehearsalSha:'d'.repeat(40)},
+      {productionDryRunSha:undefined},{productionDryRunSha:'d'.repeat(40)},
+    ]){
+      await assert.rejects(()=>item.cli(run,{...accepted,...changed}),{code:'RETENTION_REHEARSAL_GATE_REQUIRED'});
+    }
+    assert.equal((await item.db.execute('SELECT COUNT(*) AS count FROM chat_retention_runs')).rows[0].count,0);
+    assert.equal((await item.db.execute('SELECT COUNT(*) AS count FROM pair_messages')).rows[0].count,1);
+    assert.equal((await item.cli(run,accepted)).worker.deleted,1);
+  });
+});
+
+test('the CLI resumes only the requested session even when another session was queued first',async()=>{
+  await withFixture(async item=>{
+    await seedPairing(item.db);
+    await item.cli(LOCAL_ADOPT);
+    await item.db.execute('INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id) VALUES (21,10,2,3)');
+    await item.cli({...LOCAL_ADOPT,CHAT_RETENTION_PAIR_GROUP_ID:'21'});
+    const {cutoff,env:gate}=await gateEnv(item.db);
+    await item.db.batch([
+      {sql:`INSERT INTO pair_messages (id,week_id,pair_group_id,sender_id,message,created_at)
+        VALUES (1,10,20,2,'target',?),(2,10,21,2,'other-session',?)`,
+      args:[new Date(Date.parse(cutoff)-1000).toISOString(),new Date(Date.parse(cutoff)-1000).toISOString()]},
+    ],'write');
+    // Build a second evidence envelope without processing its queued job.
+    const scope={scopeKey:'local',circleId:null,weekId:10,pairGroupId:21};
+    const backup={digest:gate.CHAT_RETENTION_BACKUP_EVIDENCE_DIGEST,
+      throughAt:gate.CHAT_RETENTION_BACKUP_THROUGH_AT,completedAt:gate.CHAT_RETENTION_BACKUP_COMPLETED_AT,
+      sourceMaxMessageId:2};
+    const exported={digest:gate.CHAT_RETENTION_EXPORT_EVIDENCE_DIGEST,
+      throughAt:gate.CHAT_RETENTION_EXPORT_THROUGH_AT,completedAt:gate.CHAT_RETENTION_EXPORT_COMPLETED_AT,
+      sourceMaxMessageId:2};
+    await setChatRetentionControl(item.db,{enabled:true,expectedGeneration:0});
+    await enqueueNextChatRetentionRun(item.db,{mode:'purge',scope,
+      backup:{...backup,scopeBindingDigest:chatRetentionEvidenceBindingDigest({kind:'backup',scope,...backup})},
+      exported:{...exported,scopeBindingDigest:chatRetentionEvidenceBindingDigest({kind:'export',scope,...exported})},
+    });
+    const run={CHAT_RETENTION_ACTION:'run',CHAT_RETENTION_MODE:'purge',CHAT_RETENTION_ENABLED:'true',
+      ...SCOPE_ENV,...gate};
+    assert.equal((await item.cli(run,{targetStage:'staging'})).worker.deleted,1);
+    assert.equal((await item.cli(run,{targetStage:'staging'})).worker.deleted,0);
+    assert.deepEqual((await item.db.execute('SELECT id,message FROM pair_messages')).rows,[{id:2,message:'other-session'}]);
+  });
 });

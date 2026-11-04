@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { MAX_MESSAGES_PER_ROOM } from './_messages.js';
 
 export const CHAT_RETENTION_POLICY=Object.freeze({
   version:'private-beta-v1',
@@ -15,6 +16,12 @@ const MODES=new Set(['dry_run','purge']);
 const ERROR_CODE_PATTERN=/^[A-Z][A-Z0-9_]{0,63}$/;
 const REPLAY_REASONS=new Set(['OPERATOR_RETRY','CONFIGURATION_FIXED','TRANSIENT_FAILURE_CLEARED']);
 const DIGEST_PATTERN=/^[a-f0-9]{64}$/;
+const DEAD_LETTER_REASONS=new Set([
+  'RETENTION_FAILED','RETENTION_SCOPE_CHANGED','RETENTION_EVIDENCE_CONFLICT',
+  'RETENTION_EVIDENCE_SOURCE_MISMATCH','RETENTION_EVIDENCE_SCOPE_MISMATCH',
+  'RETENTION_EVIDENCE_ORDER_INVALID','RETENTION_TIMESTAMP_INVALID','RETENTION_TIMESTAMP_FUTURE',
+  'RETENTION_DELETE_FENCED','RETENTION_LEASE_LOST',
+]);
 
 export class ChatRetentionError extends Error{
   constructor(code,{retryable=false,cause}={}){
@@ -568,10 +575,11 @@ function runFromRow(row){
 }
 
 export async function claimChatRetentionRun(db,{workerId:worker,mode:modeValue,
-  leaseDurationMs=CHAT_RETENTION_POLICY.leaseDurationMs}={}){
+  scope:scopeValue,leaseDurationMs=CHAT_RETENTION_POLICY.leaseDurationMs}={}){
   validateBatchDb(db);
   const owner=workerId(worker);
   const runMode=mode(modeValue);
+  const requestedScope=scopeValue===undefined?null:scope(scopeValue);
   const leaseMs=integer(leaseDurationMs,1_000,300_000,'retention lease');
   const modifier=`+${(leaseMs/1000).toFixed(3)} seconds`;
   for(let attempt=1;attempt<=4;attempt+=1){
@@ -590,6 +598,7 @@ export async function claimChatRetentionRun(db,{workerId:worker,mode:modeValue,
               AND scope.week_id=run.week_id AND scope.pair_group_id=run.pair_group_id
               AND scope.circle_id IS run.circle_id
             WHERE run.mode=? AND run.failure_count<run.max_failures
+              ${requestedScope?'AND run.scope_key=? AND run.circle_id IS ? AND run.week_id=? AND run.pair_group_id=?':''}
               AND run.next_attempt_at<=strftime('%Y-%m-%dT%H:%M:%fZ','now')
               AND (run.status IN ('pending','retry') OR
                 (run.status='processing' AND (run.leased_until<=strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -601,7 +610,9 @@ export async function claimChatRetentionRun(db,{workerId:worker,mode:modeValue,
             ORDER BY run.next_attempt_at,run.id LIMIT 1
           )`,
         args:[owner,leaseToken,modifier,CHAT_RETENTION_POLICY.version,
-          CHAT_RETENTION_POLICY.retentionDays,runMode],
+          CHAT_RETENTION_POLICY.retentionDays,runMode,
+          ...(requestedScope?[requestedScope.scopeKey,requestedScope.circleId,
+            requestedScope.weekId,requestedScope.pairGroupId]:[])],
       },{
         sql:`INSERT INTO chat_retention_audit_events
           (retention_run_id,action,from_status,to_status,item_count,duration_ms,reason_code)
@@ -883,7 +894,7 @@ async function failChatRetentionRun(db,run,error,{workerId:worker,
 }
 
 export async function runChatRetentionWorker({db,workerId:worker,enabled,
-  mode:modeValue,batchSize=CHAT_RETENTION_POLICY.batchSize,
+  mode:modeValue,scope:scopeValue,batchSize=CHAT_RETENTION_POLICY.batchSize,
   maxBatches=CHAT_RETENTION_POLICY.maxBatchesPerInvocation,
   leaseDurationMs=CHAT_RETENTION_POLICY.leaseDurationMs}={}){
   const startedAt=performance.now();
@@ -896,7 +907,9 @@ export async function runChatRetentionWorker({db,workerId:worker,enabled,
   const runMode=mode(modeValue);
   const batchesLimit=integer(maxBatches,1,20,'retention batch limit');
   const size=integer(batchSize,1,100,'retention batch size');
-  const run=await claimChatRetentionRun(db,{workerId:owner,mode:runMode,leaseDurationMs});
+  const run=await claimChatRetentionRun(db,{
+    workerId:owner,mode:runMode,scope:scopeValue,leaseDurationMs,
+  });
   if(!run) return finish({disabled:false,claimed:0,batches:0,eligible:0,deleted:0,status:'idle'});
   let batches=0;
   let eligible=0;
@@ -945,9 +958,64 @@ export async function replayChatRetentionRun(db,{runId,reason}={}){
   });
 }
 
+// Rehearsal does not claim or enqueue work and is usable with both switches off.
+// One read snapshot covers the exact evidence-bound room; the existing room cap
+// bounds the aggregate scan. Neither message content nor row IDs leave this path.
+export async function dryRunChatRetention(db,{scope:scopeValue,backup,exported}={}){
+  const startedAt=performance.now();
+  validateDb(db);
+  const requestedScope=scope(scopeValue);
+  const transaction=await db.transaction('read');
+  try{
+    const clock=await databaseClock(transaction);
+    const gate=validateGate({backup,exported},clock,requestedScope);
+    const mapping=(await transaction.execute({
+      sql:`SELECT COUNT(*) AS count FROM chat_retention_scopes
+        WHERE scope_key=? AND circle_id IS ? AND week_id=? AND pair_group_id=?`,
+      args:[requestedScope.scopeKey,requestedScope.circleId,
+        requestedScope.weekId,requestedScope.pairGroupId],
+    })).rows?.[0];
+    if(Number(mapping?.count)!==1) throw new ChatRetentionError('RETENTION_SCOPE_CHANGED');
+    const anchor=(await transaction.execute({
+      sql:`SELECT COUNT(*) AS count FROM pair_messages WHERE id=? AND week_id=? AND pair_group_id=?`,
+      args:[gate.sourceMaxMessageId,requestedScope.weekId,requestedScope.pairGroupId],
+    })).rows?.[0];
+    if(Number(anchor?.count)!==1) throw new ChatRetentionError('RETENTION_EVIDENCE_SOURCE_MISMATCH');
+    const counts=(await transaction.execute({
+      sql:`SELECT COUNT(*) AS scanned,
+          COALESCE(SUM(julianday(created_at)<julianday(?)),0) AS eligible,
+          COALESCE(SUM(julianday(created_at) IS NULL),0) AS invalid,
+          COALESCE(SUM(julianday(created_at)>julianday(?)),0) AS future
+        FROM (SELECT created_at FROM pair_messages
+          WHERE week_id=? AND pair_group_id=? AND id<=? ORDER BY id LIMIT ?)`,
+      args:[clock.cutoff,clock.now,requestedScope.weekId,requestedScope.pairGroupId,
+        gate.sourceMaxMessageId,MAX_MESSAGES_PER_ROOM+1],
+    })).rows?.[0];
+    if(!counts) throw new ChatRetentionError('RETENTION_RUN_INTEGRITY');
+    if(Number(counts.scanned)>MAX_MESSAGES_PER_ROOM) throw new ChatRetentionError('RETENTION_ROOM_CAP_EXCEEDED');
+    if(Number(counts.invalid)>0) throw new ChatRetentionError('RETENTION_TIMESTAMP_INVALID');
+    if(Number(counts.future)>0) throw new ChatRetentionError('RETENTION_TIMESTAMP_FUTURE');
+    const held=(await transaction.execute({
+      sql:`SELECT EXISTS(SELECT 1 FROM chat_retention_legal_holds
+        WHERE scope_key=? AND status='active'
+          AND (hold_level='tenant' OR (week_id=? AND pair_group_id=?))) AS active`,
+      args:[requestedScope.scopeKey,requestedScope.weekId,requestedScope.pairGroupId],
+    })).rows?.[0];
+    if(!held) throw new ChatRetentionError('RETENTION_RUN_INTEGRITY');
+    const activeHold=Number(held.active)===1;
+    return Object.freeze({
+      status:activeHold?'held':'completed',scanned:Number(counts.scanned),
+      eligible:activeHold?0:Number(counts.eligible),held:activeHold?Number(counts.eligible):0,
+      deleted:0,durationMs:Math.max(0,Math.floor(performance.now()-startedAt)),
+    });
+  }finally{
+    try{ await transaction.rollback(); }finally{ transaction.close(); }
+  }
+}
+
 export async function readChatRetentionMetrics(db){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client required');
-  const [control,runs,holds,anomalies]=await Promise.all([
+  const [control,runs,holds,anomalies,deadLetters]=await Promise.all([
     db.execute(`SELECT enabled,generation,policy_version,retention_days
       FROM chat_retention_control WHERE id=1`),
     db.execute(`SELECT mode,status,COUNT(*) AS count,SUM(eligible_count) AS eligible_count,
@@ -964,6 +1032,8 @@ export async function readChatRetentionMetrics(db){
         WHERE julianday(created_at) IS NULL LIMIT 1001)) AS invalid_timestamp_count,
       (SELECT COUNT(*) FROM (SELECT 1 FROM pair_messages
         WHERE julianday(created_at)>julianday('now') LIMIT 1001)) AS future_timestamp_count`),
+    db.execute(`SELECT last_error_code,COUNT(*) AS count FROM chat_retention_runs
+      WHERE status='dead_letter' GROUP BY last_error_code ORDER BY last_error_code`),
   ]);
   const controlRow=control.rows?.[0];
   return Object.freeze({
@@ -980,6 +1050,10 @@ export async function readChatRetentionMetrics(db){
     }))),
     holds:Object.freeze((holds.rows||[]).map(row=>Object.freeze({
       level:String(row.hold_level),count:Number(row.count),
+    }))),
+    deadLetters:Object.freeze((deadLetters.rows||[]).map(row=>Object.freeze({
+      reasonCode:DEAD_LETTER_REASONS.has(row.last_error_code)?row.last_error_code:'RETENTION_FAILED',
+      count:Number(row.count),
     }))),
     anomalies:Object.freeze({
       unmappedCount:Number(anomalies.rows?.[0]?.unmapped_count||0),
