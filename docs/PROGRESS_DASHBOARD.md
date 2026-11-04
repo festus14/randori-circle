@@ -28,7 +28,7 @@ export (#302) needs no new source.
 | Method other than GET | `405 {"error":"GET only"}` with `Allow: GET` |
 | Any query key other than `user_id` (and the routing `endpoint`), a repeated key, or a malformed `user_id` | `400 {"error":"…"}` |
 | `user_id` is anyone but the session user (existing or not) | `404 {"error":"progress not found"}` |
-| Active circle is a secondary circle (multi-circle control plane) | the same `409 circle_feature_unavailable` History gets |
+| Active circle is a secondary circle (multi-circle control plane) | `409 circle_feature_unavailable`; progress retains this boundary while [secondary workspace History is live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04) |
 | Schema or database failure | `503 {"error":"progress unavailable"}` |
 | Otherwise | `200`, `Cache-Control: private, no-store`, body below |
 

@@ -6,15 +6,29 @@ Secondary scheduling is independently enabled; an unscheduled room remains a
 workspace. AI, progress, statistics and unscoped operations retain their existing
 `circle_feature_unavailable` boundary for members of multiple circles.
 
+## Production go-live (2026-11-04)
+
+`SECONDARY_CIRCLE_WORKSPACE_ENABLED=true` is live in production (owner,
+2026-11-04). The owner confirmed **"Done" in chat** after setting the flag in
+Vercel Production, following application of v25 and green production readiness.
+The owner's confirmation is the source for the flag state; Vercel settings were
+not read for this documentation update.
+
+The post-flip read-only
+[`GET /api/health/ready`](https://randoricircle.com/api/health/ready) check on
+2026-11-04 returned HTTP **200** with `{"ok":true,"status":"ready"}`.
+Readiness supports the completed schema cutover; it does not report individual
+flag values.
+
 ## Owner cutover
 
 Migration v25, `circle-owned-workspace`, is **breaking** because completion guards
 are installed on existing secondary tables. The v16 ownership index already
-supports the workspace keys. Merging this code makes
-readiness fail until the owner applies v25. Production application is a separate
+supports the workspace keys. The code merge required owner application of v25
+to restore readiness; that production cutover is complete, as recorded above.
+Production application is a separate
 owner operation using the protected migration workflow, its backup and restore
-rehearsal, one-version apply and subsequent status inspection. This PR never
-applies the production migration or enables the workspace flag.
+rehearsal, one-version apply and subsequent status inspection.
 
 Main's additive v24, `account-deletion-email-tokens` (#451), is unchanged.
 Its executable checksum remains
@@ -22,10 +36,12 @@ Its executable checksum remains
 The local migration regression applies v24, then v25, checks that v24's ledger
 row and schema are unchanged, and verifies workspace and pairing readiness.
 
-After owner application, rehearse in staging with two circles and a non-member.
+For a future cutover rehearsal, use staging with two circles and a non-member.
 Verify both directions of foreign-room rejection, scoped History, pair and solo
-completion, document/run integrity, switching and independent retention. Enable
-the flag only after that canary. Turning it off restores the unavailable gates;
+completion, document/run integrity, switching and independent retention. For
+future cutovers, enable the flag only after that canary. The flag is now enabled
+in production per the owner's confirmation above.
+Turning it off restores the unavailable gates;
 keep the new tables and rows, and never clear archive markers as rollback.
 
 ## Scope and responses

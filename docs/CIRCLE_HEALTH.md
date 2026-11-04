@@ -100,7 +100,7 @@ number), `suppressed`, `no_data` (the cycle had no pairs) or `not_tracked`.
 | `solo` | members | odd member (legacy AI/solo group) | `is_solo` group |
 | `pairs` | pairs | number of two- or three-person groups | number of two-person groups |
 | `scheduled_pairs` | pairs | groups with an agreed time (`pair_schedules.agreed_time`; a legacy free-text agreement counts) | groups with `circle_pair_schedules.agreed_time` |
-| `completed_pairs` | pairs | groups with a unanimous completion receipt set (same rule as `/api/stats`, ID-55), counting only receipts confirmed less than 48 hours after the cycle ended | `not_tracked`: secondary circles have no completion capability |
+| `completed_pairs` | pairs | groups with a unanimous completion receipt set (same rule as `/api/stats`, ID-55), counting only receipts confirmed less than 48 hours after the cycle ended | `not_tracked`: Circle health does not read secondary completion receipts, even though [secondary workspace completion is live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04) |
 | `repeat_pair_percent` | % of pairs | groups whose members were also grouped together in any of the 8 settled cycles before | same |
 | `median_hours_to_agreed_time` | | `not_tracked` (deferred, below) | `not_tracked` |
 | `cancelled`, `no_show` | | `not_tracked` until #291 | `not_tracked` until #291 |

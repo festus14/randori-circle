@@ -997,12 +997,16 @@ preventing stale-version ABA. The browser clears private state before a switch,
 reloads, and notifies sibling tabs after it commits.
 
 Roster and invitation reads/writes are now scoped to the exact resolved circle.
-Pairing, availability, chat, workspace, video, execution, and AI records do not
-yet have complete tenant ownership, so only an exact single active primary
-circle may enter those legacy paths. Multiple circles, a sole secondary circle,
-and stale or ambiguous stored selections receive `409
-circle_feature_unavailable`. This is a deliberate safety boundary until those
-schemas carry canonical circle ownership.
+At this increment, pairing, availability, chat, workspace, video, execution,
+and AI records did not yet have complete tenant ownership, so only an exact
+single active primary circle could enter those legacy paths. Multiple circles,
+a sole secondary circle, and stale or ambiguous stored selections received
+`409 circle_feature_unavailable`. This was the safety boundary until those
+schemas carried canonical circle ownership.
+
+Subsequent increments added circle-owned availability and coordination.
+The v25 [secondary workspace is now live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04)
+(owner, 2026-11-04); AI and other unscoped operations retain their boundary.
 
 **Alternatives.** A client-only circle ID or reusable header is easier but can
 be stale or forged and cannot serialize concurrent tab changes. Storing one
@@ -1119,9 +1123,12 @@ account, circle, and context.
 The existing circle-scoped v3 cycle and decision tables are sufficient; there
 is no v13. Primary first use preserves the legacy account-value bridge. A
 secondary circle's first cycle always uses `cycle_default`, and a pre-existing
-secondary legacy bridge fails closed. All other pairing, history, schedule,
-chat, execution, workspace, video, and AI routes retain the existing
-`409 circle_feature_unavailable` boundary.
+secondary legacy bridge fails closed. At this increment, all other pairing,
+history, schedule, chat, execution, workspace, video, and AI routes retained
+the existing `409 circle_feature_unavailable` boundary. Subsequent coordination
+and scheduling increments added their scoped paths; the v25
+[secondary workspace is now live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04)
+(owner, 2026-11-04). AI and other unscoped operations retain their boundary.
 
 **Alternatives.** Enabling the whole weekly workflow was rejected because its
 pairing, schedule, and collaboration records are not fully tenant-owned.
@@ -1359,8 +1366,9 @@ Client-supplied IDs or slugs weaken ownership and collision boundaries. Audit
 dedupe alone cannot bind the exact name, session, and returned generation.
 Creating without selecting adds an avoidable stale-context race. Eager default
 availability or pairing rows conflict with the existing lazy-cycle contract.
-Full secondary workspace creation remains deferred until its storage and
-authorization paths are canonically circle-owned.
+Secondary workspace now uses circle-owned parallel storage and authorization
+under v25 and is [live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04)
+(owner, 2026-11-04); circle creation retains the lazy-cycle contract above.
 
 **Rollout and recovery.** Follow Steps 2–5 of the central rollout in
 `ACTIVE_CIRCLE_CONTEXT.md`: keep feature and credential-consumer flags false,
@@ -2570,8 +2578,10 @@ the browser animates locally and polls, so no countdown tick is persisted.
 Start, pause, reset, and candidate assignment use an opaque HMAC compare-and-set
 token which excludes derived display time. Idempotent repeats are no-write
 successes and different concurrent commands return authoritative 409 state.
-AI, triad, mixed-source, secondary, absent, and unauthorized rooms are the same
-generic 404. Unanimous completion freezes the effective timer at its completion
+For this legacy primary-controls path, AI, triad, mixed-source, secondary,
+absent, and unauthorized rooms are the same generic 404. Secondary controls now
+use the separate v25 [live workspace path](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04)
+(owner, 2026-11-04). Unanimous completion freezes the effective timer at its completion
 instant and makes roles and timer read-only; expiry never implies completion.
 
 **Alternatives.** Workspace v4 couples small controls to large code/board CAS.
