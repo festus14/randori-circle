@@ -6,26 +6,42 @@ Secondary scheduling is independently enabled; an unscheduled room remains a
 workspace. AI, progress, statistics and unscoped operations retain their existing
 `circle_feature_unavailable` boundary for members of multiple circles.
 
-## Production go-live (2026-11-04)
+## Production configuration and effective gate (2026-11-04)
 
-`SECONDARY_CIRCLE_WORKSPACE_ENABLED=true` is live in production (owner,
-2026-11-04). The owner confirmed **"Done" in chat** after setting the flag in
-Vercel Production, following application of v25 and green production readiness.
-The owner's confirmation is the source for the flag state; Vercel settings were
-not read for this documentation update.
+`SECONDARY_CIRCLE_WORKSPACE_ENABLED=true` is **configured On, owner-confirmed; effectively disabled by prerequisites**
+(2026-11-04). The owner confirmed **"Done" in chat** after reporting the production
+flag configuration, following application of v25 and green production readiness.
+The owner's confirmation is the source for the configured value.
+
+The independent review's repeated read-only
+[`GET /api/auth/capabilities`](https://randoricircle.com/api/auth/capabilities)
+probe at **2026-11-04 13:01:29 UTC** returned HTTP **200** with
+`Cache-Control: no-store` and a cache **MISS**, without `multiCircleControlPlane`,
+`multiCircleAvailability`, `secondaryCircleCoordination` or
+`secondaryCircleWorkspace`. The effective gate in
+[`api/_active-circle.js`](../api/_active-circle.js) requires every flag in the
+chain `CIRCLE_MEMBERSHIP_ENABLED` → `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` →
+`MULTI_CIRCLE_AVAILABILITY_ENABLED` → `SECONDARY_CIRCLE_COORDINATION_ENABLED` →
+`SECONDARY_CIRCLE_WORKSPACE_ENABLED` to be exactly `true`. Both production flag
+tables still record the control-plane, availability and coordination gates as
+Off or Off in effect. Secondary rooms, video signalling and execution therefore
+remain effectively disabled. Vercel settings were not read for this update.
 
 The post-flip read-only
 [`GET /api/health/ready`](https://randoricircle.com/api/health/ready) check on
 2026-11-04 returned HTTP **200** with `{"ok":true,"status":"ready"}`.
 Readiness supports the completed schema cutover; it does not report individual
-flag values.
+flag values or prove effective workspace enablement. Operational go-live must
+wait for independent confirmation of the full prerequisite chain and effective
+workspace capability; that confirmation is outstanding.
 
 ## Owner cutover
 
 Migration v25, `circle-owned-workspace`, is **breaking** because completion guards
 are installed on existing secondary tables. The v16 ownership index already
 supports the workspace keys. The code merge required owner application of v25
-to restore readiness; that production cutover is complete, as recorded above.
+to restore readiness; the owner-confirmed production schema cutover is complete,
+as recorded above. Effective workspace enablement remains blocked by prerequisites.
 Production application is a separate
 owner operation using the protected migration workflow, its backup and restore
 rehearsal, one-version apply and subsequent status inspection.
@@ -39,12 +55,15 @@ row and schema are unchanged, and verifies workspace and pairing readiness.
 For a future cutover rehearsal, use staging with two circles and a non-member.
 Verify both directions of foreign-room rejection, scoped History, pair and solo
 completion, document/run integrity, switching and independent retention. For
-future cutovers, enable the flag only after that canary. The flag is now enabled
-in production per the owner's confirmation above.
-Turning it off restores the unavailable gates;
+future cutovers, enable the flag only after that canary. The current flag is
+configured On, owner-confirmed; effectively disabled by prerequisites.
+Turning it off preserves the unavailable gates (or restores them after effective enablement);
 keep the new tables and rows, and never clear archive markers as rollback.
 
 ## Scope and responses
+
+The following workspace behavior applies when the full effective gate is enabled.
+The current production flag is configured On, owner-confirmed; effectively disabled by prerequisites.
 
 The live `auth_session_circle_contexts` selection is the sole scope authority.
 Context headers are version fences. Requests repeat membership, publication,

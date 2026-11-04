@@ -1005,8 +1005,9 @@ a sole secondary circle, and stale or ambiguous stored selections received
 schemas carried canonical circle ownership.
 
 Subsequent increments added circle-owned availability and coordination.
-The v25 [secondary workspace is now live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04)
-(owner, 2026-11-04); AI and other unscoped operations retain their boundary.
+The v25 secondary workspace flag is configured On, owner-confirmed; effectively disabled by prerequisites
+(2026-11-04; [configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)).
+AI and other unscoped operations retain their boundary.
 
 **Alternatives.** A client-only circle ID or reusable header is easier but can
 be stale or forged and cannot serialize concurrent tab changes. Storing one
@@ -1126,9 +1127,10 @@ secondary circle's first cycle always uses `cycle_default`, and a pre-existing
 secondary legacy bridge fails closed. At this increment, all other pairing,
 history, schedule, chat, execution, workspace, video, and AI routes retained
 the existing `409 circle_feature_unavailable` boundary. Subsequent coordination
-and scheduling increments added their scoped paths; the v25
-[secondary workspace is now live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04)
-(owner, 2026-11-04). AI and other unscoped operations retain their boundary.
+and scheduling increments added their scoped paths; the v25 secondary workspace
+flag is configured On, owner-confirmed; effectively disabled by prerequisites
+(2026-11-04; [configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)).
+AI and other unscoped operations retain their boundary.
 
 **Alternatives.** Enabling the whole weekly workflow was rejected because its
 pairing, schedule, and collaboration records are not fully tenant-owned.
@@ -1367,8 +1369,9 @@ dedupe alone cannot bind the exact name, session, and returned generation.
 Creating without selecting adds an avoidable stale-context race. Eager default
 availability or pairing rows conflict with the existing lazy-cycle contract.
 Secondary workspace now uses circle-owned parallel storage and authorization
-under v25 and is [live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04)
-(owner, 2026-11-04); circle creation retains the lazy-cycle contract above.
+under v25. Its flag is configured On, owner-confirmed; effectively disabled by prerequisites
+(2026-11-04; [configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04));
+circle creation retains the lazy-cycle contract above.
 
 **Rollout and recovery.** Follow Steps 2–5 of the central rollout in
 `ACTIVE_CIRCLE_CONTEXT.md`: keep feature and credential-consumer flags false,
@@ -2578,10 +2581,15 @@ the browser animates locally and polls, so no countdown tick is persisted.
 Start, pause, reset, and candidate assignment use an opaque HMAC compare-and-set
 token which excludes derived display time. Idempotent repeats are no-write
 successes and different concurrent commands return authoritative 409 state.
-For this legacy primary-controls path, AI, triad, mixed-source, secondary,
-absent, and unauthorized rooms are the same generic 404. Secondary controls now
-use the separate v25 [live workspace path](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04)
-(owner, 2026-11-04). Unanimous completion freezes the effective timer at its completion
+For valid legacy room identifiers, this primary-controls path returns the same
+generic 404 for unsupported AI, triad or mixed-source rooms and for absent or
+unauthorized rooms. When the effective workspace gate is off, secondary-format
+identifiers fail legacy parsing with `400 {error:"canonical room_id required"}`;
+the [real-runtime browser regression](../tests/e2e/secondary-workspace-real-runtime.spec.ts)
+asserts this for session controls and meeting links. Secondary controls have a
+separate v25 workspace path, whose flag is configured On, owner-confirmed; effectively disabled by prerequisites
+(2026-11-04; [configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)).
+Unanimous completion freezes the effective timer at its completion
 instant and makes roles and timer read-only; expiry never implies completion.
 
 **Alternatives.** Workspace v4 couples small controls to large code/board CAS.

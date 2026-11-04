@@ -208,9 +208,12 @@ circle context (`auth_session_circle_contexts`, at most
 `MAX_CIRCLES_PER_ACCOUNT = 100` circles per account) and routes
 validate that context before touching circle-scoped data. See
 [ACTIVE_CIRCLE_CONTEXT.md](ACTIVE_CIRCLE_CONTEXT.md).
-The secondary workspace is live with `SECONDARY_CIRCLE_WORKSPACE_ENABLED=true`
-(owner, 2026-11-04), after v25 application and a post-flip readiness HTTP 200
-check; see the [go-live record](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04).
+`SECONDARY_CIRCLE_WORKSPACE_ENABLED=true` is configured On, owner-confirmed; effectively disabled by prerequisites
+(2026-11-04). The owner confirmed the configuration after v25 application;
+the independent reviewer's capabilities probe omitted the prerequisite and
+workspace capabilities. Secondary rooms, video and execution remain disabled;
+readiness HTTP 200 does not establish operational go-live. See the
+[configuration and effective-gate record](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04).
 
 ### 3.5 Authorization patterns
 
@@ -515,7 +518,9 @@ sequenceDiagram
 Every flag the code checks is listed in
 [ENVIRONMENT.md](ENVIRONMENT.md#feature-flags), with production state
 in a snapshot updated on 2026-11-04 for the owner-confirmed
-`SECONDARY_CIRCLE_WORKSPACE_ENABLED` go-live. `FEEDBACK_ENABLED` was re-verified
+`SECONDARY_CIRCLE_WORKSPACE_ENABLED` configuration: configured On, owner-confirmed; effectively disabled by prerequisites.
+The independent reviewer's capabilities probe corroborated the recorded disabled
+control-plane, availability and coordination gates. `FEEDBACK_ENABLED` was re-verified
 and `ACCOUNT_DELETION_GRACE_ENABLED` enabled by the owner on 2026-11-03;
 other flags retain their older evidence recorded in `ENVIRONMENT.md` and were
 not re-verified by this update.
@@ -528,7 +533,7 @@ wins. `*_ENABLED` flags are on only for the exact string `true`.
 | `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` | Creating / selecting / archiving secondary circles | Off |
 | `MULTI_CIRCLE_AVAILABILITY_ENABLED` | Dated availability in the selected active circle | Off in effect |
 | `SECONDARY_CIRCLE_COORDINATION_ENABLED` | Weekly pairing in a selected secondary circle | Off in effect |
-| `SECONDARY_CIRCLE_WORKSPACE_ENABLED` | Room, chat, execution, recap, completion, code documents, video and active-circle History for secondary circles; requires coordination and applied v25 | On (owner, 2026-11-04; [go-live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04)) |
+| `SECONDARY_CIRCLE_WORKSPACE_ENABLED` | Room, chat, execution, recap, completion, code documents, video and active-circle History for secondary circles; requires coordination and applied v25 | configured On, owner-confirmed; effectively disabled by prerequisites (2026-11-04; [configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)) |
 | `SECONDARY_CIRCLE_SCHEDULING_ENABLED` | Propose / accept / clear a time for a secondary pair | Off in effect |
 | `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED` | Dashboard-only pairing emails for secondary publications | Off in effect |
 | `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` | Dashboard-only schedule emails for secondary schedules | Off in effect |

@@ -24,8 +24,10 @@ chat, video, execution, AI, recap, or workspace capability. Optional result
 email links only to the dashboard and is not a workspace authorization.
 
 The owner-run v25 migration is applied and `SECONDARY_CIRCLE_WORKSPACE_ENABLED=true`
-is live in production (owner, 2026-11-04; [go-live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04)),
-enabling a secondary room through an authorized recap response. Coordination
+is configured On, owner-confirmed; effectively disabled by prerequisites
+(2026-11-04; [configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)).
+Only after the full prerequisite chain is enabled can an authorized recap
+response enable a secondary room. Coordination
 continues to return no legacy room identifiers and grants no room authority.
 The room uses the circle-owned publication and group namespace, parallel storage,
 and the live session context checks described in

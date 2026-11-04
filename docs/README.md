@@ -67,7 +67,7 @@ rings are under [Operations runbooks](#operations-runbooks).
 | [EXPLICIT_CYCLE_AVAILABILITY.md](EXPLICIT_CYCLE_AVAILABILITY.md) | The explicit "Available" or "Skip this cycle" decision for the upcoming cycle (ID-56) |
 | [PAIRING_PUBLICATION_TOTALITY.md](PAIRING_PUBLICATION_TOTALITY.md) | Weekly publication admitted only on Sunday 08:00 to 10:00 UTC by database time (ID-50) |
 | [PAIRING_PUBLICATION_RECOVERY.md](PAIRING_PUBLICATION_RECOVERY.md) | Showing a missing weekly pairing from server state and the owner's one recovery action (ID-51) |
-| [SELECTED_CIRCLE_PAIRING.md](SELECTED_CIRCLE_PAIRING.md) | Pairing coordination in a selected secondary circle (ID-26); separate [secondary workspace access is live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04) |
+| [SELECTED_CIRCLE_PAIRING.md](SELECTED_CIRCLE_PAIRING.md) | Pairing coordination in a selected secondary circle (ID-26); the separate workspace flag is configured On, owner-confirmed; effectively disabled by prerequisites ([configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)) |
 
 ## Scheduling
 
@@ -198,4 +198,4 @@ exists, so they could not be regenerated verifiably.
 | --- | --- |
 | [PRODUCTION_ARCHITECTURE_PLAN.md](PRODUCTION_ARCHITECTURE_PLAN.md) | A possible Next.js/PostgreSQL end state and delivery plan. **Note:** a proposal, not the current runtime (Vercel functions plus Turso). Superseded for current-runtime questions by [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) |
 
-- [Secondary circle workspace and owner cutover](SECONDARY_WORKSPACE.md) — issue #438, v25 applied, workspace live (owner, 2026-11-04), scoped room and History, parallel retention.
+- [Secondary circle workspace and owner cutover](SECONDARY_WORKSPACE.md) — issue #438, v25 applied; workspace flag configured On, owner-confirmed; effectively disabled by prerequisites (2026-11-04), scoped room and History implementation, parallel retention.

@@ -106,6 +106,6 @@ legacy tables.
 - Eager availability/pairing defaults conflict with the existing lazy cycle
   contract and would create unnecessary data.
 - Secondary workspace storage and authorization are now circle-owned in parallel
-  tables under v25; the separate workspace flag is live (owner, 2026-11-04;
-  [go-live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04)). Circle creation
+  tables under v25; the separate workspace flag is configured On, owner-confirmed; effectively disabled by prerequisites
+  (2026-11-04; [configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)). Circle creation
   still follows the lazy-cycle contract above.

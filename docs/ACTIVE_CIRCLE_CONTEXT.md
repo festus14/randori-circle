@@ -62,16 +62,18 @@ separately default-off.
   `SECONDARY_CIRCLE_SCHEDULING_ENABLED` flag adds only an opaque schedule
   identity and dashboard scheduling; it grants no room or workspace authority.
   `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` may then add dashboard-only v2
-  delivery. If the workspace flag is turned off, History, chat, execution,
-  workspace, video and recap return to the primary-only
+  delivery. While the effective workspace gate is off, History, chat, execution,
+  workspace, video and recap retain the primary-only
   `409 circle_feature_unavailable` boundary. AI retains that boundary regardless
   of the workspace flag. See
   `SELECTED_CIRCLE_PAIRING.md`, `SECONDARY_SCHEDULING.md`, and
   `SECONDARY_SCHEDULE_NOTIFICATIONS.md`.
 
 - Breaking migration v25 is applied and `SECONDARY_CIRCLE_WORKSPACE_ENABLED=true`
-  is live in production (owner, 2026-11-04; [go-live](SECONDARY_WORKSPACE.md#production-go-live-2026-11-04)).
-  The independent flag still defaults off and adds selected-circle History, chat,
+  is configured On, owner-confirmed; effectively disabled by prerequisites
+  (2026-11-04; [configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)).
+  The independent flag still defaults off and, when the full prerequisite chain
+  is enabled, adds selected-circle History, chat,
   runs, execution, recap, completion, controls, meeting links, snapshots, code
   documents and video signalling. It requires membership, control-plane,
   availability and secondary coordination flags; scheduling stays independent.
@@ -163,9 +165,8 @@ membership or tenant data is deleted. Do not clear an archive marker as rollback
 
 ## Deferred work
 
-Operator-reviewed archive recovery and secondary workspace ownership remain
-separate increments. Messages, runs, snapshots, video, and AI must gain canonical `circle_id`
-ownership before their secondary-circle flags can be enabled. Postgres with
+Operator-reviewed archive recovery and secondary AI remain separate increments.
+AI must gain canonical `circle_id` ownership before secondary AI can be enabled. Postgres with
 row-level security remains the preferred final tenancy boundary; a Turso
 retrofit remains possible but requires table rebuilds and application-enforced
 authorization.
