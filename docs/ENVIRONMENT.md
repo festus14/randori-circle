@@ -22,6 +22,15 @@ its production state.
   The [v23 apply artifact](https://github.com/festus14/randori-circle/actions/runs/41558187005)
   records `appliedVersions: [23]`; the [post-apply status artifact](https://github.com/festus14/randori-circle/actions/runs/41559246678)
   records `currentVersion: 23`, `pendingVersions: []` and `nextVersion: null`.
+- The owner confirmed **"Done" in chat** after reporting
+  `SECONDARY_CIRCLE_WORKSPACE_ENABLED=true` in production on
+  2026-11-04, after v25 was applied and readiness was green. The
+  flag is configured On, owner-confirmed; effectively disabled by prerequisites.
+  The [configuration and effective-gate record](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)
+  cites that confirmation and the independent reviewer's 13:01:29 UTC capabilities
+  probe, which omitted the control-plane, availability, coordination and workspace
+  capabilities. Readiness HTTP 200 does not prove effective enablement; Vercel
+  settings were not read.
 - [`.env.example`](../.env.example) is the copy-and-fill template. It names
   every variable on this page. Variables you should never set by hand appear
   there only as comments.
@@ -136,6 +145,7 @@ set in Vercel Production. They are listed with their dependencies and
 production state in the [feature flag table](#feature-flags):
 `CIRCLE_MEMBERSHIP_ENABLED`, `MULTI_CIRCLE_CONTROL_PLANE_ENABLED`,
 `MULTI_CIRCLE_AVAILABILITY_ENABLED`, `SECONDARY_CIRCLE_COORDINATION_ENABLED`,
+`SECONDARY_CIRCLE_WORKSPACE_ENABLED`,
 `SECONDARY_CIRCLE_SCHEDULING_ENABLED`, `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED`,
 `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED`, `EMAIL_PASSWORD_ACTIVATION_ENABLED`,
 `PASSWORD_RESET_ENABLED`, `IDENTITY_MANAGEMENT_ENABLED`,
@@ -368,15 +378,21 @@ shell's values.
 
 ## Feature flags
 
-Every flag the code checks. Production state is as of 2026-11-03, with
-`FEEDBACK_ENABLED` re-verified and `ACCOUNT_DELETION_GRACE_ENABLED` enabled
-by the owner on that date; other rows retain their recorded evidence:
+Every flag the code checks. The production snapshot was updated on 2026-11-04
+for `SECONDARY_CIRCLE_WORKSPACE_ENABLED`: configured On, owner-confirmed; effectively disabled by prerequisites.
+The independent reviewer's capabilities probe on that date corroborated the
+control-plane, availability and coordination gates' recorded Off/Off-in-effect state.
+`FEEDBACK_ENABLED` was re-verified and `ACCOUNT_DELETION_GRACE_ENABLED` enabled
+by the owner on 2026-11-03. Other rows retain their recorded evidence from
+2026-10-22 unless separately dated; they were not re-verified by this update:
 
 - **On (observed):** advertised by the public `/api/auth/capabilities`
   response.
-- **On (owner):** switched on by the owner, as recorded in
+- **On (owner):** configured on by the owner, as recorded in
   [PR #352](https://github.com/festus14/randori-circle/pull/352) or the linked
-  feedback verification and deletion-grace rollout records.
+  feedback verification, deletion-grace rollout and secondary-workspace configuration
+  records. A configured value does not establish effective enablement when
+  prerequisites are disabled.
 - **Off (observed):** its capability is absent.
 - **Not observable:** check Vercel.
 
@@ -386,13 +402,13 @@ them off cannot undo.
 
 ### Application flags (Vercel)
 
-| Flag | What it gates | Default | Production (as of 2026-11-03) | Depends on | Decision | Turning it off safely |
+| Flag | What it gates | Default | Production (snapshot updated 2026-11-04) | Depends on | Decision | Turning it off safely |
 | --- | --- | --- | --- | --- | --- | --- |
 | `CIRCLE_MEMBERSHIP_ENABLED` | Invitation-gated primary-circle membership: owner invitations, roster, member lifecycle, membership checks on every private route | off | On (observed: `verified_invite` mode, `accountDeletion` and `circleHealth` all require it) | Migrations current, then the data-only admin `POST /api/init` cutover | ID-12, ID-21, ID-39 ([admin data initialization](ADMIN_DATA_INITIALIZATION.md)) | Restores legacy roster behaviour and keeps membership data, but does **not** reopen registration once the cutover latch has closed. It also switches off everything below that depends on it. Avoid in production |
 | `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` | Creating, selecting and archiving secondary circles; circle-scoped roster and invitations | off | Off (observed: no `multiCircleControlPlane`) | `CIRCLE_MEMBERSHIP_ENABLED`; managed ledger through v16 | ID-21, ID-29, ID-38 ([active circle](ACTIVE_CIRCLE_CONTEXT.md)) | Turn off the dependent flags first. Context, cycle, archive and schedule rows remain and no membership data is deleted; never clear an archive marker as a rollback |
 | `MULTI_CIRCLE_AVAILABILITY_ENABLED` | Dated availability in the selected active circle | off | Off in effect (parent off) | `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` | ID-24 | Restores the legacy availability gate; rows remain |
 | `SECONDARY_CIRCLE_COORDINATION_ENABLED` | Weekly pairing and coordination in a selected secondary circle | off | Off in effect | `MULTI_CIRCLE_AVAILABILITY_ENABLED` | ID-26 ([selected-circle pairing](SELECTED_CIRCLE_PAIRING.md)) | Also disables the three flags below |
-| `SECONDARY_CIRCLE_WORKSPACE_ENABLED` | Room, chat, execution, recap, completion, code documents, video and active-circle History for secondary circles | off | Off pending owner cutover | `SECONDARY_CIRCLE_COORDINATION_ENABLED`; owner-applied breaking migration v25 | Issue #438 ([secondary workspace](SECONDARY_WORKSPACE.md)) | Disable the flag to restore unavailable gates; retain parallel workspace and retention rows. Code merge makes readiness fail until v25 is applied |
+| `SECONDARY_CIRCLE_WORKSPACE_ENABLED` | Room, chat, execution, recap, completion, code documents, video and active-circle History for secondary circles | off | configured On, owner-confirmed; effectively disabled by prerequisites (2026-11-04; [configuration and effective gate](SECONDARY_WORKSPACE.md#production-configuration-and-effective-gate-2026-11-04)) | `SECONDARY_CIRCLE_COORDINATION_ENABLED`; owner-applied breaking migration v25 (applied) | Issue #438 ([secondary workspace](SECONDARY_WORKSPACE.md)) | Disable the flag to preserve unavailable gates (or restore them after effective enablement); retain parallel workspace and retention rows. Owner-confirmed schema cutover is complete; readiness HTTP 200 does not prove effective enablement |
 | `SECONDARY_CIRCLE_SCHEDULING_ENABLED` | Propose, accept and clear a time for a secondary pair | off | Off in effect | `SECONDARY_CIRCLE_COORDINATION_ENABLED`; migration v16 | ID-33 ([secondary scheduling](SECONDARY_SCHEDULING.md)) | Schedules are kept; writes stop |
 | `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED` | Queues dashboard-only pairing emails for secondary publications | off | Off in effect | `SECONDARY_CIRCLE_COORDINATION_ENABLED`; sender canary | ID-32 | New intents stop; already-queued mail is suppressed at send time |
 | `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` | Queues dashboard-only schedule emails for secondary schedules | off | Off in effect | `SECONDARY_CIRCLE_SCHEDULING_ENABLED` | ID-34 ([notifications](SECONDARY_SCHEDULE_NOTIFICATIONS.md)) | As above |
