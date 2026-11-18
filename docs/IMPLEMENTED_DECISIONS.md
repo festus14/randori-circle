@@ -119,6 +119,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-91](#id-91-product-feedback--shared-platform-for-bug-reports-feature-requests-and-product-feedback-data-model--api) | Product feedback — shared platform for bug reports, feature requests and product feedback (data model + API) | Product & UI | Active |
 | [ID-92](#id-92-force-dompurify-to-3417-via-npm-overrides-to-clear-the-dev-only-audit-findings-382) | Force dompurify to `^3.4.17` via npm overrides to clear the dev-only audit findings (#382) | Dependencies | Active |
 | [ID-93](#id-93-give-account-deletion-a-14-day-cancellable-grace-period-behind-a-flag) | Give account deletion a 14-day cancellable grace period, behind a flag | Security, Secrets & Privacy | Active |
+| [ID-94](#id-94-keep-custom-stdin-private-and-separate-from-verified-catalogue-results) | Keep custom stdin private and separate from verified catalogue results | Security, Secrets & Privacy | Active |
 | [ID-95](#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry) | Scope primary interview controls to the interviewer and close on timer expiry | Pairing & Scheduling | Active |
 ## How to add a decision
 
@@ -5313,6 +5314,80 @@ readiness stay green throughout: pending, cancelled and deleted.
 **Removal.** Turn `ACCOUNT_DELETION_GRACE_ENABLED` off: new requests delete
 immediately again, pending requests still complete. The v23 table stays
 (no destructive migration); empty rows remain as request history.
+
+## ID-94: Keep custom stdin private and separate from verified catalogue results
+
+Status: implemented behind a default-off flag; issue #467, epic #460. No migration.
+
+**Context.** Candidates could only run server-owned catalogue cases. Custom
+stdin needs private output without letting caller-controlled input/output
+become room evidence or a durable personal-data record.
+
+**Decision.** Literal `EXECUTION_STDIN_ENABLED=true` advertises `executionStdin`
+and permits an optional `stdin` string on authenticated execute requests.
+Absent stdin preserves the catalogue-only path; present-but-disabled input
+(including empty input) returns 404. Non-string or ill-formed Unicode returns
+400; more than 20,000 UTF-8 bytes returns 413 before provider or quota writes.
+Primary, solo and secondary workspace runs use the same validation boundary.
+
+The same acknowledged code executes twice in separate isolated environments:
+the generated server-owned verification harness receives no custom stdin;
+the private run executes the source as a script with an EOF-terminated stdin
+stream. A script must read stdin and print output; function-only starters do
+not print automatically. Both runs proceed in parallel under the existing
+one-active-run account lease and 10-request-per-minute budget. Both cleanups
+settle before that lease is released, even if verification fails. The private
+run cannot see the verification marker, answer keys, or the other filesystem.
+Its failure does not erase valid catalogue evidence. Remove the unwired legacy
+browser-case runner and its orphaned helpers to keep the existing byte budgets
+unchanged; the authenticated gateway remains the only Run handler.
+
+**Privacy and retention.** Only the initiating no-store HTTP response contains
+`custom_run` stdout/stderr, exit code and timeout status. Private data is never
+added to persisted results, attestations, shared room feeds, recaps, history,
+exports, logs or Sentry. Existing feed projections remain allowlisted. Provider
+error bodies/reasons are not returned or logged. Code itself remains shared and
+retained as before; private input must not be pasted into the shared editor.
+The separate stdin control never uses editor sync, broadcast or browser storage.
+Its draft expires after 60 seconds of inactivity; the input clears at run
+completion and output expires within 60 seconds of Run. Explicit clear,
+account/room/circle/exercise/language changes, page hiding and page exit clear
+private state and abort pending display; epoch/context/deadline checks discard
+late responses, including after suspended browser timers.
+
+Each run has the existing 256 KiB output cap and 10-second command deadline.
+Vercel Sandbox receives no app secrets, denies all egress, is non-persistent,
+and is deleted in `finally` (stop fallback, 60-second session backstop). Stdin
+is streamed, not placed in command arguments, environment variables or files.
+Piston receives explicit 1-second compile and 10-second run wall/CPU caps;
+HTTP aborts at 12 seconds. Self-hosted Piston deployments must enforce process
+limits after caller disconnect, discard execution workspaces at completion
+(60 seconds maximum), and disable input/output logging before flag activation.
+Application bytes are request-scoped rather than queued or stored, so no new
+private bytes enter database backups.
+
+**Alternatives.** Mixing custom input/output into the verification harness or
+persisted run would blur evidence and privacy boundaries. A separate durable
+private-output table adds a migration, retention jobs and failure modes that
+request-only display does not need. Sequential isolated runs double provider
+latency and can outlive the existing lease; parallel isolated runs preserve its
+time budget at the cost of a second bounded provider execution per request.
+
+**Rollout and recovery.** Deploy with the flag off. Rehearse both languages,
+empty and multibyte input, timeout/output overflow, private requester output,
+and both members' verified-only room feeds without real provider credentials
+in CI. The owner may enable and redeploy only after provider retention and
+process limits are verified. Disable and redeploy to reject new stdin requests;
+normal catalogue runs and stored evidence are unchanged. No schema action or
+request-path DDL is introduced. Usage and the provider contract are in
+[README](../README.md#private-custom-stdin-dark-launch).
+
+**Verification.** Focused gateway/provider tests exercise strict input/UTF-8
+caps, EOF, real local runaway-process kill, output overflow, fail-closed flag,
+shared quota and concurrent cleanup. Primary and secondary execution tests
+check canonical code, attestation and database/feed privacy. Browser-controller
+tests exercise text-only rendering, expiration and context races; the two-user
+Playwright feed journey checks private output versus the verified summary.
 
 ## ID-95: Scope primary interview controls to the interviewer and close on timer expiry
 

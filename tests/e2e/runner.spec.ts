@@ -7,6 +7,11 @@ import {
   setCode,
 } from './helpers';
 
+test.beforeEach(async ({ page }) => {
+  // This suite is provider-free, including editor and telemetry CDNs.
+  await page.route(/^https:\/\//, route => route.abort());
+});
+
 const originalQuestion = {
   slug: 'focus-block-rollup',
   version: 1,
@@ -127,6 +132,7 @@ test('selects an original exercise and renders authoritative server results with
   await page.locator('#runBtn').click();
 
   await expect(page.locator('#runOut')).toContainText('Result: 3/3 passed');
+  await expect(page.locator('#customStdinPanel')).toBeHidden();
   await expect(page.locator('#runOut')).toContainText('Checked on the server');
   await expect(page.locator('#runOut')).toContainText('Case 1 ✓ pass');
   await expect.poll(() => executePayload).toEqual({

@@ -47,6 +47,46 @@ Not built yet: presence, remote cursors and managed (server-relayed) video.
 Which feature is on in production, and what each flag needs, is in the
 [feature flag table](docs/ENVIRONMENT.md#feature-flags).
 
+## Private custom stdin (dark launch)
+
+`EXECUTION_STDIN_ENABLED=false` is the default. Set it to literal `true` and
+redeploy to expose **Custom input · private** in the editor's Results panel.
+Check **Also run the code as a script with stdin**, enter up to 20,000 UTF-8
+bytes (empty input is allowed), then press **Run**. The script must read stdin
+and print its output. This is an extra isolated execution of the same code,
+not another verified test case; function-only starters print nothing unless
+you add a script entry point. For example, JavaScript can read
+`require('node:fs').readFileSync(0, 'utf8')`; Python can use `sys.stdin.read()`
+or `input()`. Keep stdin-only I/O outside the catalogue function: the verified
+harness remains restricted and runs without custom input.
+
+Only the requester receives `custom_run` stdout/stderr in the no-store execute
+response. The room feed, history, attestation and logs keep only the existing
+verified catalogue results, never custom input or raw output. The editor code
+itself is still shared in pair rooms: do not paste private input into it.
+Custom input is not synced, broadcast, or written to browser storage or the
+database. The UI clears it at completion, after 60 seconds of inactivity, and
+on account/room/circle/exercise/language changes; private output expires 60
+seconds after Run (or immediately via **Clear private input and output**).
+Leaving or hiding the page also clears private data and aborts pending display.
+
+Both executions share the existing one-active-run account lease and
+10-requests-per-minute limit. They run in separate isolated environments in
+parallel, so custom code/output cannot alter the server-owned verification
+harness or double its deadline. Each gets the existing 256 KiB output cap and
+10-second command deadline; Vercel Sandbox is non-persistent, egress-denied,
+and deleted on every outcome, with a 60-second session backstop. Piston receives
+explicit 1-second compile and 10-second run wall/CPU limits and a 12-second HTTP
+deadline. Enable self-hosted Piston only if it enforces those limits, cleans
+execution workspaces at completion (60 seconds maximum), and does not log
+request bodies or raw output. Application memory is request-scoped; no custom
+bytes enter database backups. A custom failure or timeout does not count as a
+verified pass and does not erase completed catalogue results.
+
+Turning the flag off rejects every request containing `stdin` (including an
+empty string) with 404, hides the controls after capabilities reload, and
+leaves normal catalogue runs unchanged. No migration or request-path DDL.
+
 ## How it is built
 
 - **Client:** one `index.html` page plus `assets/*.js|css`, with no build step

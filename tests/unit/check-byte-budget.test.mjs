@@ -42,7 +42,7 @@ test('the current tree passes the adopted #412 thresholds', () => {
   assert.ok(measurement.jsInitial <= BYTE_BUDGET_THRESHOLDS.jsInitial);
   assert.ok(measurement.jsTotal <= BYTE_BUDGET_THRESHOLDS.jsTotal);
   assert.deepEqual(measurement.linkedStylesheets, ['assets/circle-history.css']);
-  assert.equal(measurement.assetJsFiles, 27); // Includes the interview terminal coordinator.
+  assert.equal(measurement.assetJsFiles, 28); // Interview coordinator plus private stdin controller.
   assert.equal(measurement.assetCssFiles, 3);
 });
 

@@ -16,6 +16,7 @@
 <script src="/assets/landing.js"></script>
 <script src="/assets/pairing-view.js"></script>
 <script src="/assets/catalogue-view.js"></script>
+<script src="/assets/execution-stdin.js"></script>
 <script src="/assets/home-dashboard.js"></script>
 <script src="/assets/onboarding-flow.js"></script>
 <script>
@@ -2726,6 +2727,16 @@ a.btn{text-decoration:none}
                 <h3 id="runOutTitle" class="room-section-title">Your run</h3>
                 <div id="runOut" class="run-out"></div>
               </section>
+              <section id="customStdinPanel" class="room-section" aria-labelledby="customStdinTitle" hidden>
+                <h3 id="customStdinTitle" class="room-section-title">Custom input · private</h3>
+                <label class="small" for="customStdinEnabled"><input id="customStdinEnabled" type="checkbox"> Also run the code as a script with stdin</label>
+                <p id="customStdinHelp" class="small muted">Only you see this input and its output. Read stdin and print from your script; the verified catalogue checks run separately. Maximum 20,000 UTF-8 bytes. Cleared after 60 seconds.</p>
+                <label class="small" for="customStdin">Standard input</label>
+                <textarea id="customStdin" class="input" rows="4" maxlength="20000" spellcheck="false" autocomplete="off" aria-describedby="customStdinHelp customStdinStatus" disabled></textarea>
+                <p id="customStdinStatus" class="small muted" role="status" aria-live="polite"></p>
+                <button id="customStdinClear" class="btn ghost sm" type="button">Clear private input and output</button>
+                <div id="customRunOut" class="run-out" role="status" aria-live="polite"></div>
+              </section>
               <section id="pairRunsCard" class="room-section" aria-labelledby="pairRunsTitle" style="display:none">
                 <div class="room-section-head">
                   <h3 id="pairRunsTitle" class="room-section-title">Pair run feed</h3>
@@ -4328,6 +4339,7 @@ async function refreshMe(){
       ||(capabilities.adminDiagnostics!==undefined&&typeof capabilities.adminDiagnostics!=='boolean')
       ||(capabilities.accountDeletion!==undefined&&typeof capabilities.accountDeletion!=='boolean')
       ||(capabilities.dataExport!==undefined&&typeof capabilities.dataExport!=='boolean')
+      ||(capabilities.executionStdin!==undefined&&typeof capabilities.executionStdin!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
@@ -4348,6 +4360,7 @@ async function refreshMe(){
       adminDiagnostics:capabilities.adminDiagnostics===true,
       accountDeletion:capabilities.accountDeletion===true,
       dataExport:capabilities.dataExport===true,
+      executionStdin:capabilities.executionStdin===true,
       registrationMode:mode,
     });
   }
@@ -4580,6 +4593,7 @@ async function refreshMe(){
       renderInviteLanding();
       focusAuthControl();
       if(me) void renderPeople();
+      window._randori_sync_execution_stdin?.();
     }
     return authCapabilities;
   }
@@ -9027,195 +9041,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   document.getElementById('roomSelect').onchange=(e)=> loadRoom(e.target.value);
   document.getElementById('editor').addEventListener('input', ()=>{ persistRoom(); });
 
-  // -------- Robust test runner (actually executes against test_cases) --------
-  function _getEditorCode(){
-    try{ if(window.monacoEditor && typeof window.monacoEditor.getValue==='function') return window.monacoEditor.getValue(); }catch{}
-    try{ const v=window._randori_code && window._randori_code.getCode && window._randori_code.getCode(); if(v) return v; }catch{}
-    const el=document.getElementById('editor'); return el? el.value : '';
-  }
-  function _deepUnwrap(raw){
-    let cur=raw;
-    for(let i=0;i<4;i++){
-      if(typeof cur!=='string') break;
-      const tt=cur.trim();
-      if(!tt) break;
-      if((tt.startsWith('{')&&tt.endsWith('}'))||(tt.startsWith('[')&&tt.endsWith(']'))||(tt.startsWith('"')&&tt.endsWith('"'))||tt==='true'||tt==='false'||tt==='null'||(!isNaN(Number(tt))&&tt.length<32)){
-        try{ let p=JSON.parse(tt); cur=p; continue; }catch{ break; }
-      } else break;
-    }
-    return cur;
-  }
-  function _normalizeInput(raw){ let v=_deepUnwrap(raw); return v; }
-  function _normalizeExpect(raw){
-    let v=_deepUnwrap(raw);
-    if(typeof v==='string'){
-      if(v==='true') return true;
-      if(v==='false') return false;
-      if(v==='null') return null;
-      if(!isNaN(Number(v)) && v.trim()!=='') return Number(v);
-    }
-    return v;
-  }
-  function _deepEqual(a,b){
-    try{
-      if(a===b) return true;
-      if(typeof a!==typeof b){
-        if((a===true&&b==='true')||(a==='true'&&b===true)||(a===false&&b==='false')||(a==='false'&&b===false)) return true;
-        if(typeof a==='number'&&typeof b==='string'&&!isNaN(Number(b))&&Number(b)===a) return true;
-        if(typeof b==='number'&&typeof a==='string'&&!isNaN(Number(a))&&Number(a)===b) return true;
-      }
-      if(Array.isArray(a)&&Array.isArray(b)){
-        if(a.length!==b.length){
-          if(a.length===2&&b.length===2){ let sa=[...a].sort(), sb=[...b].sort(); return JSON.stringify(sa)===JSON.stringify(sb); }
-          return false;
-        }
-        for(let i=0;i<a.length;i++) if(!_deepEqual(a[i],b[i])) return false;
-        return true;
-      }
-      if(Array.isArray(a)!==Array.isArray(b)) return false;
-      if(typeof a==='object'&&typeof b==='object'&&a!==null&&b!==null){
-        let ka=Object.keys(a), kb=Object.keys(b);
-        if(ka.length!==kb.length) return false;
-        for(let k of ka) if(!_deepEqual(a[k],b[k])) return false;
-        return true;
-      }
-      return JSON.stringify(a)===JSON.stringify(b);
-    }catch{ return String(a)===String(b); }
-  }
-  function _extractFn(code){
-    if(!code) return {fn:null,name:null,all:[]};
-    let names=[];
-    let m;
-    let re=/function\s+([A-Za-z0-9_$]+)\s*\(/g; while((m=re.exec(code))!==null) names.push(m[1]);
-    let re2=/(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?(?:\(.*?\)\s*=>|function\b|[A-Za-z0-9_$]+\s*=>|\w+\s*=>)/g;
-    while((m=re2.exec(code))!==null) if(!names.includes(m[1])) names.push(m[1]);
-    let re3=/class\s+([A-Za-z0-9_$]+)/g; while((m=re3.exec(code))!==null) if(!names.includes(m[1])) names.push(m[1]);
-    return {fn:null,name:names[0]||null,all:names};
-  }
-  function _buildArgs(fn, inputNorm){
-    if(inputNorm===undefined) return [];
-    const arity = fn && typeof fn.length==='number' ? fn.length : 0;
-    if(Array.isArray(inputNorm)){
-      if(arity>=2 && inputNorm.length===arity) return inputNorm;
-      if(arity===1) return [inputNorm];
-      return [inputNorm];
-    }
-    if(inputNorm && typeof inputNorm==='object'){
-      if('nums' in inputNorm){
-        let tgt = inputNorm.target!==undefined? inputNorm.target : (inputNorm.t!==undefined? inputNorm.t : null);
-        if(tgt!==null) return [inputNorm.nums, tgt];
-        let vals=Object.values(inputNorm);
-        if(vals.length>=2) return [vals[0], vals[1]];
-        return [inputNorm.nums];
-      }
-      if('l1' in inputNorm && 'l2' in inputNorm) return [inputNorm.l1, inputNorm.l2];
-      if('s' in inputNorm && Object.keys(inputNorm).length===1) return [inputNorm.s];
-      if('operations' in inputNorm) return [inputNorm];
-      let vals=Object.values(inputNorm);
-      if(arity && vals.length===arity) return vals;
-      if(vals.length===1) return [inputNorm];
-      return vals.length? vals : [inputNorm];
-    }
-    return [inputNorm];
-  }
-  function _makeResultCard(i, inputRaw, expectRaw, got, err, pass){
-    const safe=(v)=>{ try{ return JSON.stringify(v).slice(0,200) }catch{ return String(v).slice(0,200) } };
-    const inputShow=safe(_normalizeInput(inputRaw));
-    const expectShow=safe(_normalizeExpect(expectRaw));
-    const gotShow=err? `<span class="kbd" style="color:var(--color-danger)">Error: ${String(err).slice(0,180)}</span>` : `<span class="kbd">${safe(got)}</span>`;
-    const statusColor = err ? 'var(--color-danger)' : (pass?'var(--color-success)':'var(--color-danger)');
-    const statusIcon = err ? '✗ error' : (pass?'✓ pass':'✗ fail');
-    return `<div class="test" style="border-color:${statusColor}"><div class="small"><b>Case ${i+1}</b> ${statusIcon} — got ${gotShow} exp <span class="kbd">${expectShow}</span><div class="small muted" style="margin-top:3px">in: <span class="kbd">${inputShow}</span></div></div></div>`;
-  }
-  function runCode(){
-    const out=document.getElementById('runOut');
-    const lang=document.getElementById('langSelect').value||'javascript';
-    const code=_getEditorCode();
-    if(out){
-      out.innerHTML='';
-      try{ window._randori_ui && window._randori_ui.showLoader && window._randori_ui.showLoader(out); }catch{}
-      setTimeout(()=>{ try{ window._randori_ui && window._randori_ui.hideLoader && window._randori_ui.hideLoader(out); }catch{} }, 120);
-    }
-    let q=null;
-    let tcs=[];
-    let title='';
-    try{
-      const selVal=document.getElementById('questionSelect')?.value||'';
-      if(window._randori_questions && window._randori_questions.custom){
-        const cq=window._randori_questions.custom.find(x=>x.slug===selVal);
-        if(cq){ q=cq; tcs=cq.test_cases||[]; title=cq.title; }
-      }
-      if(!q){
-        q= (typeof QUESTIONS!=='undefined' && QUESTIONS.find(x=>x.id===selVal)) || (typeof QUESTIONS!=='undefined'? QUESTIONS[0]: null);
-        if(q){ tcs=q.test_cases||q.tests||[]; title=q.title; }
-      }
-    }catch{}
-    const cards=[];
-    let passCount=0, totalCount=0, errorCount=0;
-    if(lang==='javascript' || lang==='typescript'){
-      let extracted=_extractFn(code);
-      let fn=extracted.fn, fnName=extracted.name;
-      if(!fn){
-        cards.push(`<div class="test" style="border-color:var(--color-danger)"><div class="small">No function found${fnName? ' — tried '+fnName : ''}. Expected like <code>function twoSum(nums,target)</code> or <code>const isValid = (s)=>{}</code>. <span class="kbd">${(extracted.all||[]).slice(0,3).join(', ')||'no names detected'}</span><div class="small muted">Code length ${code.length} — check export.</div></div></div>`);
-      }
-      if(tcs && tcs.length){
-        totalCount=tcs.length;
-        tcs.forEach((tc,i)=>{
-          try{
-            let inputRaw = tc.input!==undefined? tc.input : (tc.raw!==undefined? tc.raw : tc);
-            let expectRaw = tc.expect!==undefined? tc.expect : (tc.output!==undefined? tc.output: null);
-            let inputNorm=_normalizeInput(inputRaw);
-            let expectNorm=_normalizeExpect(expectRaw);
-            if(!fn){
-              let hasLogic=code.length>30;
-              cards.push(`<div class="test" style="border-color:${hasLogic?'var(--color-border)':'var(--color-danger)'}"><div class="small"><b>Case ${i+1}</b> ${hasLogic?'○ needs fn':'✗ no fn'} — in <span class="kbd">${JSON.stringify(inputNorm).slice(0,100)}</span> → exp <span class="kbd">${JSON.stringify(expectNorm).slice(0,100)}</span><div class="small muted">Add function ${fnName||''}</div></div></div>`);
-              return;
-            }
-            let args=_buildArgs(fn, inputNorm);
-            let got;
-            try{ got = fn.apply(null, args); }
-            catch(e){
-              if(/^[A-Z]/.test(fnName||'')){
-                try{
-                  got = null;
-                  let inst = new fn(inputNorm&&inputNorm.operations ? inputNorm.capacity : undefined);
-                  got = inst;
-                }catch(e2){ throw e; }
-              } else throw e;
-            }
-            let pass=_deepEqual(got, expectNorm);
-            if(pass) passCount++;
-            cards.push(_makeResultCard(i, inputRaw, expectRaw, got, null, pass));
-          }catch(err){
-            errorCount++;
-            cards.push(_makeResultCard(i, tc.input||tc.raw, tc.expect, null, err, false));
-          }
-        });
-      } else {
-        cards.push(`<div class="test"><div class="small muted">No test cases for ${title||'this question'} — add via Upload Question.</div></div>`);
-      }
-      if(totalCount){
-        cards.unshift(`<div class="test" style="border-color:${passCount===totalCount?'var(--color-success)':'var(--color-border)'}; background:color-mix(in srgb, var(--color-surface-raised) 90%, ${passCount===totalCount?'var(--color-success)':'var(--color-warning)'} 8%)"><div class="small"><b>Result: ${passCount}/${totalCount} passed</b> ${passCount===totalCount?'✓':'✗'} • ${errorCount?'⚠ '+errorCount+' errors • ':''}lang JS • fn <span class="kbd">${fnName||'?'}</span>${fn? ' • executed ✓' : ''}</div></div>`);
-      }
-    } else {
-      if(tcs && tcs.length){
-        cards.push(`<div class="test" style="border-style:dashed"><div class="small"><b>${title||'Tests'}</b> — ${tcs.length} case(s) • <span class="kbd">${lang}</span> — checked on the server.</div></div>`);
-        tcs.slice(0,8).forEach((tc,i)=>{
-          let inN=_normalizeInput(tc.input||tc.raw);
-          let exN=_normalizeExpect(tc.expect);
-          cards.push(`<div class="test"><div class="small">Case ${i+1}: in <span class="kbd">${JSON.stringify(inN).slice(0,120)}</span> → exp <span class="kbd">${JSON.stringify(exN).slice(0,120)}</span></div></div>`);
-        });
-        if(lang==='python' && /def\s+\w+/.test(code)){
-          cards.push('<div class="test"><div class="small muted">Sign in to run Python code on the server.</div></div>');
-        }
-      } else {
-        cards.push(`<div class="test"><div class="small muted">No tests — lang ${lang}</div></div>`);
-      }
-      cards.push(`<div class="test"><div class="small muted">Tip: Switch to JavaScript for local instant execution.</div></div>`);
-    }
-    if(out) out.innerHTML = cards.join('') || '<div class="small muted">no tests</div>';
-    try{ window._lastRun = {title, passCount, totalCount, errorCount, lang, at:Date.now()}; }catch{}
-  }
   // The catalogue script below replaces this handler with the authenticated
   // execution gateway. Until then, fail closed instead of running client-owned
   // cases or calling a runtime provider directly from the browser.
@@ -13696,6 +13521,27 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const pairRunsList=document.getElementById('pairRunsList');
   const pairRunsStatus=document.getElementById('pairRunsStatus');
   const pairRunsState={room:null,epoch:0,after:0,items:[],abort:null,inFlight:false,blocked:false,refreshQueued:false};
+  const privateStdin=window.RandoriExecutionStdin?.createController({
+    doc:document,
+    enabled:()=>window._randori_auth?.capabilities?.executionStdin===true,
+    context:()=>{
+      const actor=window._randori_auth?.me?.id||window._randori_auth?.me?.uid;
+      if(!actor) return null;
+      const circle=window._randori_circle_control?.scheduleContext?.();
+      const selected=selectedIdentity();
+      return JSON.stringify([actor,activeRoom(),selected.slug,selected.version,
+        document.getElementById('langSelect')?.value,circle?.circlePublicId,circle?.contextVersion]);
+    },
+  })||Object.freeze({capture:()=>null,render:()=>{},refresh:()=>false,clear:()=>{},matches:()=>false});
+  window._randori_sync_execution_stdin=()=>privateStdin.refresh();
+  window.addEventListener('randori:auth-refreshed',()=>privateStdin.refresh());
+  window.addEventListener('randori:room-change',()=>privateStdin.clear());
+  window.addEventListener('randori:workspace-scope-reset',()=>privateStdin.clear());
+  window.addEventListener('randori:workspace-edit',()=>privateStdin.refresh());
+  window.addEventListener('randori:workspace-selection-applied',()=>privateStdin.refresh());
+  window.addEventListener('pagehide',()=>privateStdin.clear());
+  document.addEventListener('visibilitychange',()=>{ if(document.hidden) privateStdin.clear(); });
+  document.getElementById('langSelect')?.addEventListener('change',()=>privateStdin.refresh());
 
   function canonicalPairRunRoom(room){
     return window.RandoriWorkspaceScope.canonicalRoom(room);
@@ -13883,9 +13729,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(runOutEl) runOutEl.innerHTML='<div class="small muted"><span class="spinner-sm"></span> Checking your '+escapeHtml(catalogueView.languageLabel(lang))+' code on the server…</div>';
       try{ if(window._randori_ui && window._randori_ui.showLoader) window._randori_ui.showLoader('Running '+lang+'…'); }catch{}
       (async()=>{
+        let privateOperation=null,executionPayload=null;
         try{
+          privateOperation=privateStdin.capture();
           let apiFn = window.api || null;
           const payload = { language: lang, code, question_slug: customQ.slug||customQ.id, question_version:customQ.version };
+          executionPayload=payload;
+          if(privateOperation){ payload.stdin=privateOperation.stdin; delete privateOperation.stdin; }
           const executionRoom=authorizedPairExecutionRoom();
           if(executionRoom){
             payload.room_id=executionRoom;
@@ -13897,14 +13747,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           }
           let j;
           if(apiFn){
-            j = await apiFn('/api/execute', {method:'POST', body: payload});
+            j = await apiFn('/api/execute', {method:'POST', body: payload,...(privateOperation?{signal:privateOperation.signal}:{})});
           }else{
-            const resp = await fetch('/api/execute', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+            const resp = await fetch('/api/execute', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload),...(privateOperation?{signal:privateOperation.signal}:{})});
             j = await resp.json().catch(()=>({ok:false, error:'bad json'}));
             if(!resp.ok) throw j;
           }
-          if(executionRoom) window._randori_pair_runs?.refresh?.(executionRoom);
           if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader();
+          if(privateOperation&&!privateStdin.matches(privateOperation)) return;
+          privateStdin.render(privateOperation,j.custom_run);
+          if(executionRoom) window._randori_pair_runs?.refresh?.(executionRoom);
           const results = j.results || [];
           const passed = j.passed_count ?? results.filter(r=>r.pass===true).length;
           passedCount = passed;
@@ -13934,6 +13786,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           if(window.toast&&!document.getElementById('roomPanel-results')?.checkVisibility?.()) window.toast(summary.headline);
         }catch(e){
           try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
+          if(privateOperation&&!privateStdin.matches(privateOperation)) return;
+          privateStdin.render(privateOperation,null);
           if(e && e.code==='execution_unavailable'){
             if(runOutEl){ runOutEl.innerHTML='<div class="test run-summary" data-status="partial" data-execution-unavailable><div class="small"><b>Code execution is temporarily unavailable.</b> Your code was not run and nothing was recorded.<div class="small muted">Your editor contents are kept — try again in a few minutes.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
             if(window.toast) window.toast('Code execution is temporarily unavailable');
@@ -13945,6 +13799,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           }
           if(runOutEl){ runOutEl.innerHTML='<div class="test run-summary" data-status="fail"><div class="small">Execution failed: '+escapeHtml(String(msg).slice(0,400))+'<div class="small muted">Check your code and try again.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
           if(window.toast) window.toast('Execution error: '+String(msg).slice(0,120));
+        }finally{
+          if(executionPayload) delete executionPayload.stdin;
         }
       })();
       return;
@@ -14356,7 +14212,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           if(j.ok||j.passed_count!==undefined){
             window._randori_log&&window._randori_log.success('execute_success', `${lang} ${j.passed_count}/${j.total_count} pass`, {lang, passed:j.passed_count, total:j.total_count});
           } else if(!r.ok){
-            window._randori_log&&window._randori_log.warn('execute_fail', `execute ${lang} http ${r.status}`, {lang, status:r.status, j});
+            window._randori_log&&window._randori_log.warn('execute_fail', `execute ${lang} http ${r.status}`, {lang, status:r.status});
           }
         }catch{}
         return r;
@@ -14381,7 +14237,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
      Monaco loader and assets/crdt-editor.js load when the code view or a pair
      room first opens, and Prettier (four unpkg scripts) on the first "Format code". -->
 <script>
-// Monaco IDE task — replace textarea with Monaco, keep textarea as hidden mirror for legacy runCode/AI paths
+// Monaco IDE task — replace textarea with Monaco, keep textarea as hidden mirror for shared code/AI paths
 (function(){
   if(typeof window.toast!=='function'){ window.toast=function(m){ try{ console.log('[toast]',m); }catch{} }; }
   const LOCAL_RUNTIME=window.__RANDORI_LOCAL_RUNTIME__===true;
