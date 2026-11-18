@@ -11,8 +11,11 @@ export function validateCatalogFiles({ catalogPath = CATALOG_PATH, provenancePat
   const catalog = JSON.parse(readFileSync(catalogPath, 'utf8'));
   const provenance = JSON.parse(readFileSync(provenancePath, 'utf8'));
   const result = validateCatalog(catalog, undefined, provenance);
+  // The independent Python references and example/oracle agreement are a
+  // required gate, not replaced by the additional-language harness checks.
+  const kitReferences = validateInterviewKitReferences(catalog);
   const additional = validateAdditionalLanguageReferences(catalog);
-  return { ...result, additional };
+  return { ...result, kitReferences, additional };
 }
 
 export function main({ stdout = process.stdout, ...paths } = {}) {

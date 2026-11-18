@@ -85,6 +85,16 @@ export function validateInterviewKitReferences(catalog, { seed = 469, runProgram
   return { exerciseCount, caseCount };
 }
 
+export function typescriptOracleSource(oracle) {
+  const source = Function.prototype.toString.call(oracle);
+  const header = source.match(/^function\s+([A-Za-z_][\w]*)\s*\(([^)]*)\)\s*\{/);
+  const parameters = header && header[2].trim() ? header[2].split(',').map(value => value.trim()) : [];
+  if (!header || !parameters.every(value => /^[A-Za-z_][\w]*$/.test(value))) {
+    throw new Error('TypeScript oracle references require a named function with plain identifier parameters (no defaults, destructuring or rest parameters)');
+  }
+  return source.replace(header[0], `function ${header[1]}(${parameters.map(name => `${name}: any`).join(', ')}): any {`);
+}
+
 // Validate additions even while rollout flags are off. TypeScript is mandatory
 // offline. Go runs with a local toolchain only, never a download/provider; CI
 // sets CATALOG_REQUIRE_GO=true to make a missing toolchain a hard failure.
@@ -108,7 +118,7 @@ export function validateAdditionalLanguageReferences(catalog, { seed = 466,
     const suite = createEvaluationSuite(exercise.slug, exercise.version, 'typescript', { env, random: seededKitRandom(seed) });
     const kit = INTERVIEW_KIT_DEFINITIONS[key];
     if (kit) {
-      const source = kit.oracle.toString().replace(/\(([^)]*)\)/, (_, params) => `(${params.split(',').map(name => `${name.trim()}: any`).join(', ')})`);
+      const source = typescriptOracleSource(kit.oracle);
       const prefix = '__TYPESCRIPT_REFERENCE__:';
       const tests = [...suite.tests, ...exercise.examples.map(example => ({ args: example.input, expected: example.output }))];
       const output = runProgram('typescript', buildExecutionHarness('typescript', source, { ...suite, tests }, prefix));
@@ -123,7 +133,7 @@ export function validateAdditionalLanguageReferences(catalog, { seed = 466,
       if (goAvailable) {
         runProgram('go', buildExecutionHarness('go', languages.go.starter, { ...goSuite, tests: [] }, prefix));
         const output = runProgram('go', harness);
-        if (normalizeRunnerResults(output, prefix, goSuite.tests).some(result => !result.pass)) throw new Error(`${key} go reference disagrees with oracle`);
+        if (normalizeRunnerResults(output, prefix, goSuite.tests, { strictSequence: true }).some(result => !result.pass)) throw new Error(`${key} go reference disagrees with oracle`);
         goCases += goSuite.tests.length;
       }
     } else if (kit) throw new Error(`Missing Go kit reference: ${key}`);
