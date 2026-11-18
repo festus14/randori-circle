@@ -2690,6 +2690,7 @@ async function handleExecute(req,res){
         if(canonical.terminal){
           return res.status(409).json({error:'session is completed',code:'session_completed'});
         }
+        if(canonical.lobby) return res.status(409).json({error:'Waiting for the interviewer to admit you.',code:'interview_lobby'});
         if(canonical.missing||canonical.stale){
           return res.status(409).json({
             error:'code document changed',code:'code_document_changed',
@@ -2840,6 +2841,7 @@ async function handleExecute(req,res){
           });
           if(!latest) return res.status(404).json({error:'pair not found'});
           if(latest.terminal) return res.status(409).json({error:'session is completed',code:'session_completed'});
+          if(latest.lobby) return res.status(409).json({error:'Waiting for the interviewer to admit you.',code:'interview_lobby'});
           if(latest.missing||latest.stale) return res.status(409).json({
             error:'code document changed',code:'code_document_changed',latest_document_version:latest.latestVersion,
           });

@@ -4,7 +4,7 @@ import * as Y from 'yjs';
 import { authPairAccessArgs } from './_pair-access.js';
 import { getPublicExercise } from './_catalog.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
-import { candidateCodeFence, interviewOpenFence, resolveInterviewMode } from './_interview-session.js';
+import { candidateCodeFence, interviewOpenFence, readInterviewGate, resolveInterviewMode } from './_interview-session.js';
 import { interviewTimerEnded } from './_session-controls.js';
 
 export const CODE_DOCUMENT_STATE_LIMIT_BYTES=256*1024;
@@ -714,6 +714,12 @@ async function readCanonicalCodeForExecutionUnlocked(db,{viewerId,room,questionS
       if(await completedPair(transaction,authorization,identity,mode)){
         commitStarted=true; await transaction.commit(); settled=true;
         return {eligible:true,terminal:true,pair:authorization.pair};
+      }
+      // The candidate's workspace is inert in the lobby (#464): no new runs.
+      const gate=await readInterviewGate(transaction,mode,identity);
+      if(gate&&!gate.live&&gate.candidateUserId===viewerId){
+        commitStarted=true; await transaction.commit(); settled=true;
+        return {eligible:true,lobby:true,pair:authorization.pair};
       }
       const row=await readRow(transaction,identity);
       if(!row||Number(row.retention_expired)===1){

@@ -8,7 +8,7 @@ import * as Y from 'yjs';
 
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { copyMigratedDatabaseSync, migratedTemplatePath } from '../support/migrated-db.mjs';
-import { getAuthorizedCodeDocument, mergeAuthorizedCodeDocument } from '../../api/_code-document.js';
+import { getAuthorizedCodeDocument, mergeAuthorizedCodeDocument, readCanonicalCodeForExecution } from '../../api/_code-document.js';
 import {
   candidateCodeFence,
   candidateWorkspaceFence,
@@ -527,4 +527,16 @@ test('the SQL state projection and the JS projection agree on lobby, live and en
     assert.equal(Number(sql.ended)===1,expected==='ended');
     assert.equal(Number(sql.live)===1,expected!=='lobby');
   }
+});
+
+test('the lobby closes new candidate execution lookups; the lock does not stop runs of the shared code',async()=>{
+  await freshDatabase();
+  const document=(await getAuthorizedCodeDocument(currentDb,{viewerId:INTERVIEWER,...IDENTITY})).document;
+  const lookup=viewerId=>readCanonicalCodeForExecution(currentDb,{viewerId,room:IDENTITY,questionSlug:IDENTITY.questionSlug,
+    questionVersion:1,language:'javascript',documentVersion:document.version});
+  assert.equal((await lookup(CANDIDATE)).lobby,true);
+  assert.equal((await lookup(INTERVIEWER)).stale,false);
+  await run(INTERVIEWER,'admit'); await run(INTERVIEWER,'lock_editing');
+  const candidate=await lookup(CANDIDATE);
+  assert.equal(candidate.lobby,undefined); assert.equal(candidate.stale,false);
 });
