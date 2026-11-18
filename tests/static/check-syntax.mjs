@@ -4,6 +4,10 @@ import { readFileSync, readdirSync } from 'node:fs';
 import vm from 'node:vm';
 
 const sourceFiles = [
+  ...readdirSync('assets')
+    .filter(file => /\.(?:js|mjs)$/.test(file))
+    .sort()
+    .map(file => `assets/${file}`),
   ...readdirSync('api')
     .filter(file => file.endsWith('.js'))
     .sort()

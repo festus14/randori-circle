@@ -1,16 +1,18 @@
 // Circle owner "invite several people at once" (ID-68).
 //
-// Loaded by index.html as `<script type="module">`. The pure helpers turn a
-// paste into a preview and a server response into result rows; the controller
-// wires them to the invite card. Every request, authorization check and
-// circle-context guard comes from the host object index.html passes in, so
+// Loaded on demand when the owner opens the bulk disclosure (ID-101). The
+// pure helpers turn a paste into a preview and a server response into result
+// rows; the controller wires them to the invite card. Every request,
+// authorization check and circle-context guard comes from the host object index.html passes in, so
 // this file never decides who may invite and never stores addresses anywhere
 // but memory (cleared by `reset()` on any identity or circle change).
-import {
-  BULK_INVITE_MAX,
-  emailProblemMessage,
-  parseEmailList,
-} from './email-validation.js';
+// The browser loader awaits the shared validator first, including retries.
+// Do not statically import its original URL in the browser: a failed module
+// evaluation at that URL can remain cached after a successful retry URL.
+const emailValidation = typeof window === 'undefined'
+  ? await import('./email-validation.js')
+  : window.RandoriEmailValidation;
+const { BULK_INVITE_MAX, emailProblemMessage, parseEmailList } = emailValidation;
 
 const INVITE_URL_PATTERN = /^\/invite#invite=[A-Za-z0-9_-]{43}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -418,7 +420,7 @@ export function mountBulkInvite({ doc, host }) {
 
   input.addEventListener('input', update);
   form.addEventListener('submit', event => { void submitAll(event); });
-  renderPreview();
+  update(); // Preserve a paste made while the lazy module was loading.
 
   return Object.freeze({
     reset() {
@@ -447,7 +449,7 @@ const api = Object.freeze({
   withoutLines,
 });
 
-if (typeof window !== 'undefined' && window) {
+if (typeof window !== 'undefined' && window && !window.RandoriBulkInvite) {
   window.RandoriBulkInvite = api;
   try { window.dispatchEvent(new Event('randori:bulk-invite-ready')); } catch { /* old browsers */ }
 }

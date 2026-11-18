@@ -496,14 +496,84 @@ test('pair members converge on a normalized proposal and acceptance in their own
   }
 });
 
+test('calendar first use retries a failed module load and produces one local download', async ({ page }) => {
+  const store = new ScheduleStore([roomA]);
+  store.seed(roomA, { agreed_time: londonInstant, legacy_agreed_time: null });
+  let requests = 0;
+  await page.route('**/assets/calendar-export.js*', route => ++requests === 1 ? route.abort() : route.continue());
+  await openDashboard(page, userA, store, () => roomA);
+  expect(requests).toBe(0);
+  const action = page.getByTestId('schedule-calendar-export');
+  await action.click();
+  await expect(page.locator('#toast')).toContainText('Calendar tools could not load');
+  await expect(action).toBeEnabled();
+  await expect(action).not.toHaveAttribute('aria-busy', 'true');
+  const download = page.waitForEvent('download');
+  await action.click();
+  expect((await download).suggestedFilename()).toBe(`randori-${roomA}.ics`);
+  expect(requests).toBe(2);
+  await expect(action).toHaveAccessibleName(/add the agreed .* session to your calendar/i);
+});
+
+test('calendar loading survives reconciliation without double export and rejects a changed agreement', async ({ page }) => {
+  const store = new ScheduleStore([roomA]);
+  store.seed(roomA, { agreed_time: londonInstant, legacy_agreed_time: null });
+  let requests = 0;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/assets/calendar-export.js*', async route => {
+    requests += 1; await gate; await route.continue();
+  });
+  const downloads: Download[] = [];
+  page.on('download', download => downloads.push(download));
+  await openDashboard(page, userA, store, () => roomA);
+  const action = page.getByTestId('schedule-calendar-export');
+  await action.click();
+  await expect(action).toHaveText('Preparing calendar…');
+  await expect(action).toBeDisabled();
+  await expect.poll(() => requests).toBe(1);
+  // A routine render cannot create a second runnable button during the load.
+  await refreshSchedule(page);
+  await expect(action).toBeDisabled();
+  await page.evaluate(() => (document.querySelector('[data-testid="schedule-calendar-export"]') as HTMLButtonElement).click());
+  const changed = '2098-10-08T19:00:00.000Z';
+  store.seed(roomA, { agreed_time: changed, legacy_agreed_time: null });
+  await refreshSchedule(page);
+  release();
+  await expect(action).toBeEnabled();
+  expect(requests).toBe(1);
+  expect(downloads).toEqual([]);
+  const download = page.waitForEvent('download');
+  await action.click();
+  expect(await downloadText(await download)).toContain('DTSTART:20981008T190000Z');
+  expect(requests).toBe(1, 'successful module is reused, never re-downloaded');
+});
+
+test('a stale detached calendar button cannot export the previous pair even when the time matches', async ({ page }) => {
+  const store = new ScheduleStore([roomA, roomB]);
+  for (const room of [roomA, roomB]) store.seed(room, { agreed_time: londonInstant, legacy_agreed_time: null });
+  let authorizedRoom = roomA;
+  const downloads: Download[] = [];
+  page.on('download', download => downloads.push(download));
+  await openDashboard(page, userA, store, () => authorizedRoom);
+  const oldButton = await page.getByTestId('schedule-calendar-export').elementHandle();
+  await page.locator('[data-tab="pair"]').click();
+  authorizedRoom = roomB;
+  await page.locator('.brand').click();
+  await waitForSchedule(page, roomB);
+  await oldButton!.evaluate(button => (button as HTMLButtonElement).click());
+  const download = page.waitForEvent('download');
+  await page.getByTestId('schedule-calendar-export').click();
+  expect((await download).suggestedFilename()).toBe(`randori-${roomB}.ics`);
+  expect(downloads.map(item => item.suggestedFilename())).toEqual([`randori-${roomB}.ics`]);
+});
+
 test('accepted schedule exports privately at 320px, reschedules in place, and disappears when cleared', async ({ page }) => {
   const store = new ScheduleStore([roomA]);
   store.seed(roomA, { agreed_time: londonInstant, legacy_agreed_time: null });
   await page.setViewportSize({ width: 320, height: 720 });
   await openDashboard(page, userA, store, () => roomA);
-  await page.waitForFunction(() => Boolean((window as typeof window & {
-    _randori_calendar_export?: { download?: unknown };
-  })._randori_calendar_export?.download));
+  expect(await page.evaluate(() => typeof (window as any)._randori_calendar_export)).toBe('undefined');
 
   const action = page.getByTestId('schedule-calendar-export');
   await expect(action).toBeVisible();
@@ -569,9 +639,7 @@ test('a click that lands while the bounded schedule read is in flight still expo
   const store = new ScheduleStore([roomA]);
   store.seed(roomA, { agreed_time: londonInstant, legacy_agreed_time: null });
   await openDashboard(page, userA, store, () => roomA);
-  await page.waitForFunction(() => Boolean((window as typeof window & {
-    _randori_calendar_export?: { download?: unknown };
-  })._randori_calendar_export?.download));
+  expect(await page.evaluate(() => typeof (window as any)._randori_calendar_export)).toBe('undefined');
 
   const delayed = store.deferNextGet(roomA);
   try {

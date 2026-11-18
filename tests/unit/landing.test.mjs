@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+await import('../../assets/optional-pages.js');
 await import('../../assets/landing.js');
 const landing = globalThis._randori_landing;
 
@@ -314,8 +315,10 @@ test('"I have an invitation" explains invitations, and opens signup only with a 
     button.click();
     assert.deepEqual(opened, ['signup'], 'disabled while capabilities load');
 
-    for (const id of ['requestInviteSignin', 'inviteSignin', 'activationSignin']) doc.$(id).click();
-    assert.deepEqual(opened, ['signup', 'signin', 'signin', 'signin']);
+    for (const id of ['requestInviteSignin', 'inviteSignin', 'activationSignin']) {
+      assert.equal(doc.$(id).listeners.has('click'), false, 'essential sign-in is owned by the synchronous shell');
+    }
+    assert.deepEqual(opened, ['signup']);
     doc.$('landingThemeToggle').click();
     assert.equal(doc.$('themeToggle').clicks, 1);
   });
@@ -462,10 +465,27 @@ test('the hero CTA and /#request-invite deep links scroll to the form, honouring
   assert.equal(landing.scrollToRequest(), false);
 });
 
-test('index.html loads the module early and keeps the landing contract hooks', () => {
+test('request-invite deep-link reveal waits until lazy page controls stop being inert', () => {
+  const doc = mounted();
+  const content = doc.$('requestInviteForm');
+  content.inert = true;
+  withGlobals({ location: { hash: '#request-invite' } }, () => {
+    landing.setCapabilities({ loaded: true, inviteRequests: true });
+    assert.equal(landing.revealRequestedSection(), false);
+    assert.equal(doc.$('request-invite').scrolled.length, 0);
+    content.inert = false;
+    assert.equal(landing.revealRequestedSection(), true);
+    assert.equal(doc.$('request-invite').scrolled.length, 1);
+    assert.equal(doc.activeElement, doc.$('request-invite'));
+    assert.equal(landing.revealRequestedSection(), false, 'reveal only once');
+  });
+});
+
+test('index.html loads only the lightweight bridge early and keeps the landing contract hooks', () => {
   const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
   const gate = html.indexOf('<script src="/assets/invite-gate.js"></script>');
-  const module = html.indexOf('<script src="/assets/landing.js"></script>');
+  const module = html.indexOf('<script src="/assets/optional-pages.js"></script>');
+  assert.doesNotMatch(html, /<script[^>]+src="\/assets\/landing\.js"/);
   const authLayer = html.indexOf('// ---------- auth layer ----------');
   assert.ok(gate >= 0 && module > gate && module < authLayer);
   assert.match(html, /<h1 id="landingTitle">Mock interviews with people you trust\.<\/h1>/);
@@ -500,6 +520,14 @@ test('the request form uses the shared strict email rules once that module has l
   } finally {
     delete globalThis.RandoriEmailValidation;
   }
+});
+
+test('late landing evaluation preserves its API and never double-wires a mounted document', async () => {
+  const doc = mounted(); const listeners = doc.$('requestInviteForm').listeners.get('submit').length;
+  await import('../../assets/landing.js?late-retry=1');
+  assert.equal(globalThis._randori_landing, landing);
+  landing.mount(doc);
+  assert.equal(doc.$('requestInviteForm').listeners.get('submit').length, listeners);
 });
 
 test('privacy links open the privacy note', () => {

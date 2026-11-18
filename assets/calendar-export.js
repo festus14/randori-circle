@@ -148,7 +148,7 @@ export function downloadScheduleCalendar(options, browser = {}) {
 }
 
 if (typeof window !== 'undefined') {
-  window._randori_calendar_export = Object.freeze({
+  window._randori_calendar_export ||= Object.freeze({
     build: buildScheduleCalendar,
     download: downloadScheduleCalendar,
   });

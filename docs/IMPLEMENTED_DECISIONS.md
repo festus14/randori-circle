@@ -126,6 +126,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-98](#id-98-embed-consent-gated-daily-video-in-primary-pair-rooms-behind-a-flag) | Embed consent-gated Daily video in primary pair rooms, behind a flag | Pairing & Scheduling | Active |
 | [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) | Add an interview lobby, schedule start, interviewer-owned selection and candidate edit lock | Pairing & Scheduling | Amended by [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) |
 | [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) | Show pair presence and remote cursors over the private relay, with a TTL heartbeat fallback | Pairing & Scheduling | Active |
+| [ID-101](#id-101-load-optional-page-tools-at-their-first-use-without-weakening-byte-gates) | Load optional page tools at their first use without weakening byte gates | Quality, CI & Testing | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -139,7 +140,8 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-101). Never reuse a number, even if an entry is
+   plus one (currently ID-103; ID-102 is reserved by parallel work in
+   #465). Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
 2. **Check for collisions before you claim it.** Parallel PRs are the
@@ -6013,3 +6015,80 @@ paused". Provider canary of `y-awareness` is an operator gate.
 canary, then set `PRESENCE_ENABLED=true` and redeploy. Rollback: unset and
 redeploy; clients stop on the next document GET, rows expire in 20 s. Details:
 [presence and remote cursors](CONFLICT_FREE_CODE_DOCUMENTS.md#presence-and-remote-cursors-462).
+## ID-101: Load optional page tools at their first use without weakening byte gates
+
+**Status: Active.** Implements #479 (epic #460). ID-99 landed in #477 and ID-100 in #481;
+neither entry is changed by this branch. No migration,
+provider call, new dependency or CSP change.
+
+**Context.** At `929cad6` (after #477), the adopted file-byte check measured
+initial JS at 998,173 bytes against 1,000,000. Pair-room members paid for public forms,
+invitation management and calendar generation even without visiting them.
+
+**Decision.** Keep only a small synchronous `assets/optional-pages.js` bridge
+in the shell. Its named, same-origin script loads are promise-deduplicated:
+
+- `landing.js` loads when the router first shows the public landing, invitation,
+  activation or password-reset view, not merely when auth capabilities arrive.
+  Static page content remains present. A live pending banner and inert optional
+  widgets prevent lost clicks; core invitation acceptance, activation, password
+  reset and sign-in remain usable when the optional script fails. Sign-in entry
+  points and core recovery visibility belong to the synchronous shell/bridge.
+  A keyboard retry parks focus on the live loading status before hiding the
+  button, returns it to Retry on failure, and moves it to the page heading on
+  success without stealing focus from a control the person chose meanwhile.
+  All four route observers disconnect after the shared module finishes.
+  The bridge buffers only the latest capability/recovery values and hydrates the
+  real landing API synchronously before publishing it, avoiding stale replay.
+- `bulk-invite.js` loads when an owner first opens its disclosure. Early pastes
+  survive loading; no invitation is submitted implicitly. Existing actor/circle
+  fences are checked again before mounting, and context resets clear the draft.
+- `calendar-export.js` loads at Add to calendar. Pending state is shared across
+  schedule reconciliation renders; duplicate clicks cannot duplicate downloads.
+  Actor, circle, cycle, agreement and expiry are checked again after loading.
+- `email-validation.js` loads with public page controls, before the bulk module,
+  or before signup or a single invitation submit. Signup waits before validating
+  fields, fails closed without the rules, and fences the wait by modal generation,
+  actor and invitation lifetime. Sign-in/reset retain legacy-address compatibility.
+  The browser bulk module uses that loaded
+  validator, not a static dependency URL whose failed evaluation could be cached.
+  Validation never silently falls back to weaker rules on a failed lazy load;
+  the draft stays retryable.
+
+A failed/timed-out load rejects, removes its script and clears its promise.
+Only explicit first use/retry starts another request. Retried module URLs have
+an attempt query to avoid cached failed evaluations, never a remote fallback.
+Every optional module initializer must be idempotent: removing a timed-out tag
+cannot guarantee that it will not evaluate alongside its `?retry=N` copy.
+Unit tests pin stable browser APIs, single readiness notification and no duplicate
+DOM handlers. The bridge's frozen recovery predicate table is shared with landing
+rather than independently copied. All loads stay under existing
+`script-src 'self'`; invitation token consumption still precedes any telemetry.
+
+**Deliberately eager.** `invite-gate.js` must exist before the head bootstrap
+scrubs/prepares invitation capabilities; deferring it would change a security
+boundary. `onboarding-flow.js` supplies synchronous first-render helpers not
+only for onboarding, but for recovery, Home, availability and setup status.
+Keeping both is safer than making unrelated synchronous callers asynchronous,
+and the selected boundary already recovers more than 40 KB.
+
+**Measurement.** No threshold changes. `jsInitial` still means inline scripts
+plus local script-tag assets, not network transfer or every route's first-use
+imports. JS total now includes both `.js` and `.mjs`, tightening the old check
+by the previously omitted realtime modules. `crdt-editor-source.js` (and the
+Monaco build shim) remain counted conservatively even though the browser does
+not request these build inputs. Excluding them would better describe served
+payloads but would loosen the adopted total gate, so it is explicitly not done.
+Network assertions separately prove that pair rooms request none of the four
+optional assets; signed-out public pages still fetch the controls they need.
+See [byte budget](design/TOKENS.md#byte-budget) and
+[page-weight testing](testing/E2E_GOLDEN_PATHS.md#page-weight-and-first-use-boundaries).
+
+**Verification and rollback.** Focused optional-loader, landing, bulk-invite,
+email, calendar and invite-gate unit tests cover single flight, failures, timeout,
+late readiness and capability hydration. Playwright covers public/recovery and
+onboarding flows, real bulk invitation and pair/calendar journeys, idle pair
+request exclusion, first-use retries, double submit and changed-agreement races.
+Existing repository gates remain required. Revert this boundary as one change
+(the bridge, script tags and callers together) if browser behaviour regresses;
+no persisted state or provider configuration needs repair.

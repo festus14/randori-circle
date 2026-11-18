@@ -27,6 +27,15 @@ and `assets/presence-ui.mjs` join that scope the same way (#462 / ID-100). New
 work is measured with focused tests locally; the full coverage gate remains a
 GitHub Actions merge prerequisite.
 
+`assets/optional-pages.js` is included as of #479 / ID-101. Its VM tests use
+its canonical `file://` source URL, so V8/c8 attribute exercised branches to
+the real file rather than an anonymous VM script. A focused Node 24 run of
+`optional-pages.test.mjs` plus `landing.test.mjs` measured 100% lines, 97.29%
+branches and 100% functions for this file. The fake DOM models hidden-element
+blur, and real-browser tests independently check retry focus and usable core
+recovery controls. This is scoped evidence, not a new aggregate baseline; full
+coverage stays in CI with the existing thresholds and exclusions unchanged.
+
 The rest of this document records the original 2026-10-19 baseline, the
 measurement fix and the test-writing packages that followed it.
 

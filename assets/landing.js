@@ -1,14 +1,16 @@
 // Public landing and recovery-page behaviour (UI redesign WP-L1).
 //
-// Classic script, loaded synchronously in <head> so the auth layer can hand
-// it capabilities as soon as they resolve. Also importable from Node for unit
-// tests: it only touches the DOM through the document passed to mount().
+// Loaded on the first public landing/recovery view (ID-101), after shared
+// email validation. The auth bridge hydrates the latest capabilities/recovery
+// state before mount. Also importable from Node for unit tests: it only touches
+// the DOM through the document passed to mount().
 //
 // Invite-request contract: docs/INVITE_REQUESTS.md (WP-L2). The form is shown
 // only when /api/auth/capabilities advertises `inviteRequests: true`; the
 // success copy is fixed client-side so every accepted outcome looks identical.
 (function installLanding(root) {
   'use strict';
+  if (root._randori_landing?.mount) return; // Ignore a late/retried classic script.
 
   const NAME_MIN = 2;
   const NAME_MAX = 60;
@@ -161,11 +163,7 @@
     },
   });
 
-  const RECOVERY_DEAD_ENDS = Object.freeze({
-    invite: ['expired', 'failed'],
-    activation: ['expired', 'revoked', 'invalid'],
-    passwordReset: ['expired', 'revoked', 'invalid'],
-  });
+  const RECOVERY_DEAD_ENDS = root._randori_optional_pages.recoveryDeadEnds;
 
   const RECOVERY_IDS = Object.freeze({
     invite: { title: 'inviteTitle', steps: 'inviteNextSteps' },
@@ -246,7 +244,8 @@
 
   function landingVisible() {
     const landing = el('view-landing');
-    return Boolean(landing && landing.style?.display !== 'none');
+    return Boolean(landing && landing.style?.display !== 'none'
+      && !el('requestInviteForm')?.inert);
   }
 
   function revealRequestedSection() {
@@ -386,6 +385,7 @@
   }
 
   function mount(doc, { fetchImpl } = {}) {
+    if (state.doc === doc) return; // A late script after a timeout must not double-wire controls.
     state.doc = doc;
     state.fetchImpl = typeof fetchImpl === 'function' ? fetchImpl : null;
     const on = (id, type, handler) => el(id)?.addEventListener?.(type, handler);
@@ -401,8 +401,8 @@
       try { root.history?.replaceState?.(root.history.state, '', '#request-invite'); } catch {}
       scrollToRequest();
     });
-    const signIn = () => root._randori_auth?.openModal?.('signin');
-    for (const id of ['requestInviteSignin', 'inviteSignin', 'activationSignin']) on(id, 'click', signIn);
+    // Essential sign-in entry points are wired by the synchronous shell,
+    // independently of these optional public widgets.
     on('landingThemeToggle', 'click', () => el('themeToggle')?.click?.());
     // "Privacy" links land on the note open, not on a closed disclosure.
     for (const link of doc.querySelectorAll?.('a[href="#landingPrivacy"]') || []) {
@@ -465,6 +465,10 @@
     },
   });
 
+  // Hydrate synchronously before publishing the real API: an auth response
+  // arriving between script evaluation and onload must not be overwritten by
+  // an older buffered value. mount() below renders the hydrated state.
+  root._randori_landing?.hydrate?.(api);
   Object.defineProperty(root, '_randori_landing', { configurable: true, value: api });
 
   const doc = root.document;
