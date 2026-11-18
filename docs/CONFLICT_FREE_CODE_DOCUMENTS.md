@@ -88,6 +88,10 @@ History recomputes the code hash. Historical v2 and solo runs remain compatible.
 
 ## Supabase relay-only transport (#461)
 
+In interview lobby mode (ID-99) the relay is one-way and a lobby or locked
+candidate gets no token; see
+[session controls](SESSION_CONTROLS.md#realtime-relay-kits-and-video).
+
 `REALTIME_RELAY_ENABLED` is on for the literal string `true` only. It defaults
 off. All four provider settings must validate locally before discovery offers
 `realtimeRelay` and primary document GETs include `realtime_relay: true`.

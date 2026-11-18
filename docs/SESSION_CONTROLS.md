@@ -267,6 +267,28 @@ Rollback: flag off (ID-95 rollback applies), or keep the flag and leave
 migration 26 unapplied for the ID-95 behaviour. The table is kept; never drop
 it or edit the ledger. Do not toggle mid-interview.
 
+### Realtime relay, kits and video
+
+With `REALTIME_RELAY_ENABLED` (ID-96) the relay could otherwise carry a lobby
+or locked candidate's Yjs bytes to the interviewer's browser, which would merge
+and persist them under the interviewer's identity. In lobby mode the relay is
+therefore **one-way**: the document GET returns
+`realtime_relay_direction:"send"` to the interviewer and `"receive"` to the
+candidate, and the live controls role must agree. The interviewer's browser
+drops every inbound packet (packets carry no authenticated sender, so any of
+them may be candidate-origin); the candidate's browser never broadcasts, and
+while held does not re-queue relayed bytes (the interviewer persists their own
+edits), so the held queue contains only the candidate's own edits.
+The relay-token endpoint refuses a candidate in the lobby or while locked with
+the uniform 404 before spending quota, and a candidate token lives 90 seconds,
+so a lock takes effect on the next renewal. Interviewer edits stay realtime for
+the candidate; candidate edits reach the interviewer over HTTPS polling.
+
+Interview kits (ID-97) are catalogue metadata: they add no writer of the room
+selection, and the candidate's catalogue and kit filters are held disabled with
+the question and language selectors. Daily video (ID-98) stays available in
+the lobby, because an interview starts by talking.
+
 In the lobby the candidate's Run is disabled and new room execution lookups
 for the candidate return `409 interview_lobby`; a locked candidate can still
 run the shared code. A run already authorized keeps its bounded lifetime.
