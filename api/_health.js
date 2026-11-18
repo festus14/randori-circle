@@ -12,6 +12,7 @@ import { inspectLedgerReadiness, readinessManifestForLedger } from '../db/migrat
 import { inspectSchema, readOnlyDatabase } from '../db/schema-inspector.js';
 import { READINESS_SCHEMA_MANIFEST } from '../db/schema-readiness-manifest.js';
 import { inspectCredentialKeyControlReadiness } from '../db/credential-key-control.js';
+import { executionQueueEnabled, executionQueueReadiness } from './_execution-queue.js';
 
 export const HEALTH_RESPONSE=Object.freeze({ok:true,status:'live'});
 export const READY_RESPONSE=Object.freeze({ok:true,status:'ready'});
@@ -55,7 +56,7 @@ export function databaseReadinessConfiguration(env=process.env){
   }
   return Object.freeze({
     cacheKey:createHash('sha256')
-      .update(`${local?'local':'remote'}\0${membershipRequired?'membership':'legacy'}\0${rawUrl}\0${authToken}`,'utf8')
+      .update(`${local?'local':'remote'}\0${membershipRequired?'membership':'legacy'}\0${rawUrl}\0${authToken}${env.EXECUTION_QUEUE_ENABLED==='true'?'\0execution-queue:'+JSON.stringify(Object.keys(env).filter(key=>key.startsWith('EXECUTION_')).sort().map(key=>[key,env[key]])):''}`,'utf8')
       .digest('hex'),
     local,
     localDatabasePath,
@@ -91,6 +92,7 @@ export function resolveHealthProbe(req){
 // the checked-in defaults.
 export async function inspectDatabaseReadiness(database,{
   membershipRequired=false,
+  env=process.env,
   contracts=MIGRATION_CONTRACTS,
   manifest=READINESS_SCHEMA_MANIFEST,
 }={}){
@@ -107,7 +109,8 @@ export async function inspectDatabaseReadiness(database,{
   const membership=membershipRequired
     ?await inspectCompletedMembershipRollout(db)
     :await inspectMembershipRolloutReadiness(db);
-  return membership.ok===true;
+  if(!membership.ok) return false;
+  return !executionQueueEnabled(env)||(await executionQueueReadiness(db,env)).ready;
 }
 
 function timeout(promise,timeoutMs){

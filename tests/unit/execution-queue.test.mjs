@@ -83,10 +83,10 @@ test('real SQLite atomically enforces circle/global ceilings and one active acco
   assert.equal(health.spend.usedMinuteUnits,4);assert.equal(health.spend.usedDayUnits,4);
   await finishExecution(db,a,{safeToRelease:true,providerMs:12});
   await finishExecution(db,b,{safeToRelease:true});
-  // Circle 1 has been served twice; the previously unserved circle 4 wins.
-  await rejectsBusy(admitExecution(db,context(3),{env:ENV}),'queued');
-  const f=await admitExecution(db,context(6,4),{env:ENV});
+  // Both eligible callers are in the ordered fill set: the first retry must
+  // not sit idle behind the other caller's reserved three-second offer.
   const e=await admitExecution(db,context(3),{env:ENV});
+  const f=await admitExecution(db,context(6,4),{env:ENV});
   for(const lease of [c,d,e,f])await finishExecution(db,lease,{safeToRelease:true});
   assert.equal((await readExecutionQueueHealth(db,{env:ENV})).activeUnits,0);
 });

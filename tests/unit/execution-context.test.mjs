@@ -60,7 +60,7 @@ test('primary execute busy/quotas never call the provider or persist a wrong-ans
   await admitExecution(db,{userId:11,circleId:1,operation:'held'}, {env:ENV});
   const req={method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-user':'1'},body:{question_slug:'focus-block-rollup',question_version:1,language:'javascript',code:'function rollUpFocusBlocks(){return [];}'}};
   const res=response();await dataHandler(req,res);
-  assert.equal(res.statusCode,503);assert.equal(res.body.code,'execution_busy');assert.equal(res.body.reason,'queued');assert.equal(res.headers['Retry-After'],'2');assert.equal(calls,0);
+  assert.equal(res.statusCode,503);assert.equal(res.body.code,'execution_busy');assert.equal(res.body.reason,'queued');assert.equal(res.headers['Retry-After'],'1');assert.equal(calls,0);
   assert.equal((await db.execute('SELECT COUNT(*) AS n FROM session_runs')).rows[0].n,0);
   assert.equal((await db.execute("SELECT COUNT(*) AS n FROM app_logs WHERE event IN ('execute_lease_start','execute_attempt')")).rows[0].n,0,'queue-on never runs legacy admission');
   await db.execute("DELETE FROM auth_rate_limits WHERE key GLOB 'eq1:*'");
@@ -71,6 +71,17 @@ test('primary execute busy/quotas never call the provider or persist a wrong-ans
   process.env.EXECUTION_QUEUE_ENABLED='false';
   const legacy=response();await dataHandler(req,legacy);assert.equal(legacy.body.code,'execution_unavailable');assert.equal(calls,1);
   assert.ok(Number((await db.execute("SELECT COUNT(*) AS n FROM app_logs WHERE event='execute_lease_start'")).rows[0].n)>0);
+});
+
+test('primary store refusal is an explicit no-run 503 with recorded metrics, not provider_error',async t=>{
+  const db=await fixture(t);envFor(t,{EXECUTION_ACCOUNT_PER_MINUTE:'10'});let calls=0,attempts=0;
+  const native=globalThis.fetch;globalThis.fetch=async()=>{calls++;throw new Error('provider must not run');};t.after(()=>{globalThis.fetch=native;});
+  currentDb={execute:s=>db.execute(s),transaction:async()=>{attempts++;throw Object.assign(new Error('store down'),{code:'NETWORK_ERROR'});}};
+  const res=response();await dataHandler({method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-user':'1'},
+    body:{question_slug:'focus-block-rollup',question_version:1,language:'javascript',code:'function rollUpFocusBlocks(){return [];}' }},res);
+  assert.equal(res.statusCode,503);assert.equal(res.body.code,'execution_busy');assert.equal(res.body.reason,'store');assert.equal(res.headers['Retry-After'],'1');assert.equal(calls,0);assert.equal(attempts,1);
+  assert.equal(Number((await db.execute("SELECT COUNT(*) AS n FROM app_logs WHERE event='execution_queue_metric' AND message='store' AND user_id IS NULL")).rows[0].n),1);
+  assert.equal(Number((await db.execute('SELECT COUNT(*) AS n FROM session_runs')).rows[0].n),0);
 });
 
 test('secondary workspace sends the same no-store busy/quota shape, not generic execution failure',()=>{

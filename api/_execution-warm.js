@@ -17,8 +17,10 @@ export function executionWarmSnapshot(language, env = process.env) {
 }
 
 export function executionWarmStatus(env = process.env) {
-  return Object.fromEntries(Object.keys(EXECUTION_RUNTIME_IMAGES).map(language => [language,
-    { supported: env.EXECUTION_PROVIDER === 'vercel-sandbox', configured: !!executionWarmSnapshot(language, env) }]));
+  return Object.fromEntries(Object.keys(EXECUTION_RUNTIME_IMAGES).map(language => {
+    try{return [language,{supported:env.EXECUTION_PROVIDER==='vercel-sandbox',configured:!!executionWarmSnapshot(language,env)}];}
+    catch{return [language,{supported:env.EXECUTION_PROVIDER==='vercel-sandbox',configured:false,valid:false}];}
+  }));
 }
 
 /** Opt-in operator/CLI creation, injected SDK for provider-free tests.

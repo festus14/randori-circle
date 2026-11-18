@@ -17,13 +17,14 @@
 // messages, and nothing here throws: every failure maps to a category.
 import { performance } from 'node:perf_hooks';
 import { executeProgram, resolveExecutionProvider } from './_execution.js';
+import { ExecutionBusyError, recordExecutionRefusal } from './_execution-queue.js';
 import { sanitizeStartupPair, warmMeasurementEnabled, warmMeasurementCohort, readStartupMeasurement } from './_execution-measurement.js';
 
 export const EXECUTION_SMOKE_LANGUAGES=Object.freeze(['javascript','python']);
-export const EXECUTION_SMOKE_STATUSES=Object.freeze(['ok','provider_error','timeout','misconfigured','throttled']);
+export const EXECUTION_SMOKE_STATUSES=Object.freeze(['ok','busy','provider_error','timeout','misconfigured','throttled']);
 // `lastStatus` of a throttled language: a recorded status, `result_missing`,
 // or null while the latest run is still inside the result grace.
-export const EXECUTION_SMOKE_LAST_STATUSES=Object.freeze(['ok','provider_error','timeout','misconfigured',
+export const EXECUTION_SMOKE_LAST_STATUSES=Object.freeze(['ok','busy','provider_error','timeout','misconfigured',
   'result_missing']);
 export const EXECUTION_SMOKE_MIN_INTERVAL='-30 minutes';
 export const EXECUTION_SMOKE_TRIGGER_WINDOWS=Object.freeze({schedule:'-20 hours',deploy:'-1 day'});
@@ -47,7 +48,7 @@ export const EXECUTION_SMOKE_PROGRAMS=Object.freeze({
 const LOG_SOURCE='runner';
 const CLAIM_EVENT='execution_smoke_claim';
 const RESULT_EVENT='execution_smoke_result';
-const RECORDED_STATUSES=new Set(['ok','provider_error','timeout','misconfigured']);
+const RECORDED_STATUSES=new Set(['ok','busy','provider_error','timeout','misconfigured']);
 const MAX_DURATION_MS=10*60*1000;
 const UNAVAILABLE=Object.freeze({status:503,body:Object.freeze({ok:false,error:'execution smoke unavailable'})});
 const INVALID_REQUEST=Object.freeze({status:400,body:Object.freeze({ok:false,error:'invalid smoke request'})});
@@ -87,6 +88,7 @@ export function parseExecutionSmokeRequest(body){
 export function classifyExecutionError(error){
   let current=error;
   for(let depth=0;current&&depth<5;depth+=1){
+    if(current instanceof ExecutionBusyError)return ['configuration','configuration_changed','primary_circle','state','request_cost'].includes(current.reason)?'misconfigured':'busy';
     if(current.name==='AbortError'||current.name==='TimeoutError') return 'timeout';
     current=current.cause;
   }
@@ -103,8 +105,8 @@ export function classifyExecutionResult(run){
 /** A throttled language passes only when its cached result passed or that run is still in flight. */
 export function executionSmokeLanguagePasses(entry){
   if(!record(entry)) return false;
-  if(entry.status==='ok') return true;
-  return entry.status==='throttled'&&(entry.lastStatus===null||entry.lastStatus==='ok');
+  if(entry.status==='ok'||entry.status==='busy') return true;
+  return entry.status==='throttled'&&(entry.lastStatus===null||entry.lastStatus==='ok'||entry.lastStatus==='busy');
 }
 
 function allPass(languages){
@@ -295,6 +297,7 @@ export async function runExecutionSmoke({trigger,getDb,env=process.env,execute=e
     }
     let cohort;
     try{cohort=warmMeasurementCohort(env);}catch{
+      await recordExecutionRefusal(db,'configuration');
       return {status:200,body:{ok:false,checkedAt:isoNow(clock),languages:Object.fromEntries(
         EXECUTION_SMOKE_LANGUAGES.map(language=>[language,{status:'misconfigured',durationMs:null}]))}};
     }

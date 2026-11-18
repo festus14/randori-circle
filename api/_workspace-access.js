@@ -113,7 +113,7 @@ export function scopedWorkspaceClient(db,context){
         circleId:context.membership.id,contextVersion:context.context_version,implicit:context.implicit,
       })) throw new WorkspaceContextError('circle_context_changed');
     };
-    const wrapped={workspaceContext:context,
+    const wrapped={workspaceContext:context,protocol:db.protocol,get closed(){return client.closed;},
       async execute(statement){
         if(context.membership.is_primary){
           const sql=typeof statement==='string'?statement:statement.sql;
@@ -129,6 +129,20 @@ export function scopedWorkspaceClient(db,context){
         finally{await tx.close?.();}
       },
       async batch(statements,mode='read'){
+        if(transaction){
+          // Admission's clock/state read and atomic TTL writes must not open a
+          // nested transaction or pay one network RTT per statement. The live
+          // context is checked before the batch and again at commit, so a
+          // changed context rolls back the entire batch before provider dispatch.
+          await check();
+          if(context.membership.is_primary)statements=statements.map(statement=>{
+            const sql=typeof statement==='string'?statement:statement.sql;
+            const scoped=sql.replace(/viewer_circle\.archived_at IS NULL/g,`viewer_circle.archived_at IS NULL AND ${workspaceSessionPredicate(context,'viewer_circle.id')}`);
+            return typeof statement==='string'?scoped:{...statement,sql:scoped};
+          });
+          if(typeof client.batch==='function')return client.batch(statements);
+          const results=[];for(const statement of statements)results.push(await client.execute(statement));return results;
+        }
         const tx=await wrapped.transaction(mode);
         try{const results=[];for(const statement of statements)results.push(await tx.execute(statement));await tx.commit();return results;}
         catch(error){try{await tx.rollback();}catch{}throw error;}
