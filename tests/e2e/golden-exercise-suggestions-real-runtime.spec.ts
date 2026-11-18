@@ -150,6 +150,8 @@ test('pair suggestions: attempted markers after a run, partner privacy, keyboard
     const hidden=suggestionsResponse(member);
     await member.keyboard.press('Enter');
     expect(new URL((await hidden).url()).searchParams.get('hidden')).toBe('compatible-review-orders');
+    // Draft Revision Fold is now honestly Easy, so it no longer outranks the
+    // Medium frequency exercise in this step-up list after hiding Compatible.
     await expect.poll(()=>suggestedSlugs(member)).toEqual([
       'connectivity-checkpoints','coverage-gap-finder','message-frequency-leaders',
     ]);
