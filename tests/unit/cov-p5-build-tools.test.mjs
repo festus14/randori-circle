@@ -142,7 +142,7 @@ test('the bundled catalogue and provenance validate and report the exercise coun
   const out = sink();
   const result = validateCatalogMain({ stdout: out });
   assert.ok(result.exerciseCount > 0);
-  assert.equal(out.text(), `Catalogue and provenance valid: ${result.exerciseCount} exercises\n`);
+  assert.match(out.text(), new RegExp(`^Catalogue and provenance valid: ${result.exerciseCount} exercises\\nAdditional references:`));
   assert.equal(validateCatalogFiles().exerciseCount, result.exerciseCount);
 });
 
@@ -174,5 +174,5 @@ test('catalogue validation refuses malformed JSON', t => {
 test('the catalogue CLI exits 0 and prints the count for the bundled data', () => {
   const ok = spawnSync(process.execPath, ['scripts/validate-catalog.mjs'], { encoding: 'utf8' });
   assert.equal(ok.status, 0, ok.stderr);
-  assert.match(ok.stdout, /^Catalogue and provenance valid: \d+ exercises\n$/);
+  assert.match(ok.stdout, /^Catalogue and provenance valid: \d+ exercises\nAdditional references: .*\n$/);
 });

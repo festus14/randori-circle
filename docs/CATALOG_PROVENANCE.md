@@ -29,6 +29,15 @@ constraints, examples, and language definitions. Object keys are sorted and
 array order is retained. Lifecycle and governance fields are excluded so an
 emergency takedown does not require rewriting the content digest.
 
+ID-104's [TypeScript/Go adapters](EXECUTION_LANGUAGES.md#catalogue-authoring-and-provenance)
+are deterministic runtime metadata derived from the reviewed canonical JavaScript
+signature, outside the source catalogue JSON. They add no authored prompt,
+example, case or bespoke starter content. Existing language definitions remain
+fully hash-bound, all catalogue/manifest bytes stay unchanged, and every adapter
+is validated even while rollout is off. Bespoke language content or changed
+semantics require the normal versioned content/review/hash path; never filter
+language definitions out of `canonicalExerciseHash` to make a change pass.
+
 An active exercise is rejected in CI and revalidated against the current UTC
 date on every bounded list, detail, trusted lookup, and evaluation operation.
 This prevents a warm serverless process from serving a review after it expires.

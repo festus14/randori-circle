@@ -602,6 +602,7 @@ beforeEach(() => {
     'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
     'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM',
     'EXECUTION_PROVIDER', 'EXECUTION_API_URL', 'EXECUTION_API_TOKEN', 'EXECUTION_STDIN_ENABLED',
+    'EXECUTION_LANGUAGE_TYPESCRIPT_ENABLED', 'EXECUTION_LANGUAGE_GO_ENABLED',
   ]) delete process.env[key];
   // Execution tests target the provider abstraction through a self-hosted
   // Piston-compatible endpoint whose transport each test replaces.
@@ -2121,6 +2122,114 @@ test('history includes every other member when the viewer is user_c', async () =
   assert.deepEqual(result.body.history[0].partner_names,['First partner','Second partner']);
   assert.equal(result.body.partner_counts['First partner'],1);
   assert.equal(result.body.partner_counts['Second partner'],1);
+});
+
+test('unsupported TypeScript rejects enum, runtime namespace and parameter properties before lease/quota/provider work', async () => {
+  process.env.EXECUTION_LANGUAGE_TYPESCRIPT_ENABLED='true';
+  let providerCalls=0;
+  globalThis.fetch=async()=>{providerCalls++;throw new Error('provider must not be reached');};
+  executeHandler=sql=>{throw new Error(`invalid TypeScript must not touch the database: ${sql}`);};
+  try{
+    for(const code of ['enum Choice { First }','namespace Values { export const x=1 }','class Box { constructor(public value: number) {} }']){
+      executed.length=0;
+      const result=await invoke(dataHandler,{method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+        body:{language:'typescript',code,question_slug:'balanced-template-markers',question_version:1}});
+      assert.equal(result.status,400);assert.match(result.body.error,/unsupported TypeScript syntax; use erasable types only/);
+      assert.equal(executed.length,0);
+    }
+    assert.equal(providerCalls,0);
+  }finally{delete process.env.EXECUTION_LANGUAGE_TYPESCRIPT_ENABLED;}
+});
+
+test('Go duplicate/reordered frames never persist a verified pass and compile diagnostics stay private', async () => {
+  process.env.EXECUTION_LANGUAGE_GO_ENABLED='true';
+  let mode='duplicate';
+  executeHandler=sql=>{
+    if(sql.includes("'execute_lease_start'")&&sql.includes('RETURNING id'))return rows([{id:966}]);
+    if(sql.includes('INSERT INTO session_runs')&&sql.includes('RETURNING id'))return rows([{id:466}]);
+    return rows();
+  };
+  globalThis.fetch=async(url,options)=>{
+    assert.equal(String(url),TEST_EXECUTION_API_URL);
+    if(mode==='compile')return new Response(JSON.stringify({compile:{code:1,stderr:'PRIVATE_COMPILER_ECHO'}}));
+    const source=JSON.parse(options.body).files[0].content;
+    const marker=source.match(/(__RANDORI_RESULT_[a-f0-9]{32}__:)/)[1];
+    const frames=Array.from({length:8},(_,idx)=>marker+JSON.stringify({idx,ok:true,got:true}));
+    const stdout=mode==='duplicate'?[...frames,frames[0]].join('\n'):[...frames].reverse().join('\n');
+    return new Response(JSON.stringify({compile:{code:0},run:{code:0,stdout,stderr:''}}));
+  };
+  try{
+    for(mode of ['duplicate','reordered','compile']){
+      executed.length=0;
+      const result=await invoke(dataHandler,{method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+        body:{language:'go',code:'package main\nfunc balancedTemplateMarkers(template string) bool { return true }',question_slug:'balanced-template-markers',question_version:1}});
+      assert.equal(result.status,200);assert.equal(result.body.passed_count,0);assert.ok(result.body.results.every(row=>!row.pass));
+      assert.equal(result.body.execution.compile_failed,mode==='compile');
+      assert.doesNotMatch(JSON.stringify(result.body),/PRIVATE_COMPILER_ECHO/);
+      const insert=executed.find(call=>call.sql.includes('INSERT INTO session_runs')&&call.sql.includes('RETURNING id'));
+      const args=insert.args.slice(-12);assert.equal(args[9],0);
+      assert.doesNotMatch(args[7]+args[8],/compile_failed|PRIVATE_COMPILER_ECHO/);
+    }
+  }finally{delete process.env.EXECUTION_LANGUAGE_GO_ENABLED;}
+});
+
+test('additional execution languages persist server-normalized attested results (TypeScript local, Go mocked provider)', async () => {
+  process.env.EXECUTION_LANGUAGE_TYPESCRIPT_ENABLED='true';
+  process.env.EXECUTION_LANGUAGE_GO_ENABLED='true';
+  const slug='balanced-template-markers';
+  let runId=466;
+  executeHandler=sql=>{
+    if(sql.includes("'execute_lease_start'")&&sql.includes('RETURNING id'))return rows([{id:900+runId}]);
+    if(sql.includes('INSERT INTO session_runs')&&sql.includes('RETURNING id'))return rows([{id:runId++}]);
+    return rows();
+  };
+  const source=`function balancedTemplateMarkers(template: string): boolean {
+    const stack: string[]=[]; const openings: Record<string,string>={')':'(',']':'[','}':'{'};
+    for(const c of template){if('([{'.includes(c))stack.push(c);else if(openings[c]&&stack.pop()!==openings[c])return false;}
+    return stack.length===0;
+  }`;
+  const goCode='package main\nfunc balancedTemplateMarkers(template string) bool { return true }';
+  const submissions=[];
+  globalThis.fetch=async(url,options)=>{
+    assert.equal(String(url),TEST_EXECUTION_API_URL);
+    const submission=JSON.parse(options.body); submissions.push(submission);
+    const harness=submission.files[0].content;
+    const marker=harness.match(/(__RANDORI_RESULT_[a-f0-9]{32}__:)/)?.[1];assert.ok(marker);
+    let stdout;
+    if(submission.language==='javascript'){
+      const execution=spawnSync(process.execPath,['--input-type=commonjs'],{input:harness,encoding:'utf8',timeout:10000,maxBuffer:256*1024});
+      assert.equal(execution.status,0,execution.stderr);stdout=execution.stdout;
+    }else{
+      // The local box has no Go compiler. This arm checks the Go transport,
+      // server normalization and persistence, NOT compiled Go correctness.
+      assert.equal(submission.language,'go');assert.equal(submission.files[1].content,goCode);
+      const encoded=harness.match(/DecodeString\("([A-Za-z0-9+/=]+)"\)/)?.[1];assert.ok(encoded);
+      const cases=JSON.parse(Buffer.from(encoded,'base64').toString());
+      stdout=cases.map(([template],idx)=>{
+        const stack=[],pairs={')':'(',']':'[','}':'{'};let got=true;
+        for(const character of template){if('([{'.includes(character))stack.push(character);else if(pairs[character]&&stack.pop()!==pairs[character]){got=false;break;}}
+        got=got&&stack.length===0;return marker+JSON.stringify({idx,ok:true,got,error:null});
+      }).join('\n');
+    }
+    return new Response(JSON.stringify({compile:{code:0},run:{code:0,stdout,stderr:''}}));
+  };
+  try{
+    for(const language of ['typescript','go']){
+      executed.length=0;
+      const result=await invoke(dataHandler,{method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+        body:{language,code:language==='typescript'?source:goCode,question_slug:slug,question_version:1,
+          test_cases:[{args:['FORGED'],expected:true}],passed_count:999,total_count:999}});
+      assert.equal(result.status,200,JSON.stringify(result.body));assert.equal(result.body.language,language);
+      assert.equal(result.body.passed_count,8);assert.equal(result.body.total_count,8);assert.ok(result.body.results.every(row=>row.pass));
+      assert.doesNotMatch(JSON.stringify(result.body),/FORGED|"stdout"|"stderr"|"expected"/);
+      const insert=executed.find(call=>call.sql.includes('INSERT INTO session_runs')&&call.sql.includes('RETURNING id'));
+      const args=insert.args.slice(-12),snapshot=JSON.parse(args[7]);
+      assert.equal(args[5],language);assert.equal(args[9],8);assert.equal(args[10],8);
+      assert.equal(snapshot.attestation_version,2);assert.equal(snapshot.attestation,signRunForTest({userId:2,questionSlug:slug,questionVersion:1,language,passedCount:8,totalCount:8,resultsJson:args[8]}));
+      assert.deepEqual(JSON.parse(args[8]),result.body.results);
+      assert.doesNotMatch(submissions.at(-1).files[0].content,/FORGED|"expected"/);
+    }
+  }finally{delete process.env.EXECUTION_LANGUAGE_TYPESCRIPT_ENABLED;delete process.env.EXECUTION_LANGUAGE_GO_ENABLED;}
 });
 
 test('execution uses only server-owned versioned cases and persists exact authoritative results', async () => {

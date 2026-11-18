@@ -1,0 +1,216 @@
+# Execution languages
+
+Status: implemented behind default-off per-language flags; issue #466, epic #460
+
+Owner: Randori Circle maintainers
+
+Last reviewed: 2026-11-18
+
+## Provider contract
+
+JavaScript/Python remain unchanged when both new flags are absent or not literal
+`true`. Public catalogue language definitions and workspace selection validation
+use the same server-owned enabled/provider-supported list. The browser does not
+infer runtime availability from a local toggle. No provider discovery request is
+made on page load or per exercise.
+
+| Language | Vercel Sandbox | Self-hosted Piston | New flag |
+| --- | --- | --- | --- |
+| JavaScript | node:24 | javascript 18.15.0 | none |
+| Python | python:3.14 | python 3.10.0 | none |
+| TypeScript | node:24, `main.cts`, `--experimental-strip-types` | syntax-stripped JS on javascript 18.15.0 | `EXECUTION_LANGUAGE_TYPESCRIPT_ENABLED` |
+| Go | **not supported** on stock images | go 1.16.2, installed offline by the operator | `EXECUTION_LANGUAGE_GO_ENABLED` |
+
+SDK 3.8.0 declares managed Node/Python and other base images, but does not promise
+an offline Go compiler in them. The rebase retains #483's durable admission and
+pristine snapshots. TypeScript may restore the existing **JavaScript Node 24
+snapshot**: its source is syntax-stripped before dispatch and its `main.cts`
+command uses that same interpreter, with no extra compiler/runtime state. Every
+run still creates and discards a fresh deny-all VM; no member-run VM is reused.
+Go has no Vercel image/snapshot capability and stays Piston-only. No runtime
+package install, vendored interpreter or mutable toolchain snapshot is added.
+
+The operator must provision the exact Piston runtime packages before enabling
+its flags. A missing package fails the smoke and must leave that language dark;
+flagging a language is not permission to download a compiler during a run.
+The self-hosted service must deny egress, isolate every run, bound output and
+CPU/wall time, and discard its run filesystem. Never use the retired public API.
+
+## Harness and private input
+
+The API never evaluates member code. Node 24's `stripTypeScriptTypes` is a
+**syntax-only** transformation in the API; the resulting source enters the same
+restricted JS VM harness inside the provider sandbox. This lets Piston reuse its
+existing JS runtime rather than requiring a second installed TypeScript compiler.
+Node v24.22.3 was checked locally: the flag is accepted, annotations/generics/type
+aliases strip, and enums fail with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. No SDK
+image documentation promises a different Node patch version.
+
+TypeScript supports erasable types only: no enums, runtime namespaces, parameter
+properties, decorators or JSX. Catalogue functions must not use imports/exports,
+`require`, stdin or top-level script output; the restricted VM is unchanged.
+This is execution, not type checking. Unsupported syntax returns a clear **400**
+after resolving authorized canonical code, before lease, quota or provider work;
+no sandbox is spent just to report eight runtime errors. The same syntax-only
+input check applies to both providers and private TypeScript scripts.
+
+Go uses a submitted `package main` file plus a separate server-owned `main.go`
+harness in the **same fresh sandbox**. Standard-library imports are permitted;
+no `main` function or external modules. The harness reflects the selected function,
+decodes each argument into its declared type, invokes it and JSON-encodes its one
+return value. Variadic functions/multiple returns, decoding errors, panics and
+non-JSON returns fail that case. A compile error or killed run leaves cases
+without results, hence failed. Return empty slices rather than nil when `[]` is
+expected; nil encodes as JSON null. Struct fields must be exported with JSON tags.
+Go stdout is reserved for the harness: exactly one frame per case, in index order.
+Duplicate, reordered, malformed, extra/non-frame or incomplete stdout invalidates
+**all** case passes before signing or persisting results. Entirely empty stdout
+reports `no result` for every case. Return values instead of printing debug
+output. Legacy JS/Python framing is unchanged. The requester's
+execute response includes only a fixed `compile_failed` category for Go; raw
+compiler text is not returned because it can echo submitted code or server
+harness/case bytes. That category stays out of attestations and shared feeds.
+
+Generic Go starters use `interface{}`: numbers decode as `float64`, arrays as
+`[]interface{}`, objects as `map[string]interface{}`, null as nil. Members may
+replace generic argument/result types with corresponding typed slices/structs.
+
+TypeScript private stdin retains ID-94: a second fresh sandbox/script, exact
+20,000-byte UTF-8 input limit, separate private response, no durable input/output,
+existing 60-second UI expiry and same account lease. **Go private stdin is not
+supported:** the controls hide/clear on language switch and the API rejects any
+Go `stdin` with a clear message before leases/provider calls. Go catalogue runs
+remain one execution. Provider-owned private command-log retention must still be
+reviewed before enabling `EXECUTION_STDIN_ENABLED`.
+
+All languages share #483's server-derived execution context, durable admission,
+lease/permit checks, spend reservation and provider-stop/cleanup accounting.
+One Go compile+run is **one provider unit**; rejected Go stdin spends zero.
+TypeScript plus private stdin reserves **two units together before either VM
+starts**, then waits for both cleanup receipts. No new language bypasses admission.
+All languages share the 256 KiB provider response/output cap, normalizer, eight
+server-owned cases, attestation, acknowledged code-document versions and verified
+run-feed projection. Expected outputs/oracles never enter a provider harness or
+browser projection. Go compilation gets 10 seconds, run wall/CPU 10 seconds and
+request 22 seconds; legacy deadlines/payloads stay unchanged. Vercel cleanup,
+deny-all policy, session timeout and per-case JS VM timeout stay unchanged.
+
+## Catalogue authoring and provenance
+
+`api/_catalog-languages.js` derives portable TypeScript/Go function signatures and
+minimal starters from the **reviewed canonical JavaScript signature**. It adds
+runtime metadata, not exercise statements, examples, constraints, versions or
+case semantics. All 27 active exercises (including all eight interview-kit
+exercises) get both adapters. The canonical catalogue and provenance JSON files
+are byte-for-byte unchanged: their existing language definitions and hashes are
+not rewritten, ignored or filtered during hash validation.
+
+Keep JS parameter/entrypoint names portable ASCII identifiers. The validator
+checks every derived signature/starter even while flags are off. Bespoke new
+language starter content or changed question semantics must instead follow
+[versioned provenance review](CATALOG_PROVENANCE.md); do not use this adapter to
+exclude authored content from the canonical hash.
+
+`npm run validate:catalog` always calls **both** `validateInterviewKitReferences`
+and `validateAdditionalLanguageReferences`. The independent JS/Python kit gate,
+missing-Python-reference guard and public-example/oracle agreement check are
+mandatory, including while the new language flags are off. Missing `python3`
+fails the command with an actionable error; it is never silently skipped.
+The additional validator checks TypeScript starters and all eight kit references
+against generated cases and public examples in the production harness. Existing
+independent Python/small-input oracle checks remain. Independently authored Go
+references cover all eight kits plus Focus Block Roll-up, Balanced Template
+Markers and Capacity Upgrade Index in `scripts/catalog-go-references.mjs`.
+With an already-installed Go toolchain the validator compiles/runs those exact
+harnesses offline (`GOPROXY=off`, `GOSUMDB=off`, `GOTOOLCHAIN=local`). It otherwise
+prints an explicit Go skip; `CATALOG_REQUIRE_GO=true` makes absence a hard failure.
+The required Ubuntu 24.04 catalogue job and Ubuntu 26.04 image-drift canary both
+set this flag, so either image losing its Go toolchain fails rather than skipping.
+Go reference coverage is **11 of 27** active exercises; all exercises still share
+the server-owned JS oracle/cases. CI uses the image's modern Go and is not proof
+of the production Piston 1.16.2 pin. Harness/references use `interface{}`, ordinary
+functions and pre-1.16 standard-library APIs, not generics/`any` aliases or other
+post-1.16 language features. Source compatibility was inspected; native Go and
+actual 1.16.2 execution were **not** verified on the compiler-free implementation
+box and must be checked by the operator canary. No compiler was installed or
+provider contacted here.
+
+TypeScript oracle annotation asserts a named function with plain identifier
+parameters; zero-argument functions are supported. Defaults, destructuring and
+rest parameters fail explicitly rather than being altered by a loose regex.
+
+## Smoke budgets and rollout
+
+The protected `execution-smoke` route runs one trivial program per enabled,
+provider-supported language. Its **existing** atomic claim, 30-minute spacing,
+schedule slot per 20 hours and deploy slot per 24 hours are unchanged. At most
+four languages run concurrently. Combined budget (unchanged claim windows):
+
+- Measurement off: two default runs/claim; three on Vercel with TypeScript; four
+  on Piston with TypeScript and Go enabled.
+- Measurement on: pair **only JS/Python**, four runs/claim; TypeScript adds one
+  ordinary run, **five total**, not a second cold/warm pair. Its startup is not
+  pooled into the JS/Python snapshot cohort. Go/Piston never enables measurement.
+- At the existing conservative 70-claims/month ceiling, measured Vercel costs
+  280 creations without TypeScript or 350 with it, all charged to admission's
+  global provider-unit budget. Ordinary Piston has at most 280 runs at that ceiling.
+
+Disabled/unsupported languages cost zero. The busy/quota classification stays
+**deferred**, never evidence of a provider pass; store failures stay alerts.
+A new language missing from an old cached result is `result_missing`, never an
+inherited pass. The assessor checks every enabled language and still validates
+paired latency regressions for the unchanged JS/Python cohort.
+
+The opt-in CLI keeps its existing maximum of five creations per invocation:
+unset `EXECUTION_SMOKE_LANGUAGE` runs the old JS/PY good+broken references and
+Vercel egress probe. Select `typescript` or `go` to run that language's good and
+broken references instead (two runs plus one egress probe on Vercel, two on
+Piston). The selector refuses disabled/unsupported targets. Measurement reuses
+those same good/broken JS/Python calls as cold/snapshot samples (no extra calls);
+targeted TypeScript/Go still run only good+broken programs, not latency pairs.
+All calls, including the egress probe, use the same durable ops admission. The
+CLI remains excluded from tests and is never invoked by ordinary gates.
+
+1. Merge/deploy with both flags off. Verify the normal JS/PY journey and gates.
+2. In the controlled canary deployment, enable **one** supported language flag.
+   For Piston first verify the exact installed runtime and isolation/egress policy.
+   Before enabling Go, verify the **deployed** execute function `maxDuration`
+   exceeds the 22-second provider request ceiling plus authorization, quota, DB
+   persistence and cleanup overhead. The smoke handler also needs room for its
+   existing 45-second watchdog, or 90-second paired-measurement watchdog when
+   measurement is enabled. `vercel.json` declares no `maxDuration`; do not assume
+   the platform default or an operator setting was checked here.
+3. Run the existing execution-smoke workflow against that deployment under the
+   approved operator setup. Require the new language's actual `status=ok`, not
+   `throttled`, and use the targeted CLI reference canary plus editor → sandbox
+   → verified-summary/feed journey. Stay within claim windows; no force bypass.
+4. Only then enable the corresponding production flag and redeploy. Require the
+   next permitted real production workflow run to pass for that language.
+5. Repeat independently for the other language. Go remains unavailable on Vercel.
+
+No provider calls or rollout were performed by this branch. Rollback is to unset
+that language flag and redeploy: the public definitions/selector disappear and
+new requests fail closed; drafts, historical signed runs and schema stay intact.
+No database migration, destructive cleanup, new npm dependency or initial Monaco
+language bundle is needed. The same-origin selector module loads only when the
+server advertises an addition; existing Monaco TypeScript/Go modes are reused.
+A server-pinned language arriving before the lazy catalogue is restored silently,
+without replacing its code or dispatching an edit. Before turning a live language
+off, interview owners should switch active rooms to an enabled language; existing
+Go documents still participate in retention after the flag is off.
+
+## Provider-free verification
+
+Use Node 24 on PATH, focused tests with at most four workers, and no credentials:
+
+```sh
+node --experimental-test-module-mocks --test --test-concurrency=4 tests/unit/execution-languages.test.mjs
+npm run validate:catalog
+npx playwright test tests/e2e/execution-languages.spec.ts --project=chromium --workers=4
+```
+
+Tests cover literal flags, provider gating, native stripping, Go file generation,
+compile/run failures, caps, normalization, attestation persistence, private stdin,
+cache rollout failure and the mocked TypeScript editor/verified-summary journey.
+Go semantic execution is checked only where a local compiler already exists;
+mocked provider results are not represented as proof of compiled Go correctness.

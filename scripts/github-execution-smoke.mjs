@@ -15,6 +15,7 @@ import { sanitizeStartupMeasurement } from '../api/_execution-measurement.js';
 export const EXECUTION_SMOKE_FORMAT='randori.execution-smoke.v1';
 export const EXECUTION_SMOKE_PATH='/api/cron/execution-smoke';
 const LANGUAGES=Object.freeze(['javascript','python']);
+const ADDITIONAL_LANGUAGES=Object.freeze(['typescript','go']);
 const STATUSES=new Set(['ok','busy','provider_error','timeout','misconfigured','throttled']);
 const LAST_STATUSES=new Set(['ok','busy','provider_error','timeout','misconfigured','result_missing']);
 const TRIGGERS=new Set(['schedule','deploy']);
@@ -65,14 +66,19 @@ function parseLanguage(value){
 export function assessExecutionSmoke(value){
   const body=record(value);
   const languages={};
-  for(const language of LANGUAGES){
+  const supplied = body && record(body.languages);
+  if (supplied && Object.keys(supplied).some(language=>![...LANGUAGES,...ADDITIONAL_LANGUAGES].includes(language))) {
+    return {ok:false,category:'malformed_response',languages:null,checkedAt:null,ageSeconds:null};
+  }
+  const languageNames = [...LANGUAGES, ...ADDITIONAL_LANGUAGES.filter(language=>supplied&&Object.hasOwn(supplied,language))];
+  for(const language of languageNames){
     const entry=body&&record(body.languages)?parseLanguage(body.languages[language]):null;
     if(!entry) return {ok:false,category:'malformed_response',languages:null,checkedAt:null,ageSeconds:null};
     languages[language]=entry;
   }
-  const throttled=LANGUAGES.some(language=>languages[language].status==='throttled');
+  const throttled=languageNames.some(language=>languages[language].status==='throttled');
   const ageSeconds=throttled?body.ageSeconds:undefined;
-  const pass=LANGUAGES.every(language=>languagePasses(languages[language]));
+  const pass=languageNames.every(language=>languagePasses(languages[language]));
   if(typeof body.ok!=='boolean'||body.ok!==pass||!timestamp(body.checkedAt)
     ||(throttled&&!nullableInteger(ageSeconds,MAX_AGE_SECONDS))
     ||(!throttled&&body.checkedAt===null)){
@@ -155,7 +161,7 @@ function result({ok,category,languages=null,checkedAt=null,ageSeconds=null,coldS
 
 function cachedNotice(outcome){
   if(outcome.ok&&outcome.category==='execution_busy')return '::notice title=Execution smoke deferred::Admission was busy; no provider pass is asserted.\n';
-  if(!outcome.ok||!LANGUAGES.some(language=>outcome.languages[language].status==='throttled')) return '';
+  if(!outcome.ok||!Object.values(outcome.languages).some(entry=>entry.status==='throttled')) return '';
   const age=outcome.ageSeconds===null?'at an unknown time':`${outcome.ageSeconds} seconds ago`;
   // The age is a validated integer, so the command cannot be forged.
   return `::notice title=Execution smoke passed on a cached result::Throttled, so nothing ran. The latest real run `
@@ -164,7 +170,7 @@ function cachedNotice(outcome){
 
 function annotation(outcome){
   const detail=outcome.languages
-    ?LANGUAGES.map(language=>{
+    ?Object.keys(outcome.languages).map(language=>{
       const entry=outcome.languages[language];
       return `${language}=${entry.status}${entry.status==='throttled'?`(last ${entry.lastStatus??'none'})`:''}`;
     }).join(' ')

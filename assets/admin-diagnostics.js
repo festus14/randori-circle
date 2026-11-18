@@ -211,7 +211,8 @@ export function smokeView(smoke, elapsedMs = 0) {
   } else {
     if (status !== 'none') {
       const languages = record(source.languages) || {};
-      const parts = SMOKE_LANGUAGES.map(([key, name]) => `${name}: ${SMOKE_LANGUAGE_COPY[record(languages[key])?.status] || 'unknown'}`);
+      const parts = [...SMOKE_LANGUAGES, ...[['typescript','TypeScript'],['go','Go']].filter(([key])=>Object.hasOwn(languages,key))]
+        .map(([key, name]) => `${name}: ${SMOKE_LANGUAGE_COPY[record(languages[key])?.status] || 'unknown'}`);
       lines = [`${parts.join(' · ')}.`];
     }
     const cadence = `expected at least every ${formatDuration(state.maxAgeMs)}`;

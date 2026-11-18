@@ -1,7 +1,10 @@
 // Live post-deploy smoke check for the configured code-execution provider
-// (issue #249). It runs one fixed, trivial JavaScript program and one fixed,
-// trivial Python program through the same boundary production uses
-// (api/_execution.js) and reports only bounded status categories.
+// (issue #249, extended by #466). It runs one fixed trivial program per
+// enabled provider-supported language (JS/Python always) through the same
+// boundary production uses and reports only bounded status categories.
+// Existing atomic claim/windows are unchanged: 2 default runs, 3 on Vercel
+// with TypeScript, up to 4 on Piston with both additions. Paired measurement
+// doubles only JS/Python (4), plus one ordinary TypeScript run (5 total).
 //
 // Budget: Vercel Sandbox creations count against the Hobby allowance shared
 // with real member runs, so a real execution is claimed atomically in
@@ -19,6 +22,7 @@ import { performance } from 'node:perf_hooks';
 import { executeProgram, resolveExecutionProvider } from './_execution.js';
 import { ExecutionBusyError, recordExecutionRefusal } from './_execution-queue.js';
 import { sanitizeStartupPair, warmMeasurementEnabled, warmMeasurementCohort, readStartupMeasurement } from './_execution-measurement.js';
+import { availableExecutionLanguages } from './_execution-languages.js';
 
 export const EXECUTION_SMOKE_LANGUAGES=Object.freeze(['javascript','python']);
 export const EXECUTION_SMOKE_STATUSES=Object.freeze(['ok','busy','provider_error','timeout','misconfigured','throttled']);
@@ -41,6 +45,11 @@ export const EXECUTION_SMOKE_PROGRAMS=Object.freeze({
   javascript:"console.log(['randori','smoke',String(6*7)].join('-'));\n",
   python:"print('-'.join(['randori','smoke',str(6*7)]))\n",
 });
+export const EXECUTION_SMOKE_ADDITIONAL_PROGRAMS=Object.freeze({
+  typescript:"const value: number=6*7; console.log('randori-smoke-'+value);\n",
+  go:'package main\nimport "fmt"\nfunc main(){fmt.Println("randori-smoke-42")}\n',
+});
+const ALL_SMOKE_LANGUAGES=Object.freeze([...EXECUTION_SMOKE_LANGUAGES,'typescript','go']);
 
 // `runner` is the server-side execution coordination namespace: api/data.js
 // rewrites browser telemetry that names it to `client`, so an authenticated
@@ -115,19 +124,20 @@ export function executionSmokeLanguagePasses(entry){
 }
 
 function allPass(languages){
-  return EXECUTION_SMOKE_LANGUAGES.every(language=>executionSmokeLanguagePasses(languages[language]));
+  return EXECUTION_SMOKE_LANGUAGES.every(language=>executionSmokeLanguagePasses(languages[language]))
+    && Object.keys(languages).every(language=>ALL_SMOKE_LANGUAGES.includes(language)&&executionSmokeLanguagePasses(languages[language]));
 }
 
 async function smokeLanguage(language,{env,execute,monotonic,setTimer,clearTimer,deadlineMs,db}){
   const started=monotonic();
   let status, startup=null, expired=false;
   let timer;
-  const measurement=warmMeasurementEnabled(env);
+  const measurement=warmMeasurementEnabled(env)&&EXECUTION_SMOKE_LANGUAGES.includes(language);
   try{
     const attempt=Promise.resolve().then(async()=>{
       const options=env.EXECUTION_QUEUE_ENABLED==='true'
         ?{env,db,executionContext:{ops:true,lane:`smoke-${language}`,operation:`smoke:${language}`}}:{env};
-      const request={language,source:EXECUTION_SMOKE_PROGRAMS[language]};
+      const request={language,source:EXECUTION_SMOKE_PROGRAMS[language]||EXECUTION_SMOKE_ADDITIONAL_PROGRAMS[language]};
       if(!measurement) return classifyExecutionResult(await execute(request,options));
       const cold=await execute(request,{...options,cold:true});
       if(classifyExecutionResult(cold)!=='ok') return classifyExecutionResult(cold);
@@ -191,7 +201,7 @@ function storedLanguages(metaJson){
   let parsed;
   try{ parsed=JSON.parse(String(metaJson)); }catch{ parsed=null; }
   const value=record(parsed)||{};
-  return Object.fromEntries(EXECUTION_SMOKE_LANGUAGES.map(language=>{
+  return Object.fromEntries(ALL_SMOKE_LANGUAGES.filter(language=>EXECUTION_SMOKE_LANGUAGES.includes(language)||Object.hasOwn(value,language)).map(language=>{
     const entry=record(value[language]);
     return [language,entry&&RECORDED_STATUSES.has(entry.status)
       ?{status:entry.status,durationMs:boundedDuration(entry.durationMs),...(Object.hasOwn(entry,'startup')?{startup:sanitizeStartupPair(entry.startup)}:{})}:null];
@@ -243,14 +253,14 @@ export async function readLatestExecutionSmoke(db,{lookback=EXECUTION_SMOKE_CLAI
  * no saved result the run is in flight (null) only while its claim is inside
  * the result grace; otherwise, or with no claim at all, it is `result_missing`.
  */
-export function throttledExecutionSmokeBody(latest){
+export function throttledExecutionSmokeBody(latest, { languageNames = EXECUTION_SMOKE_LANGUAGES } = {}) {
   const inFlight=Boolean(latest)&&!latest.saved&&latest.claimAgeSeconds!==null
     &&latest.claimAgeSeconds<=EXECUTION_SMOKE_RESULT_GRACE_SECONDS;
   const languages={};
-  for(const language of EXECUTION_SMOKE_LANGUAGES){
+  for(const language of languageNames){
     const last=latest&&latest.saved?latest.languages[language]:null;
     languages[language]={status:'throttled',durationMs:last?last.durationMs:null,
-      lastStatus:last?last.status:(inFlight?null:'result_missing')};
+      lastStatus:last?last.status:(inFlight&&EXECUTION_SMOKE_LANGUAGES.includes(language)?null:'result_missing')};
   }
   return {ok:allPass(languages),checkedAt:latest?latest.checkedAt:null,
     ageSeconds:latest?latest.claimAgeSeconds:null,languages};
@@ -265,8 +275,9 @@ export function throttledExecutionSmokeBody(latest){
  * `pending` where the throttled body has null (still inside the grace).
  */
 export function latestExecutionSmokeLanguages(latest){
-  const {languages}=throttledExecutionSmokeBody(latest);
-  return Object.fromEntries(EXECUTION_SMOKE_LANGUAGES.map(language=>[language,{
+  const languageNames = availableExecutionLanguages();
+  const {languages}=throttledExecutionSmokeBody(latest, { languageNames });
+  return Object.fromEntries(languageNames.map(language=>[language,{
     status:languages[language].lastStatus??'pending',durationMs:languages[language].durationMs,
   }]));
 }
@@ -282,6 +293,7 @@ export async function runExecutionSmoke({trigger,getDb,env=process.env,execute=e
   deadlineMs=EXECUTION_SMOKE_LANGUAGE_DEADLINE_MS}={}){
   try{
     if(typeof trigger!=='string'||!Object.hasOwn(EXECUTION_SMOKE_TRIGGER_WINDOWS,trigger)) return INVALID_REQUEST;
+    const languageNames = availableExecutionLanguages(env);
     // Configuration needs no I/O and spends no quota, so a deploy that drops
     // the provider is reported immediately, even inside the throttle window.
     if(!resolveExecutionProvider(env).configured){
@@ -304,13 +316,14 @@ export async function runExecutionSmoke({trigger,getDb,env=process.env,execute=e
     try{cohort=warmMeasurementCohort(env);}catch{
       await recordExecutionRefusal(db,'configuration');
       return {status:200,body:{ok:false,checkedAt:isoNow(clock),languages:Object.fromEntries(
-        EXECUTION_SMOKE_LANGUAGES.map(language=>[language,{status:'misconfigured',durationMs:null}]))}};
+        languageNames.map(language=>[language,{status:'misconfigured',durationMs:null}]))}};
     }
-    if(!claimId) return {status:200,body:{...throttledExecutionSmokeBody(latest),
+    if(!claimId) return {status:200,body:{...throttledExecutionSmokeBody(latest,{languageNames}),
       ...(cohort?{coldStart:await readStartupMeasurement(db,env)}:{})}};
     const options={env,execute,monotonic,setTimer,clearTimer,deadlineMs,db};
-    const entries=await Promise.all(EXECUTION_SMOKE_LANGUAGES.map(language=>smokeLanguage(language,options)));
-    const languages=Object.fromEntries(EXECUTION_SMOKE_LANGUAGES.map((language,index)=>[language,entries[index]]));
+    // Pair only JS/Python for the existing cohort; additions each spend one run.
+    const entries=await Promise.all(languageNames.map(language=>smokeLanguage(language,options)));
+    const languages=Object.fromEntries(languageNames.map((language,index)=>[language,entries[index]]));
     await recordExecutionSmoke(db,claimId,languages,{cohort});
     return {status:200,body:{ok:allPass(languages),checkedAt:isoNow(clock),languages,
       ...(cohort?{coldStart:await readStartupMeasurement(db,env)}:{})}};

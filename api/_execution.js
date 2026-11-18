@@ -9,8 +9,15 @@
 // - `vercel-sandbox`: an ephemeral, non-persistent Firecracker microVM per run
 //   with all egress denied, authenticated by the deployment's Vercel OIDC token.
 // - `piston`: a self-hosted Piston-compatible endpoint at EXECUTION_API_URL.
+// TypeScript is syntax-stripped into the existing restricted JS harness; Go
+// gets two files in one Piston sandbox. Each addition has its own literal flag.
 // Anything else (including unset) leaves execution unavailable and fails closed.
 import { Readable, Writable } from 'node:stream';
+import { stripTypeScriptTypes } from 'node:module';
+import { EXECUTION_LANGUAGES, executionLanguageEnabled, providerSupportsLanguage } from './_execution-languages.js';
+import { buildGoHarness } from './_execution-go.js';
+export { buildGoHarness } from './_execution-go.js';
+export { availableExecutionLanguages } from './_execution-languages.js';
 import { admitExecution, checkExecutionLease, finishExecution, executionQueueEnabled } from './_execution-queue.js';
 import { executionWarmSnapshot } from './_execution-warm.js';
 
@@ -55,14 +62,19 @@ export const SANDBOX_SESSION_TIMEOUT_MS = 60_000;
 // never be reintroduced as an implicit default or accepted as a configured URL.
 const RETIRED_PUBLIC_EXECUTION_HOSTS = Object.freeze(['emkc.org']);
 
-const LANGUAGE_FILES = Object.freeze({ javascript: 'main.js', python: 'main.py' });
+const LANGUAGE_FILES = Object.freeze({ javascript: 'main.js', python: 'main.py', typescript: 'main.cts', go: 'main.go' });
 
 const SANDBOX_RUNTIMES = Object.freeze({
   javascript: Object.freeze({ image: 'vercel/sandbox/node:24', cmd: 'node', version: '24' }),
   python: Object.freeze({ image: 'vercel/sandbox/python:3.14', cmd: 'python3', version: '3.14' }),
+  typescript: Object.freeze({ image: 'vercel/sandbox/node:24', cmd: 'node', args: ['--experimental-strip-types'], version: '24' }),
 });
 
-const PISTON_RUNTIMES = Object.freeze({ javascript: '18.15.0', python: '3.10.0' });
+// TypeScript is syntax-stripped, never evaluated, by the pinned Node 24 API
+// before the JS VM harness is sent to Piston's existing JavaScript runtime.
+const PISTON_RUNTIMES = Object.freeze({ javascript: '18.15.0', python: '3.10.0', typescript: '18.15.0', go: '1.16.2' });
+export const GO_COMPILE_TIMEOUT_MS = 10_000;
+export const GO_REQUEST_TIMEOUT_MS = GO_COMPILE_TIMEOUT_MS + PISTON_RUN_TIMEOUT_MS + 2_000;
 
 export class ExecutionUnavailableError extends Error {
   constructor(message = 'code execution is unavailable', options) {
@@ -96,6 +108,9 @@ export function executionStdinEnabled(env = process.env) {
 export function validateExecutionStdin(request, env = process.env) {
   if (!Object.prototype.hasOwnProperty.call(request, 'stdin')) return undefined;
   if (!executionStdinEnabled(env)) throw new ExecutionInputError('custom stdin is unavailable', 404);
+  if (String(request.language || request.lang || '').toLowerCase() === 'go') {
+    throw new ExecutionInputError('custom stdin is not supported for Go; use the catalogue function entrypoint');
+  }
   if (typeof request.stdin !== 'string') throw new ExecutionInputError('stdin must be a string');
   // Reject lossy UTF-8 conversion instead of silently changing caller input.
   if (!request.stdin.isWellFormed()) throw new ExecutionInputError('stdin must be well-formed Unicode');
@@ -183,7 +198,9 @@ async function runInVercelSandbox({ language, source, stdin }, { loadSandboxSdk 
   }
 
   let sandbox;
-  const snapshotId = cold ? null : executionWarmSnapshot(language, env);
+  // TypeScript is pre-stripped and uses the identical pristine Node 24 image;
+  // restoring that empty JS snapshot never reuses a submitted-code VM.
+  const snapshotId = cold ? null : executionWarmSnapshot(language === 'typescript' ? 'javascript' : language, env);
   if (permit) await beforeProvider(permit);
   const createStarted = Date.now();
   const createController = new AbortController();
@@ -219,7 +236,7 @@ async function runInVercelSandbox({ language, source, stdin }, { loadSandboxSdk 
     try {
       const finished = await sandbox.runCommand({
         cmd: runtime.cmd,
-        args: [filename],
+        args: [...(runtime.args || []), filename],
         ...(input || permit ? { ...(input ? { stdin: input } : {}), timeoutMs: SANDBOX_COMMAND_TIMEOUT_MS } : {}),
         stdout: collector.stdout,
         stderr: collector.stderr,
@@ -289,9 +306,13 @@ async function readBoundedJson(response, controller) {
 
 async function runInPiston({ language, source, stdin }, { url, token, fetchImpl = globalThis.fetch, permit } = {}) {
   const version = PISTON_RUNTIMES[language];
+  const compileTimeout = language === 'go' ? GO_COMPILE_TIMEOUT_MS : PISTON_COMPILE_TIMEOUT_MS;
+  const files = language === 'go' && typeof source === 'object'
+    ? [{ name: 'main.go', content: source.harness }, { name: 'submission.go', content: source.submission }]
+    : [{ name: language === 'typescript' ? 'main.js' : LANGUAGE_FILES[language], content: source }];
   if (permit) await beforeProvider(permit);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PISTON_REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), language === 'go' ? GO_REQUEST_TIMEOUT_MS : PISTON_REQUEST_TIMEOUT_MS);
   try {
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers.Authorization = `Bearer ${token}`;
@@ -301,13 +322,13 @@ async function runInPiston({ language, source, stdin }, { url, token, fetchImpl 
         method: 'POST',
         headers,
         body: JSON.stringify({
-          language, version, files: [{ name: LANGUAGE_FILES[language], content: source }],
-          // Catalogue-only requests preserve the pre-flag payload exactly.
-          // Private processes need explicit remote wall/CPU kill deadlines.
-          ...(stdin === undefined && !permit ? {} : {
+          language: language === 'typescript' ? 'javascript' : language, version, files,
+          // Legacy catalogue-only payloads stay exact when admission is off.
+          // Admitted and new-language runs always carry remote kill deadlines.
+          ...(stdin === undefined && !permit && !['typescript', 'go'].includes(language) ? {} : {
             ...(stdin === undefined ? {} : { stdin }),
-            compile_timeout: PISTON_COMPILE_TIMEOUT_MS,
-            compile_cpu_time: PISTON_COMPILE_TIMEOUT_MS,
+            compile_timeout: compileTimeout,
+            compile_cpu_time: compileTimeout,
             run_timeout: PISTON_RUN_TIMEOUT_MS,
             run_cpu_time: PISTON_RUN_TIMEOUT_MS,
           }),
@@ -323,16 +344,18 @@ async function runInPiston({ language, source, stdin }, { url, token, fetchImpl 
       throw new ExecutionUnavailableError(`execution endpoint returned status ${response.status}`);
     }
     const payload = await readBoundedJson(response, controller);
-    const run = payload && typeof payload === 'object' && payload.run && typeof payload.run === 'object' ? payload.run : {};
+    const phase = language === 'go' && payload?.compile && payload.compile.code !== 0 ? payload.compile : payload?.run;
+    const run = phase && typeof phase === 'object' ? phase : {};
     if (Number.isInteger(run.code) || typeof run.signal === 'string') providerStopped(permit);
     return {
       provider: 'piston',
       runtimeVersion: version,
+      ...(language === 'go' ? { compileFailed: Boolean(payload?.compile && payload.compile.code !== 0) } : {}),
       stdout: String(run.stdout || ''),
       stderr: String(run.stderr || ''),
       code: Number.isInteger(run.code) ? run.code : null,
       signal: typeof run.signal === 'string' ? run.signal.slice(0, 64) : null,
-      timedOut: (stdin !== undefined || !!permit) && (run.status === 'TO' || run.signal === 'SIGKILL'),
+      timedOut: (stdin !== undefined || !!permit || ['typescript', 'go'].includes(language)) && (run.status === 'TO' || run.signal === 'SIGKILL'),
     };
   } catch (error) {
     if (error instanceof ExecutionUnavailableError || error instanceof ExecutionFailedError) throw error;
@@ -344,18 +367,25 @@ async function runInPiston({ language, source, stdin }, { url, token, fetchImpl 
 
 /**
  * Execute one generated harness file in the configured isolated provider.
- * @param {{language: 'javascript'|'python', source: string, stdin?: string}} request
+ * @param {{language: 'javascript'|'python'|'typescript'|'go', source: string|{harness:string,submission:string}, stdin?: string}} request
  * @param {{env?: object, fetchImpl?: typeof fetch, loadSandboxSdk?: () => Promise<any>}} [options]
  */
 export async function executeProgram(request, options = {}) {
   const { env = process.env, fetchImpl, loadSandboxSdk } = options;
   const language = request?.language;
-  if (!Object.prototype.hasOwnProperty.call(LANGUAGE_FILES, language)) throw new TypeError('unsupported execution language');
-  if (typeof request.source !== 'string' || !request.source) throw new TypeError('execution source is required');
+  if (!EXECUTION_LANGUAGES.includes(language)) throw new TypeError('unsupported execution language');
+  if (!executionLanguageEnabled(language, env)) throw new ExecutionInputError('execution language is not enabled', 404);
+  const source = request.source;
+  const goFiles = language === 'go' && source && typeof source === 'object'
+    && Object.keys(source).length === 2 && typeof source.harness === 'string' && source.harness
+    && typeof source.submission === 'string' && source.submission;
+  if (!goFiles && (typeof source !== 'string' || !source)) throw new TypeError('execution source is required');
   const stdin = validateExecutionStdin(request, env);
-  const program = { language, source: request.source, ...(stdin === undefined ? {} : { stdin }) };
+  const program = { language, source: language === 'typescript' ? stripSubmissionTypes(source) : source,
+    ...(stdin === undefined ? {} : { stdin }) };
   const resolved = resolveExecutionProvider(env);
   if (!resolved.configured) throw new ExecutionUnavailableError(resolved.reason || 'code execution is unavailable');
+  if (!providerSupportsLanguage(resolved.provider, language)) throw new ExecutionInputError('execution language is not supported by this provider', 404);
   return withAdmission(options, 1, JSON.stringify(program), async admitted => {
     const permit = admitted[ADMISSION];
     if (resolved.provider === 'vercel-sandbox') return runInVercelSandbox(program, { loadSandboxSdk, env, permit, cold: options.cold === true });
@@ -374,8 +404,13 @@ export async function executePracticePrograms({ language, harness, code, stdin }
   const env = options.env || process.env;
   const customRequest = { language, source: code, ...(stdin === undefined ? {} : { stdin }) };
   validateExecutionStdin(customRequest, env);
+  if (!EXECUTION_LANGUAGES.includes(language)) throw new TypeError('unsupported execution language');
+  if (!executionLanguageEnabled(language, env)) throw new ExecutionInputError('execution language is not enabled', 404);
+  if (language === 'typescript') stripSubmissionTypes(code);
   if (executionQueueEnabled(env) && !options[ADMISSION]) {
-    if (!resolveExecutionProvider(env).configured) throw new ExecutionUnavailableError('code execution is unavailable');
+    const provider = resolveExecutionProvider(env);
+    if (!provider.configured) throw new ExecutionUnavailableError('code execution is unavailable');
+    if (!providerSupportsLanguage(provider.provider, language)) throw new ExecutionInputError('execution language is not supported by this provider', 404);
     return withAdmission(options, stdin === undefined ? 1 : 2, JSON.stringify(customRequest),
       admitted => executePracticePrograms({ language, harness, code, stdin }, admitted));
   }
@@ -483,10 +518,23 @@ __randori_run()
 `;
 }
 
+// This is a syntax-only transform. It never evaluates a submission in the API
+// process, honours Node 24's erasable-syntax boundary and needs no compiler,
+// package download or provider network access. The existing restricted VM then
+// invokes the transformed function in the isolated sandbox.
+export function stripSubmissionTypes(source) {
+  try { return stripTypeScriptTypes(String(source), { mode: 'strip' }); }
+  catch { throw new ExecutionInputError('unsupported TypeScript syntax; use erasable types only (no enums, runtime namespaces, parameter properties, decorators or JSX)'); }
+}
+export function buildTypescriptHarness(userCode, testSuite, resultPrefix) {
+  return buildJsHarness(stripSubmissionTypes(userCode), testSuite, resultPrefix);
+}
 export function buildExecutionHarness(language, userCode, testSuite, resultPrefix) {
-  return language === 'javascript'
-    ? buildJsHarness(userCode, testSuite, resultPrefix)
-    : buildPythonHarness(userCode, testSuite, resultPrefix);
+  if (language === 'javascript') return buildJsHarness(userCode, testSuite, resultPrefix);
+  if (language === 'python') return buildPythonHarness(userCode, testSuite, resultPrefix);
+  if (language === 'typescript') return buildTypescriptHarness(userCode, testSuite, resultPrefix);
+  if (language === 'go') return buildGoHarness(userCode, testSuite, resultPrefix);
+  throw new TypeError('unsupported execution language');
 }
 
 function runnerValuesEqual(a, b) {
@@ -502,17 +550,30 @@ function runnerValuesEqual(a, b) {
   return false;
 }
 
-export function normalizeRunnerResults(stdout, resultPrefix, tests) {
+export function normalizeRunnerResults(stdout, resultPrefix, tests, { strictSequence = false } = {}) {
   const byIndex = new Map();
+  const invalid = () => tests.map((_, idx) => ({ idx, pass: false, error: 'invalid result sequence' }));
   for (const line of String(stdout || '').split('\n')) {
     const value = line.trim();
-    if (!value.startsWith(resultPrefix) || value.length > 100000) continue;
+    if (!value) continue;
+    if (!value.startsWith(resultPrefix) || value.length > 100000) {
+      if (strictSequence) return invalid();
+      continue;
+    }
     try {
       const parsed = JSON.parse(value.slice(resultPrefix.length));
-      if (!Number.isInteger(parsed.idx) || parsed.idx < 0 || parsed.idx >= tests.length || typeof parsed.ok !== 'boolean') continue;
+      if (!Number.isInteger(parsed.idx) || parsed.idx < 0 || parsed.idx >= tests.length || typeof parsed.ok !== 'boolean') {
+        if (strictSequence) return invalid();
+        continue;
+      }
+      // Go code shares process stdout with its harness. Never accept duplicate,
+      // reordered, malformed, extra or partial frames as verified passes.
+      if (strictSequence && parsed.idx !== byIndex.size) return invalid();
       const pass = parsed.ok && runnerValuesEqual(parsed.got, tests[parsed.idx].expected);
       byIndex.set(parsed.idx, { idx: parsed.idx, pass, error: parsed.error ? 'runtime error' : null });
-    } catch {}
+    } catch { if (strictSequence) return invalid(); }
   }
+  if (strictSequence && byIndex.size !== tests.length) return byIndex.size === 0 && !String(stdout || '').trim()
+    ? tests.map((_, idx) => ({ idx, pass: false, error: 'no result' })) : invalid();
   return tests.map((_, idx) => byIndex.get(idx) || { idx, pass: false, error: 'no result' });
 }

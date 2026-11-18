@@ -1,7 +1,8 @@
+import { normalizeExecutionLanguage, executionLanguageEnabled } from './_execution-languages.js';
 import { randomBytes } from 'node:crypto';
 import { normalizeMessageTimestamp } from './_messages.js';
 import { createEvaluationSuite, listPublicExercises } from './_catalog.js';
-import { buildExecutionHarness, executePracticePrograms, executionRuntimeVersion, normalizeRunnerResults, resolveExecutionProvider, validateExecutionStdin, ExecutionUnavailableError } from './_execution.js';
+import { buildExecutionHarness, executePracticePrograms, executionRuntimeVersion, normalizeRunnerResults, resolveExecutionProvider, stripSubmissionTypes, validateExecutionStdin, ExecutionUnavailableError } from './_execution.js';
 import { executionQueueEnabled } from './_execution-queue.js';
 import { acquireExecutionLease, releaseExecutionLease, signRunAttestation, verifyRunAttestation } from './data.js';
 import { accessStatement, hash, OWNER_COLUMNS, OWNER_SELECT, readSecondaryCompletion, readSecondaryDocument, SecondaryWorkspaceConflictError, SecondaryWorkspaceInputError } from './_secondary-workspace.js';
@@ -28,8 +29,8 @@ export async function executeSecondaryProgram(db,room,req,key){
   const stdin=validateExecutionStdin(body);
   if(['week_id','pair_group_id','pg_id','pair_id','circle_id','publication_id','group_id'].some(field=>Object.hasOwn(body,field)))
     throw new SecondaryWorkspaceInputError('room_id cannot be combined with numeric room identifiers');
-  const language=({js:'javascript',javascript:'javascript',py:'python',python:'python'})[String(body.language??body.lang??'javascript').toLowerCase()];
-  if(!language)throw new SecondaryWorkspaceInputError('supported languages are javascript and python');
+  const language=normalizeExecutionLanguage(body.language??body.lang??'javascript');
+  if(!language || !executionLanguageEnabled(language))throw new SecondaryWorkspaceInputError('supported languages are javascript and python');
   const slug=String(body.question_slug??body.slug??'').trim().slice(0,120);if(!slug)throw new SecondaryWorkspaceInputError('question_slug required');
   const questionVersion=Number(body.question_version??body.version??listPublicExercises().find(exercise=>exercise.slug===slug)?.version);
   if(!Number.isSafeInteger(questionVersion)||questionVersion<1)throw new SecondaryWorkspaceInputError('question_version must be a positive integer');
@@ -47,6 +48,7 @@ export async function executeSecondaryProgram(db,room,req,key){
     await tx.commit();
   }catch(error){try{await tx.rollback();}catch{}throw error;}finally{await tx.close?.();}
   if(!code)throw new SecondaryWorkspaceInputError('code required');if(Buffer.byteLength(code)>20000)throw new SecondaryWorkspaceInputError('code exceeds the 20000-byte limit',413);
+  if(language==='typescript') stripSubmissionTypes(code);
   const provider=resolveExecutionProvider();if(!provider.configured)throw new ExecutionUnavailableError('code execution is temporarily unavailable');
   let leaseId=null;
   try{
@@ -62,7 +64,7 @@ export async function executeSecondaryProgram(db,room,req,key){
     const {run,custom}=await executePracticePrograms({language,harness:buildExecutionHarness(language,code,suite,prefix),code,stdin},
       {db,executionContext:{userId:viewer,circleId:room.circleId,interview:false,
         operation:JSON.stringify([room.roomId,slug,questionVersion,canonical?.version])}});
-    const results=normalizeRunnerResults(run.stdout,prefix,suite.tests),passed=results.filter(result=>result.pass===true).length,total=suite.tests.length,duration=Date.now()-started;
+    const results=normalizeRunnerResults(run.stdout,prefix,suite.tests,{strictSequence:language==='go'}),passed=results.filter(result=>result.pass===true).length,total=suite.tests.length,duration=Date.now()-started;
     const fields={circleId:room.circleId,publicationId:room.publicationId,groupId:room.groupId,userId:viewer,
       questionSlug:slug,questionVersion,language,codeHash:hash(code),documentRevision:canonical?.revision??null,
       documentStateHash:canonical?.stateHash??null,documentVersion:canonical?.version??null,
@@ -89,7 +91,7 @@ export async function executeSecondaryProgram(db,room,req,key){
     }catch(error){try{await write.rollback();}catch{}throw error;}finally{await write.close?.();}
     const runtime=executionRuntimeVersion(provider.provider,language);
     return {question_slug:slug,question_version:questionVersion,language,version:runtime,runtime_version:runtime,
-      execution:{provider:run.provider,code:Number.isInteger(run.code)?run.code:null,signal:typeof run.signal==='string'?run.signal.slice(0,64):null,timed_out:run.timedOut===true,has_stderr:!!run.stderr},
+      execution:{provider:run.provider,code:Number.isInteger(run.code)?run.code:null,signal:typeof run.signal==='string'?run.signal.slice(0,64):null,timed_out:run.timedOut===true,has_stderr:!!run.stderr,...(language==='go'?{compile_failed:run.compileFailed===true}:{})},
       results,passed_count:passed,total_count:total,run_id:inserted.rows[0].id,
       ...(custom===undefined?{}:{custom_run:custom})};
   }finally{await releaseExecutionLease(db,viewer,leaseId,req);}

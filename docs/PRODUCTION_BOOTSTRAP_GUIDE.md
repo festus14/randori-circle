@@ -571,8 +571,13 @@ scheduled and manual runs. Any other body gets `400`.
 
 The route runs one fixed trivial JavaScript program and one fixed trivial
 Python program through `api/_execution.js` with the production
-`EXECUTION_PROVIDER` settings. It checks for the exact expected output and
-returns only this:
+`EXECUTION_PROVIDER` settings. ID-104 additionally runs one TypeScript program
+when enabled, and one Go program only when enabled on Piston. Default cost is
+unchanged; claim windows are never widened. A newly enabled language missing
+from a cached result fails closed. Require its actual `ok` result before rollout;
+see [per-language budgets and canary](EXECUTION_LANGUAGES.md#smoke-budgets-and-rollout).
+It checks for the exact expected output and returns only this (plus entries for
+enabled additions):
 
 ```json
 {"ok":true,"checkedAt":"…","languages":{

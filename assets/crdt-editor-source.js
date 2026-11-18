@@ -54,7 +54,7 @@ function selectionIdentity(room=window._randori_workspace?.room){
   const version=Number(selection?.version);
   const language=String(document.getElementById('langSelect')?.value||'');
   if(!ROOM.test(String(room||''))||typeof selection?.slug!=='string'||!selection.slug
-    ||!Number.isSafeInteger(version)||version<1||!['javascript','python'].includes(language)) return null;
+    ||!Number.isSafeInteger(version)||version<1||!['javascript','python','typescript','go'].includes(language)) return null;
   return {room:String(room),circlePublicId:window._randori_circle_control?.scheduleContext?.()?.circlePublicId||null,questionSlug:selection.slug,questionVersion:version,language};
 }
 

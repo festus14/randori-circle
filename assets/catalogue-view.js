@@ -15,7 +15,7 @@
 // call it synchronously; node tests import the same file as an ES module.
 (function installCatalogueView(root) {
   const DIFFICULTIES = Object.freeze(['Easy', 'Medium', 'Hard']);
-  const LANGUAGE_LABELS = Object.freeze({ javascript: 'JavaScript', python: 'Python' });
+  const LANGUAGE_LABELS = Object.freeze({ javascript: 'JavaScript', python: 'Python', typescript: 'TypeScript', go: 'Go' });
   const DEFAULT_FILTERS = Object.freeze({ search: '', difficulty: 'all', type: 'all', language: 'all', kit: 'all', track: 'all' });
   const SUMMARY_MAX = 140;
   const MAX_CARD_TAGS = 3;

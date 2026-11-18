@@ -54,6 +54,28 @@ account, crawler, import, source adapter or provider call was used. This follows
 [the content policy](CONTENT_POLICY.md) and
 [the provenance contract](CATALOG_PROVENANCE.md).
 
+## TypeScript and Go adapters (#466)
+
+All eight kit exercises also derive TypeScript and Go starters from their
+reviewed JavaScript signatures, with no content-version or hash changes.
+TypeScript is available on both execution providers; Go is Piston-only.
+Each is default off behind its own literal flag. All original private cases and
+oracles are reused server-side; no kit membership makes a language available.
+
+`validate:catalog` always runs **both** the independent JS/Python kit validator
+and the additional-language validator. The former retains its missing-Python
+reference guard and public-example/oracle cross-check; absent `python3` is a hard
+failure, never a skip. The latter executes TypeScript kit references and parses
+every TypeScript starter. Independent Go references cover these eight exercises
+and three existing ones (11/27 active exercises); they compile/run only with a
+pre-existing local Go compiler. The validator prints an explicit Go skip otherwise,
+while the required Ubuntu 24.04 catalogue job **and Ubuntu 26.04 image-drift
+canary** set `CATALOG_REQUIRE_GO=true` and fail if Go is unavailable. The image's
+modern Go is not proof of the Piston 1.16.2 runtime: source avoids post-1.16
+features, and actual pinned-runtime compatibility remains an operator canary
+check. No compiler download or provider call is part of validation. Details:
+[language contracts and authoring](EXECUTION_LANGUAGES.md).
+
 ## Selecting a kit question
 
 In the room's **Problem** panel, choose **Track**, **Interview kit**, then an
