@@ -151,7 +151,7 @@ production state in the [feature flag table](#feature-flags):
 `PASSWORD_RESET_ENABLED`, `IDENTITY_MANAGEMENT_ENABLED`,
 `INVITATION_EMAIL_DELIVERY_ENABLED`, `INVITE_REQUESTS_ENABLED`, `FEEDBACK_ENABLED`,
 `REMINDERS_ENABLED`, `REMINDERS_SESSION_SOON_ENABLED`,
-`PROGRESS_DASHBOARD_ENABLED`, `EXERCISE_SUGGESTIONS_ENABLED`,
+`PROGRESS_DASHBOARD_ENABLED`, `EXERCISE_SUGGESTIONS_ENABLED`, `INTERVIEW_SESSION_ENABLED`,
 `CIRCLE_HEALTH_ENABLED`, `ADMIN_DIAGNOSTICS_ENABLED`,
 `ACCOUNT_DELETION_ENABLED`, `ACCOUNT_DELETION_GRACE_ENABLED`,
 `DATA_EXPORT_ENABLED`,
@@ -421,6 +421,7 @@ them off cannot undo.
 | `REMINDERS_ENABLED` | Availability-cutoff reminder and agree-a-time nudge from the outbox cron | off | On (owner) | Resend; the outbox scheduler | ID-71 ([reminders](REMINDERS.md)) | Queued reminders drain as `suppressed` |
 | `REMINDERS_SESSION_SOON_ENABLED` | One-hour session reminder | off | On (owner) | `REMINDERS_ENABLED` | ID-71 | As above |
 | `PROGRESS_DASHBOARD_ENABLED` | "Your progress" in History and `GET /api/progress` | off | On (owner) | none | ID-76 ([progress dashboard](PROGRESS_DASHBOARD.md)) | Safe; nothing is stored |
+| `INTERVIEW_SESSION_ENABLED` | Interviewer-only roles, timer and end-for-both in eligible primary rooms; timer expiry is terminal | off | Not deployed by this increment | Existing session-control/completion/code-document schema | ID-94 ([session controls](SESSION_CONTROLS.md#interview-first-increment-464)) | Returns to symmetric peer controls; an expired timer can be reset. Reload terminal pages; do not toggle during an interview |
 | `EXERCISE_SUGGESTIONS_ENABLED` | "Attempted" markers and suggested exercises; `GET /api/exercise-suggestions` | off | On (owner) | none | ID-77 | Safe; nothing is stored |
 | `CIRCLE_HEALTH_ENABLED` | Owner-only Circle health card and `GET /api/circle/health` | off | On (observed: `circleHealth`) | `CIRCLE_MEMBERSHIP_ENABLED` | ID-78 ([circle health](CIRCLE_HEALTH.md)) | Safe; nothing is stored |
 | `ADMIN_DIAGNOSTICS_ENABLED` | Read-only admin Diagnostics in the Circle view | off | On (observed: `adminDiagnostics`) | none (still admin-only) | ID-73 | Safe; nothing is stored |
