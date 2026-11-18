@@ -49,7 +49,13 @@ async function seed(){
   await db.execute(`INSERT INTO pairing_participants (week_id,user_id,position,source) VALUES (10,1,0,'auth'),(10,2,1,'auth'),(10,9,2,'auth')`);
   await getAuthorizedCodeDocument(db,{viewerId:1,...RELAY_IDENTITY});
 }
-const rows=async()=>(await db.execute('SELECT key,attempts,expires_at FROM auth_rate_limits ORDER BY key')).rows;
+const allRows=async()=>(await db.execute('SELECT key,attempts,expires_at FROM auth_rate_limits ORDER BY key')).rows;
+// Presence rows only (the per-account budget rows share the table).
+const rows=async()=>{
+  const config=presence.presenceConfiguration();
+  const keys=new Set([1,2,9].map(id=>presence.presenceKey(config,'week_10_pair_20',id)));
+  return (await allRows()).filter(row=>keys.has(String(row.key)));
+};
 
 beforeEach(()=>{
   authFailure=false;
@@ -79,7 +85,7 @@ test('the flag is literal, needs a strong app secret and is advertised only when
   const durable=await invoke({method:'GET',url:'/api/code-document',query:{...RELAY_BODY,question_version:'1'}});
   assert.equal(durable.status,200); assert.equal(durable.body.presence,undefined);
   const off=await invoke(); assert.equal(off.status,404); assert.deepEqual(off.body,{error:'pair not found'});
-  assert.equal((await rows()).length,0);
+  assert.equal((await allRows()).length,0,'flag off writes nothing, not even budget');
   const routes=JSON.parse(readFileSync(new URL('../../vercel.json',import.meta.url))).rewrites;
   assert.ok(routes.some(route=>route.source==='/api/code-document/presence'&&route.destination==='/api/code-document?endpoint=presence'));
 });
@@ -131,7 +137,7 @@ test('presence rows expire on the database clock without any cleanup job',async(
   await presence.recordPresence(db,presence.presenceConfiguration(),{roomId:'week_10_pair_20',viewerId:1,partnerId:2,random:()=>0});
   assert.equal((await rows()).length,1,'expired partner row swept');
   const failing={execute:async statement=>{
-    if(typeof statement==='string'&&statement.startsWith('DELETE')) throw new Error('cleanup down');
+    if(String(statement?.sql??statement).trimStart().startsWith('DELETE')) throw new Error('cleanup down');
     return db.execute(statement);
   }};
   assert.deepEqual(await presence.recordPresence(failing,presence.presenceConfiguration(),
@@ -170,7 +176,7 @@ test('anonymous, foreign, malformed, cross-origin and completed rooms fail close
       VALUES (10,20,?,'auth',1,2,NULL,'2026-09-20T10:00:00.000Z')`,args:[userId]});
   }
   assert.equal((await invoke()).status,404,'completed sessions stop presence');
-  assert.equal((await rows()).length,0);
+  assert.equal((await rows()).length,0,'denials never write presence rows (only the caller budget)');
 });
 
 test('storage and authentication failures are generic and non-cacheable',async()=>{
@@ -184,4 +190,44 @@ test('storage and authentication failures are generic and non-cacheable',async()
     assert.equal(result.headers['cache-control'],'private, no-store');
   }
   db=original;
+});
+
+test('a per-account budget caps every state, leave included, with Retry-After and a one-minute reset',async()=>{
+  await seed();
+  assert.equal(presence.PRESENCE_BUDGET_LIMIT,30);
+  for(let index=0;index<presence.PRESENCE_BUDGET_LIMIT-1;index+=1) assert.equal((await invoke()).status,200);
+  assert.equal((await invoke({body:{...BODY,state:'leave'}})).status,200,'leave spends budget too');
+  const limited=await invoke(); assert.equal(limited.status,429); assert.deepEqual(limited.body,{error:'presence rate limited'});
+  assert.ok(Number(limited.headers['retry-after'])>=1&&Number(limited.headers['retry-after'])<=60);
+  assert.equal((await invoke({body:{...BODY,state:'leave'}})).status,429);
+  assert.equal((await invoke({user:2})).status,200,'the partner has its own budget');
+  assert.equal((await invoke({user:9})).status,404,'foreign callers spend their own budget before the pair read');
+  await db.execute("UPDATE auth_rate_limits SET expires_at=CAST(strftime('%s','now') AS INTEGER)-1");
+  assert.equal((await invoke()).status,200,'window resets on the database clock');
+  const broken={execute:async()=>({rows:[{attempts:'x'}]})};
+  await assert.rejects(presence.consumePresenceBudget(broken,presence.presenceConfiguration(),1),/presence budget unavailable/);
+});
+
+test('leave requires a canonical primary room id and only deletes the caller row',async()=>{
+  await seed();
+  await invoke(); await invoke({user:2});
+  for(const room_id of ['circle_1_publication_1_group_1','week_10_pair_020','week_0_pair_20','../week_10_pair_20']){
+    const result=await invoke({body:{...BODY,room_id,state:'leave'}});
+    assert.equal(result.status,404,room_id); assert.deepEqual(result.body,{error:'pair not found'});
+  }
+  assert.equal((await rows()).length,2,'non-canonical leaves deleted nothing');
+  assert.equal(presence.parsePresenceRequest({...BODY,room_id:'circle_1_publication_1_group_1'}),null);
+});
+
+test('the opportunistic sweep is rare and bounded to a fixed number of expired rows',async()=>{
+  await seed();
+  const config=presence.presenceConfiguration();
+  await db.execute(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<100)
+    INSERT INTO auth_rate_limits (key,attempts,expires_at) SELECT printf('stale-%03d',i),1,1 FROM n`);
+  await presence.recordPresence(db,config,{roomId:'week_10_pair_20',viewerId:1,partnerId:2,random:()=>0.5});
+  assert.equal((await db.execute("SELECT count(*) AS n FROM auth_rate_limits WHERE key LIKE 'stale-%'")).rows[0].n,100,'no sweep at 50%');
+  await presence.recordPresence(db,config,{roomId:'week_10_pair_20',viewerId:1,partnerId:2,random:()=>0});
+  assert.equal((await db.execute("SELECT count(*) AS n FROM auth_rate_limits WHERE key LIKE 'stale-%'")).rows[0].n,
+    100-presence.PRESENCE_SWEEP_LIMIT,'at most PRESENCE_SWEEP_LIMIT rows per sweep');
+  assert.ok(presence.PRESENCE_CLEANUP_PROBABILITY<=0.005);
 });

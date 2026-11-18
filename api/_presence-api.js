@@ -1,5 +1,5 @@
 import { getClient, verifyRequestAuth } from './_db.js';
-import { clearPresence, parsePresenceRequest, presenceConfiguration, PRESENCE_INTERVAL_SECONDS,
+import { clearPresence, consumePresenceBudget, parsePresenceRequest, presenceConfiguration, PRESENCE_INTERVAL_SECONDS,
   PRESENCE_TTL_SECONDS, readPartnerProfile, recordPresence } from './_presence.js';
 import { authorizeRelayPair, relayOriginAllowed } from './_realtime-relay-api.js';
 
@@ -26,8 +26,15 @@ export async function handlePresence(req,res){
     const request=parsePresenceRequest(req.body);
     if(!request) return notFound(res);
     const roomId=request.identity.roomId;
-    // Leaving only deletes the caller's own keyed row, so it needs no pair
-    // read and still succeeds after a terminal interview state.
+    // Every state, leave included, spends the per-account budget before any
+    // pair read or row write.
+    const budget=await consumePresenceBudget(db,config,viewerId);
+    if(!budget.ok){
+      res.setHeader?.('Retry-After',String(budget.retryAfter));
+      return res.status(429).json({error:'presence rate limited'});
+    }
+    // Leaving only deletes the caller's own keyed row for a canonical primary
+    // room, so it needs no pair read and still succeeds after a terminal state.
     if(request.state==='leave'){ await clearPresence(db,config,{roomId,viewerId}); return res.json({ok:true}); }
     const access=await authorizeRelayPair(db,auth,req,{viewerId,...request.identity});
     if(!access) return notFound(res);
