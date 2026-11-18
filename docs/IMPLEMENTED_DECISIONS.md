@@ -90,7 +90,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-62](#id-62-execute-catalogue-runs-in-an-isolated-configurable-provider) | Execute catalogue runs in an isolated, configurable provider | Content & Catalogue | Active |
 | [ID-63](#id-63-link-google-with-randori-recent-auth-not-a-fresh-google-auth_time) | Link Google with Randori recent auth, not a fresh Google `auth_time` | Auth & Identity | Active |
 | [ID-64](#id-64-deliver-auth-and-invitation-email-immediately-after-commit) | Deliver auth and invitation email immediately after commit | Email & Notifications | Active |
-| [ID-65](#id-65-make-pair-code-conflict-free-and-execute-only-acknowledged-state) | Make pair code conflict-free and execute only acknowledged state | Pairing & Scheduling | Active |
+| [ID-65](#id-65-make-pair-code-conflict-free-and-execute-only-acknowledged-state) | Make pair code conflict-free and execute only acknowledged state | Pairing & Scheduling | Amended by [ID-96](#id-96-relay-pair-code-updates-through-private-supabase-channels-without-changing-durable-authority) |
 | [ID-66](#id-66-accept-public-invite-requests-without-enumeration) | Accept public invite requests without enumeration | Email & Notifications | Active |
 | [ID-67](#id-67-run-an-external-outbox-scheduler-beside-github-and-alert-on-delivery-health) | Run an external outbox scheduler beside GitHub and alert on delivery health | Email & Notifications | Active |
 | [ID-68](#id-68-invite-several-people-at-once-with-one-shared-email-validator) | Invite several people at once with one shared email validator | Email & Notifications | Active |
@@ -121,6 +121,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-93](#id-93-give-account-deletion-a-14-day-cancellable-grace-period-behind-a-flag) | Give account deletion a 14-day cancellable grace period, behind a flag | Security, Secrets & Privacy | Active |
 | [ID-94](#id-94-keep-custom-stdin-private-and-separate-from-verified-catalogue-results) | Keep custom stdin private and separate from verified catalogue results | Security, Secrets & Privacy | Active |
 | [ID-95](#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry) | Scope primary interview controls to the interviewer and close on timer expiry | Pairing & Scheduling | Active |
+| [ID-96](#id-96-relay-pair-code-updates-through-private-supabase-channels-without-changing-durable-authority) | Relay pair code updates through private Supabase channels without changing durable authority | Pairing & Scheduling | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -134,7 +135,7 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-96). Never reuse a number, even if an entry is
+   plus one (currently ID-97; ID-94 is reserved by open PR #470 and ID-95 is on main). Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
 2. **Check for collisions before you claim it.** Parallel PRs are the
@@ -2854,6 +2855,10 @@ scheduled worker exactly as before.
 
 ## ID-65: Make pair code conflict-free and execute only acknowledged state
 
+**Amended by ID-96:** optional default-off Supabase broadcasts accelerate editor
+visibility only; HTTPS remains the sole durable/acknowledgement authority and
+continues polling. The flag-off contract below is unchanged.
+
 Status: candidate migration-backed primary-session increment.
 
 **Decision.** Migration 20 owns one bounded Yjs code document per exact
@@ -5493,3 +5498,103 @@ selection and candidate lock/unlock remain for later #464 increments. A
 provider execution already authorized before end keeps its existing bounded
 lifetime; no provider cancellation is introduced. Full contract and canary
 steps: [session controls](SESSION_CONTROLS.md#interview-first-increment-464).
+## ID-96: Relay pair code updates through private Supabase channels without changing durable authority
+
+Status: implemented behind `REALTIME_RELAY_ENABLED=false` by default; issue #461,
+part of real-time mock-interview epic #460. No dependency on parallel PRs #470,
+#471 or #472. ID-94/ID-95 are reserved by parallel work.
+
+**Amends ID-65:** adds only an optional visibility accelerator. The existing
+HTTPS Yjs document, server version, persistence, polling, completion fences,
+retention and acknowledged-version execution remain authoritative.
+
+**Context.** The 1.2-second polling interval is reliable but cannot deliver
+sub-second partner keystrokes. Vercel Hobby functions cannot host an always-on
+WebSocket service, and replacing the durable document/provider is outside the
+owner-approved architecture.
+
+**Decision.** Use Supabase Realtime exclusively as a private-channel Yjs update
+relay. Keep authenticated HTTPS polling active even while realtime is healthy.
+Both local and received updates go through the existing HTTPS queue and merge
+idempotently; receiving a broadcast never advances a durable version or enables
+Run before server acknowledgement. Non-primary/solo/triad/AI/secondary rooms
+retain existing transport and never receive a relay token.
+
+- Group `POST /api/code-document/relay-token` in the existing function. It is
+  strictly same-origin, authenticated, private/non-cacheable and rate-limited
+  through the existing distributed `auth_rate_limits` table (12/account/5 min).
+  Source-tagged SQL verifies the live two-person primary pairing snapshot,
+  exact non-expired document identity and nonterminal state; multi-circle
+  context must select primary with an exact context-version header. All denied
+  room shapes project the same 404. No bootstrap side effect or request DDL.
+- Mint maximum-five-minute ES256 JWTs with built-in Node crypto, `kid`, opaque
+  per-account UUID-shaped `sub`, `role/aud=authenticated`, cycle, exact exercise
+  context and a topic bound to the canonical room/live participant snapshot.
+  `SUPABASE_REALTIME_SIGNING_JWK` is sensitive server-only private P-256 JSON;
+  `SUPABASE_REALTIME_SIGNING_KID` must equal the imported provider key's kid.
+  No app-session token, name, email or account number goes to Supabase.
+- Ship reviewed operator-only Realtime SQL: authenticated read/broadcast grants
+  and restrictive all-role topic/expiry/broadcast-only fences. Never permit
+  public channels or use service-role secrets in the browser. The dedicated
+  relay project must not expose other application data through authenticated
+  RLS grants. Existing channel authorization is cached; short lifetimes and
+  fresh joins bound normal revocation, not an immediate global kill switch.
+- Implement the small Phoenix v1 JSON broadcast protocol locally, wire-checked
+  against `@supabase/realtime-js@2.15.4`. No SDK/CDN/dependency added. Send only
+  bounded canonical-base64 Yjs bytes, a random per-document-session nonce and
+  monotonic sequence; coalesce 50 ms, cap 20 messages/s and validate received
+  updates on a disposable Y.Doc. Do not turn sequence into a Yjs ordering key.
+  Heartbeats, join/token deadlines, expiry and errors fail to HTTPS; fresh tokens
+  reauthorize at renewal. Identity, visibility, sign-out, offline and terminal
+  fences dispose the old socket/timers before late packets can touch the editor.
+- `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` are public browser settings,
+  only supplied by the server after authorization. Capability discovery is
+  conditional on literal flag + complete valid local configuration; actual
+  imported-key/RLS correctness is verified by the operator canary, not by a
+  server network probe. Local runtime blanks provider credentials and stays off.
+
+**Byte-budget choice.** The provided base measured **1,445,935 JS bytes**, only
+4,065 below the unchanged 1,450,000-byte gate (not the approximate 1.31 MB in
+planning). Minify the existing verified CRDT bundle with the already pinned
+esbuild `0.25.9`, including the tiny broadcast transport, instead of adding an
+SDK or raising any threshold. Source remains reviewable; `check:crdt` builds
+with exactly the same minify settings and rejects drift. No second Yjs runtime,
+Monaco bundle, new package or relaxed coverage exclusion is introduced. The new
+relay and Yjs-validation modules are included in the CI coverage scope.
+
+**Alternatives.** Bundling the full Supabase client adds unneeded Auth, REST,
+presence and database functionality and consumes the tight unminified budget.
+Switching to a new durable provider violates the HTTPS-authority decision.
+Public channels, a shared project secret or an unauthenticated token route
+would expose pair code and are rejected. Suspending polling when realtime is
+healthy would make missed/oversized broadcasts an authority/recovery gap.
+
+**Verification.** Focused tests verify ES256 claims/kid/expiry/signature, uniform
+room denial, live snapshot and circle-context fencing, rate limits, no-store,
+message bounds/replay/rates, plain Y.Text validation, fallback, socket teardown,
+concurrent/offline merge and HTTPS-only acknowledgement/Run. Fake timers and a
+mocked transport prove **80 ms** (50-ms coalescing + 30-ms transit) before any
+HTTPS write or polling tick. The two-context Playwright test holds HTTPS POST
+acknowledgements while observing partner edits and disabled Run. A real provider
+latency/RLS canary is deliberately left to the orchestrator; expected nearby
+region latency is roughly 100–300 ms, not a measured production SLA.
+
+**Rollout and recovery.** The exact operator sequence and reviewed SQL are in
+[the provider setup and rollback runbook](CONFLICT_FREE_CODE_DOCUMENTS.md#supabase-provider-setup-and-rollback):
+keep the flag off; confirm the provisioned dedicated project's public URL/key;
+disable public channels; generate a private P-256 JWK on a trusted machine;
+import **that own key** and rotate to it (Supabase does not export existing
+private keys); set matching sensitive JWK/kid in Vercel; apply the reviewed
+`supabase/realtime-authorization.sql` in the Dashboard SQL Editor; canary private
+join/foreign-room/anonymous/expired denial, heartbeat/reconnect, offline merge
+and Run; then enable the literal flag and redeploy. The privacy page discloses
+the optional relay's data flow before activation.
+
+Routine rollback unsets/sets the flag false and redeploys, preserving every
+HTTPS document and Turso ledger. Provider lockdown revokes the imported key and
+disconnects active provider sessions when immediate cutoff is needed, then applies
+`supabase/realtime-authorization-rollback.sql`: remove grants and keep restrictive
+**deny-all** fences. Do not disable RLS or drop restrictive policies, which could
+unmask broad permissive policies. Reapply the reviewed policies and matched key,
+canary, then enable deliberately. This branch neither contacts Supabase nor
+changes Vercel/production/provider state.
