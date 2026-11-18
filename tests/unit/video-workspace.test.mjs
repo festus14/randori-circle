@@ -165,6 +165,44 @@ beforeEach(async()=>{
 
 after(()=>{ db.close(); rmSync(databaseDirectory,{recursive:true,force:true}); });
 
+test('interview end and expiry block all snapshot writes without changing code or board',async()=>{
+  await db.execute('CREATE TABLE IF NOT EXISTS pair_session_controls (week_id INTEGER,pair_group_id INTEGER,timer_state TEXT,remaining_ms INTEGER,anchor_at TEXT)');
+  process.env.INTERVIEW_SESSION_ENABLED='true';
+  try{
+    const initial=await post(workspaceV3());
+    assert.equal(initial.status,200);
+    const before=(await db.execute('SELECT * FROM pair_room_snapshots')).rows;
+    for(const [timerState,remaining,anchor] of [['paused',0,null],['running',1,'2026-01-01T00:00:00.000Z']]){
+      await db.execute('DELETE FROM pair_session_controls');
+      await db.execute({sql:'INSERT INTO pair_session_controls VALUES (10,20,?,?,?)',args:[timerState,remaining,anchor]});
+      const response=await post(workspaceV3({base_revision:1,client_seq:2,code:'changed',board:{shapes:[]}}));
+      assert.equal(response.status,409); assert.equal(response.body.code,'interview_session_ended');
+      const duplicate=await post(workspaceV3());
+      assert.equal(duplicate.status,409,'terminal boundary is checked before idempotency');
+      assert.deepEqual((await db.execute('SELECT * FROM pair_room_snapshots')).rows,before);
+      assert.equal((await get()).status,200,'read-only snapshot remains available');
+    }
+  }finally{ delete process.env.INTERVIEW_SESSION_ENABLED; await db.execute('DELETE FROM pair_session_controls'); }
+});
+
+test('a racing interviewer end is fenced in the snapshot write, not just a preflight',async()=>{
+  await db.execute('CREATE TABLE IF NOT EXISTS pair_session_controls (week_id INTEGER,pair_group_id INTEGER,timer_state TEXT,remaining_ms INTEGER,anchor_at TEXT)');
+  process.env.INTERVIEW_SESSION_ENABLED='true';
+  const execute=db.execute.bind(db); let injected=false;
+  try{
+    db.execute=async statement=>{
+      if(!injected&&typeof statement==='object'&&/INSERT INTO pair_room_snapshots/.test(statement.sql)){
+        injected=true;
+        await execute('INSERT INTO pair_session_controls VALUES (10,20,\'paused\',0,NULL)');
+      }
+      return execute(statement);
+    };
+    const response=await post(workspaceV3());
+    assert.equal(injected,true); assert.equal(response.status,409); assert.equal(response.body.code,'interview_session_ended');
+    assert.equal((await execute('SELECT COUNT(*) AS c FROM pair_room_snapshots')).rows[0].c,0);
+  }finally{ db.execute=execute; delete process.env.INTERVIEW_SESSION_ENABLED; await db.execute('DELETE FROM pair_session_controls'); }
+});
+
 test('workspace reads and writes require authentication and exact room membership', async()=>{
   const anonymous=await invoke({
     query:{room_id:'week_10_pair_20',channel:'workspace'},

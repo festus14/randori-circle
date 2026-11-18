@@ -4,6 +4,7 @@ import * as Y from 'yjs';
 import { authPairAccessArgs } from './_pair-access.js';
 import { getPublicExercise } from './_catalog.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
+import { interviewTimerEnded } from './_session-controls.js';
 
 export const CODE_DOCUMENT_STATE_LIMIT_BYTES=256*1024;
 export const CODE_DOCUMENT_UPDATE_LIMIT_BYTES=64*1024;
@@ -190,7 +191,7 @@ async function completedPair(db,authorization,identity){
     args:[...authorization.accessArgs,identity.weekId,identity.pairGroupId],
   });
   if(result?.rows?.length!==1) throw new CodeDocumentDataError('completion boundary is unavailable');
-  return Number(result.rows[0].confirmed_count)===2;
+  return Number(result.rows[0].confirmed_count)===2||await interviewTimerEnded(db,authorization.pair);
 }
 
 function storedWorkspaceSeed(row,identity){
@@ -472,6 +473,9 @@ async function readUnchangedCodeDocument(db,viewerId,identity,afterRevision){
   try{
     const authorization=await authorizedPair(transaction,viewerId,identity);
     if(!authorization){ await finish(transaction,'rollback'); finished=true; return {done:true,result:null}; }
+    if(await interviewTimerEnded(transaction,authorization.pair)){
+      await finish(transaction,'rollback'); finished=true; return {done:true,result:{terminal:true}};
+    }
     const row=await readRow(transaction,identity);
     if(!row||Number(row.retention_expired)===1){
       await finish(transaction,'commit'); finished=true; return {done:false};
@@ -505,6 +509,9 @@ async function getAuthorizedCodeDocumentUnlocked(db,{viewerId,afterRevision=0,..
       transaction=await db.transaction('write');
       const authorization=await authorizedPair(transaction,viewerId,identity);
       if(!authorization){ await transaction.rollback(); settled=true; return null; }
+      if(await interviewTimerEnded(transaction,authorization.pair)){
+        await transaction.rollback(); settled=true; return {terminal:true};
+      }
       await purgeExpiredCodeDocumentIdentity(transaction,identity);
       let row=await readRow(transaction,identity);
       let created=false;
@@ -562,11 +569,11 @@ async function mergeAuthorizedCodeDocumentUnlocked(db,{viewerId,...input}){
       transaction=await db.transaction('write');
       const authorization=await authorizedPair(transaction,viewerId,input);
       if(!authorization){ await transaction.rollback(); settled=true; return null; }
-      await purgeExpiredCodeDocumentIdentity(transaction,input);
       if(await completedPair(transaction,authorization,input)){
         await transaction.rollback(); settled=true;
         return {terminal:true};
       }
+      await purgeExpiredCodeDocumentIdentity(transaction,input);
       let row=await readRow(transaction,input);
       if(!row) row=(await createDocument(transaction,viewerId,input,authorization,{clientId:input.clientId,clientSeq:input.clientSeq})).row;
       const current=normalizedRow(row,input);

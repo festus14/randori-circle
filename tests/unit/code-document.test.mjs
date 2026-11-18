@@ -72,6 +72,38 @@ function input(update,{clientId='client_A1',clientSeq=1}={}){
   return {...IDENTITY,viewerId:1,update:Buffer.from(update,'base64'),clientId,clientSeq};
 }
 
+test('interview early end and database timer expiry close CRDT reads, writes and execution without receipts',async()=>{
+  for(const timerState of ['paused','running']){
+    const item=fixture();
+    process.env.INTERVIEW_SESSION_ENABLED='true';
+    try{
+      await prepareConnection(item.db); await seed(item.db);
+      const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
+      const update=updateFromState(initial.state,text=>text.insert(0,'changed;'));
+      await item.db.execute({sql:`INSERT INTO pair_session_controls
+        (week_id,pair_group_id,pair_user_a_id,pair_user_b_id,candidate_user_id,timer_state,
+          remaining_ms,anchor_at,revision,updated_by,created_at,updated_at)
+        VALUES (10,20,1,2,1,?,?,?,1,2,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+      args:[timerState,timerState==='paused'?0:1,timerState==='paused'?null:'2026-01-01T00:00:00.000Z']});
+      const before=(await item.db.execute('SELECT * FROM pair_code_documents')).rows;
+      for(const viewerId of [1,2]){
+        for(const afterRevision of [0,initial.revision]){
+          const read=await getAuthorizedCodeDocument(item.db,{viewerId,...IDENTITY,afterRevision});
+          assert.equal(read.terminal,true);
+        }
+        const merged=await mergeAuthorizedCodeDocument(item.db,{...input(update),viewerId});
+        assert.equal(merged.terminal,true);
+        const execution=await readCanonicalCodeForExecution(item.db,{viewerId,room:IDENTITY,
+          questionSlug:IDENTITY.questionSlug,questionVersion:1,language:'javascript',documentVersion:initial.version});
+        assert.equal(execution.terminal,true);
+      }
+      assert.deepEqual((await item.db.execute('SELECT * FROM pair_code_documents')).rows,before);
+      assert.equal((await item.db.execute('SELECT COUNT(*) AS c FROM session_completion_receipts')).rows[0].c,0);
+      assert.equal(await getAuthorizedCodeDocument(item.db,{viewerId:9,...IDENTITY}),null);
+    }finally{ delete process.env.INTERVIEW_SESSION_ENABLED; item.close(); }
+  }
+});
+
 test('v20 bootstrap is server-serialized from the matching v3 workspace and survives restart',async()=>{
   const item=fixture();
   try{
