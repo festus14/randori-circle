@@ -10,6 +10,19 @@ Issue #372, decision ID-93, adds a **14-day cancellable grace period** behind
 schedules it 14 days out instead of deleting straight away; with the flag
 off the original immediate flow runs unchanged.
 
+## Private interviewer evaluations (#465)
+
+After additive migration 27, the deletion transaction removes every
+`interview_evaluations` row owned by the deleting evaluator, independently of
+the feature flag. Immediate, scheduled and restore-reapplication paths use
+the same deletion statement. Deleting the candidate preserves the evaluator's
+writing until its immutable 90-day deadline; its candidate name resolves to
+**Deleted member**, but names written inside notes are not rewritten. Group
+removal cascades evaluation rows. A v26 database is unchanged; only missing
+storage is tolerated, never a malformed schema or operational error. The
+inventory in `api/_account-deletion.js` and [toolkit retention runbook](INTERVIEWER_TOOLKIT.md#retention-runbook)
+record this ownership boundary.
+
 ## Removed members: emailed proof (issue #350, Option A)
 
 Owner approval on 2026-11-03 includes additive migration v24

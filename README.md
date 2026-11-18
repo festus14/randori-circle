@@ -45,6 +45,12 @@ the candidate or the agreed schedule starts the interview, the interviewer
 owns question and language selection, and can lock candidate editing
 ([ID-99](docs/SESSION_CONTROLS.md#interview-lobby-schedule-start-question-ownership-and-edit-lock-464)).
 It is off by default.
+`INTERVIEWER_TOOLKIT_ENABLED=true` additionally enables evaluator-only rubric,
+private notes, decisions and downloadable report/playback in the room and
+History. It requires interview mode and additive migration **27**, is default
+OFF, and never shares writing with the candidate or AI. Evaluations have a fixed
+90-day window ([interviewer toolkit](docs/INTERVIEWER_TOOLKIT.md), ID-102).
+Merging does not apply v27; production migration needs the owner's approval.
 `DAILY_VIDEO_ENABLED=true` (with the server-only `DAILY_API_KEY` and
 `DAILY_DOMAIN`) adds consent-gated in-room audio and video through Daily for
 primary two-person rooms. Calls are never recorded, and the private meeting

@@ -32,7 +32,7 @@
 </header>
 <main id="main" class="legal-main" tabindex="-1">
   <h1>Privacy Policy</h1>
-  <p class="legal-updated">Last updated: <time datetime="2026-11-18">18 November 2026</time></p>
+  <p class="legal-updated">Last updated: <time datetime="2026-11-18T11:35:00Z">18 November 2026</time></p>
 
   <div class="legal-summary">
     <p><strong>In short:</strong></p>
@@ -73,6 +73,7 @@
     <li>What you write in a pairing room: the shared code editor, the whiteboard and chat messages with your partner.</li>
     <li>Code runs: the code you run, the exercise and language, the test results and how long it took.</li>
     <li>Session details: interviewer and candidate roles, the timer, and whether you both marked the session as done.</li>
+    <li><strong>Private interviewer evaluations.</strong> The optional interviewer toolkit stores rubric scores, private notes about the candidate, and a hire/no-hire decision. Only the account that wrote an evaluation can read or edit it, even after a role swap. The candidate and other members cannot read another account’s evaluation. It is not shared in recaps or sent to AI. Its report includes only shared code checkpoints and verified runs the interviewer could already see, never private run input.</li>
     <li>Your email reminder setting. Unless you turn it off, we email you about your pairings and session times, and send reminders: about 24 hours before the Sunday availability cutoff if you haven’t chosen for the next cycle, 3 days after pairing if your pair hasn’t agreed a session time, and a day and about an hour before an agreed session.</li>
     <li><strong>Feedback you send us.</strong> If you send feedback about Randori, we store what you wrote (whether it is a bug report, a feature request or general feedback, its title and text, and, for bug reports, any technical details you choose to add), who sent it and which circle it was sent from. Email addresses, passwords, secret links and similar details are removed from the text before it is stored. We do not store your IP address or browser details with it.</li>
   </ul>
@@ -132,6 +133,7 @@
   <ul>
     <li><strong>Your account and practice history</strong> (profile, circle membership, availability, pairings, session times, chat, code runs, completed sessions and settings): while your account exists. If you leave a circle or an owner removes you, your membership becomes inactive; you are signed out only if it was your last active circle. Nothing is deleted unless you delete your account or ask us to.</li>
     <li><strong>Shared editor drafts</strong>: deleted about 90 days after the last change. <strong>Whiteboards</strong>: usually deleted about 90 days after the last change; some whiteboards can be kept for several months longer.</li>
+    <li><strong>Private interviewer evaluations</strong>: visible for 90 days after the first save; editing does not extend the deadline. Physical deletion is a separate, disabled-by-default operator step, so expired rows can remain in the database until that step runs. Deleting the evaluator’s account removes their writing; deleting the candidate’s account keeps the evaluator’s writing until its original deadline, with the candidate shown as “Deleted member”. Notes may still mention the candidate. The evaluator’s data export includes their own retained writing, never another account’s evaluation. Downloaded private reports are copies on the evaluator’s device and do not automatically expire.</li>
     <li><strong>Meeting links</strong>: removed when your agreed session time changes.</li>
     <li><strong>Video call set-up messages</strong>: about an hour, cleared while calls are in use.</li>
     <li><strong>Built-in video calls</strong>: we store nothing about the call itself. To limit join attempts we keep a counter under a code that can’t be linked back to you, and it expires within 15 minutes. Daily keeps its own call records under its terms.</li>

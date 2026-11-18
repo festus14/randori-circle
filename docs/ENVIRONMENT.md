@@ -243,6 +243,7 @@ production state in the [feature flag table](#feature-flags):
 `INVITATION_EMAIL_DELIVERY_ENABLED`, `INVITE_REQUESTS_ENABLED`, `FEEDBACK_ENABLED`,
 `REMINDERS_ENABLED`, `REMINDERS_SESSION_SOON_ENABLED`,
 `PROGRESS_DASHBOARD_ENABLED`, `EXERCISE_SUGGESTIONS_ENABLED`, `INTERVIEW_SESSION_ENABLED`,
+`INTERVIEWER_TOOLKIT_ENABLED`, `INTERVIEW_EVALUATION_PURGE_ENABLED`,
 `CIRCLE_HEALTH_ENABLED`, `ADMIN_DIAGNOSTICS_ENABLED`,
 `ACCOUNT_DELETION_ENABLED`, `ACCOUNT_DELETION_GRACE_ENABLED`,
 `DATA_EXPORT_ENABLED`, `DAILY_VIDEO_ENABLED`,
@@ -514,6 +515,8 @@ them off cannot undo.
 | `REMINDERS_SESSION_SOON_ENABLED` | One-hour session reminder | off | On (owner) | `REMINDERS_ENABLED` | ID-71 | As above |
 | `PROGRESS_DASHBOARD_ENABLED` | "Your progress" in History and `GET /api/progress` | off | On (owner) | none | ID-76 ([progress dashboard](PROGRESS_DASHBOARD.md)) | Safe; nothing is stored |
 | `INTERVIEW_SESSION_ENABLED` | Interviewer-only roles, timer and end-for-both in eligible primary rooms; timer expiry is terminal. With migration v26 also the lobby (interviewer admit or schedule start), interviewer-owned question selection and candidate edit lock | off | Not deployed | Existing session-control/completion/code-document schema; migration v26 (additive) for the lobby and lock, which stay off until it is applied | ID-95, ID-99 ([session controls](SESSION_CONTROLS.md#interview-lobby-schedule-start-question-ownership-and-edit-lock-464)) | Returns to symmetric peer controls; an expired timer can be reset; interview rows are kept and ignored. Reload terminal pages; do not toggle during an interview |
+| `INTERVIEWER_TOOLKIT_ENABLED` | Evaluator-only rubric, private notes, decisions and report/playback; capability and room/History entries only after v27 | off | Not deployed by this change | `INTERVIEW_SESSION_ENABLED=true`, additive migration v27 | ID-102 ([interviewer toolkit](INTERVIEWER_TOOLKIT.md)) | Hides feature; own data export and evaluator deletion remain independent. Keep schema and ledger |
+| `INTERVIEW_EVALUATION_PURGE_ENABLED` | Explicit bounded physical purge (max 100 expired evaluations), no scheduler | off | Not deployed by this change | Explicit operator opt-in; v27 data; documented rehearsal/owner approval | ID-102 ([retention runbook](INTERVIEWER_TOOLKIT.md#retention-runbook)) | Stops future purges; already-open atomic batch may finish. Logical 90-day expiry remains enforced |
 | `DAILY_VIDEO_ENABLED` | Consent-gated, never-recorded embedded Daily video in primary two-person rooms: `POST /api/video/room` and the `embeddedVideo` capability | off | Not deployed by this change | `DAILY_API_KEY`, `DAILY_DOMAIN=randori-circle.daily.co`; never in the local runtime | ID-98 ([embedded video](EMBEDDED_VIDEO.md)) | Safe: the capability and route disappear, live frames stop at their token expiry, the meeting link and direct call keep working. Only rate-limit counters are stored |
 | `EXERCISE_SUGGESTIONS_ENABLED` | "Attempted" markers and suggested exercises; `GET /api/exercise-suggestions` | off | On (owner) | none | ID-77 | Safe; nothing is stored |
 | `CIRCLE_HEALTH_ENABLED` | Owner-only Circle health card and `GET /api/circle/health` | off | On (observed: `circleHealth`) | `CIRCLE_MEMBERSHIP_ENABLED` | ID-78 ([circle health](CIRCLE_HEALTH.md)) | Safe; nothing is stored |

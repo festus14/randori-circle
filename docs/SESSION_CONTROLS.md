@@ -304,6 +304,28 @@ run the shared code. A run already authorized keeps its bounded lifetime.
 Not included: candidate presence in the lobby. Admission does not require the
 candidate to be connected; presence would need per-poll writes.
 
+## Private interviewer toolkit (#465)
+
+`INTERVIEWER_TOOLKIT_ENABLED=true` plus interview mode and additive migration
+27 adds a separate **Private interviewer toolkit** action to the Session panel,
+and to History for eligible past interviewers or retained evaluation owners,
+including interviews not yet scored. It captures rubric
+scores, private notes and a decision during or after the interview. It does
+not reopen terminal controls or create completion receipts. Candidate/outsider
+reads and writes are the uniform 404; no private writing enters this shared
+session-controls payload (only an evaluator/interviewer entry capability).
+
+Creation rechecks the current interviewer in the storage statement. Role
+handoff does not transfer existing evaluations: the original evaluator keeps
+read/edit access to their own writing after becoming candidate, while the new
+interviewer starts an independent evaluation. Each account sees only its own
+writing. The lazy dialog/report and fixed 90-day retention/export/deletion
+rules are in [interviewer toolkit](INTERVIEWER_TOOLKIT.md), ID-102.
+
+The terminal coordinator continues to reuse workspace/CRDT fences, never
+attendance receipts. Held controls preserve attempted re-enables until the
+lock is released. Those behaviours are unchanged by the optional toolkit.
+
 ## Alternatives considered
 
 | Option | Advantage | Why not now |

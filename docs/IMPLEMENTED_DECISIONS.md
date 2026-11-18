@@ -127,6 +127,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) | Add an interview lobby, schedule start, interviewer-owned selection and candidate edit lock | Pairing & Scheduling | Amended by [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) |
 | [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) | Show pair presence and remote cursors over the private relay, with a TTL heartbeat fallback | Pairing & Scheduling | Active |
 | [ID-101](#id-101-load-optional-page-tools-at-their-first-use-without-weakening-byte-gates) | Load optional page tools at their first use without weakening byte gates | Quality, CI & Testing | Active |
+| [ID-102](#id-102-keep-human-interview-evaluations-private-to-the-evaluator) | Keep human interview evaluations private to the evaluator | Security, Secrets & Privacy | Active |
 | [ID-103](#id-103-bound-execution-admission-and-spend-with-a-durable-retry-queue-and-pristine-runtime-snapshots) | Bound execution admission and spend with a durable retry queue and pristine runtime snapshots | Observability & Ops | Active |
 | [ID-104](#id-104-gate-typescript-and-piston-only-go-by-provider-without-runtime-installs) | Gate TypeScript and Piston-only Go by provider without runtime installs | Content & Catalogue | Active |
 ## How to add a decision
@@ -142,7 +143,7 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-105; ID-102 is reserved by #465/#484).
+   plus one (currently ID-105).
    ID-103 (#468/#483) and ID-104 (#466) are in this log.
    Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
@@ -6096,6 +6097,68 @@ Existing repository gates remain required. Revert this boundary as one change
 (the bridge, script tags and callers together) if browser behaviour regresses;
 no persisted state or provider configuration needs repair.
 
+## ID-102: Keep human interview evaluations private to the evaluator
+
+**Status: Active.** Implements #465 (epic #460) behind literal
+`INTERVIEWER_TOOLKIT_ENABLED=true`, default OFF, requiring interview mode and
+additive migration 27. ID-100 and ID-101 remain reserved by other branches.
+
+**Decision.** Store one evaluation per primary pair and evaluator account:
+four optional 1–4 rubric scores, bounded freeform notes, explicit hire/no-hire
+strength, integer CAS revision and immutable 90-day first-save deadline.
+Migration 27 owns only the new table, two indexes and two guards on it; all
+historical contracts/checksums remain untouched and no request DDL is added.
+Code at v27 stays READY on a real v26 database (`pending_additive`); routes and
+capability discovery behave as before until the owner-approved apply.
+
+Creation uses the server's current interviewer role and repeats it in SQL.
+A role swap never transfers existing writing: the original evaluator retains
+read/edit access to their own row after becoming candidate, and the new
+interviewer starts an independent row. Candidate/outsider requests to anyone
+else's report/evaluation are uniform 404. Neither shared recap/feed/chat nor
+candidate progress/history/export, presence/relay or consent-gated AI receives
+this writing. Human evaluation never invokes `api/ai.js` or relaxes its gates.
+
+The private report/playback is a sparse timeline of question/language, phase
+facts, verified runs, latest shared checkpoint and signed-v3 shared run code,
+plus the saved evaluation. It never projects private stdin, v2 private code,
+raw run payloads, chat or AI. Browser JSON download is a saved private copy,
+not a continuous recording. The entire optional UI is imported on first use
+and reuses existing form/dialog/theme CSS; no dependency or gate threshold is
+changed. History exposes an entry only for an eligible past interviewer or the
+account that owns a retained evaluation, including unscored interviews.
+
+Evaluator account deletion removes writing in the same transaction, including
+scheduled execution and restore replay. Candidate deletion keeps it with the
+candidate shown as Deleted member (freeform notes are not rewritten). Own
+writing is explicitly included in the evaluator's data export, even flag-off.
+Read visibility expires after 90 days regardless of purge configuration;
+edits never extend it, and a purged old room cannot acquire fresh writing.
+Physical purge is a disabled-by-default, explicit bounded operator operation
+(max 100 rows), with a local-file-only rehearsal CLI and no activated cron or
+provider adapter. The policy candidly discloses physical retention while
+purge is disabled and downloaded copies' separate lifetime.
+
+**Alternatives rejected.** Shared recap metadata or AI feedback would leak or
+conflate human writing and consented analysis. Browser-only notes are not
+cross-device/private-account durable. Full event sourcing would add retention
+surface and fabricate code/phase history we do not currently store. Role-owned
+rather than account-owned writing would disclose a former interviewer's notes
+on handoff. A rolling update-time TTL would silently extend sensitive data.
+
+**Verification.** Real runner v26→v27 readiness/ledger/additive/storage guards;
+endpoint and projection authorization, CAS, role-swap/racing role checks,
+flag/pending-schema behaviour, report code boundaries, lifecycle export and
+evaluator/candidate deletion, fixed retention, lazy UI and private download.
+Playwright uses the real local runtime, two isolated accounts and no toolkit
+API mocks, plus the existing lobby/controls/completion regression journeys.
+
+**Rollout.** Merging does not apply v27; production migration needs the owner's
+approval. Merge OFF, rehearse locally and use the protected migration process,
+then canary and enable. Roll back by switching the toolkit off, leaving schema
+and ledger intact. No production/provider operation or human outreach is part
+of this implementation. [Full contract and runbook](INTERVIEWER_TOOLKIT.md).
+
 ## ID-103: Bound execution admission and spend with a durable retry queue and pristine runtime snapshots
 
 **Amended by ID-104:** TypeScript/Go use this same admission flow. Paired smoke
@@ -6327,3 +6390,4 @@ Measured smoke remains four JS/Python calls plus one unpaired TypeScript call
 (five total); ordinary smoke remains 2/3 Vercel or up to 4 Piston. All claim
 windows, read-only readiness and byte thresholds remain unchanged. The requester
 gets only a fixed Go compile-failure note; empty Go stdout remains `no result`.
+

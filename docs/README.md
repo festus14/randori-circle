@@ -27,6 +27,7 @@ runtime, so it is listed separately under
 
 | Doc | What it covers |
 | --- | --- |
+| [INTERVIEWER_TOOLKIT.md](INTERVIEWER_TOOLKIT.md) | Default-off private evaluator rubric, notes, decision and report/playback; additive v27, authorization, export/deletion and fixed 90-day retention (ID-102) |
 | [UI_SHELL_ACCESSIBILITY.md](UI_SHELL_ACCESSIBILITY.md) | The accessible app shell: semantic colour roles, WCAG AA contrast, landmarks, keyboard focus and explicit loading and error states (issue #192, ID-47) |
 | [SERVER_AUTHORITATIVE_ONBOARDING.md](SERVER_AUTHORITATIVE_ONBOARDING.md) | First-run setup guidance derived from authenticated server state, not local storage (ID-52) |
 
