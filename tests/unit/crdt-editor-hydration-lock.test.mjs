@@ -18,7 +18,7 @@ function deferred(){
   return {promise,resolve,reject};
 }
 
-function harness({room=ROOM,solo=false,circlePublicId=null,queues={}}={}){
+function harness({room=ROOM,solo=false,circlePublicId=null,queues={},interview=false}={}){
   const listeners=new Map();
   const target=()=>({addEventListener(type,fn){ listeners.set(type,fn); },removeEventListener(){},dispatchEvent(){ return true; }});
   const textarea={...target(),value:'',readOnly:false,selectionStart:0,selectionEnd:0,setSelectionRange(){}};
@@ -28,6 +28,7 @@ function harness({room=ROOM,solo=false,circlePublicId=null,queues={}}={}){
   const window={
     addEventListener(){},dispatchEvent(){ return true; },
     _randori_auth:{me:{id:1}},
+    _randori_session_controls:{ended:false,controls:interview===null?null:{interviewMode:interview}},
     RandoriWorkspaceScope:{canonicalRoom:value=>/^(?:week_[1-9]\d*_pair_[1-9]\d*|circle_[1-9]\d*_publication_[1-9]\d*_group_[1-9]\d*)$/.test(value),isSolo:value=>solo&&value===room},
     _randori_circle_control:{scheduleContext:()=>({circlePublicId})},
     _randori_authorized_room:room,
@@ -63,6 +64,19 @@ test('hydration keeps the editor read-only until the canonical document is attac
   fetches[0].resolve({ok:true,status:200,json:async()=>({ok:true,revision:1,document_version:VERSION,state:emptyState()})});
   assert.equal(await activation,true);
   assert.equal(textarea.readOnly,false);
+});
+
+test('an interview expiry rejection never claims receipt-based completion in the editor status',async()=>{
+  for(const interview of [true,false,null]){
+    const {crdt,textarea,fetches,elements}=harness({interview});
+    const activation=crdt.activate();
+    await waitFor(()=>fetches.length===1);
+    fetches[0].resolve({ok:false,status:409,json:async()=>({ok:false,code:'session_completed'})});
+    assert.equal(await activation,false);
+    assert.equal(textarea.readOnly,true);
+    assert.equal(elements.codeSyncStatus.textContent,interview===false?
+      'session completed — editing closed':'interview ended — editing closed');
+  }
 });
 
 test('a failed hydration restores editability',async()=>{

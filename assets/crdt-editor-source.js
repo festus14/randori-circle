@@ -199,7 +199,11 @@ function completeIdentity(){
   if(identity) writeQueue([],identity);
   disposeDocument();
   setEditorReadOnly(true);
-  setStatus('error','session completed — editing closed');
+  // Before controls finish loading, a terminal API reply may mean expiry,
+  // not attendance. Only known peer mode or observed receipts justify "completed".
+  const completed=window._randori_session_completion?.completion?.state==='completed'
+    ||window._randori_session_controls?.controls?.interviewMode===false;
+  setStatus('error',completed?'session completed — editing closed':'interview ended — editing closed');
 }
 
 function currentCode(){

@@ -15489,10 +15489,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(Number(event.detail?.userId||0)!==state.actorId) reset();
   });
   document.addEventListener('visibilitychange',()=>{
-    if(document.visibilityState==='visible'&&state.room&&window._randori_session_controls?.ended!==true) load(state.room);
-    else if(document.visibilityState!=='visible'){
+    if(document.visibilityState==='visible'&&state.room){
+      if(window._randori_session_controls?.ended===true) render();
+      else load(state.room);
+    }else if(document.visibilityState!=='visible'){
       state.epoch+=1; state.controller?.abort(); state.controller=null; state.busy=false;
       if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
+      // An aborted operation no longer owns the disabled buttons or aria-busy.
+      // render() keeps automatic polling off while hidden or interview-ended.
+      render();
     }
   });
   document.addEventListener('click',event=>{

@@ -230,6 +230,47 @@ test('interview expiry converges for both participants and a late browser withou
   }finally{ await candidate.close(); await interviewer.close(); await late.close(); }
 });
 
+test('terminal wrap-up recovers from a hidden tab abort without restarting polling',async({page})=>{
+  const store=new ControlsStore(); store.interviewMode=true; store.terminal=true; store.remainingMs=0;
+  await openWorkspace(page,store,1);
+  const action=page.locator('#sessionCompletionAction'),refresh=page.locator('#sessionCompletionRefresh');
+  await expect(action).toBeEnabled(); await expect(refresh).toBeEnabled();
+  let release=()=>{},startedResolve=()=>{},finishedResolve=()=>{};
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  const started=new Promise<void>(resolve=>{startedResolve=resolve;});
+  const finished=new Promise<void>(resolve=>{finishedResolve=resolve;});
+  const requests:string[]=[];
+  page.on('request',request=>{if(/\/api\/session-completion(?:\?|$)/.test(request.url()))requests.push(request.method());});
+  await page.route(/\/api\/session-completion(?:\?.*)?$/,async route=>{
+    if(route.request().method()!=='POST'){await route.fallback();return;}
+    startedResolve(); await gate;
+    try{await route.fulfill({contentType:'application/json',body:JSON.stringify({ok:true,room_id:roomId,completion:{
+      state:'awaiting_participants',viewer_confirmed:true,confirmed_count:1,required_count:2,
+      version:'d'.repeat(64),completed_at:null,
+    }})});}catch{}finally{finishedResolve();}
+  });
+  try{
+    await action.click(); await started;
+    await expect(page.locator('#sessionCompletionCard')).toHaveAttribute('aria-busy','true');
+    await page.evaluate(()=>{
+      Object.defineProperty(document,'visibilityState',{configurable:true,value:'hidden'});
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.evaluate(()=>{
+      Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await expect(page.locator('#sessionCompletionCard')).toHaveAttribute('aria-busy','false');
+    await expect(action).toBeEnabled(); await expect(refresh).toBeEnabled();
+    release(); await finished;
+    await expect(action,'the aborted response cannot change the receipt display').toHaveText('Confirm session completed');
+    const count=requests.length; await page.waitForTimeout(5500);
+    expect(requests).toHaveLength(count);
+    await refresh.click();
+    await expect(action).toBeEnabled();
+  }finally{release();}
+});
+
 test('initial loading and writes remain explicitly blocking',async({page})=>{
   const store=new ControlsStore(); await openWorkspace(page,store,1);
   await page.evaluate(()=>window._randori_session_controls?.reset());
