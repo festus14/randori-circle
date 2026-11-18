@@ -17,6 +17,7 @@
 // messages, and nothing here throws: every failure maps to a category.
 import { performance } from 'node:perf_hooks';
 import { executeProgram, resolveExecutionProvider } from './_execution.js';
+import { sanitizeStartupPair, warmMeasurementEnabled, warmMeasurementCohort, readStartupMeasurement } from './_execution-measurement.js';
 
 export const EXECUTION_SMOKE_LANGUAGES=Object.freeze(['javascript','python']);
 export const EXECUTION_SMOKE_STATUSES=Object.freeze(['ok','provider_error','timeout','misconfigured','throttled']);
@@ -110,22 +111,34 @@ function allPass(languages){
   return EXECUTION_SMOKE_LANGUAGES.every(language=>executionSmokeLanguagePasses(languages[language]));
 }
 
-async function smokeLanguage(language,{env,execute,monotonic,setTimer,clearTimer,deadlineMs}){
+async function smokeLanguage(language,{env,execute,monotonic,setTimer,clearTimer,deadlineMs,db}){
   const started=monotonic();
-  let status;
+  let status, startup=null, expired=false;
   let timer;
+  const measurement=warmMeasurementEnabled(env);
   try{
-    const attempt=Promise.resolve()
-      .then(()=>execute({language,source:EXECUTION_SMOKE_PROGRAMS[language]},{env}))
-      .then(classifyExecutionResult,classifyExecutionError);
-    const deadline=new Promise(resolve=>{ timer=setTimer(()=>resolve('timeout'),deadlineMs); });
+    const attempt=Promise.resolve().then(async()=>{
+      const options=env.EXECUTION_QUEUE_ENABLED==='true'
+        ?{env,db,executionContext:{ops:true,lane:`smoke-${language}`,operation:`smoke:${language}`}}:{env};
+      const request={language,source:EXECUTION_SMOKE_PROGRAMS[language]};
+      if(!measurement) return classifyExecutionResult(await execute(request,options));
+      const cold=await execute(request,{...options,cold:true});
+      if(classifyExecutionResult(cold)!=='ok') return classifyExecutionResult(cold);
+      if(expired) return 'timeout';
+      const warm=await execute(request,options);
+      if(cold.startup?.mode==='cold'&&warm.startup?.mode==='snapshot'){
+        startup=sanitizeStartupPair({coldMs:cold.startup.createMs,snapshotMs:warm.startup.createMs});
+      }
+      return startup?classifyExecutionResult(warm):'provider_error';
+    }).catch(classifyExecutionError);
+    const deadline=new Promise(resolve=>{ timer=setTimer(()=>{expired=true;resolve('timeout');},measurement?Math.max(90000,deadlineMs):deadlineMs); });
     status=await Promise.race([attempt,deadline]);
   }catch{
     status='provider_error';
   }finally{
     try{ clearTimer(timer); }catch{}
   }
-  return {status,durationMs:elapsed(started,monotonic())};
+  return {status,durationMs:elapsed(started,monotonic()),...(measurement?{startup:status==='ok'?startup:null}:{})};
 }
 
 /**
@@ -154,12 +167,12 @@ export async function claimExecutionSmoke(db,trigger){
 }
 
 /** Record a completed result (statuses and durations only), linked to its claim. Never throws. */
-export async function recordExecutionSmoke(db,claimId,languages){
+export async function recordExecutionSmoke(db,claimId,languages,{cohort=null}={}){
   try{
     await db.execute({
       sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at)
         VALUES (?,?,?,?,?,NULL,NULL,NULL,NULL,datetime('now'))`,
-      args:[allPass(languages)?'info':'warn',LOG_SOURCE,RESULT_EVENT,String(claimId),JSON.stringify(languages)],
+      args:[allPass(languages)?'info':'warn',LOG_SOURCE,RESULT_EVENT,String(claimId),JSON.stringify(cohort?{...languages,_warmCohort:cohort}:languages)],
     });
     return true;
   }catch{
@@ -174,7 +187,7 @@ function storedLanguages(metaJson){
   return Object.fromEntries(EXECUTION_SMOKE_LANGUAGES.map(language=>{
     const entry=record(value[language]);
     return [language,entry&&RECORDED_STATUSES.has(entry.status)
-      ?{status:entry.status,durationMs:boundedDuration(entry.durationMs)}:null];
+      ?{status:entry.status,durationMs:boundedDuration(entry.durationMs),...(Object.hasOwn(entry,'startup')?{startup:sanitizeStartupPair(entry.startup)}:{})}:null];
   }));
 }
 
@@ -280,12 +293,19 @@ export async function runExecutionSmoke({trigger,getDb,env=process.env,execute=e
     }catch{
       return UNAVAILABLE;
     }
-    if(!claimId) return {status:200,body:throttledExecutionSmokeBody(latest)};
-    const options={env,execute,monotonic,setTimer,clearTimer,deadlineMs};
+    let cohort;
+    try{cohort=warmMeasurementCohort(env);}catch{
+      return {status:200,body:{ok:false,checkedAt:isoNow(clock),languages:Object.fromEntries(
+        EXECUTION_SMOKE_LANGUAGES.map(language=>[language,{status:'misconfigured',durationMs:null}]))}};
+    }
+    if(!claimId) return {status:200,body:{...throttledExecutionSmokeBody(latest),
+      ...(cohort?{coldStart:await readStartupMeasurement(db,env)}:{})}};
+    const options={env,execute,monotonic,setTimer,clearTimer,deadlineMs,db};
     const entries=await Promise.all(EXECUTION_SMOKE_LANGUAGES.map(language=>smokeLanguage(language,options)));
     const languages=Object.fromEntries(EXECUTION_SMOKE_LANGUAGES.map((language,index)=>[language,entries[index]]));
-    await recordExecutionSmoke(db,claimId,languages);
-    return {status:200,body:{ok:allPass(languages),checkedAt:isoNow(clock),languages}};
+    await recordExecutionSmoke(db,claimId,languages,{cohort});
+    return {status:200,body:{ok:allPass(languages),checkedAt:isoNow(clock),languages,
+      ...(cohort?{coldStart:await readStartupMeasurement(db,env)}:{})}};
   }catch{
     return UNAVAILABLE;
   }

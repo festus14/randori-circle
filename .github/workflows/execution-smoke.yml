@@ -7,6 +7,13 @@ name: execution-smoke
 # `schedule` run per 20 hours and one `deploy` run per 24 hours); this job
 # fails unless each language is ok, or throttled with a passing cached result.
 #
+# ID-103: when EXECUTION_QUEUE_ENABLED=true and server-side
+# EXECUTION_WARM_MEASURE_ENABLED=true, the same throttled claim runs one cold
+# and one snapshot sample per language (four creations, not two). The assessor
+# reports aggregate create-latency p50/p95 for the current snapshot cohort and
+# fails a regression once >=20 pairs/language exist. No new workflow secret,
+# unbounded load test, client-supplied program, or provider call outside the API.
+#
 # Only Vercel's own Production deployments trigger it. GitHub records a
 # "production" deployment for every job that uses that environment (this one
 # included), and expression string comparison ignores case. The creator check

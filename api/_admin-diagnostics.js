@@ -21,6 +21,9 @@ import {
 import { APP_LOG_RETENTION_DAYS } from './_app-log-retention.js';
 import { parseEmailProviderReason } from './_email-provider-reason.js';
 import { resolveExecutionProvider } from './_execution.js';
+import { executionQueueEnabled, readExecutionQueueHealth } from './_execution-queue.js';
+import { executionWarmStatus } from './_execution-warm.js';
+import { readStartupMeasurement } from './_execution-measurement.js';
 import { latestExecutionSmokeLanguages, readLatestExecutionSmoke } from './_execution-smoke.js';
 import {
   coalescedDatabaseReadiness,
@@ -413,6 +416,7 @@ async function readExecutionCard(db,nowMs,env){
     status,
     category,
     ...configuration,
+    ...(executionQueueEnabled(env) ? { queue: await readExecutionQueueHealth(db,{env}), warm: executionWarmStatus(env), coldStart: await readStartupMeasurement(db,env) } : {}),
     recent24h:Object.freeze(recent24h),
     lastOutcome,
     evidence:evidence(nowMs,latestAt,EXECUTION_EVIDENCE_MAX_AGE_MS),

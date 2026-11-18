@@ -1,6 +1,8 @@
 import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth, verifySignedRequestAuth } from './_db.js';
 import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
 import { buildExecutionHarness, executePracticePrograms, ExecutionInputError, ExecutionUnavailableError, executionRuntimeVersion, normalizeRunnerResults, resolveExecutionProvider, validateExecutionStdin } from './_execution.js';
+import { primaryExecutionContext } from './_execution-context.js';
+import { executionQueueEnabled, ExecutionBusyError, sendExecutionBusy } from './_execution-queue.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
 import { getPairingPublication } from './_pairing-publication.js';
@@ -2734,11 +2736,13 @@ async function handleExecute(req,res){
   if(!userId) return res.status(401).json({error:'authentication required'});
   const executionKey=String(userId);
   if(__activeExecutionsByUser.has(executionKey)){
+    if(executionQueueEnabled()) return sendExecutionBusy(res,new ExecutionBusyError('already_running'));
     return res.status(429).json({error:'an execution is already in progress',retry_after_seconds:1});
   }
   __activeExecutionsByUser.add(executionKey);
   let leaseId=null;
   try{
+    if(!executionQueueEnabled()){
     leaseId=await acquireExecutionLease(db,userId,req,{question_slug:questionSlug,question_version:questionVersion,language:executionLanguage});
     if(!leaseId){
       __activeExecutionsByUser.delete(executionKey);
@@ -2758,6 +2762,7 @@ async function handleExecute(req,res){
       __activeExecutionsByUser.delete(executionKey);
       return res.status(429).json({error:'execution rate limit exceeded',retry_after_seconds:60});
     }
+    }
   }catch(e){
     await releaseExecutionLease(db,userId,leaseId,req);
     leaseId=null;
@@ -2767,7 +2772,9 @@ async function handleExecute(req,res){
   }
 
   try{
-    const {run,custom} = await executePracticePrograms({language:executionLanguage,harness,code,stdin});
+    const executionContext=await primaryExecutionContext(db,{userId,workspace:req.workspace,weekId,pairId,
+      operation:JSON.stringify([questionSlug,questionVersion,weekId,pairId,canonicalDocument?.version])});
+    const {run,custom} = await executePracticePrograms({language:executionLanguage,harness,code,stdin},{db,executionContext});
     const stdout = run.stdout;
     const stderr = run.stderr;
     const results=normalizeRunnerResults(stdout,resultPrefix,testSuite.tests);
@@ -2890,6 +2897,7 @@ async function handleExecute(req,res){
       ...(custom === undefined ? {} : { custom_run:custom }),
     });
   }catch(e){
+    if(e instanceof ExecutionBusyError) return sendExecutionBusy(res,e);
     const unavailable=e instanceof ExecutionUnavailableError;
     try{ await logServer('error',unavailable?'execute_unavailable':'execute_fail',`${executionProvider.provider} ${executionLanguage} ${unavailable?'unavailable':'request failed'}`,{provider:executionProvider.provider,language:executionLanguage,reason:unavailable?'execution_unavailable':'execution_failed'},{req,source:'runner',route:req.url,skipEnsure:true}); }catch{}
     if(unavailable) return res.status(503).json(executionUnavailableBody(executionLanguage));

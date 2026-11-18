@@ -10,6 +10,7 @@
 // response body, the URL, or the secret. Exit codes: 0 healthy, 1 alert.
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { sanitizeStartupMeasurement } from '../api/_execution-measurement.js';
 
 export const EXECUTION_SMOKE_FORMAT='randori.execution-smoke.v1';
 export const EXECUTION_SMOKE_PATH='/api/cron/execution-smoke';
@@ -77,8 +78,11 @@ export function assessExecutionSmoke(value){
     ||(!throttled&&body.checkedAt===null)){
     return {ok:false,category:'malformed_response',languages:null,checkedAt:null,ageSeconds:null};
   }
-  return {ok:pass,category:pass?null:'execution_failed',languages,checkedAt:body.checkedAt,
-    ageSeconds:throttled?ageSeconds:null};
+  const coldStart = body.coldStart === undefined ? undefined : sanitizeStartupMeasurement(body.coldStart);
+  if(coldStart === null) return {ok:false,category:'malformed_response',languages:null,checkedAt:null,ageSeconds:null};
+  const regression = coldStart && Object.values(coldStart.languages).some(entry=>entry.improved === false);
+  return {ok:pass&&!regression,category:!pass?'execution_failed':regression?'warm_latency_regression':null,languages,checkedAt:body.checkedAt,
+    ageSeconds:throttled?ageSeconds:null,...(coldStart?{coldStart}:{})};
 }
 
 async function readBoundedBody(response){
@@ -143,9 +147,9 @@ export async function fetchExecutionSmoke(environment,{fetchImpl=fetch,setTimer=
   }
 }
 
-function result({ok,category,languages=null,checkedAt=null,ageSeconds=null}){
+function result({ok,category,languages=null,checkedAt=null,ageSeconds=null,coldStart}){
   return Object.freeze({ok,kind:'execution-smoke',format:EXECUTION_SMOKE_FORMAT,
-    status:ok?'healthy':'alert',alert:!ok,category,checkedAt,ageSeconds,languages});
+    status:ok?'healthy':'alert',alert:!ok,category,checkedAt,ageSeconds,languages,...(coldStart?{coldStart}:{})});
 }
 
 function cachedNotice(outcome){

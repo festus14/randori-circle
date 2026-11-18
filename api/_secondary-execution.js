@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { normalizeMessageTimestamp } from './_messages.js';
 import { createEvaluationSuite, listPublicExercises } from './_catalog.js';
 import { buildExecutionHarness, executePracticePrograms, executionRuntimeVersion, normalizeRunnerResults, resolveExecutionProvider, validateExecutionStdin, ExecutionUnavailableError } from './_execution.js';
+import { executionQueueEnabled } from './_execution-queue.js';
 import { acquireExecutionLease, releaseExecutionLease, signRunAttestation, verifyRunAttestation } from './data.js';
 import { accessStatement, hash, OWNER_COLUMNS, OWNER_SELECT, readSecondaryCompletion, readSecondaryDocument, SecondaryWorkspaceConflictError, SecondaryWorkspaceInputError } from './_secondary-workspace.js';
 
@@ -49,14 +50,18 @@ export async function executeSecondaryProgram(db,room,req,key){
   const provider=resolveExecutionProvider();if(!provider.configured)throw new ExecutionUnavailableError('code execution is temporarily unavailable');
   let leaseId=null;
   try{
+    if(!executionQueueEnabled()){
     leaseId=await acquireExecutionLease(db,viewer,req,{question_slug:slug,question_version:questionVersion,language});
     if(!leaseId)throw new SecondaryWorkspaceInputError('an execution is already in progress',429);
     const rate=await db.batch([{
       sql:`INSERT INTO app_logs(level,source,event,message,user_id,created_at) VALUES('info','runner','execute_attempt','execution requested',?,datetime('now'))`,args:[viewer],
     },{sql:`SELECT COUNT(*) AS count FROM app_logs WHERE user_id=? AND source='runner' AND event='execute_attempt' AND datetime(created_at)>=datetime('now','-1 minute')`,args:[viewer]}],'write');
     if(Number(rate[1].rows[0].count)>10)throw new SecondaryWorkspaceInputError('execution rate limit exceeded',429);
+    }
     const prefix=`__RANDORI_RESULT_${randomBytes(16).toString('hex')}__:`,started=Date.now();
-    const {run,custom}=await executePracticePrograms({language,harness:buildExecutionHarness(language,code,suite,prefix),code,stdin});
+    const {run,custom}=await executePracticePrograms({language,harness:buildExecutionHarness(language,code,suite,prefix),code,stdin},
+      {db,executionContext:{userId:viewer,circleId:room.circleId,interview:false,
+        operation:JSON.stringify([room.roomId,slug,questionVersion,canonical?.version])}});
     const results=normalizeRunnerResults(run.stdout,prefix,suite.tests),passed=results.filter(result=>result.pass===true).length,total=suite.tests.length,duration=Date.now()-started;
     const fields={circleId:room.circleId,publicationId:room.publicationId,groupId:room.groupId,userId:viewer,
       questionSlug:slug,questionVersion,language,codeHash:hash(code),documentRevision:canonical?.revision??null,
