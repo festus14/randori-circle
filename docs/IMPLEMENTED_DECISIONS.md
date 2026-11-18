@@ -124,7 +124,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-96](#id-96-relay-pair-code-updates-through-private-supabase-channels-without-changing-durable-authority) | Relay pair code updates through private Supabase channels without changing durable authority | Pairing & Scheduling | Amended by [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) and [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) |
 | [ID-97](#id-97-curate-original-interview-kits-as-versioned-catalogue-metadata) | Curate original interview kits as versioned catalogue metadata | Content & Catalogue | Active |
 | [ID-98](#id-98-embed-consent-gated-daily-video-in-primary-pair-rooms-behind-a-flag) | Embed consent-gated Daily video in primary pair rooms, behind a flag | Pairing & Scheduling | Active |
-| [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) | Add an interview lobby, schedule start, interviewer-owned selection and candidate edit lock | Pairing & Scheduling | Active |
+| [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) | Add an interview lobby, schedule start, interviewer-owned selection and candidate edit lock | Pairing & Scheduling | Amended by [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) |
 | [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) | Show pair presence and remote cursors over the private relay, with a TTL heartbeat fallback | Pairing & Scheduling | Active |
 ## How to add a decision
 
@@ -5811,6 +5811,10 @@ Setup and canary steps: [embedded video](EMBEDDED_VIDEO.md#operator-setup).
 
 ## ID-99: Add an interview lobby, schedule start, interviewer-owned selection and candidate edit lock
 
+**Amended by ID-100:** display-only Yjs awareness (`y-awareness`) is exempt
+from the one-way relay rule, and a lobby or locked candidate may report
+room-scoped presence over HTTPS (no relay token, document or cursor).
+
 **Amends ID-95 and ID-96.** Status: Active. Completes #464 (epic #460) behind
 the existing `INTERVIEW_SESSION_ENABLED` flag; additive migration 26
 (`interview-lobby-and-edit-lock`). Rebased onto main `705756d`, which includes
@@ -5915,68 +5919,95 @@ ID-95 behaviour. Never drop the table or edit the ledger.
 ## ID-100: Show pair presence and remote cursors over the private relay, with a TTL heartbeat fallback
 
 Status: implemented behind `PRESENCE_ENABLED=false` by default; issue #462, part
-of real-time mock-interview epic #460. Built on main `0a99cf4` (ID-96 relay,
-ID-95 interview controls). ID-98 (open PR #476) and ID-99 (#464 lobby branch)
-are reserved by parallel PRs; renumber at merge time if needed.
+of real-time mock-interview epic #460. Rebased onto main `929cad6`, which
+includes ID-98 (Daily video, #476) and ID-99 (interview lobby and edit lock,
+#477).
 
-**Amends ID-96:** adds a second broadcast event to the private relay. HTTPS
-documents, polling, acknowledgement and Run are unchanged.
+**Amends ID-96 and ID-99:** adds a second, display-only broadcast event to the
+private relay, exempt from ID-99's one-way `y-update` rule. HTTPS documents,
+polling, acknowledgement, Run and every ID-99 edit/relay-token fence are
+unchanged.
 
 **Context.** In a live interview the interviewer cannot see whether the
 candidate is in the room or where they are typing. Presence must be cheap,
 authenticated, room-scoped and self-expiring, without a new provider, Supabase
-Presence, Postgres change or an unbounded table.
+Presence, Postgres change or an unbounded table. ID-99 rejected a "candidate
+waiting" heartbeat as per-poll writes; here writes are bounded (one keyed row
+per participant, renewed at most every 4 s, budgeted per account).
 
 **Decision.**
 
 - Carry pinned `y-protocols@1.0.6` awareness as `y-awareness` on the existing
   private channel/token. Frames ≤ 1 KiB, 10/s each way (independent of
-  `y-update`); fully decoded before apply; exact state schema (`v`, `seat`,
-  `status`, `sel` of root-text relative positions); ≤ 4 remote peers; no own id;
-  newer clocks only renew. 200 ms coalescing, 5 s renewal, 15 s TTL on
+  `y-update`); fully decoded before apply; exact state schema v2 (`v`, `seat`,
+  `status` of `active`/`idle`/`locked`, `sel` of root-text relative positions,
+  never with `locked`); ≤ 4 remote peers counted across a whole frame; no own
+  id; newer clocks only renew. 200 ms coalescing, 5 s renewal, 15 s TTL on
   injectable timers, idle after 60 s, clear on disconnect, one final departure
   frame on every teardown fence. Policies are topic-scoped and event-agnostic,
   so `supabase/realtime-authorization*.sql` is unchanged.
+- Interview mode: the interviewer accepts inbound `y-awareness` while still
+  dropping every inbound `y-update`; the admitted candidate broadcasts
+  `y-awareness` but never `y-update`. Relay frames carry no authenticated
+  sender, so **forged awareness is cosmetic only**: at worst a wrong cursor or
+  status on the interviewer's screen, never code, persistence or Run. A locked
+  candidate publishes `locked` without a selection; access changes (admission,
+  lock, role swap) drop all remote awareness at once and re-announce.
 - Fallback and seat authority: grouped, same-origin
-  `POST /api/code-document/presence` reusing the relay's live-pair
-  authorization (`authorizeRelayPair`, factored out of the token route). One
+  `POST /api/code-document/presence` with body `{room_id, state}`, reusing the
+  relay route's circle/legacy checks with a room-level pair read
+  (`readPresenceAuthorization`): two-human primary pair, no unanimous
+  completion, open interview — but not ID-99's candidate edit/relay fence, so a
+  lobby or locked candidate can still report "online" (and the interviewer
+  sees "waiting in the lobby"); interview end stops presence for both. One
   HMAC-keyed row per (room, participant) in existing `auth_rate_limits`,
   DB-clock `expires_at` +20 s, renewals under 4 s are no-op writes, partner read
   by key. A keyed per-account budget (30/min, 429 + `Retry-After`) precedes any
   pair read, `leave` included. Stale partner rows are deleted by exact key; a
   0.5% sweep is bounded to 32 expired rows. `leave` accepts only canonical
-  primary rooms and deletes only the caller's row.
-  `join` additionally returns the partner's already-visible display name and
-  colour for direct `/join` links. **No migration**, no request DDL.
+  primary rooms and deletes only the caller's row. `join` additionally returns
+  the partner's already-visible display name and colour for direct `/join`
+  links. **No migration**, no request DDL.
+- Room presence outlives a document: same-room re-activation swaps only the
+  awareness session (no HTTPS leave, no flicker). An awareness departure means
+  "left this document's channel"; an HTTPS re-check one second later decides
+  between "not in the room" and "online".
 - UI: plain-text room-bar status with connection health; polite live region for
   joins/leaves only; Monaco decorations and a plain-editor mirror overlay that
   never move local caret, selection, focus or scroll; one animation-frame render
-  per burst of events; injected style and live region removed on teardown. Cursors need the relay;
-  polling shows "online" only. Styles injected by the lazy bundle.
+  per burst of events; injected style and live region removed on teardown.
+  Cursors need the relay; polling shows "online" only.
 
-**Privacy.** No cursor, code, name or email in the HTTPS body, stored row or
-logs; awareness carries only seat, activity and relative positions, in memory
-and transit. The privacy policy discloses both (same 18 November 2026 date).
+**Privacy.** No cursor, code, exercise, name or email in the HTTPS body, stored
+row or logs; awareness carries only seat, activity and relative positions, in
+memory and transit. The privacy policy discloses both (same 18 November 2026
+date as ID-98).
 
-**Byte budget.** The CRDT bundle grows from 112,629 to 132,093 bytes
-(awareness, lib0 decoding, presence/UI); JS total 1,293,061 of the unchanged
-1,450,000-byte gate. CSS slices are unchanged; initial JS grows only by the
-168-byte `index.html` label guard (989,161 of 1,000,000).
+**Byte budget.** The CRDT bundle grows from main's 113,867 to 134,909
+bytes (awareness, lib0 decoding, presence/UI); JS total 1,324,805 of the
+unchanged 1,450,000-byte gate. CSS slices are unchanged; initial JS grows only
+by the 168-byte `index.html` label guard (998,341 of 1,000,000).
 
 **Alternatives.** Supabase Presence (provider-side state, another extension to
 authorize, SDK-shaped protocol) and a dedicated Turso table (migration, growth
 management) were rejected for the keyed TTL row. Persisting cursors, or sending
 names inside awareness, was rejected on privacy grounds. Rendering via
 y-monaco's built-in awareness was rejected: it leaks editor listeners on rebind
-and needs per-client CSS classes.
+and needs per-client CSS classes. Keeping awareness one-way like `y-update`
+would hide exactly the candidate cursor the interviewer needs; gating it on the
+edit lock server-side would need an authenticated relay sender.
 
-**Verification.** Unit: awareness schema/bounds/rates/replay/TTL/idle,
+**Verification.** Unit: awareness schema v2/bounds/rates/replay/TTL/idle/lock,
 relay envelope and caps, fallback cadence/backoff/expiry, server flag,
-authorization, DB-clock expiry, write throttle, leave, view announcements and
-non-intrusive Monaco/overlay rendering, and the shipped bundle end to end. A
-two-context Playwright journey with a mocked relay socket covers join, cursor
-and selection, hidden-tab leave, rejoin and silent-crash TTL expiry, plus the
-polling-only fallback. Provider canary of `y-awareness` is an operator gate.
+room-level authorization for lobby/locked candidates and interview end, budget,
+DB-clock expiry, write throttle, leave, view announcements and non-intrusive
+Monaco/overlay rendering, and the shipped bundle end to end (including
+interview direction, lock and lobby). Playwright: the two-context presence
+journey (join, cursor, hidden-tab leave, rejoin, silent-crash TTL expiry,
+polling-only fallback) and an interview journey where the interviewer sees the
+waiting candidate, then the admitted candidate's cursor via awareness while a
+candidate `y-update` is never sent and a forged one is dropped, then "editing
+paused". Provider canary of `y-awareness` is an operator gate.
 
 **Rollout and recovery.** Merge with the flag off. Enable after the relay
 canary, then set `PRESENCE_ENABLED=true` and redeploy. Rollback: unset and

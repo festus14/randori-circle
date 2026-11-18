@@ -126,7 +126,8 @@ runtime configuration restricts each connection to the configured project.
 
 `PRESENCE_ENABLED=true` (literal) with the existing `JWT_SECRET` (at least 32
 bytes) advertises `presence` in `/api/auth/capabilities` and `presence: true`
-on primary document GETs. Browsers then send one authenticated, same-origin
+on primary document GETs (and on a lobby candidate's `409 interview_lobby`
+reply, so the interviewer can see a waiting candidate). Browsers then send one authenticated, same-origin
 `POST /api/code-document/presence` heartbeat about every five seconds (fifteen
 while the relay is live). The server keeps one HMAC-keyed row per room and
 participant in the existing `auth_rate_limits` table that expires 20 seconds

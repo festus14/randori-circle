@@ -209,8 +209,9 @@ envelope is exactly `{sender: <document-session nonce>, awareness: <canonical
 base64>}`; frames are at most 1 KiB and capped at 10/s in each direction,
 independently of `y-update`. A received update is fully decoded before it
 touches the live awareness: one to four entries, unique uint32 client ids, never
-our own id, and each non-null state exactly `{v:1, seat:'a'|'b',
-status:'active'|'idle', sel:null|{anchor,head}}` where anchors are
+our own id, and each non-null state exactly `{v:2, seat:'a'|'b',
+status:'active'|'idle'|'locked', sel:null|{anchor,head}}` (a `locked` state
+never has a selection; v1 is refused) where anchors are
 `Y.relativePositionToJSON` positions on the root `code` text (no names, emails,
 colours, code or free text). Unknown clients must arrive with a state, at most
 four remote peers are tracked, and forgotten peers' clocks are dropped after
@@ -226,12 +227,15 @@ is never shown as the partner. The seat is learned from the server, below.
 
 **Polling fallback (relay off or unavailable).** `POST
 /api/code-document/presence` is grouped in `api/code-document.js`, strictly
-same-origin and `private, no-store`, and reuses the relay token's live-pair
-authority (`authorizeRelayPair`: legacy availability, primary circle context,
-exact two-participant document snapshot, no unanimous completion and, with
-`INTERVIEW_SESSION_ENABLED`, the DB-time timer-open fence). The body is the
-exact document identity of a canonical primary room (`week_N_pair_M`) plus
-`state: join|online|leave`. Every state first spends a per-account budget of
+same-origin and `private, no-store`, and reuses the relay token's checks
+(`authorizeRelayPair`: legacy availability and primary circle context) with a
+**room-level** pair read, `readPresenceAuthorization`: the same source-tagged
+two-human pair access as the document, no unanimous completion and, with
+`INTERVIEW_SESSION_ENABLED`, the ID-95/ID-99 open-interview fence. It needs no
+document and deliberately skips ID-99's candidate edit/relay fence (see
+interview mode below). The body is exactly `{room_id, state}` for a canonical
+primary room (`week_N_pair_M`), `state: join|online|leave`; no exercise,
+language, cursor or code is ever sent. Every state first spends a per-account budget of
 30 requests per database-clock minute (a keyed row in the same table; 429 with
 `Retry-After`), so a hostile client is capped before any pair read. The
 normal cadence is 12 per minute. The server then upserts one
@@ -252,10 +256,14 @@ backs off, and a last "online" result degrades to unknown after its TTL.
 
 **UI.** The room bar (`#presenceText`) reads "Two is here · line 3 · live",
 "Two is here · idle · live", "Two online · polling", or "Two not in the room ·
-reconnecting". Only joins/leaves are announced, through a polite `role=status`
-live region on `<body>` (the room-bar chip is hidden on phones). An explicit
-awareness departure shows "not in the room" until a later HTTPS beat confirms
-otherwise. Monaco renders the partner's selection and caret as decorations with
+reconnecting"; in interview mode the interviewer also sees "Two is waiting in
+the lobby" and "· editing paused". Only joins/leaves are announced, through a
+polite `role=status` live region on `<body>` (the room-bar chip is hidden on
+phones). An explicit awareness departure means the partner left *this
+document's channel* (tab hidden, sign-out, or another exercise or language):
+the cursor disappears at once and an HTTPS re-check one second later (after the
+partner's keepalive `leave`) decides between "not in the room" and "online".
+Monaco renders the partner's selection and caret as decorations with
 the partner's existing colour; the plain editor gets an `aria-hidden` mirror
 overlay, positioned against the textarea's own parent only while it exists.
 Neither moves the local caret, selection, focus or scroll. Bursts of scroll,
@@ -264,10 +272,32 @@ Styles are injected by the lazy CRDT bundle (the initial CSS budget is
 unchanged) and removed, with the live region, when presence stops.
 Cursor rendering needs the relay; on polling only "online" is shown.
 
-**Lifecycle and privacy.** Every fence that disposes the document — terminal
-completion or `randori:interview-ended`, hidden tab, sign-out, room/exercise/
-language/account/circle change, offline, flag withdrawal and `pagehide` — stops
-presence first: it sends one final null awareness frame (allowed past the
+**Interview mode (#464, ID-99).** Awareness is display-only and never touches
+the document, so it is exempt from ID-99's one-way `y-update` rule: the
+interviewer's browser still drops every inbound `y-update` but accepts inbound
+`y-awareness`, and the admitted, unlocked candidate (who holds a relay token)
+still never broadcasts `y-update` but does broadcast `y-awareness`. That is the
+point of #462: the interviewer sees where the candidate is looking and typing.
+Relay frames carry no authenticated sender, so a forged awareness frame from
+someone holding a room token can only move a cosmetic cursor or status; it
+cannot change code, persistence, acknowledgement or Run. A candidate whose
+editing is paused publishes `status: 'locked'` with no selection (restored on
+unlock); the candidate's relay token is refused at its 90-second renewal anyway,
+and the interviewer's own controls also label the candidate "editing paused".
+A lobby candidate cannot read the document or get a relay token, but the
+lobby `409 interview_lobby` reply carries `presence: true` when the flag is on
+and the browser then reports room presence over HTTPS only (online/offline, no
+cursor), so the interviewer sees the candidate waiting. Admission, a lock change
+or a role swap (`randori:interview-access`) drops every remote awareness state
+at once and re-announces, so nothing stale lingers for the 15-second TTL.
+
+**Lifecycle and privacy.** Room presence outlives a document: a same-room
+re-activation (another exercise or language, admission from the lobby) swaps
+only the awareness session and editor bindings, with no HTTPS `leave`, so the
+partner sees no leave/join flicker. Every other fence that disposes the
+document — terminal completion or `randori:interview-ended`, hidden tab,
+sign-out, room/account/circle change, offline, flag withdrawal and `pagehide` —
+stops presence first: it sends one final null awareness frame (allowed past the
 sender cap and the already-bumped epoch, never after `stop()`) and a keepalive
 `leave`. Nothing about presence is logged or persisted besides the keyed
 20-second row; cursor positions exist only in memory and in transit. Supabase
