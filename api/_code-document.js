@@ -185,10 +185,15 @@ class InterviewEndedError extends Error{}
 class CandidateEditingClosedError extends Error{}
 
 // Interview lobby (#464): the candidate cannot read the interviewer's prepared
-// code before admission, whether or not a document exists yet.
-async function candidateInLobby(db,mode,viewerId,identity){
+// code before admission, whether or not a document exists yet. In lobby mode
+// the realtime relay is one-way (ID-96 + ID-99): the interviewer only sends and
+// never applies relayed bytes (any of which may be candidate-origin); the
+// candidate only receives and never broadcasts.
+async function lobbyAccess(db,mode,viewerId,identity){
   const gate=await readInterviewGate(db,mode,identity);
-  return !!gate&&!gate.live&&!gate.ended&&gate.candidateUserId===viewerId;
+  if(!gate) return {lobby:false,relayDirection:null};
+  const candidate=gate.candidateUserId===viewerId;
+  return {lobby:candidate&&!gate.live&&!gate.ended,relayDirection:candidate?'receive':'send'};
 }
 
 // A failed storage-time fence must roll back the whole transaction, including
@@ -527,7 +532,8 @@ async function readUnchangedCodeDocument(db,viewerId,identity,afterRevision,mode
     if(await interviewTimerEnded(transaction,authorization.pair,mode)){
       await finish(transaction,'rollback'); finished=true; return {done:true,result:{terminal:true}};
     }
-    if(await candidateInLobby(transaction,mode,viewerId,identity)){
+    const access=await lobbyAccess(transaction,mode,viewerId,identity);
+    if(access.lobby){
       await finish(transaction,'rollback'); finished=true; return {done:true,result:{lobby:true}};
     }
     const row=await readRow(transaction,identity);
@@ -543,7 +549,7 @@ async function readUnchangedCodeDocument(db,viewerId,identity,afterRevision,mode
       })
       :normalizedRow(row,identity);
     await finish(transaction,'commit'); finished=true;
-    return {done:true,result:{document,created:false,pair:authorization.pair}};
+    return {done:true,result:{document,created:false,pair:authorization.pair,relayDirection:access.relayDirection}};
   }catch(error){
     if(!finished){ try{ await finish(transaction,'rollback'); }catch{} }
     throw error;
@@ -567,7 +573,8 @@ async function getAuthorizedCodeDocumentUnlocked(db,{viewerId,afterRevision=0,..
       if(await interviewTimerEnded(transaction,authorization.pair,mode)){
         await transaction.rollback(); settled=true; return {terminal:true};
       }
-      if(await candidateInLobby(transaction,mode,viewerId,identity)){
+      const access=await lobbyAccess(transaction,mode,viewerId,identity);
+      if(access.lobby){
         await transaction.rollback(); settled=true; return {lobby:true};
       }
       await purgeExpiredCodeDocumentIdentity(transaction,identity);
@@ -577,7 +584,7 @@ async function getAuthorizedCodeDocumentUnlocked(db,{viewerId,afterRevision=0,..
       const document=normalizedRow(row,identity);
       await assertInterviewStillOpen(transaction,authorization.pair,mode);
       commitStarted=true; await transaction.commit(); settled=true;
-      return {document,created,pair:authorization.pair};
+      return {document,created,pair:authorization.pair,relayDirection:access.relayDirection};
     }catch(error){
       if(transaction&&!settled&&!commitStarted){ try{ await transaction.rollback(); settled=true; }catch{} }
       if(error instanceof InterviewEndedError) return {terminal:true};

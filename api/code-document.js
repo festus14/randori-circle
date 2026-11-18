@@ -103,7 +103,8 @@ export default async function handler(req,res){
       if(result.lobby) return res.status(409).json(IN_LOBBY);
       if(result.editingClosed) return res.status(409).json(EDITING_CLOSED);
       return res.json({...codeDocumentResponse(result,{afterRevision:input.afterRevision}),
-        ...(realtimeRelayConfiguration()?{realtime_relay:true}:{})});
+        ...(realtimeRelayConfiguration()?{realtime_relay:true,
+          ...(result.relayDirection?{realtime_relay_direction:result.relayDirection}:{})}:{})});
     }
     const input=parseCodeDocumentMutation(req.body);
     const result=await mergeAuthorizedCodeDocument(db,{viewerId,...input});

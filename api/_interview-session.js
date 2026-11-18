@@ -117,6 +117,20 @@ export function candidateWorkspaceFence(mode,{weekId,pairGroupId,actorId,insert,
   });
 }
 
+/**
+ * Realtime relay token predicate (#464 with ID-96): the candidate gets a
+ * relay token only while live and unlocked, so a lobby or locked candidate
+ * holds no relay credential at all. The interviewer is unrestricted.
+ */
+export function candidateRelayFence(mode,{weekId,pairGroupId,actorId}){
+  if(!mode?.lobby) return Object.freeze({sql:'1',args:[]});
+  return Object.freeze({
+    sql:`COALESCE((SELECT CASE WHEN st.candidate_user_id<>? THEN 1 WHEN st.live=1 AND st.locked=0 THEN 1 ELSE 0 END
+      FROM (${interviewStateSql()}) st),1)=1`,
+    args:[actorId,weekId,pairGroupId],
+  });
+}
+
 /** The same state as plain values (lobby mode only), at statement time. */
 export async function readInterviewGate(db,mode,{weekId,pairGroupId}){
   if(!mode?.lobby) return null;
