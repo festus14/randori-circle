@@ -83,7 +83,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-55](#id-55-derive-completed-sessions-from-unanimous-participant-receipts) | Derive completed sessions from unanimous participant receipts | Pairing & Scheduling | Active |
 | [ID-56](#id-56-separate-inherited-availability-from-an-explicit-cycle-decision) | Separate inherited availability from an explicit cycle decision | Pairing & Scheduling | Active |
 | [ID-57](#id-57-bridge-reliable-sessions-with-a-private-schedule-bound-https-link) | Bridge reliable sessions with a private schedule-bound HTTPS link | Pairing & Scheduling | Active |
-| [ID-58](#id-58-persist-pair-roles-and-focus-time-as-one-database-clock-aggregate) | Persist pair roles and focus time as one database-clock aggregate | Pairing & Scheduling | Amended by [ID-94](#id-94-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry) |
+| [ID-58](#id-58-persist-pair-roles-and-focus-time-as-one-database-clock-aggregate) | Persist pair roles and focus time as one database-clock aggregate | Pairing & Scheduling | Amended by [ID-95](#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry) |
 | [ID-59](#id-59-keep-session-control-reconciliation-non-blocking-after-hydration) | Keep session-control reconciliation non-blocking after hydration | Product & UI | Active |
 | [ID-60](#id-60-broaden-the-executable-catalogue-with-a-bounded-original-pack) | Broaden the executable catalogue with a bounded original pack | Content & Catalogue | Active |
 | [ID-61](#id-61-treat-tursos-disallowed-check-constraint-pragma-as-enforced) | Treat Turso's disallowed CHECK-constraint pragma as enforced | Data, Schema & Migrations | Active |
@@ -119,7 +119,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-91](#id-91-product-feedback--shared-platform-for-bug-reports-feature-requests-and-product-feedback-data-model--api) | Product feedback — shared platform for bug reports, feature requests and product feedback (data model + API) | Product & UI | Active |
 | [ID-92](#id-92-force-dompurify-to-3417-via-npm-overrides-to-clear-the-dev-only-audit-findings-382) | Force dompurify to `^3.4.17` via npm overrides to clear the dev-only audit findings (#382) | Dependencies | Active |
 | [ID-93](#id-93-give-account-deletion-a-14-day-cancellable-grace-period-behind-a-flag) | Give account deletion a 14-day cancellable grace period, behind a flag | Security, Secrets & Privacy | Active |
-| [ID-94](#id-94-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry) | Scope primary interview controls to the interviewer and close on timer expiry | Pairing & Scheduling | Active |
+| [ID-95](#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry) | Scope primary interview controls to the interviewer and close on timer expiry | Pairing & Scheduling | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -133,7 +133,7 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-94). Never reuse a number, even if an entry is
+   plus one (currently ID-96). Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
 2. **Check for collisions before you claim it.** Parallel PRs are the
@@ -2571,7 +2571,7 @@ forward. Full details are in
 
 ## ID-58: Persist pair roles and focus time as one database-clock aggregate
 
-**Amended by ID-94:** the original peer timer remains the default; the optional
+**Amended by ID-95:** the original peer timer remains the default; the optional
 interview mode makes controls interviewer-only and timer expiry terminal.
 
 Status: candidate migration-backed primary-session increment.
@@ -5314,7 +5314,7 @@ readiness stay green throughout: pending, cancelled and deleted.
 immediately again, pending requests still complete. The v23 table stays
 (no destructive migration); empty rows remain as request history.
 
-## ID-94: Scope primary interview controls to the interviewer and close on timer expiry
+## ID-95: Scope primary interview controls to the interviewer and close on timer expiry
 
 **Status: Active.** Code-only first increment, Part of #464 (epic #460).
 Amends ID-58 only when `INTERVIEW_SESSION_ENABLED=true`; ID-55's unanimous
@@ -5364,8 +5364,13 @@ provider TTL cannot be the cross-device authority; reuse the database anchor.
 role handoff, stale and cross-mode versions, wrong rooms, pause/reset, early end,
 late joins/restart, expiry and separate completion receipts. Code-document and
 workspace tests exercise terminal closure and an end racing checkpoint SQL.
+Real SQLite boundary regressions seed 500 ms remaining and delay the actual
+control/CRDT create/update/projection statement by 700 ms: the statement affects
+zero rows and the entire transaction rolls back, including an earlier bootstrap.
 The focused Playwright controls suite covers both browsers, late entry,
-terminal work stopping, explicit two-participant wrap-up and flag-off peers.
+terminal work stopping, explicit two-participant wrap-up, hidden-tab aborted
+confirmation recovery, and flag-off peers. Peer mode retains its original
+retention-before-completion ordering and terminal rollback policy.
 
 **Recovery and remaining scope.** Set the flag off and redeploy; retain controls
 and receipts. Peer controls can reset expired timers again, so reload terminal

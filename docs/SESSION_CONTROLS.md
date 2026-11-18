@@ -75,6 +75,8 @@ history. The v19 runtime explicitly deletes demo-week control rows first.
 
 ## Interview first increment (#464)
 
+Decision: ID-95 in [the implemented decision log](IMPLEMENTED_DECISIONS.md#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry).
+
 `INTERVIEW_SESSION_ENABLED` is optional, non-secret and **off unless exactly
 `true`**. With it off, the existing peer controls, response shape, resettable
 focus blocks, and completion contract above are unchanged. The flag is
@@ -104,6 +106,10 @@ With it on:
   state from the running anchor, including when no browser was present.
   It needs no cron, per-tick write or new schema. Every terminal command,
   including a repeated end, returns a stable 409; no reset can reopen it.
+  Every control INSERT/UPDATE and CRDT create/update/workspace projection repeats
+  the database-time boundary **in the storage statement**, since time can advance
+  inside a serialized transaction. A rejected fence reports terminal state and
+  rolls back the entire transaction, including any earlier document bootstrap.
 - Late browsers read the same timer/end state after restart. The browser does
   not assert expiry from its own clock: when its local animation reaches zero
   it reconciles with the database boundary before entering terminal state.
@@ -117,7 +123,10 @@ With it on:
   schedule and run-feed reconciliation in that browser. Scope/identity fences
   prevent delayed responses from reopening it. Wrap-up remains usable: each
   participant confirms their **own** receipt through the unchanged completion
-  endpoint; **Refresh completion** is explicit after end. Ending a room never
+  endpoint; **Refresh completion** is explicit after end. An interrupted hidden-tab
+  confirmation releases its busy/disabled UI without restarting polling; a delayed
+  aborted response cannot change the receipt display. Refresh reconciles whether
+  the server accepted that interrupted confirmation. Ending a room never
   fabricates the partner's receipt and never increments completion metrics.
 
 **Rollout:** no migration or new provider/secret. Use the existing migrated

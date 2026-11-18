@@ -41,7 +41,8 @@ primary two-person rooms to interviewer-only role/timer/end controls and a
 25-minute timer whose expiry ends the interview for both participants. It is
 off by default; no new migration is required. Lobby/admission, scheduled
 auto-start, interviewer-owned question selection and candidate edit locks are
-not included yet ([session controls](docs/SESSION_CONTROLS.md#interview-first-increment-464)).
+not included yet ([session controls](docs/SESSION_CONTROLS.md#interview-first-increment-464),
+ID-95 in the decision log).
 Not built yet: presence, remote cursors and managed (server-relayed) video.
 Which feature is on in production, and what each flag needs, is in the
 [feature flag table](docs/ENVIRONMENT.md#feature-flags).
