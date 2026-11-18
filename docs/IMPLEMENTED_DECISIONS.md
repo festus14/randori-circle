@@ -5705,7 +5705,7 @@ change. Authoring, renewal and takedown procedures:
 **Status: Active.** Closes the scope of #463 (epic #460) behind
 `DAILY_VIDEO_ENABLED`, off by default. No migration. Leaves ID-57's private
 meeting link and the existing WebRTC call in place as fallbacks. ID-94 and
-ID-96 landed first and ID-97 is held by an open PR, so this entry took ID-98.
+ID-96 and ID-97 landed first, so this entry took ID-98.
 
 **Context.** Live interviews need built-in audio and video. The room offered
 peer-to-peer WebRTC signalling through `api/video.js` (STUN only, so it fails
