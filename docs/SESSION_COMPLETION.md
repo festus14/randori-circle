@@ -36,6 +36,24 @@ While a non-terminal workspace remains visible, bounded polling refreshes the
 aggregate so one participant observes the other participants' confirmations.
 Polling stops on completion, hide, sign-out, or any scope reset.
 
+## Interview termination (#464 first increment)
+
+Decision: ID-95 in [the implemented decision log](IMPLEMENTED_DECISIONS.md#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry).
+
+With `INTERVIEW_SESSION_ENABLED=true`, an interviewer end or database timer
+expiry closes live room work for both browsers, but **does not confirm any
+completion receipt**. End and attendance are separate facts: a timer can run
+with nobody present, and an interviewer cannot assert the candidate attended.
+The existing `confirm`/`withdraw` commands, CAS versions, immutable quorum and
+terminal-unanimity rules above are unchanged. Wrap-up remains available after
+end, with an explicit **Refresh completion** button instead of background
+polling. If a confirmation is interrupted by hiding the tab, its request
+generation is fenced and the buttons are re-enabled without restarting polling;
+use Refresh to reconcile the server's receipt state. History, recap and metrics
+still require each participant's receipt.
+See [the bounded interview increment](SESSION_CONTROLS.md#interview-first-increment-464)
+for role authority, late joins, rollback behavior and remaining lobby scope.
+
 ## Rollout
 
 1. Rehearse migration 17 against a disposable restore and verify exact v16 evidence.

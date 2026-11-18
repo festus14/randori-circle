@@ -83,7 +83,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-55](#id-55-derive-completed-sessions-from-unanimous-participant-receipts) | Derive completed sessions from unanimous participant receipts | Pairing & Scheduling | Active |
 | [ID-56](#id-56-separate-inherited-availability-from-an-explicit-cycle-decision) | Separate inherited availability from an explicit cycle decision | Pairing & Scheduling | Active |
 | [ID-57](#id-57-bridge-reliable-sessions-with-a-private-schedule-bound-https-link) | Bridge reliable sessions with a private schedule-bound HTTPS link | Pairing & Scheduling | Active |
-| [ID-58](#id-58-persist-pair-roles-and-focus-time-as-one-database-clock-aggregate) | Persist pair roles and focus time as one database-clock aggregate | Pairing & Scheduling | Active |
+| [ID-58](#id-58-persist-pair-roles-and-focus-time-as-one-database-clock-aggregate) | Persist pair roles and focus time as one database-clock aggregate | Pairing & Scheduling | Amended by [ID-95](#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry) |
 | [ID-59](#id-59-keep-session-control-reconciliation-non-blocking-after-hydration) | Keep session-control reconciliation non-blocking after hydration | Product & UI | Active |
 | [ID-60](#id-60-broaden-the-executable-catalogue-with-a-bounded-original-pack) | Broaden the executable catalogue with a bounded original pack | Content & Catalogue | Active |
 | [ID-61](#id-61-treat-tursos-disallowed-check-constraint-pragma-as-enforced) | Treat Turso's disallowed CHECK-constraint pragma as enforced | Data, Schema & Migrations | Active |
@@ -119,6 +119,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-91](#id-91-product-feedback--shared-platform-for-bug-reports-feature-requests-and-product-feedback-data-model--api) | Product feedback — shared platform for bug reports, feature requests and product feedback (data model + API) | Product & UI | Active |
 | [ID-92](#id-92-force-dompurify-to-3417-via-npm-overrides-to-clear-the-dev-only-audit-findings-382) | Force dompurify to `^3.4.17` via npm overrides to clear the dev-only audit findings (#382) | Dependencies | Active |
 | [ID-93](#id-93-give-account-deletion-a-14-day-cancellable-grace-period-behind-a-flag) | Give account deletion a 14-day cancellable grace period, behind a flag | Security, Secrets & Privacy | Active |
+| [ID-95](#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry) | Scope primary interview controls to the interviewer and close on timer expiry | Pairing & Scheduling | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -132,7 +133,7 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-94). Never reuse a number, even if an entry is
+   plus one (currently ID-96). Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
 2. **Check for collisions before you claim it.** Parallel PRs are the
@@ -2569,6 +2570,9 @@ forward. Full details are in
 [`PRIVATE_MEETING_LINKS.md`](PRIVATE_MEETING_LINKS.md).
 
 ## ID-58: Persist pair roles and focus time as one database-clock aggregate
+
+**Amended by ID-95:** the original peer timer remains the default; the optional
+interview mode makes controls interviewer-only and timer expiry terminal.
 
 Status: candidate migration-backed primary-session increment.
 
@@ -5309,3 +5313,70 @@ readiness stay green throughout: pending, cancelled and deleted.
 **Removal.** Turn `ACCOUNT_DELETION_GRACE_ENABLED` off: new requests delete
 immediately again, pending requests still complete. The v23 table stays
 (no destructive migration); empty rows remain as request history.
+
+## ID-95: Scope primary interview controls to the interviewer and close on timer expiry
+
+**Status: Active.** Code-only first increment, Part of #464 (epic #460).
+Amends ID-58 only when `INTERVIEW_SESSION_ENABLED=true`; ID-55's unanimous
+participant-receipt completion contract is unchanged.
+
+**Context.** Pair roles were durable labels, but either participant could
+change the role or focus timer. Expiry was just another resettable focus block.
+The first interview increment needs enforceable role authority and a shared
+terminal boundary without inventing attendance or adding deployment risk.
+
+**Decision.**
+- Keep the flag off by default. With it on, the existing exact primary auth
+  pair and candidate assignment determine authority: slot A defaults to
+  candidate, slot B to interviewer. Only the current interviewer can change
+  roles, start/pause/reset the timer or end the interview. The candidate cannot
+  acquire interviewer power through a fresh/stale token, actor body fields,
+  a no-op command, or a role swap. Deliberate interviewer-to-candidate handoff
+  revokes the former interviewer's powers in the serialized write transaction.
+- Keep strict CAS commands and private, non-cacheable projections. Denied
+  controls return the identical absent-room 404. Interview HMAC versions use
+  a separate domain. Flags or browser role labels never supply actor identity.
+- Reuse the existing paused/zero timer to store early end. Database-clock
+  running expiry is terminal with no per-tick/cron write. No schema objects,
+  checksums or migration ledger entries change. Late browsers and restarted
+  processes observe the same durable boundary; terminal commands cannot reset
+  it while interview mode is on.
+- Close CRDT operations and new execution lookups at the same boundary.
+  Snapshot writes repeat the timer guard in SQL to fence an early-end race.
+  Compact the generated CRDT bundle with esbuild's whitespace-only minification
+  (the build and exact-bundle verifier share the option); keep byte-budget and
+  coverage thresholds unchanged. The asset inventory grows by one coordinator.
+  Browser termination reuses the CRDT completion fence, aborts workspace work,
+  disposes media and stops controls, receipts and room reconciliation. Pending
+  receipt confirmation remains explicit, with Refresh completion after end.
+  Never create a partner receipt from timer expiry or interviewer action.
+- This is a deployment-wide mode for eligible primary pairs, not a stored
+  per-room opt-in. Secondary peer rooms remain unchanged. Do not toggle it
+  during an interview; existing expired primary timers become terminal too.
+
+**Alternatives considered.** A new lifecycle table would support per-room
+mode, schedule/admission and edit-lock state but adds migration and rollout
+scope before the role/timer boundary is proven. Reusing completion receipts to
+end for everyone would silently claim attendance; rejected. A browser clock or
+provider TTL cannot be the cross-device authority; reuse the database anchor.
+
+**Verification.** Session-control unit tests cover candidate escalation/no-ops,
+role handoff, stale and cross-mode versions, wrong rooms, pause/reset, early end,
+late joins/restart, expiry and separate completion receipts. Code-document and
+workspace tests exercise terminal closure and an end racing checkpoint SQL.
+Real SQLite boundary regressions seed 500 ms remaining and delay the actual
+control/CRDT create/update/projection statement by 700 ms: the statement affects
+zero rows and the entire transaction rolls back, including an earlier bootstrap.
+The focused Playwright controls suite covers both browsers, late entry,
+terminal work stopping, explicit two-participant wrap-up, hidden-tab aborted
+confirmation recovery, and flag-off peers. Peer mode retains its original
+retention-before-completion ordering and terminal rollback policy.
+
+**Recovery and remaining scope.** Set the flag off and redeploy; retain controls
+and receipts. Peer controls can reset expired timers again, so reload terminal
+pages and do not call this an irreversible per-room promise across rollback.
+Lobby/admission, schedule-driven auto-start, interviewer-owned question
+selection and candidate lock/unlock remain for later #464 increments. A
+provider execution already authorized before end keeps its existing bounded
+lifetime; no provider cancellation is introduced. Full contract and canary
+steps: [session controls](SESSION_CONTROLS.md#interview-first-increment-464).

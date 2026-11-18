@@ -17,6 +17,8 @@ export async function verifyCrdtBundle({buildBundle=build,readBundle=readFile}={
     format:'iife',
     platform:'browser',
     target:'es2020',
+    // Keep the first-party JS byte budget without renaming or folding code.
+    minifyWhitespace:true,
     alias:{'monaco-editor/esm/vs/editor/editor.api.js':'./assets/monaco-api-shim.js'},
     outfile,
     write:false,

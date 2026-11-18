@@ -73,6 +73,80 @@ rollback keeps the table, triggers, and ledger row, disables the handler/UI if
 needed, and rolls forward. It must not drop the table or rewrite migration
 history. The v19 runtime explicitly deletes demo-week control rows first.
 
+## Interview first increment (#464)
+
+Decision: ID-95 in [the implemented decision log](IMPLEMENTED_DECISIONS.md#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry).
+
+`INTERVIEW_SESSION_ENABLED` is optional, non-secret and **off unless exactly
+`true`**. With it off, the existing peer controls, response shape, resettable
+focus blocks, and completion contract above are unchanged. The flag is
+advertised only in authorized primary-room controls (`interview_mode:true`),
+not in public capabilities. Secondary workspaces retain their peer behavior.
+
+With it on:
+
+- The existing candidate assignment is authoritative. Without a stored row,
+  pair slot A is candidate and slot B is interviewer. Only the **current**
+  interviewer can start, pause, reset, assign the candidate, or submit the new
+  exact command `{room_id, action:"end", base_version}`. Assigning themselves
+  candidate deliberately hands interviewer authority to the partner. The old
+  interviewer loses powers immediately; a candidate cannot change the roles,
+  even with a fresh token or an idempotent command. Authorization happens in
+  the serialized transaction **before** idempotency, CAS or terminal checks.
+  Denied commands return the same private `404 {error:"pair not found"}` as
+  absent and unauthorized rooms. Actor/role fields in the body are rejected.
+- Authorized projections add `interview_mode`, `can_control`, and `end_reason`
+  (`null`, `interviewer_ended`, `timer_expired`, or `completed`). Control HMACs
+  use a separate domain so peer-mode tokens cannot authorize interview writes.
+- Start is manual and begins/resumes the existing 25-minute timer. Pause
+  preserves database-derived remaining time; reset is permitted **only before
+  terminal state** and starts another full, paused block. End is irreversible
+  while this mode is enabled: it writes the already-supported paused timer
+  with zero remaining time and no anchor. Natural expiry derives terminal
+  state from the running anchor, including when no browser was present.
+  It needs no cron, per-tick write or new schema. Every terminal command,
+  including a repeated end, returns a stable 409; no reset can reopen it.
+  Every control INSERT/UPDATE and CRDT create/update/workspace projection repeats
+  the database-time boundary **in the storage statement**, since time can advance
+  inside a serialized transaction. A rejected fence reports terminal state and
+  rolls back the entire transaction, including any earlier document bootstrap.
+- Late browsers read the same timer/end state after restart. The browser does
+  not assert expiry from its own clock: when its local animation reaches zero
+  it reconciles with the database boundary before entering terminal state.
+- End/expiry closes CRDT reads/merges and new room execution lookups. Workspace
+  snapshot writes repeat the boundary in SQL so an early-end race cannot
+  publish another checkpoint. Already-authorized executions may finish within
+  their existing bounded provider lifetime; this increment does not cancel a
+  provider job already running. Read-only workspace snapshots remain available.
+- A terminal observation stops countdown and control/receipt polling, aborts
+  workspace polling/saves, closes CRDT work, disposes the call and stops chat,
+  schedule and run-feed reconciliation in that browser. Scope/identity fences
+  prevent delayed responses from reopening it. Wrap-up remains usable: each
+  participant confirms their **own** receipt through the unchanged completion
+  endpoint; **Refresh completion** is explicit after end. An interrupted hidden-tab
+  confirmation releases its busy/disabled UI without restarting polling; a delayed
+  aborted response cannot change the receipt display. Refresh reconciles whether
+  the server accepted that interrupted confirmation. Ending a room never
+  fabricates the partner's receipt and never increments completion metrics.
+
+**Rollout:** no migration or new provider/secret. Use the existing migrated
+schema. Canary a fresh primary pair with the flag on; verify A/B roles,
+interviewer-to-candidate handoff, start/pause/reset, early end, natural expiry,
+late joins, sign-out, and both completion confirmations. A running or already
+expired *existing* focus timer is interpreted by these same rules when the
+flag is enabled; choose the canary deliberately, not a live peer practice.
+
+**Rollback:** set the flag off and redeploy. Stored controls and receipts stay
+intact, but controls return to symmetric peer behavior and an expired timer
+can be reset again. A page already in terminal summary needs a reload to pick
+up the changed mode. This flag is a deployment-wide mode for eligible primary
+pairs, not a durable per-room opt-in; do not toggle it mid-interview.
+
+**Remaining scope (Part of #464):** lobby/admission, schedule-driven auto-start,
+interviewer-owned question selection, and lock/unlock of candidate editing.
+The current question-selection and pre-terminal editing APIs remain peer
+capabilities; this increment does **not** claim those are interviewer-only.
+
 ## Alternatives considered
 
 | Option | Advantage | Why not now |

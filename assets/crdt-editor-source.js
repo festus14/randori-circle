@@ -188,6 +188,7 @@ function isAcknowledged(){
 }
 
 function setEditorReadOnly(readOnly){
+  readOnly=readOnly||window._randori_session_controls?.ended===true;
   try{ window._randori_code?.getEditor?.()?.updateOptions?.({readOnly}); }catch{}
   const textarea=document.getElementById('editor'); if(textarea) textarea.readOnly=readOnly;
 }
@@ -198,7 +199,11 @@ function completeIdentity(){
   if(identity) writeQueue([],identity);
   disposeDocument();
   setEditorReadOnly(true);
-  setStatus('error','session completed — editing closed');
+  // Before controls finish loading, a terminal API reply may mean expiry,
+  // not attendance. Only known peer mode or observed receipts justify "completed".
+  const completed=window._randori_session_completion?.completion?.state==='completed'
+    ||window._randori_session_controls?.controls?.interviewMode===false;
+  setStatus('error',completed?'session completed — editing closed':'interview ended — editing closed');
 }
 
 function currentCode(){
@@ -341,6 +346,7 @@ async function hydrate(identity,epoch){
     const result=await fetchJson(endpoint(identity),{},epoch,identity);
     if(result.stale) return false;
     if(result.response.status===401||result.response.status===404){ deactivate(); return false; }
+    if(result.response.status===409&&result.data.code==='session_completed'){ completeIdentity(); return false; }
     if(!result.response.ok) throw new Error(result.data.error||'code document unavailable');
     const doc=new Y.Doc({gc:true}); const text=doc.getText('code');
     Y.applyUpdate(doc,base64ToBytes(result.data.state),ORIGIN_REMOTE);
@@ -420,6 +426,7 @@ async function poll(){
     const result=await fetchJson(endpoint(identity,{afterRevision:state.revision}),{},epoch,identity);
     if(result.stale) return;
     if(result.response.status===401||result.response.status===404){ deactivate(); return; }
+    if(result.response.status===409&&result.data.code==='session_completed'){ completeIdentity(); return; }
     if(!result.response.ok) throw new Error(result.data.error||'poll failed');
     if(!acceptResponse(result.data,epoch,identity,{apply:result.data.changed!==false})) throw new Error('invalid poll response');
     state.retryMs=500; setStatus('synced');
@@ -489,7 +496,7 @@ async function activate(){
     &&window._randori_workspace?.hydrated===true
     &&window._randori_workspace?.room===identity.room
     &&window._randori_authorized_room===identity.room;
-  if(window._randori_session_completion?.completion?.state==='completed'){
+  if(window._randori_session_completion?.completion?.state==='completed'||window._randori_session_controls?.ended===true){
     state.awaitingRoom=false; state.room=identity.room; state.identity=identity; state.actorId=owner;
     completeIdentity(); return false;
   }
@@ -532,6 +539,9 @@ window.addEventListener('randori:workspace-deactivated',()=>deactivate());
 window.addEventListener('randori:workspace-selection-applied',scheduleActivation);
 window.addEventListener('randori:monaco-ready',()=>{ if(state.hydrated) attachEditor(state.epoch); });
 window.addEventListener('randori:auth-refreshed',scheduleActivation);
+window.addEventListener('randori:interview-ended',event=>{
+  if(event.detail?.room===state.room&&window._randori_session_controls?.ended===true) completeIdentity();
+});
 window.addEventListener('randori:completion-observed',event=>{
   if(event.detail?.room===state.room&&event.detail?.state==='completed'){
     completeIdentity();

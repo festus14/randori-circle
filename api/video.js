@@ -1,3 +1,4 @@
+import { interviewSessionEnabled, interviewTimerOpenSql } from './_session-controls.js';
 import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
@@ -482,11 +483,20 @@ async function handleWorkspacePost(req,res,db,auth,room){
   const userId=authenticatedUserId(auth);
   if(!userId) return res.status(403).json({ok:false,error:'not a member of this room'});
   const outcome=await withWorkspaceLock(room,async()=>{
+    const timerGuard=interviewTimerOpenSql();
+    const timerArgs=interviewSessionEnabled()?[room.weekId,room.pairGroupId]:[];
+    const timerOpen=async()=>{
+      if(!interviewSessionEnabled()) return true;
+      const result=await db.execute({sql:`SELECT ${timerGuard} AS timer_open`,args:timerArgs});
+      if(result?.rows?.length!==1) throw new Error('interview boundary unavailable');
+      return Number(result.rows[0].timer_open)===1;
+    };
     const documentsAvailable=workspace.question_version?await hasCodeDocumentTable(db):false;
     for(let attempt=0;attempt<6;attempt+=1){
       try{
         const initial=await readAuthorizedWorkspaceSnapshot(db,userId,room);
         if(!initial.authorized) return {kind:'denied'};
+        if(!await timerOpen()) return {kind:'ended'};
         const current=initial.snapshot;
         let projection=null;
         if(documentsAvailable){
@@ -521,23 +531,24 @@ async function handleWorkspacePost(req,res,db,auth,room){
             sql:`WITH access AS (${authPairAccessSql()}) UPDATE pair_room_snapshots
               SET revision=revision+1,schema_version=?,client_id=?,client_seq=?,language=?,question_id=?,code=?,updated_by=?,updated_at=datetime('now')
               WHERE room_id=? AND week_id=? AND pair_group_id=? AND revision=?
-                AND EXISTS (SELECT 1 FROM access) ${documentGuard}`,
+                AND EXISTS (SELECT 1 FROM access) ${documentGuard} AND ${timerGuard}`,
             args:[...pairAccessArgs(userId,room),workspace.schema_version,workspace.client_id,
               workspace.client_seq,workspace.language,storedQuestionId,codeEnvelope,userId,
-              room.roomId,room.weekId,room.pairGroupId,workspace.base_revision,...documentArgs],
+              room.roomId,room.weekId,room.pairGroupId,workspace.base_revision,...documentArgs,...timerArgs],
           })
           :await db.execute({
             sql:`WITH access AS (${authPairAccessSql()}) INSERT INTO pair_room_snapshots
               (room_id,week_id,pair_group_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by)
-              SELECT ?,?,?,1,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM access) ${documentGuard}
+              SELECT ?,?,?,1,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM access) ${documentGuard} AND ${timerGuard}
               ON CONFLICT DO NOTHING`,
             args:[...pairAccessArgs(userId,room),room.roomId,room.weekId,room.pairGroupId,
               workspace.schema_version,workspace.client_id,workspace.client_seq,workspace.language,
-              storedQuestionId,codeEnvelope,userId,...documentArgs],
+              storedQuestionId,codeEnvelope,userId,...documentArgs,...timerArgs],
           });
         const latest=await readAuthorizedWorkspaceSnapshot(db,userId,room);
         if(!latest.authorized) return {kind:'denied'};
         if(Number(writeResult?.rowsAffected)===1) return {kind:'written',snapshot:latest.snapshot};
+        if(!await timerOpen()) return {kind:'ended'};
         if(latest.snapshot?.client_id===workspace.client_id&&latest.snapshot.client_seq===workspace.client_seq){
           return {kind:'idempotent',snapshot:latest.snapshot};
         }
@@ -549,6 +560,7 @@ async function handleWorkspacePost(req,res,db,auth,room){
     }
     throw new Error('workspace update contention exceeded its retry bound');
   });
+  if(outcome.kind==='ended') return res.status(409).json({ok:false,error:'interview has ended',code:'interview_session_ended'});
   if(outcome.kind==='denied') return res.status(403).json({ok:false,error:'not a member of this room'});
   if(outcome.kind==='downgrade') return res.status(409).json({
     ok:false,error:`schema version ${workspace.schema_version} cannot overwrite workspace schema version ${outcome.current.schema_version}`,

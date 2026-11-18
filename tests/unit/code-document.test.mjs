@@ -8,6 +8,7 @@ import * as Y from 'yjs';
 
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { copyMigratedDatabaseSync, migratedTemplatePath } from '../support/migrated-db.mjs';
+import { delayInterviewWrite, seedExpiringInterview } from '../support/interview-expiry.mjs';
 import {
   CODE_DOCUMENT_RETENTION_BATCH_LIMIT,
   CodeDocumentDataError,
@@ -71,6 +72,71 @@ function updateFromState(state,edit){
 function input(update,{clientId='client_A1',clientSeq=1}={}){
   return {...IDENTITY,viewerId:1,update:Buffer.from(update,'base64'),clientId,clientSeq};
 }
+
+test('interview expiry fences CRDT creation, updates and projections inside real SQLite writes',async()=>{
+  for(const target of ['get-create','post-create','post-create-update','update','projection']){
+    const item=fixture();
+    process.env.INTERVIEW_SESSION_ENABLED='true';
+    try{
+      await prepareConnection(item.db); await seed(item.db);
+      let update;
+      if(target==='update'||target==='projection'){
+        const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
+        update=updateFromState(initial.state,text=>text.insert(0,'changed;'));
+      }else{
+        const doc=new Y.Doc(); doc.getText('code').insert(0,'created;');
+        update=Buffer.from(Y.encodeStateAsUpdate(doc)).toString('base64'); doc.destroy();
+      }
+      await seedExpiringInterview(item.db);
+      const before=(await item.db.execute('SELECT * FROM pair_code_documents')).rows;
+      const workspace=(await item.db.execute('SELECT * FROM pair_room_snapshots')).rows;
+      const pattern=target==='projection'?/UPDATE pair_room_snapshots/:
+        target==='update'||target==='post-create-update'?/UPDATE pair_code_documents/:/INSERT INTO pair_code_documents/;
+      const delayed=delayInterviewWrite(item.db,pattern);
+      const result=target==='get-create'
+        ?await getAuthorizedCodeDocument(delayed.client,{viewerId:1,...IDENTITY})
+        :await mergeAuthorizedCodeDocument(delayed.client,input(update));
+      assert.equal(delayed.observations.length,1,target);
+      assert.equal(delayed.observations[0].rowsAffected,0,`${target} is rejected in SQL, not merely checked earlier`);
+      assert.equal(result.terminal,true,target);
+      assert.deepEqual((await item.db.execute('SELECT * FROM pair_code_documents')).rows,before,`${target} must roll back all document writes`);
+      assert.deepEqual((await item.db.execute('SELECT * FROM pair_room_snapshots')).rows,workspace,`${target} must not publish changed code`);
+      assert.equal((await item.db.execute('SELECT COUNT(*) AS c FROM session_completion_receipts')).rows[0].c,0);
+    }finally{ delete process.env.INTERVIEW_SESSION_ENABLED; item.close(); }
+  }
+});
+
+test('interview early end and database timer expiry close CRDT reads, writes and execution without receipts',async()=>{
+  for(const timerState of ['paused','running']){
+    const item=fixture();
+    process.env.INTERVIEW_SESSION_ENABLED='true';
+    try{
+      await prepareConnection(item.db); await seed(item.db);
+      const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
+      const update=updateFromState(initial.state,text=>text.insert(0,'changed;'));
+      await item.db.execute({sql:`INSERT INTO pair_session_controls
+        (week_id,pair_group_id,pair_user_a_id,pair_user_b_id,candidate_user_id,timer_state,
+          remaining_ms,anchor_at,revision,updated_by,created_at,updated_at)
+        VALUES (10,20,1,2,1,?,?,?,1,2,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+      args:[timerState,timerState==='paused'?0:1,timerState==='paused'?null:'2026-01-01T00:00:00.000Z']});
+      const before=(await item.db.execute('SELECT * FROM pair_code_documents')).rows;
+      for(const viewerId of [1,2]){
+        for(const afterRevision of [0,initial.revision]){
+          const read=await getAuthorizedCodeDocument(item.db,{viewerId,...IDENTITY,afterRevision});
+          assert.equal(read.terminal,true);
+        }
+        const merged=await mergeAuthorizedCodeDocument(item.db,{...input(update),viewerId});
+        assert.equal(merged.terminal,true);
+        const execution=await readCanonicalCodeForExecution(item.db,{viewerId,room:IDENTITY,
+          questionSlug:IDENTITY.questionSlug,questionVersion:1,language:'javascript',documentVersion:initial.version});
+        assert.equal(execution.terminal,true);
+      }
+      assert.deepEqual((await item.db.execute('SELECT * FROM pair_code_documents')).rows,before);
+      assert.equal((await item.db.execute('SELECT COUNT(*) AS c FROM session_completion_receipts')).rows[0].c,0);
+      assert.equal(await getAuthorizedCodeDocument(item.db,{viewerId:9,...IDENTITY}),null);
+    }finally{ delete process.env.INTERVIEW_SESSION_ENABLED; item.close(); }
+  }
+});
 
 test('v20 bootstrap is server-serialized from the matching v3 workspace and survives restart',async()=>{
   const item=fixture();
@@ -209,6 +275,50 @@ test('authorization makes nonexistent, outsider, AI, triad, mixed-source, and co
       assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM pair_code_documents`)).rows[0].c,0);
     }finally{ item.close(); }
   }
+});
+
+test('flag-off completed POST keeps legacy retention cleanup before the completion boundary',async()=>{
+  const item=fixture(); delete process.env.INTERVIEW_SESSION_ENABLED;
+  try{
+    await prepareConnection(item.db); await seed(item.db);
+    const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
+    await item.db.execute('DELETE FROM pair_code_documents');
+    await item.db.execute({sql:`INSERT INTO pair_code_documents
+      (week_id,pair_group_id,question_slug,question_version,language,y_state_base64,state_hash,code_hash,
+        revision,pair_user_a_id,pair_user_a_source,pair_user_b_id,pair_user_b_source,pair_user_c_id,
+        last_actor_id,last_actor_source,last_client_id,last_client_seq,created_at,updated_at)
+      VALUES (10,20,'focus-block-rollup',1,'javascript',?,?,?,1,1,'auth',2,'auth',NULL,1,'auth',
+        'client_old',0,'2020-01-01T00:00:00.000Z','2020-01-01T00:00:00.000Z')`,
+    args:[initial.state,initial.stateHash,initial.codeHash]});
+    for(const userId of [1,2]) await item.db.execute({sql:`INSERT INTO session_completion_receipts
+      (week_id,pair_group_id,user_id,participant_source,pair_user_a_id,pair_user_b_id,pair_user_c_id,confirmed_at)
+      VALUES (10,20,?,'auth',1,2,NULL,'2026-09-20T10:00:00.000Z')`,args:[userId]});
+    const before=(await item.db.execute('SELECT * FROM pair_code_documents')).rows;
+    const trace=[];
+    const client={async transaction(mode){
+      const tx=await item.db.transaction(mode),execute=tx.execute.bind(tx);
+      tx.execute=async statement=>{
+        const sql=typeof statement==='string'?statement:statement.sql; trace.push(sql);
+        if(sql.includes('COUNT(*) AS confirmed_count')){
+          assert.equal((await execute('SELECT COUNT(*) AS c FROM pair_code_documents')).rows[0].c,0,
+            'the retention-expired document has already been purged inside this transaction');
+          const row=(await execute('SELECT code FROM pair_room_snapshots')).rows[0];
+          assert.equal(JSON.parse(row.code).code,'','the previous workspace scrub also ran before completion');
+        }
+        return execute(statement);
+      };
+      return tx;
+    }};
+    const blocked=await mergeAuthorizedCodeDocument(client,input(updateFromState(initial.state,text=>text.insert(0,'new;'))));
+    assert.equal(blocked.terminal,true);
+    const purge=trace.findIndex(sql=>sql.includes('DELETE FROM pair_code_documents'));
+    const completion=trace.findIndex(sql=>sql.includes('COUNT(*) AS confirmed_count'));
+    assert.ok(purge>=0&&purge<completion);
+    assert.equal(trace.some(sql=>sql.includes('pair_session_controls')),false,'flag-off path needs no interview state');
+    // As in the original peer implementation, terminal rejection rolls back
+    // this transaction, including its earlier cleanup; do not change that policy.
+    assert.deepEqual((await item.db.execute('SELECT * FROM pair_code_documents')).rows,before);
+  }finally{ item.close(); }
 });
 
 test('completion blocks writes and execution lookup binds the exact canonical version',async()=>{

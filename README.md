@@ -35,7 +35,14 @@ still serves `/api/*` (ID-80).
 - **Accounts.** Members can link Google and password sign-in, reset a password,
   and delete their own account. App admins have a read-only Diagnostics view.
 
-Built but switched off: secondary circles (multi-circle) and AI coaching.
+Built but switched off: secondary circles (multi-circle), AI coaching and the
+first interview-lifecycle increment. `INTERVIEW_SESSION_ENABLED=true` changes
+primary two-person rooms to interviewer-only role/timer/end controls and a
+25-minute timer whose expiry ends the interview for both participants. It is
+off by default; no new migration is required. Lobby/admission, scheduled
+auto-start, interviewer-owned question selection and candidate edit locks are
+not included yet ([session controls](docs/SESSION_CONTROLS.md#interview-first-increment-464),
+ID-95 in the decision log).
 Not built yet: presence, remote cursors and managed (server-relayed) video.
 Which feature is on in production, and what each flag needs, is in the
 [feature flag table](docs/ENVIRONMENT.md#feature-flags).

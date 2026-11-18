@@ -2750,6 +2750,7 @@ a.btn{text-decoration:none}
                   </label>
                   <button id="sessionControlsStartPause" class="btn" data-testid="session-controls-start-pause" type="button">Start</button>
                   <button id="sessionControlsReset" class="btn secondary" data-testid="session-controls-reset" type="button">Reset to 25:00</button>
+                  <button id="sessionControlsEnd" class="btn secondary" data-testid="session-controls-end" type="button" hidden>End interview for both</button>
                   <button id="sessionControlsRetry" class="btn secondary" data-testid="session-controls-retry" type="button" hidden>Retry</button>
                 </div>
                 <div id="sessionControlsStatus" class="small muted" data-testid="session-controls-status" role="status" aria-live="polite">Loading shared controls…</div>
@@ -2762,6 +2763,7 @@ a.btn{text-decoration:none}
                     <div id="sessionCompletionStatus" class="small muted" role="status" aria-live="polite">Loading completion status…</div>
                   </div>
                   <button id="sessionCompletionAction" class="btn" type="button" hidden></button>
+                  <button id="sessionCompletionRefresh" class="btn secondary" type="button" hidden>Refresh completion</button>
                 </div>
               </section>
               <p class="small muted room-panel-empty session-empty">Roles, the focus timer, the meeting link and wrap-up appear here once your pair room is ready.</p>
@@ -9864,6 +9866,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   async function joinVideo(){
+    if(window._randori_session_controls?.ended===true){ toast('This interview has ended.'); return; }
     const room = getVideoRoomId();
     if(!room){ toast('pick a pair room first'); return; }
     // Solo-practice guard: no remote peer exists for an odd-user room.
@@ -11814,6 +11817,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   async function pollSchedule({force=false}={}){
+    if(window._randori_session_controls?.ended===true) return false;
     const scope=pairedDashboardSchedule();
     if(!scope||scope.identity!==scheduleState.room||scheduleState.inFlight) return false;
     const captured=captureScheduleOperation(scope);
@@ -12148,6 +12152,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function eligibleChatRoom(){
+    if(window._randori_session_controls?.ended===true) return null;
     const workspace=window._randori_workspace;
     const secondary=window.RandoriWorkspaceScope.secondaryRoom(workspace?.room)&&window._randori_authorized_room===workspace.room
       &&document.getElementById('view-code')?.style.display!=='none'&&window.RandoriWorkspaceScope.enabled()?workspace.room:null;
@@ -13696,6 +13701,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return window.RandoriWorkspaceScope.canonicalRoom(room);
   }
   function authorizedPairExecutionRoom(){
+    if(window._randori_session_controls?.ended===true) return null;
     const room=String(activeRoom()||'');
     if(!signedIn()||!canonicalPairRunRoom(room)||window._randori_authorized_room!==room) return null;
     return room;
@@ -13861,6 +13867,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return editor?.value||'';
   }
   async function upgradedRun(){
+    if(window._randori_session_controls?.ended===true) return;
     try{
     // The selected identity survives a filter that hides it, so Run keeps
     // working on the current exercise while the list shows an empty state.
@@ -14824,6 +14831,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 <script type="module" src="/assets/calendar-export.js"></script>
 <script type="module" src="/assets/app-shell.js"></script>
 <script type="module" src="/assets/room-layout.js"></script>
+<script type="module" src="/assets/interview-session.js"></script>
 <script type="module" src="/assets/ai-feedback.js"></script>
 
 <script>
@@ -14999,7 +15007,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   async function poll(initial=false,room=state.room,epoch=state.epoch){
     const pollToken=`${epoch}:${room}`;
     const needsHydration=initial||!state.hydrated;
-    if(!signedIn()||!canonical(room)||state.pollInFlight===pollToken) return;
+    if(window._randori_session_controls?.ended===true||!signedIn()||!canonical(room)||state.pollInFlight===pollToken) return;
     state.pollInFlight=pollToken;
     const controller=new AbortController();
     state.pollAbort=controller;
@@ -15056,7 +15064,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
   }
   function scheduleSave(domain='code'){
-    if(state.applying||!state.hydrated||!signedIn()||!canonical(state.room)||activeRoom()!==state.room) return;
+    if(window._randori_session_controls?.ended===true||state.applying||!state.hydrated||!signedIn()||!canonical(state.room)||activeRoom()!==state.room) return;
     if(domain==='code'||domain==='board') state.syncBlocked=false;
     refreshPending();
     if(domain==='board'&&!draft().board){ window._randori_board?.setSyncState?.('error','The board is too large or contains an invalid shape.'); return; }
@@ -15099,7 +15107,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   async function drainSave(){
     saveTimer=null;
-    if(state.inFlight||!state.pending||!state.room||!signedIn()||activeRoom()!==state.room) return;
+    if(window._randori_session_controls?.ended===true||state.inFlight||!state.pending||!state.room||!signedIn()||activeRoom()!==state.room) return;
     const flags=state.pending;
     const change=composeChange(flags);
     if(!change||!change.question_id||!change.question_version) return;
@@ -15176,7 +15184,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const room=state.room,epoch=state.epoch;
     const guard=()=>typeof canContinue!=='function'||canContinue()===true;
     if(!guard()) return false;
-    if(!room) return true;
+    if(!room||window._randori_session_controls?.ended===true) return true;
     if(!signedIn()||!canonical(room)||activeRoom()!==room) return false;
     // Turn the board's gesture debounce into a workspace edit while the old
     // room is still active, then wait for its CAS write to be acknowledged.
@@ -15257,9 +15265,24 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   document.getElementById('editor')?.addEventListener('input',()=>{ markHydrationEdit('code'); scheduleSave('code'); });
   document.getElementById('langSelect')?.addEventListener('change',()=>{ markHydrationEdit('code'); scheduleSave('code'); });
   document.getElementById('questionSelect')?.addEventListener('change',()=>{ markHydrationEdit('code'); scheduleSave('code'); });
-  setInterval(()=>{ if(!signedIn()) deactivate(); else if(state.room) poll(false,state.room,state.epoch); },1200);
-  setInterval(()=>{ const room=activeRoom(); if(signedIn()&&canonical(room)&&room!==state.room&&window._randori_authorized_room===room) activate(room); },500);
-  window._randori_workspace={activate,requestAccess,deactivate,poll,markHydrationEdit,flush:flushCurrentWorkspace,get room(){return state.room},get revision(){return state.revision},get hydrated(){return state.hydrated},get clientId(){return clientId}};
+  let workspacePollTimer=null,workspaceRoomTimer=null;
+  function startWorkspacePolling(){
+    if(workspacePollTimer===null) workspacePollTimer=setInterval(()=>{ if(!signedIn()) deactivate(); else if(state.room) poll(false,state.room,state.epoch); },1200);
+    if(workspaceRoomTimer===null) workspaceRoomTimer=setInterval(()=>{ const room=activeRoom(); if(signedIn()&&canonical(room)&&room!==state.room&&window._randori_authorized_room===room) activate(room); },500);
+  }
+  function endInterview(room){
+    if(room!==state.room||window._randori_session_controls?.ended!==true) return;
+    state.epoch+=1; state.pollAbort?.abort(); state.writeAbort?.abort();
+    if(saveTimer){ clearTimeout(saveTimer); saveTimer=null; }
+    if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
+    state.pending=null; state.syncBlocked=true;
+    clearInterval(workspacePollTimer); clearInterval(workspaceRoomTimer);
+    workspacePollTimer=null; workspaceRoomTimer=null;
+  }
+  window.addEventListener('randori:room-change',startWorkspacePolling);
+  window.addEventListener('randori:workspace-deactivated',startWorkspacePolling);
+  startWorkspacePolling();
+  window._randori_workspace={activate,requestAccess,deactivate,endInterview,poll,markHydrationEdit,flush:flushCurrentWorkspace,get room(){return state.room},get revision(){return state.revision},get hydrated(){return state.hydrated},get clientId(){return clientId}};
 })();
 </script>
 
@@ -15271,6 +15294,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const card=document.getElementById('sessionCompletionCard');
   const status=document.getElementById('sessionCompletionStatus');
   const action=document.getElementById('sessionCompletionAction');
+  const refresh=document.getElementById('sessionCompletionRefresh');
   const state={epoch:0,controller:null,pollTimer:null,room:null,actorId:null,circlePublicId:null,contextVersion:null,cycleToken:null,completion:null,busy:false};
   const POLL_INTERVAL_MS=5000;
 
@@ -15334,6 +15358,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
     if(card){ card.hidden=true; card.setAttribute('aria-busy','false'); }
     if(action){ action.hidden=true; action.disabled=false; action.textContent=''; }
+    if(refresh) refresh.hidden=true;
     if(status) status.textContent='';
   }
   function render(message=''){
@@ -15341,6 +15366,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!card||!status||!action||!state.room){ setHidden(); return; }
     card.hidden=false; card.setAttribute('aria-busy',state.busy?'true':'false');
     action.hidden=true; action.disabled=state.busy;
+    if(refresh){ refresh.hidden=window._randori_session_controls?.ended!==true||state.completion?.state==='completed'; refresh.disabled=state.busy; }
     if(!state.completion){
       status.textContent=message||(state.busy?'Loading completion status…':'Completion status unavailable.');
       if(!state.busy){ action.hidden=false; action.textContent='Retry'; action.dataset.action='retry'; }
@@ -15365,7 +15391,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       action.hidden=false;
       action.dataset.action=completion.viewer_confirmed?'withdraw':'confirm';
       action.textContent=completion.viewer_confirmed?'Withdraw confirmation':'Confirm session completed';
-      if(!state.busy&&document.visibilityState==='visible'){
+      if(!state.busy&&document.visibilityState==='visible'&&window._randori_session_controls?.ended!==true){
         state.pollTimer=setTimeout(()=>{ state.pollTimer=null; load(state.room); },POLL_INTERVAL_MS);
       }
     }
@@ -15445,6 +15471,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }finally{ if(state.controller===controller) state.controller=null; }
   }
 
+  refresh?.addEventListener('click',()=>load(state.room));
+  window.addEventListener('randori:interview-ended',event=>{
+    if(event.detail?.room!==state.room||window._randori_session_controls?.ended!==true) return;
+    // Preserve participant confirmation controls but stop automatic receipt reads.
+    render();
+  });
   action?.addEventListener('click',()=>{
     const intent=action.dataset.action;
     if(intent==='retry') load();
@@ -15457,10 +15489,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(Number(event.detail?.userId||0)!==state.actorId) reset();
   });
   document.addEventListener('visibilitychange',()=>{
-    if(document.visibilityState==='visible'&&state.room) load(state.room);
-    else if(document.visibilityState!=='visible'){
+    if(document.visibilityState==='visible'&&state.room){
+      if(window._randori_session_controls?.ended===true) render();
+      else load(state.room);
+    }else if(document.visibilityState!=='visible'){
       state.epoch+=1; state.controller?.abort(); state.controller=null; state.busy=false;
       if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
+      // An aborted operation no longer owns the disabled buttons or aria-busy.
+      // render() keeps automatic polling off while hidden or interview-ended.
+      render();
     }
   });
   document.addEventListener('click',event=>{
@@ -15483,6 +15520,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const candidate=document.getElementById('sessionControlsCandidate');
   const startPause=document.getElementById('sessionControlsStartPause');
   const resetButton=document.getElementById('sessionControlsReset');
+  const endButton=document.getElementById('sessionControlsEnd');
   const retry=document.getElementById('sessionControlsRetry');
   const toolbarRole=document.getElementById('roleToggle');
   const toolbarTimer=document.getElementById('timerBtn');
@@ -15567,7 +15605,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       ||typeof raw.terminal!=='boolean'||!VERSION.test(String(raw.version||''))
       ||!VERSION.test(String(raw.completion_version||''))||!observedAt
       ||raw.updated_at!==null&&!updatedAt) return null;
+    if(raw.interview_mode!==undefined&&(raw.interview_mode!==true
+      ||typeof raw.can_control!=='boolean'
+      ||raw.can_control!==(raw.viewer_role==='interviewer'&&!raw.terminal)
+      ||![null,'timer_expired','interviewer_ended','completed'].includes(raw.end_reason)
+      ||raw.terminal!==(raw.end_reason!==null))) return null;
     return {
+      interviewMode:raw.interview_mode===true,canControl:raw.interview_mode===true?raw.can_control:!raw.terminal,
+      endReason:raw.end_reason||null,
       timerState:raw.timer_state,remainingMs:remaining,durationMs:duration,
       candidateUserId:candidateId,partnerUserId:partnerId,viewerRole:raw.viewer_role,
       partnerRole:raw.partner_role,terminal:raw.terminal,version:String(raw.version),
@@ -15596,6 +15641,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   function hide(){
     clearTick(); clearPoll();
+    if(endButton){ endButton.hidden=true; endButton.disabled=true; }
     if(card){ card.hidden=true; card.setAttribute('aria-busy','false'); }
     if(toolbarRole){ toolbarRole.disabled=true; toolbarRole.textContent='Role'; }
     if(toolbarTimer){ toolbarTimer.disabled=true; toolbarTimer.removeAttribute('data-running'); const label=toolbarTimer.querySelector('#timerText'); if(label) label.textContent='25:00'; }
@@ -15610,16 +15656,19 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       toolbarTimer.setAttribute('aria-label',state.controls?.timerState==='running'&&remaining>0?'Pause shared focus timer':'Start shared focus timer');
     }
     if(remaining===0){
-      if(startPause){ startPause.textContent='Start'; startPause.disabled=true; }
-      if(toolbarTimer){ toolbarTimer.disabled=true; toolbarTimer.setAttribute('aria-label','Shared focus timer expired; reset required'); }
+      if(startPause){ startPause.textContent=state.controls?.interviewMode?'Ended':'Start'; startPause.disabled=true; }
+      if(toolbarTimer){ toolbarTimer.disabled=true; toolbarTimer.setAttribute('aria-label',state.controls?.interviewMode?'Interview ended; timer is read-only':'Shared focus timer expired; reset required'); }
     }
     timerSec=Math.ceil(remaining/1000); timerRun=state.controls?.timerState==='running'&&remaining>0&&!state.controls?.terminal;
     if(remaining===0&&state.controls?.timerState==='running'
       &&state.announcedExpiryVersion!==state.controls.version){
       state.announcedExpiryVersion=state.controls.version;
-      state.message='Time is up. Reset the timer to begin another focus block.';
+      state.message=state.controls.interviewMode?'Time is up. Checking the interview end…':
+        'Time is up. Reset the timer to begin another focus block.';
       if(status) status.textContent=state.message;
-      clearTick(); schedulePoll();
+      clearTick();
+      if(state.controls.interviewMode) queueMicrotask(()=>load(state.room));
+      else schedulePoll();
     }
   }
   function scheduleTick(){
@@ -15645,6 +15694,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(candidate){ candidate.replaceChildren(); candidate.disabled=true; }
       if(startPause){ startPause.disabled=true; startPause.textContent='Start'; }
       if(resetButton) resetButton.disabled=true;
+      if(endButton){ endButton.hidden=true; endButton.disabled=true; }
       if(retry){ retry.hidden=state.busy; retry.disabled=state.busy; }
       if(status) status.textContent=state.message||(state.busy?'Loading shared controls…':'Shared controls unavailable — retry.');
       if(toolbarRole) toolbarRole.disabled=true;
@@ -15662,28 +15712,34 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         candidate.appendChild(option);
       }
       candidate.value=current;
-      candidate.disabled=state.busy||controls.terminal;
+      candidate.disabled=state.busy||!controls.canControl;
     }
     const remaining=effectiveRemaining();
     if(startPause){
       startPause.textContent=controls.timerState==='running'&&remaining>0?'Pause':'Start';
-      startPause.disabled=state.busy||controls.terminal||remaining===0;
+      startPause.disabled=state.busy||!controls.canControl||remaining===0;
     }
-    if(resetButton) resetButton.disabled=state.busy||controls.terminal;
+    if(resetButton) resetButton.disabled=state.busy||!controls.canControl;
+    if(endButton){ endButton.hidden=!controls.interviewMode; endButton.disabled=state.busy||!controls.canControl; }
     if(retry){ retry.hidden=true; retry.disabled=false; }
     if(toolbarRole){
-      toolbarRole.disabled=state.busy||controls.terminal;
+      toolbarRole.disabled=state.busy||!controls.canControl;
       toolbarRole.textContent=controls.viewerRole==='candidate'?'Candidate':'Interviewer';
       toolbarRole.setAttribute('aria-label',`You are ${controls.viewerRole}; switch shared participant roles`);
     }
-    if(toolbarTimer) toolbarTimer.disabled=state.busy||controls.terminal||remaining===0;
+    if(toolbarTimer) toolbarTimer.disabled=state.busy||!controls.canControl||remaining===0;
     if(status){
       status.textContent=state.message||(controls.terminal
-        ?'Session completed. The shared timer and roles are now read-only.'
+        ?(controls.interviewMode?'Interview ended. Controls are read-only. Each participant must confirm completion below.':
+          'Session completed. The shared timer and roles are now read-only.')
         :(remaining===0?'Time is up. Reset the timer to begin another focus block.'
-          :(controls.timerState==='running'?'Shared focus timer is running.':'Shared focus timer is paused.')));
+          :(controls.interviewMode&&!controls.canControl?'The interviewer controls the shared timer and roles.':
+            controls.timerState==='running'?'Shared focus timer is running.':'Shared focus timer is paused.')));
     }
     renderTimer(); scheduleTick(); schedulePoll();
+    if(controls.interviewMode&&controls.terminal){
+      window.dispatchEvent(new CustomEvent('randori:interview-ended',{detail:{room:state.room,actorId:state.actorId}}));
+    }
   }
   function reset(){
     state.epoch+=1; state.requestEpoch+=1; state.controller?.abort(); state.controller=null;
@@ -15711,8 +15767,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     return true;
   }
-  async function load(room=window._randori_workspace?.room){
+  async function load(room=window._randori_workspace?.room,{refreshTerminal=false}={}){
     if(!adoptRoom(room)){ reset(); return false; }
+    if(state.controls?.interviewMode&&state.controls.terminal&&!refreshTerminal) return true;
     // A write already owns the request generation. Reconciliation must never
     // cancel a user action, while a later user action may supersede a read.
     if(state.busy&&state.controls) return false;
@@ -15756,7 +15813,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   async function mutate(action,candidateUserId=null){
     const controls=state.controls;
-    if(!controls||state.busy||controls.terminal||!['start','pause','reset','set_candidate'].includes(action)) return false;
+    if(!controls||state.busy||!controls.canControl
+      ||!['start','pause','reset','set_candidate','end'].includes(action)
+      ||action==='end'&&!controls.interviewMode) return false;
     state.requestEpoch+=1; state.controller?.abort();
     const controller=new AbortController(); state.controller=controller;
     state.busy=true; state.message='Saving shared controls…'; const scope=identityScope(); render();
@@ -15779,7 +15838,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       state.controls=next; state.completionVersion=next.completionVersion; state.receivedAt=Date.now();
       state.busy=false;
       state.message=action==='start'?'Shared timer started.':action==='pause'?'Shared timer paused.':
-        action==='reset'?'Shared timer reset to 25 minutes.':'Participant roles updated.';
+        action==='reset'?'Shared timer reset to 25 minutes.':action==='end'?'Interview ended for both participants. Confirm completion below.':'Participant roles updated.';
       render(); return true;
     }catch(error){
       if(error?.name!=='AbortError'&&matchesMutation(scope)){
@@ -15804,6 +15863,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   candidate?.addEventListener('change',()=>{ mutate('set_candidate',Number(candidate.value)); });
   startPause?.addEventListener('click',toggleTimer);
   resetButton?.addEventListener('click',()=>mutate('reset'));
+  endButton?.addEventListener('click',()=>{
+    if(state.controls?.canControl&&window.confirm('End this interview for both participants? It cannot be restarted while interview mode is enabled.')) mutate('end');
+  });
   retry?.addEventListener('click',()=>load(state.room));
   window.addEventListener('randori:workspace-hydrated',event=>{ load(event.detail?.roomId); });
   window.addEventListener('randori:room-change',()=>{ reset(); });
@@ -15815,11 +15877,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       state.epoch+=1; state.requestEpoch+=1; state.controller?.abort(); state.controller=null;
       clearPoll(); clearTick(); state.busy=false; state.completionVersion=completionVersion;
       if(event.detail.state==='completed'&&state.controls){
-        state.controls={...state.controls,terminal:true,completionVersion};
+        state.controls={...state.controls,terminal:true,canControl:false,endReason:state.controls.interviewMode?'completed':null,completionVersion};
         state.receivedAt=Date.now(); state.busy=false; state.message=''; render();
         // Completion stops local animation immediately. Re-read once so the
         // visible remainder is capped at the database-recorded completion time.
-        queueMicrotask(()=>{ load(state.room); });
+        queueMicrotask(()=>{ load(state.room,{refreshTerminal:true}); });
       }else queueMicrotask(()=>{ load(state.room); });
     }
   });
@@ -15827,7 +15889,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(Number(event.detail?.userId||0)!==state.actorId) reset();
   });
   document.addEventListener('visibilitychange',()=>{
-    if(document.visibilityState==='visible'&&state.room) load(state.room);
+    if(document.visibilityState==='visible'&&state.room&&window._randori_session_controls?.ended!==true) load(state.room);
     else if(document.visibilityState!=='visible'){
       state.epoch+=1; state.requestEpoch+=1; state.controller?.abort(); state.controller=null;
       state.busy=false; clearPoll(); clearTick();
@@ -15839,6 +15901,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   hide();
   window.addEventListener('randori:workspace-scope-reset',()=>reset());
   window._randori_session_controls={load,mutate,reset,normalize,toggleTimer,toggleCandidate,
+    get ended(){return !!state.controls?.interviewMode&&state.controls.terminal&&actorId()===state.actorId&&window._randori_authorized_room===state.room;},
     get room(){return state.room;},get controls(){return state.controls?{...state.controls}:null;},
     get remainingMs(){return effectiveRemaining();}};
 })();
@@ -16160,7 +16223,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(Number(event.detail?.userId||0)!==state.actorId) reset();
   });
   document.addEventListener('visibilitychange',()=>{
-    if(document.visibilityState==='visible'&&state.room) load(state.room);
+    if(document.visibilityState==='visible'&&state.room&&window._randori_session_controls?.ended!==true) load(state.room);
     else if(document.visibilityState!=='visible'){
       state.epoch+=1; state.controller?.abort(); state.controller=null; state.busy=false;
       if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }

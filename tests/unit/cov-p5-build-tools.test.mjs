@@ -44,6 +44,7 @@ test('the CRDT check refuses a build whose bytes differ from the checked-in asse
   assert.equal(calls.length, 1);
   assert.equal(calls[0].write, false, 'the check must never overwrite the asset');
   assert.equal(calls[0].bundle, true);
+  assert.equal(calls[0].minifyWhitespace, true, 'byte savings must preserve the pinned source semantics');
   assert.deepEqual(calls[0].entryPoints, ['assets/crdt-editor-source.js']);
 });
 

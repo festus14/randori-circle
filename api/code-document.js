@@ -88,6 +88,7 @@ export default async function handler(req,res){
       // the legacy code-document 404 (including an unsupported solo/triad).
       // Foreign/nonexistent workspace requests use the uniform pair 404.
       if(!result) return res.status(404).json({ok:false,error:'code document not found'});
+      if(result.terminal) return res.status(409).json({ok:false,code:'session_completed',error:'session is ended; editing is closed'});
       return res.json(codeDocumentResponse(result,{afterRevision:input.afterRevision}));
     }
     const input=parseCodeDocumentMutation(req.body);

@@ -99,6 +99,15 @@ async function open(page:Page,user:User,store:CodeStore,workspaceHandler=workspa
   await mockApi(page,{
     '/api/auth/me':{ok:true,user},'/api/profile':{ok:true,user},'/api/my-pair':()=>pair(user),
     '/api/video/signal':workspaceHandler,'/api/code-document':store.handle,
+    // This suite exercises legacy peer completion, not interview-mode expiry.
+    // Supply the authoritative peer projection so terminal copy is not inferred
+    // from a missing controls response that could also be an interview end.
+    '/api/session-controls':{ok:true,room_id:room,session_controls:{
+      timer_state:'paused',remaining_ms:1500000,duration_ms:1500000,candidate_user_id:1,
+      partner_user_id:user.id===1?2:1,viewer_role:user.id===1?'candidate':'interviewer',
+      partner_role:user.id===1?'interviewer':'candidate',terminal:false,
+      completion_version:'0'.repeat(64),version:'a'.repeat(64),updated_at:null,observed_at:new Date().toISOString(),
+    }},
     '/api/execute':request=>{
       const body=request.postDataJSON() as {document_version?:string;language?:string};
       const language=String(body.language||'javascript');

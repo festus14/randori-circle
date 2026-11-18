@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
+import { delayInterviewWrite, seedExpiringInterview } from '../support/interview-expiry.mjs';
 
 import {
   mutateAuthorizedSessionControls,
@@ -76,13 +77,13 @@ async function readyDatabase(){
 beforeEach(()=>{
   currentDb=null;
   for(const key of ['CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED',
-    'MULTI_CIRCLE_AVAILABILITY_ENABLED','SECONDARY_CIRCLE_COORDINATION_ENABLED']) delete process.env[key];
+    'MULTI_CIRCLE_AVAILABILITY_ENABLED','SECONDARY_CIRCLE_COORDINATION_ENABLED','INTERVIEW_SESSION_ENABLED']) delete process.env[key];
 });
 afterEach(()=>{
   try{ currentDb?.close?.(); }catch{} currentDb=null;
   if(currentDirectory){ rmSync(currentDirectory,{recursive:true,force:true}); currentDirectory=null; }
   for(const key of ['CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED',
-    'MULTI_CIRCLE_AVAILABILITY_ENABLED','SECONDARY_CIRCLE_COORDINATION_ENABLED']) delete process.env[key];
+    'MULTI_CIRCLE_AVAILABILITY_ENABLED','SECONDARY_CIRCLE_COORDINATION_ENABLED','INTERVIEW_SESSION_ENABLED']) delete process.env[key];
 });
 
 test('session-controls request contract accepts only exact canonical actions',()=>{
@@ -285,6 +286,149 @@ test('unanimous completion freezes the effective timer and rejects every command
     assert.equal(response.status,409);
     assert.equal(response.body.code,'session_controls_completed');
     assert.equal(response.body.session_controls.terminal,true);
+  }
+});
+
+test('interview controls cannot reopen a timer that expires inside the write transaction',async()=>{
+  process.env.INTERVIEW_SESSION_ENABLED='true';
+  for(const action of ['reset','pause','set_candidate','end']){
+    if(currentDb){ currentDb.close(); rmSync(currentDirectory,{recursive:true,force:true}); }
+    currentDb=await readyDatabase();
+    await seedExpiringInterview(currentDb,{userAId:2,userBId:4});
+    const current=await readAuthorizedSessionControls(currentDb,{viewerId:4,weekId:10,pairGroupId:20,versionKey:VERSION_KEY});
+    const stored=(await currentDb.execute('SELECT * FROM pair_session_controls')).rows;
+    const delayed=delayInterviewWrite(currentDb,/UPDATE pair_session_controls SET/);
+    await assert.rejects(mutateAuthorizedSessionControls(delayed.client,{viewerId:4,versionKey:VERSION_KEY,mutation:{
+      roomId:'week_10_pair_20',weekId:10,pairGroupId:20,action,baseVersion:current.state.version,
+      candidateUserId:action==='set_candidate'?4:null,
+    }}),error=>error instanceof SessionControlsConflictError&&error.code==='interview_session_ended'&&error.state.terminal===true);
+    assert.equal(delayed.observations.length,1,action);
+    assert.equal(delayed.observations[0].rowsAffected,0,'the storage-time predicate rejects the UPDATE');
+    assert.deepEqual((await currentDb.execute('SELECT * FROM pair_session_controls')).rows,stored,`${action} must leave the expired timer unchanged`);
+    const late=await readAuthorizedSessionControls(currentDb,{viewerId:2,weekId:10,pairGroupId:20,versionKey:VERSION_KEY});
+    assert.equal(late.state.terminal,true); assert.equal(late.state.end_reason,'timer_expired');
+  }
+});
+
+test('interview flag is exact-true only; off preserves peer powers, projections, and expiry',async()=>{
+  currentDb=await readyDatabase();
+  for(const value of [undefined,'false','TRUE','1']){
+    if(value===undefined) delete process.env.INTERVIEW_SESSION_ENABLED;
+    else process.env.INTERVIEW_SESSION_ENABLED=value;
+    const state=(await invoke()).body.session_controls;
+    assert.equal('interview_mode' in state,false);
+    const paused=await invoke({method:'POST',query:{endpoint:'session-controls'},body:{
+      room_id:'week_10_pair_20',action:'pause',base_version:state.version,
+    }});
+    assert.equal(paused.status,200,'candidate retains symmetric peer powers with flag off');
+    assert.throws(()=>parseSessionControlsMutation({room_id:'week_10_pair_20',action:'end',base_version:state.version}),SessionControlsInputError);
+  }
+});
+
+test('interview candidate cannot invoke any interviewer command, including no-ops and role escalation',async()=>{
+  currentDb=await readyDatabase(); process.env.INTERVIEW_SESSION_ENABLED='true';
+  const candidate=(await invoke()).body.session_controls;
+  assert.equal(candidate.interview_mode,true); assert.equal(candidate.can_control,false);
+  const interviewer=(await invoke({headers:{'x-test-auth':'partner'}})).body.session_controls;
+  assert.equal(interviewer.can_control,true);
+  const before=await currentDb.execute('SELECT * FROM pair_session_controls');
+  for(const action of ['start','pause','reset','end','set_candidate']){
+    for(const version of [candidate.version,'a'.repeat(64)]){
+      const body={room_id:'week_10_pair_20',action,base_version:version};
+      if(action==='set_candidate') body.candidate_user_id=4; // Make myself interviewer.
+      const denied=await invoke({method:'POST',query:{endpoint:'session-controls'},body});
+      assert.equal(denied.status,404,JSON.stringify(denied.body));
+      assert.deepEqual(denied.body,{error:'pair not found'});
+      assert.equal(denied.headers['cache-control'],'private, no-store');
+    }
+  }
+  assert.deepEqual((await currentDb.execute('SELECT * FROM pair_session_controls')).rows,before.rows);
+  const forged=await invoke({method:'POST',query:{endpoint:'session-controls'},body:{
+    room_id:'week_10_pair_20',action:'start',base_version:candidate.version,viewer_role:'interviewer',
+  }});
+  assert.equal(forged.status,400);
+  const transfer=await invoke({method:'POST',query:{endpoint:'session-controls'},headers:{'x-test-auth':'partner'},body:{
+    room_id:'week_10_pair_20',action:'set_candidate',base_version:interviewer.version,candidate_user_id:4,
+  }});
+  assert.equal(transfer.status,200); assert.equal(transfer.body.session_controls.can_control,false);
+  const oldInterviewer=await invoke({method:'POST',query:{endpoint:'session-controls'},headers:{'x-test-auth':'partner'},body:{
+    room_id:'week_10_pair_20',action:'start',base_version:transfer.body.session_controls.version,
+  }});
+  assert.equal(oldInterviewer.status,404,'role handoff revokes the former interviewer in the transaction');
+  const newInterviewer=(await invoke()).body.session_controls;
+  const start=await invoke({method:'POST',query:{endpoint:'session-controls'},body:{
+    room_id:'week_10_pair_20',action:'start',base_version:newInterviewer.version,
+  }});
+  assert.equal(start.status,200);
+});
+
+test('interview timer control, stale versions, early end, late join and independent completion receipts',async()=>{
+  currentDb=await readyDatabase(); process.env.INTERVIEW_SESSION_ENABLED='true';
+  const command=(action,version,extra={})=>invoke({method:'POST',query:{endpoint:'session-controls'},headers:{'x-test-auth':'partner'},body:{room_id:'week_10_pair_20',action,base_version:version,...extra}});
+  const initial=(await invoke()).body.session_controls;
+  const started=await command('start',initial.version);
+  assert.equal(started.status,200); assert.equal(started.body.session_controls.timer_state,'running');
+  const noOp=await command('start',initial.version);
+  assert.equal(noOp.status,200); assert.equal(noOp.body.session_controls.version,started.body.session_controls.version);
+  const stale=await command('end',initial.version);
+  assert.equal(stale.status,409); assert.equal(stale.body.code,'session_controls_changed');
+  const paused=await command('pause',started.body.session_controls.version);
+  assert.equal(paused.status,200); assert.equal(paused.body.session_controls.timer_state,'paused');
+  const reset=await command('reset',paused.body.session_controls.version);
+  assert.equal(reset.status,200); assert.equal(reset.body.session_controls.remaining_ms,SESSION_TIMER_DURATION_MS);
+  const ended=await command('end',reset.body.session_controls.version);
+  assert.equal(ended.status,200); assert.equal(ended.body.session_controls.end_reason,'interviewer_ended');
+  assert.equal(ended.body.session_controls.terminal,true); assert.equal(ended.body.session_controls.remaining_ms,0);
+  const stored=(await currentDb.execute('SELECT * FROM pair_session_controls')).rows;
+  currentDb.close(); currentDb=createClient({url:`file:${join(currentDirectory,'test.sqlite')}`});
+  const late=(await invoke()).body.session_controls;
+  assert.equal(late.terminal,true); assert.equal(late.end_reason,'interviewer_ended');
+  assert.equal(late.version,ended.body.session_controls.version);
+  assert.deepEqual((await currentDb.execute('SELECT * FROM session_completion_receipts')).rows,[],'end does not fabricate attendance');
+  for(const action of ['start','pause','reset','end','set_candidate']){
+    const rejected=await command(action,late.version,action==='set_candidate'?{candidate_user_id:4}:{});
+    assert.equal(rejected.status,409); assert.equal(rejected.body.code,'interview_session_ended');
+  }
+  assert.deepEqual((await currentDb.execute('SELECT * FROM pair_session_controls')).rows,stored);
+  const completionRequest=(headers,body)=>invoke({url:'/api/session-completion',headers,method:body?'POST':'GET',query:body?{endpoint:'session-completion'}:{endpoint:'session-completion',room_id:'week_10_pair_20'},body});
+  const first=(await completionRequest({'x-test-auth':'member'})).body.completion;
+  const confirmed=await completionRequest({'x-test-auth':'member'},{room_id:'week_10_pair_20',action:'confirm',base_version:first.version});
+  assert.equal(confirmed.status,200); assert.equal(confirmed.body.completion.state,'awaiting_participants');
+  const second=(await completionRequest({'x-test-auth':'partner'})).body.completion;
+  const complete=await completionRequest({'x-test-auth':'partner'},{room_id:'week_10_pair_20',action:'confirm',base_version:second.version});
+  assert.equal(complete.status,200); assert.equal(complete.body.completion.state,'completed');
+  assert.equal((await completionRequest({'x-test-auth':'member'})).body.completion.state,'completed');
+});
+
+test('interview database-clock expiry is a no-write terminal boundary for both participants',async()=>{
+  currentDb=await readyDatabase(); process.env.INTERVIEW_SESSION_ENABLED='true';
+  const initial=(await invoke()).body.session_controls;
+  await invoke({method:'POST',query:{endpoint:'session-controls'},headers:{'x-test-auth':'partner'},body:{room_id:'week_10_pair_20',action:'start',base_version:initial.version}});
+  await currentDb.execute(`UPDATE pair_session_controls SET remaining_ms=1,anchor_at='2026-01-01T00:00:00.000Z',created_at='2026-01-01T00:00:00.000Z',updated_at='2026-01-01T00:00:00.000Z'`);
+  const before=(await currentDb.execute('SELECT * FROM pair_session_controls')).rows;
+  for(const auth of ['member','partner']){
+    const state=(await invoke({headers:{'x-test-auth':auth}})).body.session_controls;
+    assert.equal(state.terminal,true); assert.equal(state.end_reason,'timer_expired');
+    assert.equal(state.can_control,false); assert.equal(state.remaining_ms,0);
+  }
+  const expired=(await invoke()).body.session_controls;
+  const reset=await invoke({method:'POST',query:{endpoint:'session-controls'},headers:{'x-test-auth':'partner'},body:{room_id:'week_10_pair_20',action:'reset',base_version:expired.version}});
+  assert.equal(reset.status,409); assert.equal(reset.body.code,'interview_session_ended');
+  assert.deepEqual((await currentDb.execute('SELECT * FROM pair_session_controls')).rows,before);
+  assert.deepEqual((await currentDb.execute('SELECT * FROM session_completion_receipts')).rows,[]);
+});
+
+test('interview authority is room-bound and versions are domain-separated from peer mode',async()=>{
+  currentDb=await readyDatabase();
+  const peer=(await invoke()).body.session_controls;
+  process.env.INTERVIEW_SESSION_ENABLED='true';
+  const interview=(await invoke()).body.session_controls;
+  assert.notEqual(interview.version,peer.version);
+  const stale=await invoke({method:'POST',query:{endpoint:'session-controls'},headers:{'x-test-auth':'partner'},body:{room_id:'week_10_pair_20',action:'end',base_version:peer.version}});
+  assert.equal(stale.status,409);
+  for(const auth of ['member','partner','outsider']){
+    const response=await invoke({method:'POST',query:{endpoint:'session-controls'},headers:{'x-test-auth':auth},body:{room_id:'week_10_pair_999',action:'end',base_version:interview.version}});
+    assert.equal(response.status,404); assert.deepEqual(response.body,{error:'pair not found'});
   }
 });
 
