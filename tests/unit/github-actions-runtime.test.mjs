@@ -167,3 +167,43 @@ test('floating or unreviewed runner images are rejected',()=>{
   hidden.find(item=>item.name==='e2e.yml').source+='\n# runs-on: ubuntu-latest\n';
   assert.throws(()=>assertPinnedRunners(hidden),/must not use the floating ubuntu-latest image/u);
 });
+
+const PLAYWRIGHT_IMAGE=/^mcr\.microsoft\.com\/playwright:v(\d+\.\d+\.\d+)-noble@sha256:[0-9a-f]{64}$/u;
+function containerImages(source){
+  const document=parseDocument(source,{prettyErrors:false,uniqueKeys:true});
+  const images=[];
+  for(const job of document.get('jobs')?.items||[]){
+    const container=job.value?.get?.('container');
+    if(container===undefined) continue;
+    const image=isScalar(container)?container.value:container.get('image');
+    images.push({job:String(job.key.value),image:String(image)});
+  }
+  return images;
+}
+function assertPinnedPlaywrightImages(source,lockVersion){
+  for(const {job,image} of containerImages(source)){
+    const match=PLAYWRIGHT_IMAGE.exec(image);
+    assert.ok(match,`${job} must use the official Playwright image pinned by digest, not ${image}`);
+    assert.equal(match[1],lockVersion,`${job} Playwright image must match @playwright/test ${lockVersion}`);
+  }
+}
+
+test('cross-browser smoke runs in the digest-pinned Playwright image matching the lockfile (#478)',()=>{
+  const lock=JSON.parse(readFileSync(new URL('../../package-lock.json',import.meta.url),'utf8'));
+  const version=lock.packages['node_modules/@playwright/test'].version;
+  const e2e=workflowSources().find(item=>item.name==='e2e.yml').source;
+  const images=containerImages(e2e);
+  assert.deepEqual(images.map(item=>item.job),['cross-browser-smoke']);
+  assertPinnedPlaywrightImages(e2e,version);
+  assert.doesNotMatch(e2e.slice(e2e.indexOf('  cross-browser-smoke:')),/playwright install --with-deps \$\{\{ matrix\.browser \}\}/u,
+    'cross-browser legs must not reinstall browsers from the Ubuntu mirror');
+});
+
+test('floating, unpinned or version-drifted Playwright images are rejected',()=>{
+  const job=image=>`jobs:\n  x:\n    runs-on: ubuntu-24.04\n    container:\n      image: ${image}\n`;
+  assert.throws(()=>assertPinnedPlaywrightImages(job('mcr.microsoft.com/playwright:v1.63.0-noble'),'1.63.0'),/pinned by digest/u);
+  assert.throws(()=>assertPinnedPlaywrightImages(job(`mcr.microsoft.com/playwright:latest@sha256:${'a'.repeat(64)}`),'1.63.0'),/pinned by digest/u);
+  assert.throws(()=>assertPinnedPlaywrightImages(job(`attacker/playwright:v1.63.0-noble@sha256:${'a'.repeat(64)}`),'1.63.0'),/pinned by digest/u);
+  assert.throws(()=>assertPinnedPlaywrightImages(job(`mcr.microsoft.com/playwright:v1.62.0-noble@sha256:${'a'.repeat(64)}`),'1.63.0'),/must match/u);
+  assert.doesNotThrow(()=>assertPinnedPlaywrightImages(job(`mcr.microsoft.com/playwright:v1.63.0-noble@sha256:${'a'.repeat(64)}`),'1.63.0'));
+});
