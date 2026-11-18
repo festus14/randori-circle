@@ -1,7 +1,7 @@
 import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth, verifySignedRequestAuth } from './_db.js';
 import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
 import { normalizeExecutionLanguage, executionLanguageEnabled } from './_execution-languages.js';
-import { buildExecutionHarness, executePracticePrograms, ExecutionInputError, ExecutionUnavailableError, executionRuntimeVersion, normalizeRunnerResults, resolveExecutionProvider, validateExecutionStdin } from './_execution.js';
+import { buildExecutionHarness, executePracticePrograms, ExecutionInputError, ExecutionUnavailableError, executionRuntimeVersion, normalizeRunnerResults, resolveExecutionProvider, stripSubmissionTypes, validateExecutionStdin } from './_execution.js';
 import { primaryExecutionContext } from './_execution-context.js';
 import { executionQueueEnabled, ExecutionBusyError, sendExecutionBusy } from './_execution-queue.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
@@ -2718,6 +2718,15 @@ async function handleExecute(req,res){
   }
   if(!code) return res.status(400).json({error:'code required'});
   if(Buffer.byteLength(code,'utf8')>20000) return res.status(413).json({error:'code exceeds the 20000-byte limit'});
+  // Validate the authorized canonical source before any lease/quota/provider
+  // work. Syntax-only stripping never evaluates member code in this process.
+  if(executionLanguage==='typescript'){
+    try{ stripSubmissionTypes(code); }
+    catch(error){
+      if(error instanceof ExecutionInputError) return res.status(error.status).json({error:error.message});
+      throw error;
+    }
+  }
 
   // Authorization is settled before provider configuration is disclosed. With
   // no isolated provider configured, fail closed before leases or quota writes.
@@ -2777,7 +2786,7 @@ async function handleExecute(req,res){
     const {run,custom} = await executePracticePrograms({language:executionLanguage,harness,code,stdin},{db,executionContext});
     const stdout = run.stdout;
     const stderr = run.stderr;
-    const results=normalizeRunnerResults(stdout,resultPrefix,testSuite.tests);
+    const results=normalizeRunnerResults(stdout,resultPrefix,testSuite.tests,{strictSequence:executionLanguage==='go'});
     const passed = results.filter(r=>r.pass===true).length;
     const dur = Date.now()-_execStart;
     const total=testSuite.tests.length;
@@ -2887,6 +2896,7 @@ async function handleExecute(req,res){
         signal:typeof run.signal==='string'?run.signal.slice(0,64):null,
         timed_out:run.timedOut===true,
         has_stderr:!!stderr,
+        ...(executionLanguage==='go'?{compile_failed:run.compileFailed===true}:{}),
       },
       results,
       passed_count:passed,

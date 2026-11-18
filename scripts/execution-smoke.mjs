@@ -74,8 +74,8 @@ async function main() {
     const run = await executeProgram({
       language,
       source: buildExecutionHarness(language, SOLUTIONS[language](suite.entrypoint), suite, prefix),
-    }, { ...options, cold: measure });
-    const results = normalizeRunnerResults(run.stdout, prefix, suite.tests);
+    }, { ...options, cold: measure&&['javascript','python'].includes(language) });
+    const results = normalizeRunnerResults(run.stdout, prefix, suite.tests, { strictSequence: language === 'go' });
     const passed = countPassed(results);
     console.log(`execution smoke: ${run.provider} ${language} ${run.runtimeVersion} ${passed}/${suite.tests.length} in ${Date.now() - started}ms (exit ${run.code})`);
     if (passed !== suite.tests.length) fail(`${language} reference solution did not pass every case`);
@@ -93,7 +93,7 @@ async function main() {
       console.log(`execution smoke: cold-start ${language} ${JSON.stringify(summarizeStartupPairs(pair))}`);
       if(!pair.length) fail('cold-start measurement requires both pristine runtime snapshots');
     }
-    const brokenPassed = countPassed(normalizeRunnerResults(broken.stdout, prefix, suite.tests));
+    const brokenPassed = countPassed(normalizeRunnerResults(broken.stdout, prefix, suite.tests, { strictSequence: language === 'go' }));
     if (brokenPassed !== 0) fail(`${language} broken solution passed ${brokenPassed} case(s)`);
   }
 

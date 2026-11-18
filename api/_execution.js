@@ -349,6 +349,7 @@ async function runInPiston({ language, source, stdin }, { url, token, fetchImpl 
     return {
       provider: 'piston',
       runtimeVersion: version,
+      ...(language === 'go' ? { compileFailed: Boolean(payload?.compile && payload.compile.code !== 0) } : {}),
       stdout: String(run.stdout || ''),
       stderr: String(run.stderr || ''),
       code: Number.isInteger(run.code) ? run.code : null,
@@ -379,7 +380,8 @@ export async function executeProgram(request, options = {}) {
     && typeof source.submission === 'string' && source.submission;
   if (!goFiles && (typeof source !== 'string' || !source)) throw new TypeError('execution source is required');
   const stdin = validateExecutionStdin(request, env);
-  const program = { language, source, ...(stdin === undefined ? {} : { stdin }) };
+  const program = { language, source: language === 'typescript' ? stripSubmissionTypes(source) : source,
+    ...(stdin === undefined ? {} : { stdin }) };
   const resolved = resolveExecutionProvider(env);
   if (!resolved.configured) throw new ExecutionUnavailableError(resolved.reason || 'code execution is unavailable');
   if (!providerSupportsLanguage(resolved.provider, language)) throw new ExecutionInputError('execution language is not supported by this provider', 404);
@@ -401,6 +403,7 @@ export async function executePracticePrograms({ language, harness, code, stdin }
   const env = options.env || process.env;
   const customRequest = { language, source: code, ...(stdin === undefined ? {} : { stdin }) };
   validateExecutionStdin(customRequest, env);
+  if (language === 'typescript') stripSubmissionTypes(code);
   if (executionQueueEnabled(env) && !options[ADMISSION]) {
     if (!resolveExecutionProvider(env).configured) throw new ExecutionUnavailableError('code execution is unavailable');
     return withAdmission(options, stdin === undefined ? 1 : 2, JSON.stringify(customRequest),
@@ -516,7 +519,7 @@ __randori_run()
 // invokes the transformed function in the isolated sandbox.
 export function stripSubmissionTypes(source) {
   try { return stripTypeScriptTypes(String(source), { mode: 'strip' }); }
-  catch { return "throw new Error('unsupported TypeScript syntax');"; }
+  catch { throw new ExecutionInputError('unsupported TypeScript syntax; use erasable types only (no enums, runtime namespaces, parameter properties, decorators or JSX)'); }
 }
 export function buildTypescriptHarness(userCode, testSuite, resultPrefix) {
   return buildJsHarness(stripSubmissionTypes(userCode), testSuite, resultPrefix);
@@ -542,17 +545,29 @@ function runnerValuesEqual(a, b) {
   return false;
 }
 
-export function normalizeRunnerResults(stdout, resultPrefix, tests) {
+export function normalizeRunnerResults(stdout, resultPrefix, tests, { strictSequence = false } = {}) {
   const byIndex = new Map();
+  const invalid = () => tests.map((_, idx) => ({ idx, pass: false, error: 'invalid result sequence' }));
   for (const line of String(stdout || '').split('\n')) {
     const value = line.trim();
-    if (!value.startsWith(resultPrefix) || value.length > 100000) continue;
+    if (!value) continue;
+    if (!value.startsWith(resultPrefix) || value.length > 100000) {
+      if (strictSequence) return invalid();
+      continue;
+    }
     try {
       const parsed = JSON.parse(value.slice(resultPrefix.length));
-      if (!Number.isInteger(parsed.idx) || parsed.idx < 0 || parsed.idx >= tests.length || typeof parsed.ok !== 'boolean') continue;
+      if (!Number.isInteger(parsed.idx) || parsed.idx < 0 || parsed.idx >= tests.length || typeof parsed.ok !== 'boolean') {
+        if (strictSequence) return invalid();
+        continue;
+      }
+      // Go code shares process stdout with its harness. Never accept duplicate,
+      // reordered, malformed, extra or partial frames as verified passes.
+      if (strictSequence && parsed.idx !== byIndex.size) return invalid();
       const pass = parsed.ok && runnerValuesEqual(parsed.got, tests[parsed.idx].expected);
       byIndex.set(parsed.idx, { idx: parsed.idx, pass, error: parsed.error ? 'runtime error' : null });
-    } catch {}
+    } catch { if (strictSequence) return invalid(); }
   }
+  if (strictSequence && byIndex.size !== tests.length) return invalid();
   return tests.map((_, idx) => byIndex.get(idx) || { idx, pass: false, error: 'no result' });
 }

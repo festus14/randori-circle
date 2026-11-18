@@ -8,7 +8,7 @@ import { createEvaluationSuite, getPublicExercise, listPublicExercises } from '.
 import { deriveExerciseLanguages } from '../../api/_catalog-languages.js';
 import { canonicalExerciseHash } from '../../api/_catalog-provenance.js';
 import { parseCodeDocumentQuery, purgeExpiredCodeDocuments } from '../../api/_code-document.js';
-import { runReferenceProgram, validateAdditionalLanguageReferences } from '../../scripts/validate-interview-kits.mjs';
+import { runReferenceProgram, typescriptOracleSource, validateAdditionalLanguageReferences } from '../../scripts/validate-interview-kits.mjs';
 import { GO_CATALOG_REFERENCES } from '../../scripts/catalog-go-references.mjs';
 import { smokeEnvironment, smokeLanguages } from '../../scripts/execution-smoke-checks.mjs';
 import { EXECUTION_SMOKE_EXPECTED_OUTPUT, runExecutionSmoke, throttledExecutionSmokeBody } from '../../api/_execution-smoke.js';
@@ -58,12 +58,52 @@ test('TypeScript strips erasable syntax only, preserves VM limits and never ship
   assert.match(harness, /codeGeneration:\{strings:false,wasm:false\}/);
   assert.match(harness, /timeout:1000/);
   assert.doesNotMatch(harness, /"expected"/);
-  for (const source of ['enum Choice { First }', 'function answer(x: number) { while(true) {} }', 'function answer(x: number) { return undefined; }']) {
+  for (const source of ['function answer(x: number) { while(true) {} }', 'function answer(x: number) { return undefined; }']) {
     const output = runReferenceProgram('typescript', buildExecutionHarness('typescript', source, suite, prefix));
     assert.ok(normalizeRunnerResults(output, prefix, tests).every(result => !result.pass));
   }
   assert.throws(() => buildExecutionHarness('ruby', '', suite, prefix), /unsupported/);
   assert.doesNotMatch(stripSubmissionTypes(source), /type Count|extends Count|: number/);
+});
+
+test('unsupported TypeScript is a clear input error before any provider work', async () => {
+  const invalid = ['enum Choice { First }', 'namespace Values { export const x = 1 }', 'class Box { constructor(public value: number) {} }'];
+  let calls = 0;
+  const forbidden = async () => { calls++; throw new Error('provider must not be reached'); };
+  for (const source of invalid) {
+    assert.throws(() => buildExecutionHarness('typescript', source, suite, prefix), error => error instanceof ExecutionInputError && error.status === 400 && /unsupported TypeScript syntax; use erasable types only/.test(error.message));
+    for (const env of [TS, PISTON]) {
+      await assert.rejects(executeProgram({ language: 'typescript', source }, { env, fetchImpl: forbidden, loadSandboxSdk: forbidden }), ExecutionInputError);
+      await assert.rejects(executePracticePrograms({ language: 'typescript', harness: '1', code: source, stdin: '' }, { env: { ...env, EXECUTION_STDIN_ENABLED: 'true' }, fetchImpl: forbidden, loadSandboxSdk: forbidden }), ExecutionInputError);
+    }
+  }
+  assert.equal(calls, 0);
+});
+
+test('strict Go result framing rejects duplicates, reordering, extra output and partial streams', () => {
+  const rows = tests.map((test, idx) => prefix + JSON.stringify({ idx, ok: true, got: test.expected }));
+  const strict = output => normalizeRunnerResults(output, prefix, tests, { strictSequence: true });
+  assert.ok(strict(rows.join('\n')).every(result => result.pass));
+  for (const output of [rows[0]+'\n'+rows.join('\n'), rows.join('\n')+'\n'+rows[1], [...rows].reverse().join('\n'), rows[0],
+    'debug output\n'+rows.join('\n'), prefix+'{bad json}\n'+rows.join('\n'),
+    prefix+JSON.stringify({ idx: 9, ok: true, got: 3 })+'\n'+rows.join('\n'),
+    prefix+JSON.stringify({ idx: 0, ok: 'true', got: 3 })+'\n'+rows.join('\n'),
+    prefix+'x'.repeat(100001)+'\n'+rows.join('\n')]) {
+    assert.deepEqual(strict(output), tests.map((_, idx) => ({ idx, pass: false, error: 'invalid result sequence' })));
+  }
+  // Legacy JS/Python framing is intentionally unchanged with both flags off.
+  assert.ok(normalizeRunnerResults(rows[0]+'\n'+rows.join('\n'), prefix, tests).every(result => result.pass));
+});
+
+test('TypeScript oracle annotations support plain and zero-argument functions and reject unsupported shapes', () => {
+  function zero() { return 42; }
+  const source = typescriptOracleSource(zero);
+  assert.match(source, /function zero\(\): any/);
+  const cases = [{ args: [], expected: 42 }];
+  assert.ok(normalizeRunnerResults(runReferenceProgram('typescript', buildExecutionHarness('typescript', source, { entrypoint: 'zero', tests: cases }, prefix)), prefix, cases)[0].pass);
+  for (const oracle of [function defaulted(value = 1) { return value; }, function unpack({ value }) { return value; }, function rest(...values) { return values; }, value => value]) {
+    assert.throws(() => typescriptOracleSource(oracle), /plain identifier parameters/);
+  }
 });
 
 test('Vercel TypeScript keeps fresh deny-all sandboxes, native stripping, bounded output and cleanup', async () => {
