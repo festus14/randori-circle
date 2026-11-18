@@ -27,7 +27,8 @@ own data:
 - `session_completions` and `session_controls` — the member's completion
   receipts and the timer / interview-role controls for their pair groups.
 - `interview_evaluations` — after v27, only the evaluator's own retained rubric,
-  notes and decision, with candidate display name only. Fixed 90-day expiry;
+  notes and decision, with candidate display name only and ISO UTC timestamps
+  matching the private evaluation API. Fixed 90-day expiry;
   a candidate never exports another account's evaluation. Included even after
   the toolkit feature flag is rolled back; absent on v26. See
   [interviewer toolkit](INTERVIEWER_TOOLKIT.md).

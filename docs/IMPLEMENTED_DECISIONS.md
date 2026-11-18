@@ -6101,7 +6101,9 @@ no persisted state or provider configuration needs repair.
 
 **Status: Active.** Implements #465 (epic #460) behind literal
 `INTERVIEWER_TOOLKIT_ENABLED=true`, default OFF, requiring interview mode and
-additive migration 27. ID-100 and ID-101 remain reserved by other branches.
+additive migration 27. ID-100 is the merged presence increment; ID-101 (#480)
+and ID-103 (#483) are reserved by other branches, so the next available ID is
+currently ID-104.
 
 **Decision.** Store one evaluation per primary pair and evaluator account:
 four optional 1–4 rubric scores, bounded freeform notes, explicit hire/no-hire
