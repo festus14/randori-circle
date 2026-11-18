@@ -67,8 +67,9 @@ export async function handleEmbeddedRoom(req,res,config){
     db=req.workspace?.db||getClient(); await ensureDataSessionControlsReadiness(db); secret=getJwtSecret();
   }catch{ return res.status(503).json(EMBEDDED_VIDEO_UNAVAILABLE); }
   try{
-    if(!await enforceDailyVideoRateLimit(db,{req,userId,secret})){
-      res.setHeader('Retry-After','900');
+    const rate=await enforceDailyVideoRateLimit(db,{req,userId,secret});
+    if(!rate.allowed){
+      res.setHeader('Retry-After',String(rate.retryAfter));
       return res.status(429).json({error:'too many video join attempts; try again later'});
     }
   }catch{ return res.status(503).json(EMBEDDED_VIDEO_UNAVAILABLE); }
@@ -91,13 +92,14 @@ export async function handleEmbeddedRoom(req,res,config){
     });
     return res.json({
       ok:true,room_id:input.roomId,provider:'daily',room_url:grant.roomUrl,token:grant.token,
-      expires_at:grant.expiresAt,recording:false,
+      expires_at:grant.expiresAt,expires_in:grant.expiresIn,recording:false,
     });
   }catch(error){
-    // Stage and provider status only: no key, token, label or room name.
-    const stage=error instanceof DailyProviderError?error.stage:'unexpected';
-    const status=error instanceof DailyProviderError?error.status:null;
-    try{ console.warn('[video] embedded provider unavailable',JSON.stringify({stage,status})); }catch{}
+    // Stage, HTTP status and Daily's fixed error code only: no key, token,
+    // label, room name or provider free text.
+    const known=error instanceof DailyProviderError;
+    const detail={stage:known?error.stage:'unexpected',status:known?error.status:null,error:known?error.providerError:null};
+    try{ console.warn('[video] embedded provider unavailable',JSON.stringify(detail)); }catch{}
     return res.status(503).json(EMBEDDED_VIDEO_UNAVAILABLE);
   }
 }

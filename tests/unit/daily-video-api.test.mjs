@@ -16,6 +16,8 @@ import {
   dailyGrantWindow,
   dailyRoomName,
   DailyProviderError,
+  dailyErrorCode,
+  dailyRoomMatches,
   dailyVideoConfiguration,
   enforceDailyVideoRateLimit,
   mintDailyRoomGrant,
@@ -183,7 +185,8 @@ test('an authorized participant gets a private two-person room and a short non-o
   assert.equal(response.headers['cache-control'],'private, no-store');
   const name=dailyRoomName('week_10_pair_20',SECRET);
   assert.match(name,/^rc-[a-f0-9]{32}$/);
-  assert.deepEqual(Object.keys(response.body).sort(),['expires_at','ok','provider','recording','room_id','room_url','token']);
+  assert.deepEqual(Object.keys(response.body).sort(),['expires_at','expires_in','ok','provider','recording','room_id','room_url','token']);
+  assert.equal(response.body.expires_in,DAILY_TOKEN_MAX_TTL_SECONDS,'the server, not the browser clock, says how long the pass lasts');
   assert.equal(response.body.room_url,`${DAILY_FRAME_ORIGIN}/${name}`);
   assert.equal(response.body.recording,false);
   assert.equal(response.body.token,'eyJ.test-token-1.sig');
@@ -340,7 +343,7 @@ test('provider failures and timeouts map to a generic 503 that leaks no secret o
   assert.equal(warnings.length,7);
   const name=dailyRoomName('week_10_pair_20',SECRET);
   for(const line of warnings){
-    assert.match(line,/^\[video\] embedded provider unavailable \{"stage":"[a-z-]+","status":(?:\d+|null)\}$/);
+    assert.match(line,/^\[video\] embedded provider unavailable \{"stage":"[a-z-]+","status":(?:\d+|null),"error":(?:"[a-z-]+"|null)\}$/);
     for(const secret of [API_KEY,name,'Candidate','member@example.test','week_10_pair_20','eyJ']) assert.equal(line.includes(secret),false);
   }
 });
@@ -351,7 +354,7 @@ test('a concurrent partner creation is absorbed by one update retry',async()=>{
   let updates=0;
   provider.fail=path=>{
     if(path===`/v1/rooms/${name}`&&updates++===0) return new Response('{"error":"not-found"}',{status:404});
-    if(path==='/v1/rooms'){ provider.rooms.set(name,{name,privacy:'private',config:{}}); return new Response('{"error":"exists"}',{status:400}); }
+    if(path==='/v1/rooms'){ provider.rooms.set(name,{name,privacy:'private',config:{max_participants:2}}); return new Response('{"error":"invalid-request-error"}',{status:400}); }
     return undefined;
   };
   const response=await invoke();
@@ -367,7 +370,12 @@ test('joins are rate limited per account and per network before authorization or
   }
   const calls=provider.requests.length;
   const limited=await invoke({address:'198.51.100.200'});
-  assert.equal(limited.status,429); assert.equal(limited.headers['retry-after'],'900');
+  assert.equal(limited.status,429);
+  const retryAfter=Number(limited.headers['retry-after']);
+  const window=15*60;
+  const remaining=window-(Math.floor(Date.now()/1000)%window);
+  assert.ok(Number.isSafeInteger(retryAfter)&&retryAfter>=1&&retryAfter<=window,'Retry-After is the rest of the window');
+  assert.ok((retryAfter-remaining+window)%window<=2,`Retry-After ${retryAfter} matches the remaining ${remaining}s`);
   assert.equal(provider.requests.length,calls,'a limited join never reaches the provider');
   // A non-participant's probes count against its own windows before authorization.
   for(let index=0;index<DAILY_RATE_LIMITS.account;index+=1){
@@ -378,10 +386,11 @@ test('joins are rate limited per account and per network before authorization or
   const nowSeconds=Math.floor(Date.now()/1000);
   const req={headers:{'x-forwarded-for':'2001:db8:1:2::1'},socket:{}};
   for(let userId=100;userId<100+DAILY_RATE_LIMITS.address;userId+=1){
-    assert.equal(await enforceDailyVideoRateLimit(currentDb,{req,userId,secret:SECRET,nowSeconds}),true);
+    assert.equal((await enforceDailyVideoRateLimit(currentDb,{req,userId,secret:SECRET,nowSeconds})).allowed,true);
   }
   const rotated={headers:{'x-forwarded-for':'2001:db8:1:2:ffff::9'},socket:{}};
-  assert.equal(await enforceDailyVideoRateLimit(currentDb,{req:rotated,userId:999,secret:SECRET,nowSeconds}),false);
+  const blocked=await enforceDailyVideoRateLimit(currentDb,{req:rotated,userId:999,secret:SECRET,nowSeconds});
+  assert.deepEqual({...blocked},{allowed:false,dimension:'address',retryAfter:15*60-(nowSeconds%(15*60))});
   const keys=await currentDb.execute('SELECT key FROM auth_rate_limits');
   for(const row of keys.rows) assert.match(String(row.key),/^[a-f0-9]{64}$/,'only keyed hashes are stored');
 });
@@ -449,7 +458,7 @@ test('schema, stored-state and unexpected failures are generic 503s',async()=>{
     globalThis.fetch=async()=>null;
     const unexpected=await invoke({address:'198.51.100.99'});
     assert.equal(unexpected.status,503);
-    assert.deepEqual(warnings,['[video] embedded provider unavailable {"stage":"unexpected","status":null}']);
+    assert.deepEqual(warnings,['[video] embedded provider unavailable {"stage":"unexpected","status":null,"error":null}']);
   }finally{ console.warn=originalWarn; globalThis.fetch=provider.fetch; }
 
   await currentDb.execute('DROP TABLE pair_session_controls');
@@ -465,7 +474,7 @@ test('a failed update after a create race is a 503',async()=>{
   const warnings=[]; const originalWarn=console.warn;
   console.warn=(...args)=>warnings.push(args.join(' '));
   try{ assert.equal((await invoke()).status,503); }finally{ console.warn=originalWarn; }
-  assert.deepEqual(warnings,['[video] embedded provider unavailable {"stage":"room-update","status":404}']);
+  assert.deepEqual(warnings,['[video] embedded provider unavailable {"stage":"room-update","status":404,"error":"not-found"}']);
   assert.equal(provider.requests.filter(request=>new URL(request.url).pathname==='/v1/meeting-tokens').length,0);
 });
 
@@ -477,4 +486,59 @@ test('grant helpers fail closed on a bad clock, no configuration or no time left
   await assert.rejects(mintDailyRoomGrant(config,{roomId:'week_10_pair_20',secret:SECRET,
     window:{...window,ttlSeconds:0}}),DailyProviderError);
   assert.equal(provider.requests.length,0);
+});
+
+test('a room Daily reports with recording, extra seats or public access fails closed before any token',async()=>{
+  currentDb=await readyDatabase(); enable();
+  const name=dailyRoomName('week_10_pair_20',SECRET);
+  const warnings=[]; const originalWarn=console.warn;
+  console.warn=(...args)=>warnings.push(args.join(' '));
+  try{
+    for(const reported of [
+      {name,privacy:'private',config:{max_participants:2,enable_recording:'cloud'}},
+      {name,privacy:'private',config:{max_participants:2,enable_recording:'local'}},
+      {name,privacy:'private',config:{max_participants:3}},
+      {name,privacy:'private',config:{}},
+      {name,privacy:'private'},
+      {name,privacy:'public',config:{max_participants:2}},
+      {name:'rc-other',privacy:'private',config:{max_participants:2}},
+    ]){
+      provider.requests.length=0;
+      provider.fail=path=>path===`/v1/rooms/${name}`?new Response(JSON.stringify(reported),{status:200}):undefined;
+      const response=await invoke();
+      assert.equal(response.status,503,JSON.stringify(reported));
+      assert.equal(response.body.code,'embedded_video_unavailable');
+      assert.equal(provider.requests.some(request=>new URL(request.url).pathname==='/v1/meeting-tokens'),false,'no token for a mismatched room');
+    }
+    // The create path is checked the same way.
+    provider.fail=path=>path===`/v1/rooms/${name}`?new Response('{"error":"not-found"}',{status:404})
+      :path==='/v1/rooms'?new Response(JSON.stringify({name,privacy:'private',config:{max_participants:2,enable_recording:'raw-tracks'}}),{status:200}):undefined;
+    assert.equal((await invoke()).status,503);
+  }finally{ console.warn=originalWarn; }
+  assert.equal(warnings.length,8);
+  for(const line of warnings) assert.equal(line,'[video] embedded provider unavailable {"stage":"room-config","status":200,"error":null}');
+  assert.equal(dailyRoomMatches({name,privacy:'private',config:{max_participants:2,enable_recording:null}},name),true);
+  assert.equal(dailyRoomMatches({name,privacy:'private',config:{max_participants:2,enable_recording:false}},name),true);
+  assert.equal(dailyRoomMatches({name,privacy:'private',config:{max_participants:2,enable_recording:''}},name),true);
+});
+
+test('the 503 log carries Daily\'s fixed error code but never its free text',async()=>{
+  currentDb=await readyDatabase(); enable();
+  const warnings=[]; const originalWarn=console.warn;
+  console.warn=(...args)=>warnings.push(args.join(' '));
+  try{
+    provider.fail=()=>new Response(JSON.stringify({error:'authentication-error',info:`bad key ${API_KEY}`}),{status:401});
+    assert.equal((await invoke()).status,503);
+    provider.fail=()=>new Response(JSON.stringify({error:`Bearer ${API_KEY}`,info:'x'}),{status:400});
+    assert.equal((await invoke()).status,503);
+    provider.fail=path=>path==='/v1/meeting-tokens'?new Response(JSON.stringify({error:'rate-limit-error'}),{status:429}):undefined;
+    assert.equal((await invoke()).status,503);
+  }finally{ console.warn=originalWarn; }
+  assert.deepEqual(warnings,[
+    '[video] embedded provider unavailable {"stage":"room-update","status":401,"error":"authentication-error"}',
+    '[video] embedded provider unavailable {"stage":"room-update","status":400,"error":null}',
+    '[video] embedded provider unavailable {"stage":"token","status":429,"error":"rate-limit-error"}',
+  ]);
+  assert.equal(dailyErrorCode({error:'invalid-request-error'}),'invalid-request-error');
+  for(const payload of [null,{},{error:42},{error:'Has Caps'},{error:'x'.repeat(80)}]) assert.equal(dailyErrorCode(payload),null);
 });

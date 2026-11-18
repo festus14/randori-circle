@@ -1,7 +1,8 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import { getJwtSecret } from './_db.js';
 import { rateLimitAddress } from './_client-address.js';
+import { consumeKeyedRateLimits } from './_keyed-rate-limit.js';
 import { redactLogText, redactLogValue } from './_client-log-policy.js';
 import { outboxStatementIdentity } from './_outbox-identity.js';
 import {
@@ -37,11 +38,6 @@ export class FeedbackConflictError extends Error{
   }
 }
 
-function rateLimitKey(dimension,value,bucket){
-  return createHmac('sha256',getJwtSecret())
-    .update(`randori-feedback-rate-v1\0${dimension}\0${value}\0${bucket}`,'utf8').digest('hex');
-}
-
 /**
  * Consume the submission budget in the shared auth_rate_limits table: per
  * member, then per client address (IPv6 keyed by /64), each over a rolling
@@ -54,28 +50,15 @@ export async function consumeFeedbackRateLimits(db,{userId,ip,nowSeconds=Math.fl
   const user=Number(userId);
   if(!Number.isSafeInteger(user)||user<1) throw new TypeError('valid user id is required');
   if(!Number.isSafeInteger(nowSeconds)||nowSeconds<1) throw new TypeError('valid time is required');
-  const dimensions=[
-    ['user-hour',String(user),FEEDBACK_RATE_LIMITS.userHour],
-    ['user-day',String(user),FEEDBACK_RATE_LIMITS.userDay],
-    ['ip-hour',rateLimitAddress(ip),FEEDBACK_RATE_LIMITS.ipHour],
-    ['ip-day',rateLimitAddress(ip),FEEDBACK_RATE_LIMITS.ipDay],
-  ];
-  for(const [dimension,value,{limit,windowSeconds}] of dimensions){
-    const bucket=Math.floor(nowSeconds/windowSeconds);
-    const expiresAt=(bucket+1)*windowSeconds;
-    const result=await db.execute({
-      sql:`INSERT INTO auth_rate_limits (key,attempts,expires_at) VALUES (?,1,?)
-        ON CONFLICT(key) DO UPDATE SET attempts=auth_rate_limits.attempts+1
-        RETURNING attempts`,
-      args:[rateLimitKey(dimension,value,bucket),expiresAt],
-    });
-    const attempts=Number(result.rows?.[0]?.attempts);
-    if(!Number.isSafeInteger(attempts)||attempts<1) throw new Error('invalid rate limit state');
-    if(attempts>limit){
-      return Object.freeze({allowed:false,dimension,retryAfter:Math.max(1,expiresAt-nowSeconds)});
-    }
-  }
-  return Object.freeze({allowed:true,dimension:null,retryAfter:0});
+  return consumeKeyedRateLimits(db,{
+    label:'randori-feedback-rate-v1',secret:getJwtSecret(),nowSeconds,
+    dimensions:[
+      ['user-hour',String(user),FEEDBACK_RATE_LIMITS.userHour],
+      ['user-day',String(user),FEEDBACK_RATE_LIMITS.userDay],
+      ['ip-hour',rateLimitAddress(ip),FEEDBACK_RATE_LIMITS.ipHour],
+      ['ip-day',rateLimitAddress(ip),FEEDBACK_RATE_LIMITS.ipDay],
+    ],
+  });
 }
 
 function projectFeedbackItem(row){

@@ -7,12 +7,16 @@
 // persisted in Turso: the room name is derived (HMAC) from the canonical room
 // id, and rate-limit counters reuse the existing keyed-hash table.
 //
-// Recording is deliberately not offered: neither the room nor the token ever
-// sets `enable_recording`, `start_cloud_recording`, or a recording UI, so
-// Daily's default (recording not set = unavailable) applies.
+// Recording is deliberately not offered. Daily's `enable_recording` takes only
+// the recording modes ("cloud", "local", "raw-tracks", ...) and is off when it
+// is not set, so neither the room nor the token ever sends it, nor
+// `start_cloud_recording`. Instead every room Daily returns is checked: a
+// room whose config reports any recording mode, more than two participants
+// or non-private access fails closed before a token is minted.
 import { createHmac } from 'node:crypto';
 
 import { clientAddress, rateLimitAddress } from './_client-address.js';
+import { consumeKeyedRateLimits } from './_keyed-rate-limit.js';
 
 // vercel.json's CSP `frame-src` and Permissions-Policy allow exactly this
 // origin. A different DAILY_DOMAIN would load a frame the browser blocks, so
@@ -33,12 +37,22 @@ export class DailyVideoInputError extends Error{
   constructor(message){ super(message); this.name='DailyVideoInputError'; }
 }
 
-// Carries only the failing stage and the provider's HTTP status: never the
-// request, the response body, the API key, a token or a participant label.
+const PROVIDER_ERROR_CODE=/^[a-z][a-z-]{0,63}$/;
+
+// Daily's fixed `error` enum (for example `invalid-request-error`), or null.
+// Free-text `info` and anything else from the body is never kept.
+export function dailyErrorCode(payload){
+  const code=payload?.error;
+  return typeof code==='string'&&PROVIDER_ERROR_CODE.test(code)?code:null;
+}
+
+// Carries only the failing stage, the provider's HTTP status and its fixed
+// error code: never the request, other response text, the API key, a token,
+// a room name or a participant label.
 export class DailyProviderError extends Error{
-  constructor(stage,status=null){
+  constructor(stage,status=null,providerError=null){
     super('embedded video provider request failed');
-    this.name='DailyProviderError'; this.stage=stage; this.status=status;
+    this.name='DailyProviderError'; this.stage=stage; this.status=status; this.providerError=providerError;
   }
 }
 
@@ -94,27 +108,19 @@ export function parseEmbeddedRoomRequest(req,parseRoom){
 }
 
 /**
- * Two fixed windows (account and client network). Keys are secret-keyed
- * hashes in the existing `auth_rate_limits` table, so nothing linkable to the
- * member is stored and no migration is needed.
+ * Two fixed 15-minute windows (account, then client network) through the
+ * shared keyed limiter, so nothing linkable to the member is stored and no
+ * migration is needed. Returns {allowed, dimension, retryAfter}.
  */
-export async function enforceDailyVideoRateLimit(db,{req,userId,secret,nowSeconds=Math.floor(Date.now()/1000)}){
-  const bucket=Math.floor(nowSeconds/DAILY_RATE_WINDOW_SECONDS);
-  const dimensions=[
-    ['account',String(userId),DAILY_RATE_LIMITS.account],
-    ['address',rateLimitAddress(clientAddress(req)),DAILY_RATE_LIMITS.address],
-  ];
-  for(const [dimension,value,limit] of dimensions){
-    const key=createHmac('sha256',secret)
-      .update(`randori-daily-video-rate-v1\0${dimension}\0${value}\0${bucket}`,'utf8').digest('hex');
-    const result=await db.execute({
-      sql:`INSERT INTO auth_rate_limits (key, attempts, expires_at) VALUES (?,1,?)
-        ON CONFLICT(key) DO UPDATE SET attempts=attempts+1 RETURNING attempts`,
-      args:[key,(bucket+1)*DAILY_RATE_WINDOW_SECONDS],
-    });
-    if(Number(result.rows[0].attempts)>limit) return false;
-  }
-  return true;
+export function enforceDailyVideoRateLimit(db,{req,userId,secret,nowSeconds=Math.floor(Date.now()/1000)}){
+  const window={windowSeconds:DAILY_RATE_WINDOW_SECONDS};
+  return consumeKeyedRateLimits(db,{
+    label:'randori-daily-video-rate-v1',secret,nowSeconds,
+    dimensions:[
+      ['account',String(userId),{...window,limit:DAILY_RATE_LIMITS.account}],
+      ['address',rateLimitAddress(clientAddress(req)),{...window,limit:DAILY_RATE_LIMITS.address}],
+    ],
+  });
 }
 
 /**
@@ -184,8 +190,26 @@ async function dailyRequest(config,{method,path,body,stage,fetchImpl}){
   return {status:response.status,payload};
 }
 
-function privateRoom(payload,name){
-  return payload?.name===name&&payload?.privacy==='private';
+function recordingConfigured(value){
+  return value!==undefined&&value!==null&&value!==false&&value!=='';
+}
+
+// The room as Daily reports it must be exactly the one Randori asked for.
+export function dailyRoomMatches(payload,name){
+  const config=payload?.config;
+  return payload?.name===name&&payload?.privacy==='private'
+    &&!!config&&typeof config==='object'&&config.max_participants===2
+    &&!recordingConfigured(config.enable_recording);
+}
+
+function roomResult(response,name){
+  if(response.status!==200) return false;
+  if(dailyRoomMatches(response.payload,name)) return true;
+  throw new DailyProviderError('room-config',200,dailyErrorCode(response.payload));
+}
+
+function providerFailure(stage,response){
+  return new DailyProviderError(stage,response.status,dailyErrorCode(response.payload));
 }
 
 async function ensureDailyRoom(config,{name,properties,fetchImpl}){
@@ -193,22 +217,22 @@ async function ensureDailyRoom(config,{name,properties,fetchImpl}){
     method:'POST',path:`/rooms/${name}`,body:{privacy:'private',properties},stage:'room-update',fetchImpl,
   });
   const first=await update();
-  if(first.status===200&&privateRoom(first.payload,name)) return;
-  if(first.status!==404) throw new DailyProviderError('room-update',first.status);
+  if(roomResult(first,name)) return;
+  if(first.status!==404) throw providerFailure('room-update',first);
   const created=await dailyRequest(config,{
     method:'POST',path:'/rooms',body:{name,privacy:'private',properties},stage:'room-create',fetchImpl,
   });
-  if(created.status===200&&privateRoom(created.payload,name)) return;
+  if(roomResult(created,name)) return;
   if(created.status===400){
     // The partner may have created the room in between; update it once.
     const retried=await update();
-    if(retried.status===200&&privateRoom(retried.payload,name)) return;
-    throw new DailyProviderError('room-update',retried.status);
+    if(roomResult(retried,name)) return;
+    throw providerFailure('room-update',retried);
   }
-  throw new DailyProviderError('room-create',created.status);
+  throw providerFailure('room-create',created);
 }
 
-/** Returns {roomUrl, token, expiresAt}; throws DailyProviderError. */
+/** Returns {roomUrl, token, expiresAt, expiresIn}; throws DailyProviderError. */
 export async function mintDailyRoomGrant(config,{roomId,secret,window,label,camera,microphone,fetchImpl=globalThis.fetch}){
   if(!config||!(window?.ttlSeconds>0)) throw new DailyProviderError('configuration',null);
   const name=dailyRoomName(roomId,secret);
@@ -221,10 +245,11 @@ export async function mintDailyRoomGrant(config,{roomId,secret,window,label,came
   });
   const token=minted.payload?.token;
   if(minted.status!==200||typeof token!=='string'||!MEETING_TOKEN.test(token)){
-    throw new DailyProviderError('token',minted.status);
+    throw providerFailure('token',minted);
   }
   return Object.freeze({
     roomUrl:`${config.origin}/${name}`,token,
     expiresAt:new Date(window.expiresAt*1000).toISOString(),
+    expiresIn:window.ttlSeconds,
   });
 }
