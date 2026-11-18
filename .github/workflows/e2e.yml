@@ -112,6 +112,15 @@ jobs:
   cross-browser-smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # Run inside the official Playwright image (issue #478): its browsers and
+    # their system libraries are preinstalled, so these legs no longer download
+    # ~125 MB of WebKit/Firefox dependencies from the Ubuntu mirror on every run
+    # (slow-mirror timeouts and orphaned-apt locks failed the install step).
+    # The tag must match @playwright/test in package-lock.json and the image is
+    # pinned by its index digest; tests/unit/github-actions-runtime.test.mjs
+    # enforces both.
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
     strategy:
       fail-fast: false
       matrix:
@@ -120,6 +129,9 @@ jobs:
             project: firefox-smoke
           - browser: webkit
             project: webkit-smoke
+    env:
+      # Firefox refuses to run as root under a foreign HOME inside the container.
+      HOME: /root
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -130,29 +142,10 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Let apt wait for the runner's dpkg lock
-        # ubuntu-24.04 images (20261111+) can still hold the dpkg frontend
-        # lock from boot-time apt work, and a timed-out first install attempt
-        # leaves its orphaned apt-get holding it. Wait for the lock instead of
-        # failing the retry immediately with exit code 100.
-        run: echo 'DPkg::Lock::Timeout "240";' | sudo tee /etc/apt/apt.conf.d/99-dpkg-lock-timeout
-      - name: Install Playwright browser
-        # install --with-deps intermittently stalls on apt (two 20-minute
-        # hangs on this job). Give each attempt its own timeout so a hung
-        # attempt is killed and the retry actually runs, instead of the
-        # step timeout killing the whole step mid-retry.
-        timeout-minutes: 12
-        # A timed-out first attempt leaves its apt-get child running and holding
-        # the dpkg lock, so the retry used to wait out DPkg::Lock::Timeout and
-        # fail. Clear the orphan and repair dpkg before retrying once.
+      - name: Verify the preinstalled browser matches the lockfile
         run: |
-          timeout 330 npx playwright install --with-deps ${{ matrix.browser }} && exit 0
-          echo "First Playwright install attempt failed; clearing orphaned apt/dpkg before retrying."
-          sudo pkill -x apt-get || true
-          sudo pkill -x dpkg || true
-          sleep 2
-          sudo dpkg --configure -a || true
-          timeout 330 npx playwright install --with-deps ${{ matrix.browser }}
+          npx playwright --version
+          test "$(npx playwright --version)" = "Version $(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")"
       - name: Run cross-browser smoke tests
         run: npm run test:e2e -- --project=${{ matrix.project }}
       - name: Upload report
