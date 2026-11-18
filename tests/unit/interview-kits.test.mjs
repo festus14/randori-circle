@@ -12,7 +12,7 @@ import { createEvaluationSuite, getPublicExercise, listPublicExercises, validate
 import { INTERVIEW_KIT_DEFINITIONS } from '../../api/_catalog-interview-kits.js';
 import { canonicalExerciseHash } from '../../api/_catalog-provenance.js';
 import { applyTakedown } from '../../scripts/catalog-provenance.mjs';
-import { seededKitRandom, validateInterviewKitReferences } from '../../scripts/validate-interview-kits.mjs';
+import { seededKitRandom, runReferenceProgram, validateInterviewKitReferences } from '../../scripts/validate-interview-kits.mjs';
 
 const keys = Object.keys(INTERVIEW_KIT_DEFINITIONS);
 const fresh = () => ({ catalog: structuredClone(catalog), manifest: structuredClone(manifest) });
@@ -35,7 +35,7 @@ test('two distinct interview tracks each add four original exercises across all 
     const added = kit.exerciseKeys.filter(key => keys.includes(key));
     assert.equal(added.length, 4);
     const difficulties = added.map(key => getPublicExercise(key.split('@')[0], 1).difficulty);
-    assert.deepEqual(difficulties, ['Easy', 'Medium', 'Medium', 'Hard']);
+    assert.deepEqual(difficulties, kit.track === 'backend' ? ['Easy', 'Medium', 'Medium', 'Hard'] : ['Easy', 'Easy', 'Medium', 'Hard']);
     assert.equal(kit.exerciseKeys.length, 7, 'three existing exercises also belong to each kit');
   }
   for (const key of keys) {
@@ -117,15 +117,26 @@ const independent = {
   },
   'shard-window-audit@1': (events, queries) => queries.map(([shard, start, end]) => events
     .filter(([s, time]) => s === shard && start <= time && time < end).reduce((sum, [, , delta]) => sum + delta, 0)),
-  'retry-lane-dispatch@1': jobs => {
-    const remaining = [...jobs], result = [];
-    let time = 0;
-    while (remaining.length) {
-      if (!remaining.some(j => j.readyAt <= time)) time = Math.min(...remaining.map(j => j.readyAt));
-      const chosen = remaining.filter(j => j.readyAt <= time).sort((a, b) => a.duration - b.duration || a.id.localeCompare(b.id))[0];
-      result.push({ id: chosen.id, start: time });
-      time += chosen.duration;
-      remaining.splice(remaining.indexOf(chosen), 1);
+  'retry-credit-rounds@1': (lanes, slots) => {
+    const ids = lanes.map(lane => lane.id).sort();
+    const states = new Map(lanes.map(lane => [lane.id, { ...lane, queue: [...lane.charges], credit: 0, last: -1 }]));
+    const result = [];
+    let round = 0;
+    while ([...states.values()].some(lane => lane.queue.length)) {
+      round += 1;
+      for (const lane of states.values()) lane.credit = Math.min(lane.cap, lane.credit + lane.refill);
+      const pivot = (round - 1) % ids.length;
+      const visits = [...ids.slice(pivot), ...ids.slice(0, pivot)];
+      let available = slots;
+      for (const id of visits) {
+        const lane = states.get(id);
+        if (!available) break;
+        if (!lane.queue.length || lane.last === round - 1 || lane.credit < lane.queue[0]) continue;
+        result.push({ round, lane: id, job: lane.charges.length - lane.queue.length });
+        lane.credit -= lane.queue.shift();
+        lane.last = round;
+        available -= 1;
+      }
     }
     return result;
   },
@@ -217,9 +228,11 @@ test('kit upper-bound cases and guaranteed traps have known expected answers', (
   assert.deepEqual(tests['shard-window-audit'][1].expected, [5, 0, 3, 0]);
   assert.equal(tests['shard-window-audit'][7].args[0].length, 2000);
   assert.deepEqual(tests['shard-window-audit'][7].expected, Array.from({ length: 2000 }, (_, i) => i % 2 ? 1000 : 0));
-  assert.deepEqual(tests['retry-lane-dispatch'][2].expected, [{ id: 'z', start: 0 }, { id: 'a', start: 5 }, { id: 'b', start: 6 }, { id: 'late', start: 20 }]);
-  assert.equal(tests['retry-lane-dispatch'][7].args[0].length, 1000);
-  assert.deepEqual(tests['retry-lane-dispatch'][7].expected, Array.from({ length: 1000 }, (_, i) => ({ id: `j${String(i).padStart(4, '0')}`, start: i })));
+  assert.deepEqual(tests['retry-credit-rounds'][1].expected, [{ round: 3, lane: 'only', job: 0 }, { round: 5, lane: 'only', job: 1 }, { round: 7, lane: 'only', job: 2 }]);
+  assert.deepEqual(tests['retry-credit-rounds'][2].expected, [{ round: 1, lane: 'amber', job: 0 }, { round: 2, lane: 'blue', job: 0 }, { round: 3, lane: 'amber', job: 1 }, { round: 4, lane: 'blue', job: 1 }]);
+  assert.deepEqual(tests['retry-credit-rounds'][3].expected, [{ round: 1, lane: 'a', job: 0 }, { round: 3, lane: 'a', job: 1 }, { round: 4, lane: 'b', job: 0 }, { round: 5, lane: 'a', job: 2 }, { round: 7, lane: 'a', job: 3 }, { round: 8, lane: 'b', job: 1 }, { round: 9, lane: 'a', job: 4 }]);
+  assert.equal(tests['retry-credit-rounds'][7].args[0].length, 16);
+  assert.deepEqual(tests['retry-credit-rounds'][7].expected, Array.from({ length: 200 }, (_, i) => ({ round: (i + 1) * 100, lane: 'l15', job: i })));
   assert.deepEqual(tests['shard-fence-planner'].slice(0, 4).map(c => c.expected), [0, -1, 23, -1]);
   assert.equal(tests['shard-fence-planner'][7].args[0].length, 180);
   assert.equal(tests['shard-fence-planner'][7].expected, 248);
@@ -229,6 +242,7 @@ test('kit upper-bound cases and guaranteed traps have known expected answers', (
   assert.deepEqual(tests['viewport-anchor-walk'][1].expected, [[1, 0], [1, 0], [0, 0], [1, 3]]);
   assert.deepEqual(tests['viewport-anchor-walk'][7].expected, Array.from({ length: 400 }, (_, i) => [i, 0]));
   assert.deepEqual(tests['focus-shortcut-tour'].slice(0, 4).map(c => c.expected), [0, -1, 4, 2]);
+  assert.equal(tests['focus-shortcut-tour'][4].expected, 4, 'the cheaper duplicate arriving second must replace the first edge');
   assert.equal(tests['focus-shortcut-tour'][7].args[0], 40);
   assert.equal(tests['focus-shortcut-tour'][7].args[2].length, 10);
   assert.equal(tests['focus-shortcut-tour'][7].expected, 39);
@@ -248,7 +262,7 @@ async function withRuntime(pair, check) {
     await mkdir(join(root, 'api'));
     await mkdir(join(root, 'data'));
     await writeFile(join(root, 'package.json'), '{"type":"module"}');
-    for (const file of ['_catalog.js', '_catalog-provenance.js', '_catalog-interview-kits.js']) {
+    for (const file of ['_catalog.js', '_catalog-provenance.js', '_catalog-interview-kits.js', '_catalog-random.js']) {
       await copyFile(new URL(`../../api/${file}`, import.meta.url), join(root, 'api', file));
     }
     await writeFile(join(root, 'data/randori-catalog-v1.json'), JSON.stringify(pair.catalog));

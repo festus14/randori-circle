@@ -6,7 +6,7 @@
       "title": "Backend data processing",
       "track": "backend",
       "description": "Practise ingestion, time-window reporting, dispatch and batch planning across three difficulty tiers.",
-      "exerciseKeys": ["delivery-receipt-ledger@1", "shard-window-audit@1", "retry-lane-dispatch@1", "shard-fence-planner@1", "message-frequency-leaders@1", "release-feed-merge@1", "resilient-network-budget@1"]
+      "exerciseKeys": ["delivery-receipt-ledger@1", "shard-window-audit@1", "retry-credit-rounds@1", "shard-fence-planner@1", "message-frequency-leaders@1", "release-feed-merge@1", "resilient-network-budget@1"]
     },
     {
       "id": "frontend-state-logic",
@@ -1198,8 +1198,8 @@
       "status": "active",
       "title": "Delivery Receipt Ledger",
       "difficulty": "Easy",
-      "type": "hash-map",
-      "tags": ["hash-maps", "deduplication", "sorting"],
+      "type": "deduplicating-aggregation",
+      "tags": ["deduplication", "aggregation", "sorting"],
       "prompt": "A parcel rehearsal service receives receipts in arrival order. Each receipt has id, destination and units. Only the first receipt with a given id counts, even if later receipts with that id name a different destination or number of units. Total the counted units for each destination. Return objects {destination, units} sorted by destination in ascending ASCII order. Include destinations whose counted total is zero; return an empty list when there are no receipts.",
       "constraints": ["0 <= receipts.length <= 2000", "id and destination are non-empty strings of at most 20 lowercase ASCII letters or digits", "units is an integer from 0 to 1000; ids may repeat and destinations are case-sensitive"],
       "examples": [
@@ -1225,8 +1225,8 @@
       "status": "active",
       "title": "Shard Window Audit",
       "difficulty": "Medium",
-      "type": "prefix-sums",
-      "tags": ["prefix-sums", "binary-search", "sorting"],
+      "type": "range-aggregation",
+      "tags": ["time-windows", "aggregation", "signed-adjustments"],
       "prompt": "A rehearsal ingestion service records adjustments [shard, time, delta] in no particular order. An audit query [shard, start, end] asks for the sum of deltas on that shard with start <= time < end. Return one integer per query in the original query order. Every event counts, including duplicate rows and rows at the same time. An unknown shard or an empty time window has sum zero. Negative deltas undo units and must not be discarded.",
       "constraints": ["0 <= events.length <= 2000 and 0 <= queries.length <= 2000", "Shard names use 1 to 20 lowercase ASCII letters or digits", "Times, start and end are integers from -10000 to 10000 with start <= end", "delta is an integer from -1000 to 1000"],
       "examples": [
@@ -1247,22 +1247,22 @@
       }
     },
     {
-      "slug": "retry-lane-dispatch",
+      "slug": "retry-credit-rounds",
       "version": 1,
       "status": "active",
-      "title": "Retry Lane Dispatch",
+      "title": "Retry Credit Rounds",
       "difficulty": "Medium",
-      "type": "heap",
-      "tags": ["heaps", "simulation", "sorting"],
-      "prompt": "A service rehearsal has one retry lane and jobs {id, readyAt, duration} supplied in arbitrary order. The lane starts at time zero. Whenever it is free, choose the ready unfinished job with the shortest duration, breaking a tie by ascending ASCII id. A job is ready when readyAt is no greater than the current time. Run the chosen job to completion without interruption. If none is ready, advance to the next readyAt. Return {id, start} for every job in dispatch order, where start is its start time. Jobs that arrive during a run wait for the next choice.",
-      "constraints": ["0 <= jobs.length <= 1000", "Job ids are unique strings of 1 to 20 lowercase ASCII letters or digits", "readyAt is an integer from 0 to 10000 and duration is an integer from 1 to 1000"],
+      "type": "round-simulation",
+      "tags": ["round-robin", "simulation", "state-machines"],
+      "prompt": "A retry rehearsal has lanes {id, refill, cap, charges}, supplied in arbitrary order. Each lane's charges list is a FIFO queue of job costs, all available from the start. Credits begin at zero. In round one and each later round, first add refill credits to every lane, capped at cap, even if that lane cannot dispatch. Then visit the lanes in ascending ASCII id order, rotated left by (round-1) modulo the number of lanes. Dispatch at most slots jobs across the entire round, and at most one job per lane. A lane can dispatch only its front job, only if it has enough credits, and only if it did not dispatch in the immediately previous round. Debit the job's charge when dispatched. A blocked lane does not consume a slot. Discard unused slots and advance the round; keep credits between rounds. Continue until every queue is empty. Return {round, lane, job} for each dispatch in emission order, where job is the original zero-based position in that lane's queue. An empty rehearsal returns an empty list. There are no arrival times or job durations to optimise.",
+      "constraints": ["0 <= lanes.length <= 16 and the total number of queued jobs is at most 200", "Lane ids are unique strings of 1 to 20 lowercase ASCII letters or digits", "1 <= refill <= cap <= 100; charges are integers from 1 to that lane's cap", "1 <= slots <= 16; round numbering starts at one and queues are never reordered"],
       "examples": [
-        {"input": [[{"id":"z","readyAt":0,"duration":5},{"id":"b","readyAt":2,"duration":1},{"id":"a","readyAt":2,"duration":1},{"id":"late","readyAt":20,"duration":1}]], "output": [{"id":"z","start":0},{"id":"a","start":5},{"id":"b","start":6},{"id":"late","start":20}], "explanation": "The first run is not interrupted. At time five a wins the tie; after b the lane waits until time twenty."},
-        {"input": [[{"id":"solo","readyAt":8,"duration":2}]], "output": [{"id":"solo","start":8}], "explanation": "The lane waits for the only job instead of starting it at zero."}
+        {"input": [[{"id":"blue","refill":3,"cap":4,"charges":[4,1]},{"id":"amber","refill":2,"cap":4,"charges":[2,2]}],1], "output": [{"round":1,"lane":"amber","job":0},{"round":2,"lane":"blue","job":0},{"round":3,"lane":"amber","job":1},{"round":4,"lane":"blue","job":1}], "explanation": "Each round has one global slot. The rotated lane order and one-round cooldown alternate dispatches; the supplied order is irrelevant."},
+        {"input": [[{"id":"only","refill":2,"cap":5,"charges":[5,1,5]}],1], "output": [{"round":3,"lane":"only","job":0},{"round":5,"lane":"only","job":1},{"round":7,"lane":"only","job":2}], "explanation": "The first charge waits for credits. Rounds four and six refill credits but cooldown forbids dispatch."}
       ],
       "languages": {
-        "javascript": {"entrypoint":"retryLaneDispatch","signature":"function retryLaneDispatch(jobs)","starter":"function retryLaneDispatch(jobs) {\n  // Return jobs and their start times in dispatch order.\n}\n"},
-        "python": {"entrypoint":"retry_lane_dispatch","signature":"def retry_lane_dispatch(jobs):","starter":"def retry_lane_dispatch(jobs):\n    # Return jobs and their start times in dispatch order.\n    pass\n"}
+        "javascript": {"entrypoint":"retryCreditRounds","signature":"function retryCreditRounds(lanes, slots)","starter":"function retryCreditRounds(lanes, slots) {\n  // Return the credit-round dispatch log without changing the queues.\n}\n"},
+        "python": {"entrypoint":"retry_credit_rounds","signature":"def retry_credit_rounds(lanes, slots):","starter":"def retry_credit_rounds(lanes, slots):\n    # Return the credit-round dispatch log without changing the queues.\n    pass\n"}
       },
       "governance": {
         "rightsOwner":"Randori Circle project contributors",
@@ -1332,7 +1332,7 @@
       "version": 1,
       "status": "active",
       "title": "Draft Revision Fold",
-      "difficulty": "Medium",
+      "difficulty": "Easy",
       "type": "state-reducer",
       "tags": ["hash-maps", "versioning", "tombstones"],
       "prompt": "A rehearsal editor receives full draft updates {id, revision, text} in delivery order, not revision order. For each id, accept its first update and then only updates with a strictly larger revision. Equal revisions keep the first accepted text. A null text is a deletion marker: retain its revision when rejecting stale updates, but omit that draft from the final output. A later larger revision with non-null text restores the draft. Return the accepted non-deleted drafts as {id, revision, text} sorted by id in ascending ASCII order. Empty text is a live draft, not a deletion.",

@@ -5637,8 +5637,13 @@ more executable original content, not imported problem-bank statements.
 
 **Decision.**
 - Add two distinct tracks: Backend data processing and Frontend state logic.
-  Each adds four original exercises (one Easy, two Medium, one Hard) and curates
-  three existing reviewed exercises. Every new question has two public examples,
+  Each adds four original exercises and curates three existing reviewed
+  exercises. Backend has one Easy, two Medium and one Hard addition; Frontend
+  has two Easy, one Medium and one Hard (Draft Revision Fold is a one-pass Easy
+  reducer). Retry Credit Rounds uses capped per-lane credit refill, FIFO jobs,
+  cooldown, rotating lane visits and a global round slot limit, not shortest-ready
+  duration scheduling. Ledger/window tags describe behaviour; their bounds do
+  not mandate a particular hash-map or prefix-query technique. Every new question has two public examples,
   both language starters, eight fresh server-owned cases, an oracle, exact
   original provenance, a canonical hash and a bounded review expiry.
 - Advance the catalogue's payload schema to 2 with a closed `kits` envelope and
@@ -5662,7 +5667,10 @@ more executable original content, not imported problem-bank statements.
 - Extend `validate:catalog` with offline JavaScript/Python reference execution
   through the production harnesses for new kit content. Python references cannot
   use imports or builtins outside the execution gateway's allowed namespace.
-  Runtime catalogue validation itself remains in-process and never executes
+  The JS arm verifies oracle/harness compatibility, while separately authored
+  Python references and small-input checks supply independent correctness
+  evidence. SHA-pinned CI Python setup and a clear missing-python3 error make
+  this dependency explicit. Runtime catalogue validation itself remains in-process and never executes
   these authoring checks or starts a provider.
 
 **Alternatives.** A large import was rejected: originality and case review must

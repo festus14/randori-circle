@@ -14,16 +14,38 @@ three existing exercises without changing their statements, versions or hashes.
 
 | Track / kit | New Easy | New Medium | New Hard | Existing members |
 | --- | --- | --- | --- | --- |
-| Backend / Backend data processing | Delivery Receipt Ledger | Shard Window Audit; Retry Lane Dispatch | Shard Fence Planner | Message Frequency Leaders; Release Feed Merge; Resilient Network Budget |
-| Frontend / Frontend state logic | Panel Notice Counters | Draft Revision Fold; Viewport Anchor Walk | Focus Shortcut Tour | Balanced Template Markers; Command Prefix Census; Command Message Segmentation |
+| Backend / Backend data processing | Delivery Receipt Ledger | Shard Window Audit; Retry Credit Rounds | Shard Fence Planner | Message Frequency Leaders; Release Feed Merge; Resilient Network Budget |
+| Frontend / Frontend state logic | Panel Notice Counters; Draft Revision Fold | Viewport Anchor Walk | Focus Shortcut Tour | Balanced Template Markers; Command Prefix Census; Command Message Segmentation |
 
 Every new exercise has two public examples, JavaScript and Python starters,
 eight fresh server-owned cases (including deterministic boundaries and an
 upper-bound case), a JavaScript oracle, and an independently written Python
 reference. `npm run validate:catalog` executes those references in **both**
 production harnesses against generated cases and public examples. It needs
-Node 24 and `python3`, not a configured provider or network access. Unit tests
-also compare small cases against separate brute-force references.
+Node 24 and `python3`, not a configured provider or network access. The two CI
+jobs that run it provision Python 3.14 using a SHA-pinned `actions/setup-python`;
+a missing local Python installation produces a direct setup instruction. Unit tests
+also compare small cases against separate brute-force references. The JavaScript
+arm proves that the server oracle executes in the real VM harness, not that it
+is correct independently; answer agreement with the separately authored Python
+reference and small-input checks is the correctness evidence.
+
+### Scheduling and difficulty review
+
+Retry Credit Rounds has no job arrivals, durations or shortest-ready optimisation.
+Its independently specified contract combines per-lane capped refill credits,
+FIFO charges, a one-round cooldown, rotating ASCII lane visits and a global
+round slot limit. Cases separately catch missing cooldown, uncapped balances,
+fixed visit order, per-lane rather than global slots and shortest-charge queue
+reordering. This replaces the initial scheduling draft before publication.
+
+Draft Revision Fold is **Easy**: its full-update, strict-revision/tombstone rule is
+a one-pass reducer, not a Medium challenge. The frontend kit therefore has two
+Easy, one Medium and one Hard addition. Delivery Receipt Ledger and Shard Window
+Audit use behavioural pattern metadata rather than promising that hash maps,
+prefix sums or binary search are required at their modest bounds. The oracles
+may use those techniques, but any correct implementation within runner limits
+is valid; algorithm choice is not graded.
 
 All wording, scenarios, examples, starters, generated inputs and reference code
 were authored for Randori Circle from general algorithm topics. No problem-bank

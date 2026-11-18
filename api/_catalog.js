@@ -1,4 +1,4 @@
-import { randomInt } from 'node:crypto';
+import { defaultRandom, randomUnit, randomInteger } from './_catalog-random.js';
 
 import rawCatalog from '../data/randori-catalog-v1.json' with { type: 'json' };
 import rawProvenanceManifest from '../data/randori-catalog-provenance-v1.json' with { type: 'json' };
@@ -12,23 +12,6 @@ import {
 export const SUPPORTED_LANGUAGES = Object.freeze(['javascript', 'python']);
 
 const GENERATED_CASE_COUNT = 8;
-
-function defaultRandom() {
-  return randomInt(0, 0x100000000) / 0x100000000;
-}
-
-function randomUnit(random) {
-  if (typeof random !== 'function') throw new TypeError('random must be a function');
-  const value = Number(random());
-  if (!Number.isFinite(value) || value < 0 || value >= 1) {
-    throw new RangeError('random must return a finite number in [0, 1)');
-  }
-  return value;
-}
-
-function randomInteger(random, minimum, maximum) {
-  return minimum + Math.floor(randomUnit(random) * (maximum - minimum + 1));
-}
 
 function randomItem(random, values) {
   return values[randomInteger(random, 0, values.length - 1)];

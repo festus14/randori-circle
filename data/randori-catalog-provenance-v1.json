@@ -239,7 +239,7 @@
       "author": {"name":"Randori Circle project contributors","kind":"collective"},
       "license": {"identifier":"LicenseRef-Randori-Original","name":"Randori Circle original project content","evidence":"repository://docs/CONTENT_POLICY.md"},
       "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
-      "contentHash": "sha256:517186037c96fd6f269da1b632f454b6b7b3d25b042629229a8cefb822c66498",
+      "contentHash": "sha256:26dc2d00422d33b961cede756b92788b9657e2f0300345612e67a60050409bc5",
       "review": {"status":"approved","reviewedAt":"2026-11-18","expiresAt":"2027-11-18","reviewer":"Randori Circle maintainers"},
       "takedown": {"status":"clear","effectiveAt":null,"reference":null}
     },
@@ -251,19 +251,19 @@
       "author": {"name":"Randori Circle project contributors","kind":"collective"},
       "license": {"identifier":"LicenseRef-Randori-Original","name":"Randori Circle original project content","evidence":"repository://docs/CONTENT_POLICY.md"},
       "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
-      "contentHash": "sha256:74d4629af3ac40b3d4f32ea596f6f323f65e9315b288d8bc420770b9d75c8224",
+      "contentHash": "sha256:ed2f93a592c6eafe61fd2d34e14568c5f4e256f6ebe4414cb9bf104c5f5efe25",
       "review": {"status":"approved","reviewedAt":"2026-11-18","expiresAt":"2027-11-18","reviewer":"Randori Circle maintainers"},
       "takedown": {"status":"clear","effectiveAt":null,"reference":null}
     },
     {
-      "key": "retry-lane-dispatch@1",
-      "slug": "retry-lane-dispatch",
+      "key": "retry-credit-rounds@1",
+      "slug": "retry-credit-rounds",
       "version": 1,
-      "source": {"type":"original","reference":"repository://data/randori-catalog-v1.json#retry-lane-dispatch@1","statement":"Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank."},
+      "source": {"type":"original","reference":"repository://data/randori-catalog-v1.json#retry-credit-rounds@1","statement":"Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank."},
       "author": {"name":"Randori Circle project contributors","kind":"collective"},
       "license": {"identifier":"LicenseRef-Randori-Original","name":"Randori Circle original project content","evidence":"repository://docs/CONTENT_POLICY.md"},
       "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
-      "contentHash": "sha256:37a928e2923a0ac6098aaa7e112002c151e95df7a2fbf35cbee1db074012e0b6",
+      "contentHash": "sha256:d69f964713e102cbc7eeb0bd52026ef6a6a7a477458252b303370ddd7de535a6",
       "review": {"status":"approved","reviewedAt":"2026-11-18","expiresAt":"2027-11-18","reviewer":"Randori Circle maintainers"},
       "takedown": {"status":"clear","effectiveAt":null,"reference":null}
     },
@@ -299,7 +299,7 @@
       "author": {"name":"Randori Circle project contributors","kind":"collective"},
       "license": {"identifier":"LicenseRef-Randori-Original","name":"Randori Circle original project content","evidence":"repository://docs/CONTENT_POLICY.md"},
       "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
-      "contentHash": "sha256:1a230e85d52826df6552d5c5eb997e8d0141c6dfa59b5839c102e34eb5a39e8d",
+      "contentHash": "sha256:d4b1622057afda99187ecb7598b08d1da1d16be23284ec7c60b5afbba6c8bb03",
       "review": {"status":"approved","reviewedAt":"2026-11-18","expiresAt":"2027-11-18","reviewer":"Randori Circle maintainers"},
       "takedown": {"status":"clear","effectiveAt":null,"reference":null}
     },

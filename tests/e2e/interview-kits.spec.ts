@@ -38,7 +38,7 @@ test('original kits are discoverable by track, difficulty and language and use t
   await visibleSlugs(page, slugsFor(backendId));
   await page.getByTestId('catalog-difficulty').selectOption('Medium');
   await page.getByTestId('catalog-language').selectOption('python');
-  await visibleSlugs(page, ['message-frequency-leaders', 'release-feed-merge', 'shard-window-audit', 'retry-lane-dispatch']);
+  await visibleSlugs(page, ['message-frequency-leaders', 'release-feed-merge', 'shard-window-audit', 'retry-credit-rounds']);
   await page.locator('.catalog-card[data-slug="shard-window-audit"]').click();
   await expect(page.locator('#qTitle')).toHaveText('Shard Window Audit');
   await expect(page.locator('#qDiff')).toContainText('Backend data processing');

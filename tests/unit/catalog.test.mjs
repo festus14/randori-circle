@@ -150,7 +150,7 @@ test('public listing returns full active exercises without server-owned test dat
       'resilient-network-budget',
       'delivery-receipt-ledger',
       'shard-window-audit',
-      'retry-lane-dispatch',
+      'retry-credit-rounds',
       'shard-fence-planner',
       'panel-notice-counters',
       'draft-revision-fold',

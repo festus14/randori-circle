@@ -41,20 +41,34 @@ export const PYTHON_KIT_REFERENCES = Object.freeze({
         answer.append(sums[lower(entries, end)] - sums[lower(entries, start)])
     return answer
 `,
-  'retry-lane-dispatch@1': `def retry_lane_dispatch(jobs):
-    remaining = list(jobs)
-    time = 0
-    result = []
-    while remaining:
-        ready = [j for j in remaining if j['readyAt'] <= time]
-        if not ready:
-            time = min(j['readyAt'] for j in remaining)
-            ready = [j for j in remaining if j['readyAt'] <= time]
-        job = min(ready, key=lambda j: (j['duration'], j['id']))
-        result.append({'id': job['id'], 'start': time})
-        time += job['duration']
-        remaining.remove(job)
-    return result
+  'retry-credit-rounds@1': `def retry_credit_rounds(lanes, slots):
+    order = sorted(lanes, key=lambda lane: lane['id'])
+    states = {lane['id']: {'credit': 0, 'cursor': 0, 'last': -1} for lane in order}
+    log = []
+    round_number = 0
+    while any(states[lane['id']]['cursor'] < len(lane['charges']) for lane in order):
+        round_number += 1
+        for lane in order:
+            state = states[lane['id']]
+            state['credit'] = min(lane['cap'], state['credit'] + lane['refill'])
+        pivot = (round_number - 1) % len(order)
+        visits = order[pivot:] + order[:pivot]
+        available = slots
+        for lane in visits:
+            state = states[lane['id']]
+            job = state['cursor']
+            if not available:
+                break
+            if job == len(lane['charges']) or state['last'] == round_number - 1:
+                continue
+            charge = lane['charges'][job]
+            if charge <= state['credit']:
+                state['credit'] -= charge
+                state['cursor'] += 1
+                state['last'] = round_number
+                available -= 1
+                log.append({'round': round_number, 'lane': lane['id'], 'job': job})
+    return log
 `,
   'shard-fence-planner@1': `def shard_fence_planner(events, batches, shard_fee):
     n = len(events)

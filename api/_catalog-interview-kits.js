@@ -1,3 +1,5 @@
+import { randomInteger as integer } from './_catalog-random.js';
+
 // Original interview-kit evaluation definitions. Server only: never bundle in assets.
 // Oracles are deliberately standalone so the real JS harness can execute them
 // without imports, just as a member's solution must run without imports.
@@ -41,45 +43,30 @@ function shardWindowAudit(events, queries) {
   });
 }
 
-function retryLaneDispatch(jobs) {
-  const pending = [...jobs].sort((a, b) => a.readyAt - b.readyAt);
-  const heap = [];
-  const compare = (a, b) => a.duration - b.duration || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  const push = job => {
-    heap.push(job);
-    let index = heap.length - 1;
-    while (index > 0) {
-      const parent = Math.floor((index - 1) / 2);
-      if (compare(heap[parent], heap[index]) <= 0) break;
-      [heap[parent], heap[index]] = [heap[index], heap[parent]];
-      index = parent;
-    }
-  };
-  const pop = () => {
-    const job = heap[0], last = heap.pop();
-    if (heap.length) {
-      heap[0] = last;
-      let index = 0;
-      while (true) {
-        let smallest = index;
-        const left = 2 * index + 1, right = left + 1;
-        if (left < heap.length && compare(heap[left], heap[smallest]) < 0) smallest = left;
-        if (right < heap.length && compare(heap[right], heap[smallest]) < 0) smallest = right;
-        if (smallest === index) break;
-        [heap[index], heap[smallest]] = [heap[smallest], heap[index]];
-        index = smallest;
-      }
-    }
-    return job;
-  };
-  let cursor = 0, time = 0;
+function retryCreditRounds(lanes, slots) {
+  const ordered = [...lanes].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const credits = Array(ordered.length).fill(0);
+  const nextJob = Array(ordered.length).fill(0);
+  const lastRound = Array(ordered.length).fill(-1);
+  let remaining = ordered.reduce((total, lane) => total + lane.charges.length, 0);
   const result = [];
-  while (cursor < pending.length || heap.length) {
-    if (!heap.length) time = Math.max(time, pending[cursor].readyAt);
-    while (cursor < pending.length && pending[cursor].readyAt <= time) push(pending[cursor++]);
-    const job = pop();
-    result.push({ id: job.id, start: time });
-    time += job.duration;
+  for (let round = 1; remaining > 0; round += 1) {
+    for (let index = 0; index < ordered.length; index += 1) {
+      credits[index] = Math.min(ordered[index].cap, credits[index] + ordered[index].refill);
+    }
+    let dispatched = 0;
+    for (let offset = 0; offset < ordered.length && dispatched < slots; offset += 1) {
+      const index = (round - 1 + offset) % ordered.length;
+      const lane = ordered[index];
+      const job = nextJob[index];
+      if (job === lane.charges.length || lastRound[index] === round - 1 || credits[index] < lane.charges[job]) continue;
+      credits[index] -= lane.charges[job];
+      nextJob[index] += 1;
+      lastRound[index] = round;
+      remaining -= 1;
+      dispatched += 1;
+      result.push({ round, lane: lane.id, job });
+    }
   }
   return result;
 }
@@ -174,12 +161,6 @@ function focusShortcutTour(panelCount, shortcuts, required) {
   return Number.isFinite(answer) ? answer : -1;
 }
 
-function integer(random, low, high) {
-  const unit = Number(random());
-  if (!Number.isFinite(unit) || unit < 0 || unit >= 1) throw new RangeError('random must return a finite number in [0, 1)');
-  return low + Math.floor(unit * (high - low + 1));
-}
-
 export const INTERVIEW_KIT_DEFINITIONS = {
   'delivery-receipt-ledger@1': {
     oracle: deliveryReceiptLedger,
@@ -213,14 +194,22 @@ export const INTERVIEW_KIT_DEFINITIONS = {
       return [events, queries];
     },
   },
-  'retry-lane-dispatch@1': {
-    oracle: retryLaneDispatch,
+  'retry-credit-rounds@1': {
+    oracle: retryCreditRounds,
     generateArgs(random, index) {
-      if (index === 0) return [[]];
-      if (index === 1) return [[{ id: 'solo', readyAt: 8, duration: 2 }]];
-      if (index === 2) return [[{ id: 'z', readyAt: 0, duration: 5 }, { id: 'b', readyAt: 2, duration: 1 }, { id: 'a', readyAt: 2, duration: 1 }, { id: 'late', readyAt: 20, duration: 1 }]];
-      if (index === 7) return [Array.from({ length: 1000 }, (_, i) => ({ id: `j${String(999 - i).padStart(4, '0')}`, readyAt: 0, duration: 1 }))];
-      return [Array.from({ length: integer(random, 5, 25) }, (_, i) => ({ id: `j${i}`, readyAt: integer(random, 0, 30), duration: integer(random, 1, 8) }))];
+      if (index === 0) return [[], 1];
+      if (index === 1) return [[{ id: 'only', refill: 2, cap: 5, charges: [5, 1, 5] }], 1];
+      if (index === 2) return [[{ id: 'blue', refill: 3, cap: 4, charges: [4, 1] }, { id: 'amber', refill: 2, cap: 4, charges: [2, 2] }], 1];
+      if (index === 3) return [[{ id: 'a', refill: 1, cap: 3, charges: [1, 1, 1, 1, 1] }, { id: 'b', refill: 1, cap: 3, charges: [3, 3] }], 1];
+      if (index === 4) return [[{ id: 'c', refill: 1, cap: 1, charges: [1, 1] }, { id: 'a', refill: 1, cap: 1, charges: [1, 1] }, { id: 'b', refill: 1, cap: 1, charges: [1, 1] }], 1];
+      if (index === 7) return [Array.from({ length: 16 }, (_, i) => ({ id: `l${String(i).padStart(2, '0')}`, refill: 1, cap: 100, charges: i === 15 ? Array(200).fill(100) : [] })), 16];
+      const count = integer(random, 2, 6);
+      const lanes = Array.from({ length: count }, (_, i) => {
+        const cap = integer(random, 2, 12);
+        return { id: `l${count - i}`, refill: integer(random, 1, cap), cap,
+          charges: Array.from({ length: integer(random, 0, 8) }, () => integer(random, 1, cap)) };
+      });
+      return [lanes, integer(random, 1, count)];
     },
   },
   'shard-fence-planner@1': {
@@ -277,6 +266,7 @@ export const INTERVIEW_KIT_DEFINITIONS = {
       if (index === 1) return [3, [[0, 2, 1]], [1]];
       if (index === 2) return [4, [[0, 1, 9], [0, 2, 1], [2, 1, 1], [1, 3, 2], [2, 3, 9], [0, 2, 5]], [1, 2]];
       if (index === 3) return [3, [[0, 1, 0], [1, 0, 0], [1, 2, 2]], [2, 0, 1]];
+      if (index === 4) return [4, [[0, 1, 8], [0, 1, 1], [1, 2, 7], [1, 2, 2], [2, 3, 1]], [1, 2]];
       if (index === 7) return [40, Array.from({ length: 39 }, (_, i) => [i, i + 1, 1]), Array.from({ length: 10 }, (_, i) => 30 - i)];
       const count = integer(random, 3, 7);
       const edges = [];
