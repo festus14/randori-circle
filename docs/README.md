@@ -106,9 +106,10 @@ ID-64 in the decision log.
 | [CATALOGUE_PACK_V3.md](CATALOGUE_PACK_V3.md) | The nine-exercise original pack v3 and its review (ID-60) |
 | [INTERVIEW_KITS.md](INTERVIEW_KITS.md) | Backend and frontend kits, selection, authoring, review expiry and retirement (ID-97, #469) |
 
-Code execution has no separate doc: see ID-62 (provider choice) and ID-74 (live
-execution smoke check) in the decision log, and `EXECUTION_PROVIDER` in
-[ENVIRONMENT.md](ENVIRONMENT.md).
+Code execution: [EXECUTION_LANGUAGES.md](EXECUTION_LANGUAGES.md) covers the
+TypeScript/Go matrix, default-off flags, harnesses, provenance and per-language
+smoke rollout (ID-104). See also ID-62 (provider choice), ID-74 (live smoke), and
+`EXECUTION_PROVIDER` in [ENVIRONMENT.md](ENVIRONMENT.md).
 
 ## Insights
 

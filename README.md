@@ -54,6 +54,25 @@ Not built yet: presence and remote cursors.
 Which feature is on in production, and what each flag needs, is in the
 [feature flag table](docs/ENVIRONMENT.md#feature-flags).
 
+## Execution languages (dark launch)
+
+JavaScript and Python remain the default. Literal
+`EXECUTION_LANGUAGE_TYPESCRIPT_ENABLED=true` enables TypeScript on Vercel Sandbox
+and self-hosted Piston; `EXECUTION_LANGUAGE_GO_ENABLED=true` enables Go on Piston
+only. The editor lists only additions advertised by the configured server
+provider, with a starter for every active exercise. Both flags default off.
+
+TypeScript accepts erasable types, not enums, namespaces, decorators, JSX or
+module imports/exports in catalogue functions. Go submissions are `package main`
+files with one function entrypoint and offline standard-library imports, no
+`main`. Generic starters explain the JSON types; typed function arguments are
+also supported. Go custom stdin is explicitly unsupported; TypeScript retains
+the private stdin behaviour below.
+
+Rollout, runtime pins, catalogue authoring and smoke budgets:
+[execution languages](docs/EXECUTION_LANGUAGES.md) (ID-104). No production or
+provider calls were made to enable these flags.
+
 ## Private custom stdin (dark launch)
 
 `EXECUTION_STDIN_ENABLED=false` is the default. Set it to literal `true` and

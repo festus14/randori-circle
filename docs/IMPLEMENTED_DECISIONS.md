@@ -128,6 +128,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) | Show pair presence and remote cursors over the private relay, with a TTL heartbeat fallback | Pairing & Scheduling | Active |
 | [ID-101](#id-101-load-optional-page-tools-at-their-first-use-without-weakening-byte-gates) | Load optional page tools at their first use without weakening byte gates | Quality, CI & Testing | Active |
 | [ID-103](#id-103-bound-execution-admission-and-spend-with-a-durable-retry-queue-and-pristine-runtime-snapshots) | Bound execution admission and spend with a durable retry queue and pristine runtime snapshots | Observability & Ops | Active |
+| [ID-104](#id-104-gate-typescript-and-piston-only-go-by-provider-without-runtime-installs) | Gate TypeScript and Piston-only Go by provider without runtime installs | Content & Catalogue | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -141,8 +142,9 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-104; ID-102 is reserved by parallel work in
-   #465). Never reuse a number, even if an entry is
+   plus one (currently ID-105; ID-102 is reserved by #465/#484).
+   ID-103 (#468/#483) and ID-104 (#466) are in this log.
+   Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
 2. **Check for collisions before you claim it.** Parallel PRs are the
@@ -6228,3 +6230,72 @@ local-only statement to `api/_db.js`; no migration or remote journal setting is
 introduced. Real-file and mocked-remote tests cover the boundary. On the rebased
 branch, initial JS is 957,738 bytes (+1,127 over main 956,611), with the unchanged
 1,000,000-byte gate. No provider/performance canary was run.
+
+## ID-104: Gate TypeScript and Piston-only Go by provider without runtime installs
+
+**Status: Active.** Implements #466 (epic #460), based on main `1eb7078`.
+ID-102 is reserved by #465/#484; ID-103 by #468/#483. No migration or rollout.
+
+**Amends ID-62, ID-74, ID-94 and ID-97.** JavaScript/Python are unchanged by
+absent/false flags. Literal `EXECUTION_LANGUAGE_TYPESCRIPT_ENABLED=true` enables
+TypeScript on both providers; literal `EXECUTION_LANGUAGE_GO_ENABLED=true`
+enables Go only on self-hosted Piston. The API/catalogue/workspace validators
+own the provider-language matrix; the selector never offers a new language the
+configured provider cannot run. Existing Monaco modes are reused, and the small
+selector adapter is imported only when the server advertises an addition.
+
+**Decision.** Use Node 24's syntax-only type stripping, then the existing
+restricted JavaScript VM harness; Piston receives stripped JS on its already
+installed JavaScript runtime. No code runs in the API, no TypeScript compiler is
+installed and no provider network is needed. Vercel uses the managed Node 24
+image/strip-types flag. TypeScript is limited to erasable syntax, not runtime
+transforms or type checking. Go uses Piston's pinned offline `go` 1.16.2 with a
+submitted package file and separate server-owned harness, JSON-to-declared-type
+reflection, per-case panic recovery and one JSON return value. Go is explicitly
+excluded from stock Vercel images; future snapshot toolchains need their own
+capability/version evidence and do not depend on #483 here.
+
+**Authority and provenance.** New signatures/starters are deterministic runtime
+adapters of the reviewed canonical JS signature, not bespoke authored exercise
+content. The catalogue and manifest JSON, canonical language definitions,
+content hashes, exercise versions, examples and generator semantics stay
+unchanged. Every active exercise gets adapters; every adapter is validated even
+when dark. All eight kit TypeScript references and independent Go references for
+eight kits plus three existing exercises are checked in the production harness
+when their local runtime exists. Missing Go is reported explicitly locally and
+fails CI under `CATALOG_REQUIRE_GO=true`. Bespoke content must use normal versioned
+provenance review rather than this metadata path.
+
+**Limits and privacy.** Server-owned answer keys/oracles stay out of provider
+payloads and browser state. Normalization, attestation, acknowledged-document
+execution and verified feed projection are shared unchanged. Output cap remains
+256 KiB. Go compile/run deadlines are 10 seconds each (22-second request cap);
+legacy envelopes/timeouts are unchanged. TypeScript custom stdin keeps ID-94's
+second fresh sandbox and private response/expiry semantics. Go stdin is refused
+before quota/provider work with a clear message and hidden/cleared UI controls.
+
+**Budget and rollout.** The live workflow tests all enabled supported languages
+under the same atomic claim and 30-minute/20-hour/24-hour throttle windows.
+Default: two runs per claim. Vercel with TypeScript: three. Piston with both
+additions: four. A missing new-language cache entry fails, never inherits a JS/PY
+pass. Targeted `EXECUTION_SMOKE_LANGUAGE` CLI checks keep at most five creations
+per invocation (the old default), with good/broken oracle runs for the selected
+language. Roll each flag independently after a real per-language smoke and
+editor-to-verified-feed canary on that provider. No production/provider call was
+made by this branch. Rollback unsets the one flag; data/history remain intact.
+
+**Verification.** Focused provider-free unit tests cover type stripping, flags,
+provider support, file generation, compile/run errors/timeouts/caps, catalogue
+hash preservation, workspace identity, normalization, attestation persistence,
+private input and cache failure. Playwright covers TypeScript selection, drafts,
+mocked execute results/history, Go stdin exclusion and default-off first-use
+loading. Real Go execution is skipped on the compiler-free implementation box,
+not inferred from mocks. No byte thresholds are changed.
+
+Details and operator/authoring steps: [execution languages](EXECUTION_LANGUAGES.md).
+
+**Byte budget.** On this branch, initial JS is 957,094 bytes (+483 versus
+`1eb7078`) under the unchanged 1,000,000 limit; total JS is 1,379,558 under
+1,450,000. The immutable smoke-workflow/assessor digest pins were refreshed for
+this reviewed extension; their permissions, trigger and secret predicates and
+replacement/mutation rejection tests remain intact.

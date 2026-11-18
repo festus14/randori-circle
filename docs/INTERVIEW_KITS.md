@@ -54,6 +54,22 @@ account, crawler, import, source adapter or provider call was used. This follows
 [the content policy](CONTENT_POLICY.md) and
 [the provenance contract](CATALOG_PROVENANCE.md).
 
+## TypeScript and Go adapters (#466)
+
+All eight kit exercises also derive TypeScript and Go starters from their
+reviewed JavaScript signatures, with no content-version or hash changes.
+TypeScript is available on both execution providers; Go is Piston-only.
+Each is default off behind its own literal flag. All original private cases and
+oracles are reused server-side; no kit membership makes a language available.
+
+`validate:catalog` additionally executes TypeScript kit references and parses
+every TypeScript starter. Independent Go references cover these eight exercises
+and three existing ones; they compile/run only with a pre-existing local Go
+compiler. The validator prints an explicit skip otherwise, while the required
+Ubuntu catalogue CI job sets `CATALOG_REQUIRE_GO=true` and fails if unavailable.
+No runtime/compiler download or provider call is part of validation. Details:
+[language contracts and authoring](EXECUTION_LANGUAGES.md).
+
 ## Selecting a kit question
 
 In the room's **Problem** panel, choose **Track**, **Interview kit**, then an
