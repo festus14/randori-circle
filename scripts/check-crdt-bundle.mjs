@@ -17,11 +17,12 @@ export async function verifyCrdtBundle({buildBundle=build,readBundle=readFile}={
     format:'iife',
     platform:'browser',
     target:'es2020',
-    // Keep the first-party JS byte budget without renaming or folding code.
-    minifyWhitespace:true,
+    // Full minification is pinned here and in build:crdt; ID-96 explains the
+    // whitespace-only alternative and preserved unchanged byte thresholds.
     alias:{'monaco-editor/esm/vs/editor/editor.api.js':'./assets/monaco-api-shim.js'},
     outfile,
     write:false,
+    minify:true,
   });
   const checkedIn=await readBundle(outfile);
   if(result.outputFiles.length!==1||!Buffer.from(result.outputFiles[0].contents).equals(checkedIn)){

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { expect, Page, Request, test } from '@playwright/test';
+import { expect, Page, Request, test, WebSocketRoute } from '@playwright/test';
 import * as Y from 'yjs';
 
 import { mockApi, originalQuestionFixture, setCode } from './helpers';
@@ -24,6 +24,8 @@ class CodeStore{
   getCount=0;
   runCount=0;
   completed=false;
+  relayEnabled=false;
+  holdWrites:Promise<void>|null=null;
   private documents=new Map<string,StoredDocument>();
   constructor(){
     for(const language of ['javascript','python'] as const){
@@ -44,7 +46,7 @@ class CodeStore{
   code(language='javascript'){ return this.get(language).doc.getText('code').toString(); }
   response(after=0,language='javascript'){
     const current=this.get(language);
-    return {ok:true,changed:current.revision!==after,created:false,revision:current.revision,
+    return {ok:true,...(this.relayEnabled?{realtime_relay:true}:{}),changed:current.revision!==after,created:false,revision:current.revision,
       document_version:this.version(language),state:current.revision!==after?current.persisted:null,
       code_hash:digest(this.code(language)),updated_at:'2026-09-20T10:00:00.000Z'};
   }
@@ -58,6 +60,7 @@ class CodeStore{
       return this.response(Number(url.searchParams.get('after_revision')||0),language);
     }
     this.postCount+=1;
+    if(this.holdWrites) await this.holdWrites;
     if(this.completed) return {_status:409,ok:false,error:'session is completed',code:'session_completed'};
     if(typeof body.update!=='string') return {_status:400,ok:false,error:'invalid update'};
     const before=current.persisted;
@@ -108,6 +111,13 @@ async function open(page:Page,user:User,store:CodeStore,workspaceHandler=workspa
       partner_role:user.id===1?'interviewer':'candidate',terminal:false,
       completion_version:'0'.repeat(64),version:'a'.repeat(64),updated_at:null,observed_at:new Date().toISOString(),
     }},
+    '/api/code-document/relay-token':request=>{
+      if(!store.relayEnabled) return {_status:404,error:'pair not found'};
+      const body=request.postDataJSON() as {room_id:string;language:string};
+      return {ok:true,url:'https://relay-test.supabase.co',publishable_key:'sb_publishable_test_public_key_461',
+        topic:`rc-code:v1:${body.room_id}:${digest(body.language)}`,token:'header.payload.signature',
+        expires_at:Math.floor(Date.now()/1000)+300};
+    },
     '/api/execute':request=>{
       const body=request.postDataJSON() as {document_version?:string;language?:string};
       const language=String(body.language||'javascript');
@@ -309,4 +319,78 @@ test('terminal write rejection disposes the binding and keeps the editor closed'
   await page.locator('#editor').press('End');
   await page.keyboard.type(' cannot-edit');
   await expect(page.locator('#editor')).toHaveValue(frozen);
+});
+
+test('private realtime shows partner edits before HTTPS acknowledgement, then falls back and stops on completion',async({browser})=>{
+  const store=new CodeStore(); store.relayEnabled=true;
+  const contexts=await Promise.all([browser.newContext(),browser.newContext()]);
+  const pages=await Promise.all(contexts.map(context=>context.newPage()));
+  const peers=new Map<WebSocketRoute,string>();
+  let joins=0,broadcasts=0;
+  let releaseWrites=()=>{};
+  try{
+    for(const page of pages){
+      // routeWebSocket never calls connectToServer: no Supabase/network access.
+      await page.routeWebSocket('wss://relay-test.supabase.co/realtime/v1/websocket**',socket=>{
+        socket.onClose(()=>peers.delete(socket));
+        socket.onMessage(raw=>{
+          const frame=JSON.parse(typeof raw==='string'?raw:raw.toString());
+          if(frame.event==='phx_join'){
+            expect(frame.payload.config.private).toBe(true);
+            expect(frame.payload.config.presence.enabled).toBe(false);
+            expect(frame.payload.config.postgres_changes).toEqual([]);
+            peers.set(socket,frame.topic); joins+=1;
+            socket.send(JSON.stringify({topic:frame.topic,event:'phx_reply',ref:frame.ref,join_ref:frame.join_ref,
+              payload:{status:'ok',response:{}}}));
+          }else if(frame.event==='heartbeat') socket.send(JSON.stringify({topic:'phoenix',event:'phx_reply',ref:frame.ref,payload:{status:'ok'}}));
+          else if(frame.event==='broadcast'){
+            broadcasts+=1;
+            expect(Object.keys(frame.payload.payload).sort()).toEqual(['sender','seq','update']);
+            for(const [peer,topic] of peers) if(peer!==socket&&topic===frame.topic) peer.send(JSON.stringify({
+              topic,event:'broadcast',payload:frame.payload,ref:null,join_ref:'1',
+            }));
+          }
+        });
+      });
+    }
+    await Promise.all([open(pages[0],users[0],store),open(pages[1],users[1],store)]);
+    await expect.poll(()=>joins).toBe(2);
+    await expect.poll(()=>pages[0].evaluate(()=>window._randori_crdt?.relayConnected)).toBe(true);
+    const before=store.code();
+    store.holdWrites=new Promise(resolve=>{ releaseWrites=resolve; });
+    await pages[0].locator('#editor').evaluate(node=>{
+      const editor=node as HTMLTextAreaElement; editor.value=`// relay-before-ack\n${editor.value}`;
+      editor.dispatchEvent(new Event('input',{bubbles:true}));
+    });
+    await expect(pages[1].locator('#editor')).toHaveValue(`// relay-before-ack\n${before}`,{timeout:1000});
+    expect(store.code()).toBe(before);
+    await expect(pages[0].locator('#runBtn')).toBeDisabled();
+    await expect(pages[1].locator('#runBtn')).toBeDisabled();
+    expect(await pages[1].evaluate(()=>window._randori_crdt?.documentVersion)).toBeNull();
+    expect(broadcasts).toBe(1,'received updates persist over HTTPS without echo');
+    releaseWrites(); store.holdWrites=null;
+    await expect.poll(()=>store.code(),{timeout:12000}).toContain('relay-before-ack');
+    await expect(pages[0].locator('#runBtn')).toBeEnabled();
+    await expect(pages[1].locator('#runBtn')).toBeEnabled();
+    expect(store.runCount).toBe(0);
+
+    store.relayEnabled=false;
+    for(const socket of peers.keys()) socket.close();
+    await expect.poll(()=>pages[0].evaluate(()=>window._randori_crdt?.relayConnected)).toBe(false);
+    await insertAt(pages[0],(await editorValue(pages[0])).length,' polling-fallback');
+    await expect.poll(()=>store.code(),{timeout:12000}).toContain('polling-fallback');
+    await expect.poll(()=>editorValue(pages[1]),{timeout:12000}).toBe(store.code());
+    expect(broadcasts).toBe(1);
+
+    for(const page of pages) await page.evaluate(activeRoom=>window.dispatchEvent(new CustomEvent('randori:completion-observed',{
+      detail:{room:activeRoom,state:'completed'},
+    })),room);
+    for(const page of pages){
+      await expect(page.locator('#editor')).toHaveAttribute('readonly','');
+      await expect(page.locator('#runBtn')).toBeDisabled();
+    }
+  }finally{
+    releaseWrites(); store.holdWrites=null;
+    await Promise.all(contexts.map(context=>context.close()));
+  }
 });

@@ -47,6 +47,8 @@ const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   'assets/workspace-scope.js',
   // Interview terminal-work coordinator (#464).
   'assets/interview-session.js',
+  // Private broadcast-only relay and untrusted Yjs validation (#461).
+  'assets/realtime-relay.mjs', 'assets/realtime-yjs.mjs',
   // Removed members use the independent public email-proof page (issue #350).
   'assets/deletion-link.js'];
 // Operator tools that cannot run under unit tests; see
