@@ -6195,6 +6195,36 @@ Regression models use real migrated SQLite files (WAL for independent-reader
 load, no deployment journal changes). Cases cover abandoned heads, abandoned
 interview priority, 8 arrivals/s congestion, 2/16 concurrent clients and lock-RTT
 counts, plus rollback proof, metric privacy, startup prerequisites and store/day
-runner UX. Initial JavaScript stays 999,468 bytes; the 1,000,000-byte threshold,
-SDK version and schema remain unchanged. Provider/performance canary remains an
+runner UX. After rebase onto main `1eb7078`, initial JavaScript is **957,738**
+bytes (main 956,611; branch delta +1,127), not the old-base 999,468 figure. The
+1,000,000-byte threshold, SDK version and schema remain unchanged. Provider/performance canary remains an
 operator action and was not run by this revision.
+
+### ID-103 revision 3: execution faults stay outside deployment readiness
+
+Whole-app readiness and admin initialization are restored byte-for-byte to the
+`1eb7078` main readiness implementation. Execution knobs, snapshot ids and its
+primary-circle fallback precondition do not participate in the schema/DB readiness
+result or cache identity. An execution-only fault is refused at execute with the
+documented 503 state and shown on the admin execution card; it must not prevent
+an otherwise valid deployment or primary-circle bootstrap from becoming ready.
+This supersedes revision 2's whole-app execution-readiness check.
+
+A hashed main-source fixture compares GET/HEAD on `/api/health`,
+`/api/health/ready` and `/api/readyz` with queue unset/false, bad execution knobs,
+and zero/two primary circles. Two active primaries require a corrupt schema in
+SQLite; both versions reject that schema for the same reason. A queue-ON case
+proves execution misconfiguration leaves readiness and admin initialization
+unchanged, while execute refuses and diagnostics records the configuration fault.
+
+Store failures in smoke now fail/alert, even when the provider was never called;
+configuration faults also fail. Only genuine capacity/budget contention is
+`busy`/`deferred`. Fresh and cached failure cases are tested separately.
+
+The validated local credential-free file client initializes WAL before exposing
+any query/batch/transaction operation, with fail-closed setup and orderly shutdown.
+Remote clients never receive a journal PRAGMA. The SQL guard restricts this
+local-only statement to `api/_db.js`; no migration or remote journal setting is
+introduced. Real-file and mocked-remote tests cover the boundary. On the rebased
+branch, initial JS is 957,738 bytes (+1,127 over main 956,611), with the unchanged
+1,000,000-byte gate. No provider/performance canary was run.

@@ -22,6 +22,11 @@ const IDENTIFIER_ARGUMENT=/^\((?:'[A-Za-z_][A-Za-z0-9_]*'|"[A-Za-z_][A-Za-z0-9_]
 // `files` restricts a tolerated pragma to the helper that handles Turso's
 // rejection; omit it for pragmas the remote server accepts everywhere.
 export const TURSO_REMOTE_PRAGMA_ALLOWLIST=Object.freeze({
+  journal_mode:Object.freeze({
+    arguments:[/^=WAL$/i],
+    files:Object.freeze(['api/_db.js']),
+    verified:'local credential-free file startup only; never issued to remote Turso',
+  }),
   foreign_keys:Object.freeze({arguments:[/^$/,/^=(?:ON|OFF)$/i],verified:'read and set accepted by Turso remote'}),
   integrity_check:Object.freeze({arguments:[/^\(1\)$/],verified:'integrity_check(1) accepted by Turso remote'}),
   table_info:Object.freeze({arguments:[IDENTIFIER_ARGUMENT],verified:'accepted by Turso remote'}),

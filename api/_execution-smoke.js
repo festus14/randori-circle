@@ -88,7 +88,12 @@ export function parseExecutionSmokeRequest(body){
 export function classifyExecutionError(error){
   let current=error;
   for(let depth=0;current&&depth<5;depth+=1){
-    if(current instanceof ExecutionBusyError)return ['configuration','configuration_changed','primary_circle','state','request_cost'].includes(current.reason)?'misconfigured':'busy';
+    if(current instanceof ExecutionBusyError){
+      if(['configuration','configuration_changed','primary_circle','state','request_cost'].includes(current.reason))return 'misconfigured';
+      // Infrastructure/store failure is not ordinary capacity contention. It
+      // must fail the smoke even when no provider dispatch was attempted.
+      return ['queued','capacity','queue_full','queue_expired','already_running','pending_run','quota','lease_expired'].includes(current.reason)?'busy':'provider_error';
+    }
     if(current.name==='AbortError'||current.name==='TimeoutError') return 'timeout';
     current=current.cause;
   }

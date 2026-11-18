@@ -175,8 +175,10 @@ supply snapshots from arbitrary third-party builders or member runs: only this
 pristine builder's snapshot is suitable. Storage/session/billing characteristics
 must be checked by the operator before activation. Before enabling the queue,
 verify exactly one non-archived primary circle exists for unscoped fallback runs.
-Enabled readiness and admin queue configuration report `primary_circle` if that
-precondition is missing; no request creates a circle or changes schema. Renew
+Execution-only readiness in the admin queue card reports `primary_circle` if that
+precondition is missing; it does not control whole-app readiness or admin
+initialization. Execution then fails closed with its documented busy/configuration
+response. No request creates a circle or changes schema. Renew
 before expiry, and remove
 obsolete snapshots through the provider's normal operator controls.
 
@@ -198,8 +200,11 @@ security gate, `Cache-Control:no-store`) extends `cards.execution` with:
 - `coldStart`: paired cold/snapshot creation measurements for the current immutable
   snapshot cohort over the log's 30-day retention. No snapshot id/cohort hash escapes.
 
-The existing lazy admin card renders these fields with text-only DOM. Public
-liveness/readiness bodies and schema contracts are unchanged. No account/circle
+The existing lazy admin card renders these fields with text-only DOM. Whole-app
+liveness/readiness and admin initialization use only their existing DB/schema/
+membership contracts, exactly as main does, regardless of execution settings.
+An execution-only fault never makes the whole deployment unready: it is shown
+on the admin execution card and refused at the execution boundary. No account/circle
 breakdown, code, stdin, output, provider URL or error text leaves this endpoint.
 `runner/execution_queue_metric` rows have **NULL user_id, route, ua and ip** and
 fixed event names plus bounded numeric metadata. Browser telemetry cannot forge
@@ -240,13 +245,26 @@ Queue-enabled admission contention is a distinct `busy` language result, not a
 provider error. The assessor emits `status:"deferred"` and a notice, without
 alerting or asserting a provider pass. A throttled cached busy result remains
 explicitly deferred. Admin smoke status is `busy`, never `passed`, and cannot lift
-an unknown execution card to healthy. Invalid admission configuration remains a
-misconfiguration failure. The existing smoke claim/trigger budget is unchanged.
+an unknown execution card to healthy. Admission store failures are alerting gateway
+failures (`provider_error`), not deferred capacity; invalid admission configuration
+is an alerting `misconfigured` result. Neither failure asserts a provider call or
+pass. Only genuine capacity/budget contention is deferred. The existing smoke
+claim/trigger budget is unchanged.
 
 **Outstanding acceptance evidence:** this provider-free branch cannot demonstrate
 live cold-start p95 improvement. Leave the flag off until the owner performs the
 bounded rollout and records sufficiently sampled workflow evidence. See the
 [runbook](runbooks/execution-capacity.md) for tuning, renewal and rollback.
+
+## Local SQLite journaling
+
+The validated credential-free local file client in `api/_db.js` initializes WAL
+once before any execute/batch/transaction method runs. Setup failure refuses
+local DB operations; shutdown waits for setup to settle. This permits independent
+reader/writer connections in the dev runtime rather than depending on a test-only
+journal setting. No remote client receives a journal PRAGMA. The SQL guard permits
+only `journal_mode=WAL` in that one helper; it remains forbidden in other runtime
+files. Migration contracts and database schema are unchanged.
 
 ## Storage, deletion, export and compatibility
 

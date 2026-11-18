@@ -78,6 +78,25 @@ test('daily quota supplies a fixed reset instant and window rather than asking f
   const body=sendExecutionBusy(res,error);assert.equal(res.statusCode,429);assert.equal(body.quota_window,'day');assert.equal(body.reset_at,error.resetAt);
 });
 
+for(const [reason,status]of [['store','provider_error'],['configuration','misconfigured']])test(`smoke ${reason} failure alerts without provider dispatch, fresh and cached`,async t=>{
+  const db=await fixture(t);let dispatched=0;
+  assert.equal(classifyExecutionError(new ExecutionBusyError(reason)),status);
+  assert.equal(classifyExecutionError(new Error('wrapped',{cause:new ExecutionBusyError(reason)})),status);
+  const first=await runExecutionSmoke({trigger:'schedule',getDb:()=>db,env:ENV,execute:async()=>{throw new ExecutionBusyError(reason);}});
+  assert.equal(dispatched,0);assert.equal(first.body.ok,false);assert.equal(first.body.languages.javascript.status,status);
+  const cached=await runExecutionSmoke({trigger:'schedule',getDb:()=>db,env:ENV,execute:async()=>{dispatched++;return{code:0,stdout:EXECUTION_SMOKE_EXPECTED_OUTPUT};}});
+  assert.equal(dispatched,0);assert.equal(cached.body.ok,false);assert.equal(cached.body.languages.python.lastStatus,status);
+  const assessment=assessExecutionSmoke(first.body);assert.equal(assessment.ok,false);assert.equal(assessment.category,'execution_failed');
+  const cli=await assessCli({environment:{APP_URL:'https://fixture.invalid',CRON_SECRET:'fixture',EXECUTION_SMOKE_TIMEOUT_MS:'1000',EXECUTION_SMOKE_TRIGGER:'schedule'},
+    fetchImpl:async()=>new Response(JSON.stringify(first.body)),stdout:{write(){}}});
+  assert.equal(cli.exitCode,1);assert.equal(cli.result.alert,true);assert.equal(cli.result.status,'alert');
+});
+
+test('only genuine capacity reasons defer smoke',()=>{
+  for(const reason of ['queued','capacity','queue_full'])assert.equal(classifyExecutionError(new ExecutionBusyError(reason)),'busy');
+  assert.equal(classifyExecutionError(new ExecutionBusyError('unknown_failure')),'provider_error');
+});
+
 test('busy smoke is explicit deferred evidence, never a provider error or a verified passing smoke',async t=>{
   const db=await fixture(t);
   assert.equal(classifyExecutionError(new ExecutionBusyError('queued')),'busy');assert.equal(classifyExecutionError(new ExecutionBusyError('configuration')),'misconfigured');

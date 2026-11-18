@@ -33,22 +33,29 @@ function observeLocalStatement(statement){
   try{ localDevelopmentSqlObserver(sql); }catch{}
 }
 
-function observedLocalDatabase(target,{client=false}={}){
+function observedLocalDatabase(target,{client=false,ready=null}={}){
   return new Proxy(target,{
     get(database,property){
       if(property==='execute') return async statement=>{
+        if(ready)await ready;
         observeLocalStatement(statement);
         return database.execute(statement);
       };
       if(property==='executeMultiple') return async sql=>{
+        if(ready)await ready;
         observeLocalStatement(sql);
         return database.executeMultiple(sql);
       };
       if(property==='batch') return async(statements,...args)=>{
+        if(ready)await ready;
         for(const statement of statements||[]) observeLocalStatement(statement);
         return database.batch(statements,...args);
       };
+      if(client&&property==='close')return async()=>{
+        try{if(ready)await ready;}catch{}finally{return database.close();}
+      };
       if(client&&property==='transaction') return async(...args)=>{
+        if(ready)await ready;
         const transaction=await database.transaction(...args);
         return observedLocalDatabase(transaction);
       };
@@ -153,7 +160,18 @@ export function getClient() {
       throw new Error('Local runtime database changed without shutdown');
     }
     if(!localDevelopmentClient){
-      localDevelopmentClient=observedLocalDatabase(createClient({url}),{client:true});
+      const database=createClient({url});
+      // Only this validated, credential-free local file path changes journal
+      // mode. Keep getClient synchronous, but gate all methods on setup so no
+      // request can race WAL initialization; failures stay fail-closed.
+      const ready=Promise.resolve().then(()=>{
+        observeLocalStatement('PRAGMA journal_mode=WAL');
+        return database.execute('PRAGMA journal_mode=WAL');
+      }).then(result=>{
+        if(result.rows?.[0]?.journal_mode!=='wal')throw new Error('Local file database requires WAL journaling');
+      });
+      ready.catch(()=>{}); // handled even if the caller never uses the client
+      localDevelopmentClient=observedLocalDatabase(database,{client:true,ready});
       localDevelopmentClientUrl=url;
     }
     return localDevelopmentClient;
