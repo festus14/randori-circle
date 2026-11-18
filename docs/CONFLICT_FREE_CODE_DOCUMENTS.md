@@ -142,7 +142,7 @@ wire topic prepends `realtime:`; RLS compares `auth.jwt()->>'room'` to
 The browser uses the small JSON Phoenix v1 broadcast subset, wire-reviewed
 against `@supabase/realtime-js@2.15.4`: private `phx_join`, broadcast, heartbeat,
 reply and close/error handling. It never falls back to public channels, REST
-provider broadcasts, presence or Postgres subscriptions. The publishable key
+provider broadcasts, Supabase Presence or Postgres subscriptions. The publishable key
 alone is in the socket URL; the short-lived JWT is only in the join frame and
 memory, never local/session storage or logs. CSP permits the Supabase WSS host
 family; configuration restricts the actual connection to the configured project.
@@ -151,7 +151,9 @@ The checked-in CRDT bundle is minified and verified byte-for-byte by
 
 Packets contain exactly `{update: <canonical base64 Yjs bytes>, sender:
 <random per-document-session nonce>, seq: <positive monotonic integer>}`. No board,
-chat, presence, identity or plain code field is relayed. Every update is bounded
+chat, identity or plain code field is relayed. Optional presence (#462) is a
+separate, separately bounded `y-awareness` event described in
+[presence and remote cursors](#presence-and-remote-cursors-462). Every update is bounded
 to 64 KiB; frames to base64 capacity plus 1 KiB; send/receive to 20 messages/s.
 Outgoing edits coalesce for 50 ms in one bounded update. A socket buffer above
 256 KiB fails over. Invalid frames, stale topics, self-echo, duplicate metadata
@@ -190,6 +192,82 @@ observing the partner's code and disabled Run. Typical real-world expectation is
 roughly 50 ms plus sender→Supabase→partner transit and rendering (often
 100–300 ms in a nearby region); this is not a measured production SLA. Provider
 canary latency, private join denial and reconnect checks are operator gates.
+
+## Presence and remote cursors (#462)
+
+`PRESENCE_ENABLED` is on for the literal string `true` only, defaults off and
+also requires `JWT_SECRET` of at least 32 bytes. It then adds `presence` to
+`/api/auth/capabilities` and `presence: true` to primary document GETs; no
+capability, request or awareness frame exists otherwise. Presence is advisory
+UI: it never touches the Yjs document, the HTTPS queue, acknowledgement or Run.
+Decision: [ID-100](IMPLEMENTED_DECISIONS.md#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback).
+
+**Live path (relay on).** Each participant runs a pinned `y-protocols@1.0.6`
+awareness instance per document session, carried as a second broadcast event,
+`y-awareness`, on the *same* private channel and token as `y-update`. The
+envelope is exactly `{sender: <document-session nonce>, awareness: <canonical
+base64>}`; frames are at most 1 KiB and capped at 10/s in each direction,
+independently of `y-update`. A received update is fully decoded before it
+touches the live awareness: one to four entries, unique uint32 client ids, never
+our own id, and each non-null state exactly `{v:1, seat:'a'|'b',
+status:'active'|'idle', sel:null|{anchor,head}}` where anchors are
+`Y.relativePositionToJSON` positions on the root `code` text (no names, emails,
+colours, code or free text). Unknown clients must arrive with a state, at most
+four remote peers are tracked, and forgotten peers' clocks are dropped after
+the TTL, so state cannot grow without bound. The awareness clock is the
+monotonic ordering/replay guard; only a strictly newer clock renews a peer.
+
+Local state is broadcast at most every 200 ms (coalesced), renewed every
+5 seconds, and goes `idle` after a minute without local input. A remote peer
+that sends nothing for **15 seconds expires** on an injectable timer; there is
+no cleanup message or job. A newcomer is answered once. On disconnect remote
+cursors are cleared at once. A same-seat peer (another tab of the same account)
+is never shown as the partner. The seat is learned from the server, below.
+
+**Polling fallback (relay off or unavailable).** `POST
+/api/code-document/presence` is grouped in `api/code-document.js`, strictly
+same-origin and `private, no-store`, and reuses the relay token's live-pair
+authority (`authorizeRelayPair`: legacy availability, primary circle context,
+exact two-participant document snapshot, no unanimous completion and, with
+`INTERVIEW_SESSION_ENABLED`, the DB-time timer-open fence). The body is the
+exact document identity plus `state: join|online|leave`. The server upserts one
+row per (room, participant) in the existing `auth_rate_limits` table: the key is
+an HMAC of the room and account id with a presence-domain key derived from
+`JWT_SECRET`, `expires_at` is the **database clock** plus 20 seconds, and a
+renewal under four seconds old is a no-op write. It reads only the partner's
+keyed row and returns `{seat, partner_online, ttl_seconds, interval_seconds}`;
+a `join` also returns the partner's already-visible `display_name`/`color` (the
+fields `/api/my-pair` shows this viewer) so direct `/join` links can label the
+partner. `leave` deletes only the caller's row without a pair read, so it also
+works after a terminal state. Expired rows are ignored by every reader and swept
+opportunistically (2% of beats, the existing limiter pattern). Clients beat
+every 5 seconds, or 15 while the relay is live; 401/404 stop presence, 429
+backs off, and a last "online" result degrades to unknown after its TTL.
+
+**UI.** The room bar (`#presenceText`) reads "Two is here · line 3 · live",
+"Two is here · idle · live", "Two online · polling", or "Two not in the room ·
+reconnecting". Only joins/leaves are announced, through a polite `role=status`
+live region on `<body>` (the room-bar chip is hidden on phones). An explicit
+awareness departure shows "not in the room" until a later HTTPS beat confirms
+otherwise. Monaco renders the partner's selection and caret as decorations with
+the partner's existing colour; the plain editor gets an `aria-hidden` mirror
+overlay. Neither moves the local caret, selection, focus or scroll. Styles are
+injected by the lazy CRDT bundle (the initial CSS budget is unchanged).
+Cursor rendering needs the relay; on polling only "online" is shown.
+
+**Lifecycle and privacy.** Every fence that disposes the document — terminal
+completion or `randori:interview-ended`, hidden tab, sign-out, room/exercise/
+language/account/circle change, offline, flag withdrawal and `pagehide` — stops
+presence first: it sends one final null awareness frame (allowed past the
+sender cap and the already-bumped epoch, never after `stop()`) and a keepalive
+`leave`. Nothing about presence is logged or persisted besides the keyed
+20-second row; cursor positions exist only in memory and in transit. Supabase
+policies are topic-scoped and do not inspect `event`, so no SQL change is
+needed (a unit test pins that the policies stay event-agnostic and broadcast-only).
+
+**Rollback.** Unset the flag (or `false`) and redeploy: the capability goes,
+heartbeats return 404, and each client stops on its next document GET. Rows
+expire within 20 seconds. Disabling the relay alone downgrades to "online".
 
 ## Supabase provider setup and rollback
 
@@ -240,7 +318,9 @@ CI or this implementation. Do not contact a real project from unit/e2e tests.
 6. Verify in the provider canary: both authorized participants can privately
    join their identical topic; another room/context, anonymous publishable
    key, expired token and missing room claim cannot read or broadcast;
-   presence/database subscriptions remain denied. Also verify that an already
+   Supabase Presence/database subscriptions remain denied. If `PRESENCE_ENABLED`
+   will be turned on, also see the partner's cursor arrive as a `y-awareness`
+   broadcast under the same policies (no SQL change). Also verify that an already
    joined test connection loses read/broadcast access at JWT expiry even if it
    does not refresh; do not assume join-time RLS is continuous revocation.
    Leave the flag off if that provider check fails. Check heartbeat, reconnect,

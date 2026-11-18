@@ -121,10 +121,11 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-93](#id-93-give-account-deletion-a-14-day-cancellable-grace-period-behind-a-flag) | Give account deletion a 14-day cancellable grace period, behind a flag | Security, Secrets & Privacy | Active |
 | [ID-94](#id-94-keep-custom-stdin-private-and-separate-from-verified-catalogue-results) | Keep custom stdin private and separate from verified catalogue results | Security, Secrets & Privacy | Active |
 | [ID-95](#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry) | Scope primary interview controls to the interviewer and close on timer expiry | Pairing & Scheduling | Active |
-| [ID-96](#id-96-relay-pair-code-updates-through-private-supabase-channels-without-changing-durable-authority) | Relay pair code updates through private Supabase channels without changing durable authority | Pairing & Scheduling | Active |
+| [ID-96](#id-96-relay-pair-code-updates-through-private-supabase-channels-without-changing-durable-authority) | Relay pair code updates through private Supabase channels without changing durable authority | Pairing & Scheduling | Amended by [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) and [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) |
 | [ID-97](#id-97-curate-original-interview-kits-as-versioned-catalogue-metadata) | Curate original interview kits as versioned catalogue metadata | Content & Catalogue | Active |
 | [ID-98](#id-98-embed-consent-gated-daily-video-in-primary-pair-rooms-behind-a-flag) | Embed consent-gated Daily video in primary pair rooms, behind a flag | Pairing & Scheduling | Active |
 | [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) | Add an interview lobby, schedule start, interviewer-owned selection and candidate edit lock | Pairing & Scheduling | Active |
+| [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) | Show pair presence and remote cursors over the private relay, with a TTL heartbeat fallback | Pairing & Scheduling | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -138,7 +139,7 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-100). Never reuse a number, even if an entry is
+   plus one (currently ID-101). Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
 2. **Check for collisions before you claim it.** Parallel PRs are the
@@ -5511,6 +5512,9 @@ steps: [session controls](SESSION_CONTROLS.md#interview-first-increment-464).
 interviewer only sends, the candidate only receives), a lobby or locked
 candidate gets no relay token, and a candidate token lives 90 seconds.
 
+**Amended by ID-100:** the same private channel also carries optional,
+separately bounded Yjs awareness (`y-awareness`) for presence and cursors.
+
 Status: implemented behind `REALTIME_RELAY_ENABLED=false` by default; issue #461,
 part of real-time mock-interview epic #460. Rebased onto main `9d5f8f4`, including
 merged PRs #471 (ID-95 interview termination) and #472 (CI apt-lock fix).
@@ -5907,3 +5911,70 @@ protected workflow, then canary as in
 [session controls](SESSION_CONTROLS.md#interview-lobby-schedule-start-question-ownership-and-edit-lock-464).
 Roll back by turning the flag off, or by leaving migration 26 unapplied for
 ID-95 behaviour. Never drop the table or edit the ledger.
+
+## ID-100: Show pair presence and remote cursors over the private relay, with a TTL heartbeat fallback
+
+Status: implemented behind `PRESENCE_ENABLED=false` by default; issue #462, part
+of real-time mock-interview epic #460. Built on main `0a99cf4` (ID-96 relay,
+ID-95 interview controls). ID-98 (open PR #476) and ID-99 (#464 lobby branch)
+are reserved by parallel PRs; renumber at merge time if needed.
+
+**Amends ID-96:** adds a second broadcast event to the private relay. HTTPS
+documents, polling, acknowledgement and Run are unchanged.
+
+**Context.** In a live interview the interviewer cannot see whether the
+candidate is in the room or where they are typing. Presence must be cheap,
+authenticated, room-scoped and self-expiring, without a new provider, Supabase
+Presence, Postgres change or an unbounded table.
+
+**Decision.**
+
+- Carry pinned `y-protocols@1.0.6` awareness as `y-awareness` on the existing
+  private channel/token. Frames ≤ 1 KiB, 10/s each way (independent of
+  `y-update`); fully decoded before apply; exact state schema (`v`, `seat`,
+  `status`, `sel` of root-text relative positions); ≤ 4 remote peers; no own id;
+  newer clocks only renew. 200 ms coalescing, 5 s renewal, 15 s TTL on
+  injectable timers, idle after 60 s, clear on disconnect, one final departure
+  frame on every teardown fence. Policies are topic-scoped and event-agnostic,
+  so `supabase/realtime-authorization*.sql` is unchanged.
+- Fallback and seat authority: grouped, same-origin
+  `POST /api/code-document/presence` reusing the relay's live-pair
+  authorization (`authorizeRelayPair`, factored out of the token route). One
+  HMAC-keyed row per (room, participant) in existing `auth_rate_limits`,
+  DB-clock `expires_at` +20 s, renewals under 4 s are no-op writes, partner read
+  by key, opportunistic expired-row sweep, `leave` deletes only the caller's row.
+  `join` additionally returns the partner's already-visible display name and
+  colour for direct `/join` links. **No migration**, no request DDL.
+- UI: plain-text room-bar status with connection health; polite live region for
+  joins/leaves only; Monaco decorations and a plain-editor mirror overlay that
+  never move local caret, selection, focus or scroll. Cursors need the relay;
+  polling shows "online" only. Styles injected by the lazy bundle.
+
+**Privacy.** No cursor, code, name or email in the HTTPS body, stored row or
+logs; awareness carries only seat, activity and relative positions, in memory
+and transit. The privacy policy discloses both (same 18 November 2026 date).
+
+**Byte budget.** The CRDT bundle grows from 112,629 to 131,526 bytes
+(awareness, lib0 decoding, presence/UI); JS total 1,291,819 of the unchanged
+1,450,000-byte gate. CSS slices are unchanged; initial JS grows only by the
+168-byte `index.html` label guard (989,161 of 1,000,000).
+
+**Alternatives.** Supabase Presence (provider-side state, another extension to
+authorize, SDK-shaped protocol) and a dedicated Turso table (migration, growth
+management) were rejected for the keyed TTL row. Persisting cursors, or sending
+names inside awareness, was rejected on privacy grounds. Rendering via
+y-monaco's built-in awareness was rejected: it leaks editor listeners on rebind
+and needs per-client CSS classes.
+
+**Verification.** Unit: awareness schema/bounds/rates/replay/TTL/idle,
+relay envelope and caps, fallback cadence/backoff/expiry, server flag,
+authorization, DB-clock expiry, write throttle, leave, view announcements and
+non-intrusive Monaco/overlay rendering, and the shipped bundle end to end. A
+two-context Playwright journey with a mocked relay socket covers join, cursor
+and selection, hidden-tab leave, rejoin and silent-crash TTL expiry, plus the
+polling-only fallback. Provider canary of `y-awareness` is an operator gate.
+
+**Rollout and recovery.** Merge with the flag off. Enable after the relay
+canary, then set `PRESENCE_ENABLED=true` and redeploy. Rollback: unset and
+redeploy; clients stop on the next document GET, rows expire in 20 s. Details:
+[presence and remote cursors](CONFLICT_FREE_CODE_DOCUMENTS.md#presence-and-remote-cursors-462).

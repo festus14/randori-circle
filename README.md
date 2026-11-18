@@ -183,6 +183,10 @@ leaves normal catalogue runs unchanged. No migration or request-path DDL.
 - **Realtime code relay (optional):** Supabase Realtime private broadcasts,
   behind `REALTIME_RELAY_ENABLED=false` by default. It never stores the code
   document or acknowledges Run; authenticated HTTPS remains authoritative.
+- **Pair presence (optional):** who is in the room and, with the relay, the
+  partner's live cursor/selection, behind `PRESENCE_ENABLED=false` by default.
+  Cursors travel only as Yjs awareness over the same private channel; the
+  HTTPS fallback keeps a 20-second keyed "online" row and nothing else.
 - **Scheduled jobs:**
 
 | Job | Schedule | Runs on |
@@ -308,6 +312,12 @@ orchestrator imports/rotates the matching provider signing key, disables public
 channels, applies the reviewed SQL and completes the two-browser canary.
 [Provider setup and rollback](docs/CONFLICT_FREE_CODE_DOCUMENTS.md#supabase-provider-setup-and-rollback)
 include the exact SQL operations. No new Turso migration is required.
+
+Pair-room presence and live partner cursors are a separate default-off flag,
+`PRESENCE_ENABLED`. It needs no new provider value or SQL: presence rides the
+relay's private channel as a second broadcast event, and its HTTPS fallback
+uses the existing `auth_rate_limits` table with a 20-second TTL
+([presence](docs/CONFLICT_FREE_CODE_DOCUMENTS.md#presence-and-remote-cursors-462)).
 
 ## Security baseline
 
