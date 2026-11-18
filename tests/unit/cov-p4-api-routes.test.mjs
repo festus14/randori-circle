@@ -248,6 +248,11 @@ test('demo seed, shuffle and reset operate only on demo data and require an admi
   // Count probes are best-effort; the reset still deletes demo rows if they fail.
   await invoke(opsHandler,{url:'/api/ops/demo-seed',method:'POST',auth:'admin'});
   assert.equal(Number(await scalar('SELECT COUNT(*) FROM auth_accounts WHERE is_demo=1')),6);
+  const demo=Number(await scalar('SELECT MIN(id) FROM auth_accounts WHERE is_demo=1'));
+  await realDb.execute(`INSERT INTO pairing_weeks(id,week_label,week_start,is_demo) VALUES(500,'evaluation-demo-target','2026-11-18T08:00:00.000Z',0)`);
+  await realDb.execute({sql:'INSERT INTO pairing_groups(id,week_id,user_a_id,user_b_id,is_ai_pair) VALUES(500,500,?,1,0)',args:[demo]});
+  await realDb.execute({sql:"INSERT INTO pairing_participants(week_id,user_id,position,source) VALUES(500,?,0,'auth'),(500,1,1,'auth')",args:[demo]});
+  await realDb.execute({sql:"INSERT INTO interview_evaluations(week_id,pair_group_id,evaluator_user_id,candidate_user_id,notes,decision,revision,created_at,updated_at,expires_at) VALUES(500,500,1,?,'private demo notes','undecided',1,100,100,7776100)",args:[demo]});
   const probeFailure=failingClient(/SELECT COUNT\(\*\) AS c FROM (pairing_|auth_accounts WHERE is_demo=1)/);
   clientOverride=probeFailure;
   const blind=await invoke(opsHandler,{url:'/api/ops/demo-reset',method:'POST',auth:'admin'});
@@ -255,6 +260,7 @@ test('demo seed, shuffle and reset operate only on demo data and require an admi
   assert.equal(probeFailure.hits,3);
   assert.deepEqual(blind.body.deleted,{groups:0,weeks:0,demo_users:0});
   assert.equal(Number(await scalar('SELECT COUNT(*) FROM auth_accounts WHERE is_demo=1')),0);
+  assert.equal(Number(await scalar('SELECT COUNT(*) FROM interview_evaluations WHERE pair_group_id=500')),0);
 });
 
 test('outbox replay validates the operator and the request shape before touching the outbox', async ()=>{

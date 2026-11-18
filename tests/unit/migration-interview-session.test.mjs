@@ -9,12 +9,19 @@ import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { MIGRATION_CONTRACTS } from '../../db/migration-contract.js';
 import { inspectMigrationCompatibility } from '../../db/migration-compatibility-check.js';
 import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { READINESS_SCHEMA_MANIFEST } from '../../db/schema-readiness-manifest.js';
 import { inspectDatabaseReadiness } from '../../api/_health.js';
 import { schemaCapabilityAvailable } from '../../api/_schema-capability.js';
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const THROUGH_V25=EXECUTABLE_MIGRATIONS.slice(0,25);
 const V26=EXECUTABLE_MIGRATIONS[25];
+// Preserve the original v26-on-v25 release proof, without claiming current
+// v27 code supports a two-version readiness lag.
+const V26_READINESS={contracts:MIGRATION_CONTRACTS.slice(0,26),manifest:{...READINESS_SCHEMA_MANIFEST,
+  tables:READINESS_SCHEMA_MANIFEST.tables.filter(item=>item.name!=='interview_evaluations'),
+  indexes:READINESS_SCHEMA_MANIFEST.indexes.filter(item=>item.table!=='interview_evaluations'),
+  triggers:READINESS_SCHEMA_MANIFEST.triggers.filter(item=>item.table!=='interview_evaluations')}};
 const AT='2026-09-20T10:00:00.000Z';
 const LATER='2026-09-20T10:05:00.000Z';
 
@@ -67,17 +74,17 @@ test('a managed v25 database upgrades by v26 alone and stays ready one additive 
   const item=fixture();
   try{
     await apply(item.db,THROUGH_V25); await seedPair(item.db);
-    assert.equal(await inspectDatabaseReadiness(item.db),true,'code at v26 is ready on a v25 database');
+    assert.equal(await inspectDatabaseReadiness(item.db,V26_READINESS),true,'code at v26 is ready on a v25 database');
     assert.equal(await schemaCapabilityAvailable(item.db,{version:26,env:{}}),false);
-    const before=await inspectMigrationState(item.db);
+    const before=await inspectMigrationState(item.db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,26)});
     assert.equal(before.currentVersion,25);
     const upgraded=await applyMigrations(item.db,{expectedStateFingerprint:before.stateFingerprint,
-      migrations:EXECUTABLE_MIGRATIONS,retry:NO_RETRY});
+      migrations:EXECUTABLE_MIGRATIONS.slice(0,26),retry:NO_RETRY});
     assert.deepEqual(upgraded.applied.map(entry=>entry.version),[26]);
     assert.equal((await item.db.execute('SELECT COUNT(*) AS c FROM pair_interview_sessions')).rows[0].c,0,
       'no admission or lock state is synthesized for existing rooms');
-    assert.equal((await inspectMigrationState(item.db)).schemaExact,true);
-    assert.equal(await inspectDatabaseReadiness(item.db),true);
+    assert.equal((await inspectMigrationState(item.db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,26)})).schemaExact,true);
+    assert.equal(await inspectDatabaseReadiness(item.db,V26_READINESS),true);
     const foreignKeys=await item.db.execute(`PRAGMA foreign_key_list('pair_interview_sessions')`);
     assert.deepEqual(foreignKeys.rows.map(row=>[String(row.table),String(row.on_delete)]),[['pairing_groups','CASCADE']]);
   }finally{ item.close(); }

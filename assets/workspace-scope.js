@@ -56,7 +56,7 @@
     if(!notice&&host){ notice=document.createElement('p'); notice.id='workspaceCircleUnavailable'; notice.setAttribute('role','status'); host.prepend(notice); }
     if(notice) notice.textContent='Workspace is not available in this circle yet.';
   }
-  const WORKSPACE=/^\/api\/(?:history|messages|runs|execute|my-pair|pair-recap|session-completion|session-controls|meeting-link|code-document(?:\/relay-token)?|video(?:\/.*)?|ai(?:\/.*)?)$/;
+  const WORKSPACE=/^\/api\/(?:history|messages|runs|execute|my-pair|pair-recap|interviewer-toolkit|session-completion|session-controls|meeting-link|code-document(?:\/relay-token)?|video(?:\/.*)?|ai(?:\/.*)?)$/;
   // Private execution bodies are constructed only after async context checks.
   // Native fetch takes its transport-owned copy synchronously; erase our init
   // immediately, not when the response settles. Never forward the factory.

@@ -146,10 +146,10 @@ test('an empty schema has a stable fingerprint without metadata reads',async()=>
 });
 
 
-test('v26 is ready with 338 objects and rejects databases above the 384-object inspection bound',async()=>{
+test('v27 is ready with 344 objects and rejects databases above the 384-object inspection bound',async()=>{
   await withDatabase(async db=>{
     const count=Number((await db.execute("SELECT COUNT(*) AS count FROM sqlite_schema WHERE type IN ('table','index','view','trigger')")).rows[0].count);
-    assert.equal(count,338);
+    assert.equal(count,344);
     assert.equal(await pairingSchemaV6Ready(db),true);
     for(let index=count;index<=384;index++)await db.execute(`CREATE TABLE guard_probe_${index}(id INTEGER)`);
     await assert.rejects(pairingSchemaV6Fingerprint(db),/schema object limit exceeded/);

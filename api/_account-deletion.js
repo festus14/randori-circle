@@ -10,6 +10,9 @@
 // one write transaction with the recent-authentication proof and the
 // last-owner rule checked inside it, so concurrent requests serialize and a
 // retry is a no-op. No schema change: every column reused here already exists.
+// Intentional import cycle with _interviewer-toolkit.js: that module reads
+// LIVE_ACCOUNT_SQL only inside functions, after module initialization.
+import { evaluationSchemaInstalled } from './_interviewer-toolkit.js';
 import { requireRecentAuth } from './_recent-auth.js';
 import { feedbackSchemaNotInstalled } from './_feedback-config.js';
 import { FEEDBACK_MIGRATION_VERSION } from './_feedback-config.js';
@@ -86,6 +89,8 @@ export const ACCOUNT_DATA_INVENTORY=Object.freeze([
   ['session_completion_receipts',['user_id'],'keep','Immutable; the partner\'s completed-session count needs both receipts.'],
   ['pair_session_controls',['candidate_user_id','updated_by'],'keep','Interview roles stay in the partner\'s progress.'],
   ['pair_interview_sessions',['pair_user_a_id','pair_user_b_id','updated_by'],'keep','Interview admission and edit-lock state stays with the partner\'s room; actor ids resolve to the tombstone.'],
+  ['interview_evaluations',['evaluator_user_id','candidate_user_id','problem_solving','communication','code_quality','testing','notes','decision'],'delete',
+    'Evaluator deletion removes their writing. Candidate deletion keeps the evaluator\'s writing for its fixed 90-day window, resolving the candidate to Deleted member.'],
   ['pair_messages',['sender_id','message'],'anonymise','Text of every message they sent becomes "Message deleted"; the row keeps the partner\'s conversation in order.'],
   ['session_runs',['user_id','code','test_cases_snapshot','results_json'],'anonymise',
     'Solo runs are deleted. Pair runs keep their verified summary for the partner; code is cleared unless it is the attested shared pair document.'],
@@ -447,7 +452,7 @@ async function deletionEmailTokensInstalled(executor){
   }
 }
 
-function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,nowSeconds,feedback=false,emailTokens=false,workspace=false,graceExecutedAt=null}){
+function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,nowSeconds,feedback=false,emailTokens=false,workspace=false,evaluations=false,graceExecutedAt=null}){
   const recipientArgs=outboxRecipientArgs(userId,email,emailHash,occurredAt);
   const suppressWhere=`${OUTBOX_ACTIONABLE} AND (${OUTBOX_RECIPIENT_SQL} OR ${OUTBOX_SENT_INVITATION_SQL})`;
   const suppressArgs=[...recipientArgs,userId];
@@ -555,6 +560,7 @@ function deletionStatements({userId,email,emailHash,tombstoneEmail,occurredAt,no
         AND (CASE WHEN json_valid(test_cases_snapshot)
           THEN json_extract(test_cases_snapshot,'$.attestation_version') END) IS NOT 3`,
     args:[userId]},
+    ...(evaluations?[{count:'interview_evaluations_deleted',sql:'DELETE FROM interview_evaluations WHERE evaluator_user_id=?',args:[userId]}]:[]),
     {sql:`DELETE FROM pair_meeting_links WHERE updated_by=?`,args:[userId]},
     ...(workspace?[
       {count:'secondary_messages_redacted',sql:`UPDATE circle_pair_messages SET message=? WHERE sender_id=? AND message<>?`,args:[DELETED_MESSAGE_TEXT,userId,DELETED_MESSAGE_TEXT]},
@@ -660,7 +666,7 @@ export async function deleteAccount(db,{
       &&String(feedbackProbe.rows[0].checksum)===contract.checksum;
     const emailTokens=await deletionEmailTokensInstalled(transaction);
     const plan=deletionStatements({userId:id,email,emailHash:hashInvitationEmail(email)||null,
-      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback,emailTokens,workspace:await workspaceSchemaInstalled(transaction)});
+      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback,emailTokens,evaluations:await evaluationSchemaInstalled(transaction),workspace:await workspaceSchemaInstalled(transaction)});
     const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
     const summary={};
     plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });
@@ -751,7 +757,7 @@ export async function executeScheduledAccountDeletion(db,{
       &&String(feedbackProbe.rows[0].checksum)===contract.checksum;
     const emailTokens=await deletionEmailTokensInstalled(transaction);
     const plan=deletionStatements({userId:id,email,emailHash:hashInvitationEmail(email)||null,
-      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback,emailTokens,workspace:await workspaceSchemaInstalled(transaction),graceExecutedAt:nowSeconds});
+      tombstoneEmail:deletedAccountEmail(id),occurredAt,nowSeconds,feedback,emailTokens,evaluations:await evaluationSchemaInstalled(transaction),workspace:await workspaceSchemaInstalled(transaction),graceExecutedAt:nowSeconds});
     const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
     const summary={};
     plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });
@@ -937,7 +943,7 @@ export async function reapplyAccountDeletion(db,{
     const emailTokens=await deletionEmailTokensInstalled(transaction);
     const plan=deletionStatements({userId:parsed.account_id,email,
       emailHash:hashInvitationEmail(email)||null,
-      tombstoneEmail:deletedAccountEmail(parsed.account_id),occurredAt,nowSeconds,emailTokens,workspace:await workspaceSchemaInstalled(transaction)});
+      tombstoneEmail:deletedAccountEmail(parsed.account_id),occurredAt,nowSeconds,emailTokens,evaluations:await evaluationSchemaInstalled(transaction),workspace:await workspaceSchemaInstalled(transaction)});
     const results=await transaction.batch(plan.map(({sql,args})=>({sql,args})));
     const summary={};
     plan.forEach((statement,index)=>{ if(statement.count) summary[statement.count]=changed(results[index]); });

@@ -1,3 +1,4 @@
+import { evaluationSchemaInstalled } from './_interviewer-toolkit.js';
 import { LIVE_ACCOUNT_SQL } from './_account-deletion.js';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { getClient, getCronSecret, getAdminEmails, isoWeekLabel, deterministicColor, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
@@ -1273,6 +1274,7 @@ async function handleDemoReset(req,res){
     `DELETE FROM pairing_groups WHERE week_id IN (SELECT id FROM pairing_weeks WHERE is_demo=1)`,
     `DELETE FROM pairing_week_runs WHERE week_id IN (SELECT id FROM pairing_weeks WHERE is_demo=1)`,
     `DELETE FROM pairing_weeks WHERE is_demo=1`,
+    ...(await evaluationSchemaInstalled(db)?[`DELETE FROM interview_evaluations WHERE candidate_user_id IN (SELECT id FROM auth_accounts WHERE is_demo=1)`]:[]),
     `DELETE FROM auth_accounts WHERE is_demo=1`,
   ],'write');
   return res.json({ ok:true, deleted:{ groups:deletedGroups, weeks:deletedWeeks, demo_users:deletedUsers }, note:'Demo reset complete — demo users + demo weeks + their groups deleted. Real users untouched.' });

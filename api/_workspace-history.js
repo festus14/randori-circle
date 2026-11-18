@@ -1,3 +1,4 @@
+import { interviewerToolkitAvailable, toolkitHistoryRooms } from './_interviewer-toolkit.js';
 import { canonicalCompletionPair, projectSessionCompletion } from './_session-completion.js';
 import { projectSecondaryCompletion } from './_secondary-workspace.js';
 import { secondaryRoomId, workspaceEnvelope, workspaceSessionPredicate } from './_workspace-access.js';
@@ -50,6 +51,10 @@ export async function readWorkspaceHistory(db,context,key,{progressEnabled=false
         partner_id:partners[0]?.[0]??null,partner_name:partnerNames.join(' & '),partner_ids:partners.map(([id])=>id),partner_names:partnerNames,
         partner_unavailable:partners.some(([id,source])=>source!=='auth'||!byName.has(Number(id))),you_are_a:Number(row.user_a_id)===viewer,completion};
     });
+    if(!secondary&&await interviewerToolkitAvailable(db)){
+      const owned=await toolkitHistoryRooms(tx,viewer);
+      for(const item of history)if(owned.has(`week_${item.week_id}_pair_${item.pg_id}`))item.interviewer_toolkit=true;
+    }
     const partnerCounts={};for(const row of history){if(!row.is_ai&&!row.solo)for(const name of row.partner_names)partnerCounts[name]=(partnerCounts[name]||0)+1;}
     await tx.commit();
     return {ok:true,...workspaceEnvelope(context),user:{id:context.payload.id??context.payload.uid,name:context.payload.name},history,partner_counts:partnerCounts,total:history.length,

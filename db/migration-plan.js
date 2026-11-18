@@ -183,6 +183,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'8d7d70b1d6b2dfe0827f108891cc7808a504ac11975dca4f34c47dfdb0988b81',
     checksum:'892717efad7a119b02b5eb616c311e00e955fc1731ecda625b281a240837af19',
   }),
+  Object.freeze({
+    version:27,
+    name:'private-interviewer-evaluations',
+    description:'Private evaluator-owned rubric, notes and decision with fixed 90-day expiry (#465).',
+    operationsChecksum:'cbb55c35ac056302278cdb71311cb8d47c8536e7f0c545cf287ca3bbfaaa5ff1',
+    checksum:'ccd5eeaba7f5c3eba6dc1fa797633716a376c11280b4e79ce7987f5251867681',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

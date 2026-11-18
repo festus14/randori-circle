@@ -199,6 +199,17 @@ export const MIGRATION_CONTRACTS=Object.freeze([
       triggers:Object.freeze(['trg_pair_interview_sessions_insert_guard','trg_pair_interview_sessions_update_guard']),
     }),
   }),
+  Object.freeze({
+    version:27,
+    name:'private-interviewer-evaluations',
+    checksum:'147e2cac0f994c17dc1266b1cba644a5c31da1b9d7f1e6769635dcebe1788077',
+    compatibility:'additive',
+    introduces:Object.freeze({
+      tables:Object.freeze(['interview_evaluations']),
+      indexes:Object.freeze(['idx_interview_evaluations_owner','idx_interview_evaluations_expiry']),
+      triggers:Object.freeze(['trg_interview_evaluations_insert_guard','trg_interview_evaluations_update_guard']),
+    }),
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

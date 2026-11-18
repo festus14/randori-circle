@@ -26,6 +26,12 @@ own data:
   proposals, and meeting links for the member's own pair groups.
 - `session_completions` and `session_controls` — the member's completion
   receipts and the timer / interview-role controls for their pair groups.
+- `interview_evaluations` — after v27, only the evaluator's own retained rubric,
+  notes and decision, with candidate display name only and ISO UTC timestamps
+  matching the private evaluation API. Fixed 90-day expiry;
+  a candidate never exports another account's evaluation. Included even after
+  the toolkit feature flag is rolled back; absent on v26. See
+  [interviewer toolkit](INTERVIEWER_TOOLKIT.md).
 - `messages` — only messages the member sent.
 - `code_runs` — the member's own code runs, solo and in pair rooms.
 - `secondary_workspace` — own secondary messages, code runs and completion

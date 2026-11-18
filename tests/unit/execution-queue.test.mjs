@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createClient } from '@libsql/client';
 import { createMigratedDatabase } from '../support/migrated-db.mjs';
+import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { admitExecution, checkExecutionLease, executionQueueConfiguration, executionQueueEnabled,
   ExecutionBusyError, finishExecution, readExecutionQueueHealth, selectExecutionTicket, sendExecutionBusy } from '../../api/_execution-queue.js';
 import { executePracticePrograms, executeProgram } from '../../api/_execution.js';
@@ -13,7 +14,9 @@ async function fixture(t) {
   const db=createClient({url:file.url});
   t.after(()=>{db.close();file.cleanup();});
   const ledger=await db.execute('SELECT MAX(version) AS version FROM schema_migrations');
-  assert.equal(Number(ledger.rows[0].version),26,'runs on unmodified v26 database');
+  // The queue adds no migration of its own (ID-103): it must run on the repository's
+  // unmodified latest schema, whatever that version is.
+  assert.equal(Number(ledger.rows[0].version),EXECUTABLE_MIGRATIONS.at(-1).version,'runs on the unmodified latest schema');
   return {db,file};
 }
 const rejectsBusy=(promise,reason)=>assert.rejects(promise,e=>e instanceof ExecutionBusyError&&(!reason||e.reason===reason));

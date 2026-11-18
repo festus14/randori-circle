@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 60 application tables and 77 named indexes.
+- `db/schema-manifest.js` is the current contract: 77 application tables and 105 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -54,6 +54,14 @@ Randori has read-only schema inspection for configured databases, a transactiona
   apply, `db:status` reports four expected `missing_*` blockers (the table, its
   index and two triggers) and readiness reports `pending_additive`; neither
   blocks serving. See `SESSION_CONTROLS.md`.
+
+- Migration v27 (additive) adds `interview_evaluations`, two indexes and two
+  guards on the new table only (#465, ID-102). **Production must already be
+  at migration v26 (applied and verified) before this code deploys.** Code at
+  v27 remains READY on v26 with `pending_additive`, but NOT on v25
+  (`state:"behind"`); readiness tolerates only one pending additive version.
+  The private toolkit has no capability until
+  the approved migration is applied. See [interviewer toolkit](INTERVIEWER_TOOLKIT.md).
 
 ## Commands
 

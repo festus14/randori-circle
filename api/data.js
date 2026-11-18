@@ -52,6 +52,8 @@ import {
   parseExerciseSuggestionsQuery,
   readExerciseSuggestions,
 } from './_exercise-suggestions.js';
+import { handleInterviewerToolkit } from './_interviewer-toolkit-api.js';
+import { interviewerToolkitAvailable, toolkitHistoryRooms } from './_interviewer-toolkit.js';
 import { ensureProgressReadiness, parseProgressQuery, progressDashboardEnabled, readMemberProgress } from './_progress.js';
 import { handleFeedbackRoute } from './_feedback-api.js';
 import { DELETED_ACCOUNT_PASSWORD_HASH, LIVE_ACCOUNT_SQL } from './_account-deletion.js';
@@ -186,6 +188,7 @@ function resolveDataRoute(req,endpoint){
   if(endpoint==='pair-recap'||path.includes('/pair-recap')) return 'pair-recap';
   if(endpoint==='exercise-suggestions'||path.includes('/exercise-suggestions')) return 'exercise-suggestions';
   if(endpoint==='session-completion'||path.includes('/session-completion')) return 'session-completion';
+  if(endpoint==='interviewer-toolkit'||path.includes('/interviewer-toolkit')) return 'interviewer-toolkit';
   if(endpoint==='session-controls'||path.includes('/session-controls')) return 'session-controls';
   if(endpoint==='meeting-link'||path.includes('/meeting-link')) return 'meeting-link';
   if(endpoint==='schedule'||path.includes('/schedule')) return 'schedule';
@@ -1156,6 +1159,10 @@ async function handleHistory(req,res){
       receiptsByPair.get(`${r.week_id}:${r.pg_id}`)||[],completionVersionKey);
     return { pg_id:r.pg_id, week_id:r.week_id, week_label:r.week_label, week_start:r.week_start, is_ai:!!r.is_ai_pair, topic:r.topic, topic_kind:r.topic_kind, partner_id:partnerIds[0]??null, partner_name:partnerNames.join(' & '), partner_ids:partnerIds, partner_names:partnerNames, you_are_a:isA, completion };
   }); }catch{ return res.status(503).json({error:'history unavailable'}); }
+  let toolkitRooms=new Set();
+  try{ if(await interviewerToolkitAvailable(db)) toolkitRooms=await toolkitHistoryRooms(db,Number(userId)); }
+  catch{ return res.status(503).json({error:'history unavailable'}); }
+  for(const item of enriched) if(toolkitRooms.has(`week_${item.week_id}_pair_${item.pg_id}`)) item.interviewer_toolkit=true;
   const partnerCounts={}; enriched.forEach(e=>{ if(!e.is_ai) e.partner_names.forEach(name=>{ partnerCounts[name]=(partnerCounts[name]||0)+1; }); });
   return res.json({ ok:true, user:{ id:payload.id, name:payload.name }, history:enriched, partner_counts:partnerCounts, total:enriched.length,
     // Issue #293: tells the History view to load /api/progress; absent while the flag is off.
@@ -1343,8 +1350,11 @@ async function handleSessionControls(req,res){
           viewerId:userId,weekId:input.weekId,pairGroupId:input.pairGroupId,versionKey,mode,
         });
         if(!read){ await transaction.rollback(); finished=true; return res.status(404).json({error:'pair not found'}); }
+        const toolkit=await interviewerToolkitAvailable(db);
+        const owned=toolkit?(await toolkitHistoryRooms(transaction,userId,input)).has(input.roomId):false;
         await transaction.commit(); finished=true;
-        return res.json({ok:true,room_id:input.roomId,session_controls:read.state});
+        return res.json({ok:true,room_id:input.roomId,session_controls:{...read.state,
+          ...(toolkit&&owned?{interviewer_toolkit:true}:{})}});
       }catch(error){
         if(!finished){ try{ await transaction.rollback(); }catch{} }
         throw error;
@@ -2955,6 +2965,13 @@ export default async function handler(req,res){
   try{
   const ep=getEndpoint(req);
   const route=resolveDataRoute(req,ep);
+  if(route==='interviewer-toolkit') return await handleInterviewerToolkit(req,res,{authenticate:getAuthPayload,verifyAttestation:verifyRunAttestation,
+    selectPrimary:async(request,db,payload,userId)=>{
+      if(!multiCircleControlPlaneEnabled()||strictLocalPairingRuntime(request)) return true;
+      const quiet={status(){return this;},json(){return this;}};
+      const selected=await requireSelectedPairingReader(request,quiet,db,payload,userId);
+      return !!selected&&selected.mode!=='secondary';
+    }});
   if(await dispatchWorkspaceData(req,res,route)) return;
   if(!await requireSingleCircleDataFeature(req,res,route)) return;
   if(route==='runs') return await handleRuns(req,res);

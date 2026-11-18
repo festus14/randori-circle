@@ -1,3 +1,4 @@
+import { INTERVIEW_EVALUATION_OPERATIONS } from './interview-evaluation-schema.js';
 import { SECONDARY_WORKSPACE_OPERATIONS } from './secondary-workspace-schema.js';
 import {checksum} from './stable-checksum.js';
 
@@ -408,6 +409,7 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({version:24,operations:PLAN_24_OPERATIONS}),
   Object.freeze({version:25,operations:SECONDARY_WORKSPACE_OPERATIONS}),
   Object.freeze({version:26,operations:PLAN_26_OPERATIONS}),
+  Object.freeze({version:27,operations:INTERVIEW_EVALUATION_OPERATIONS}),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -437,7 +439,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM="39b02e625eba0acefb403f1f577b7b7b7ab26906ebf8251dffff579a25dce4e0";
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM="eac2a82f24a44f822c44dc1c2b6efce5955cd594239a75255ff6b7aa40efa42c";
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

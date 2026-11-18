@@ -207,6 +207,10 @@
       "destination": "/api/data?endpoint=session-completion"
     },
     {
+      "source": "/api/interviewer-toolkit",
+      "destination": "/api/data?endpoint=interviewer-toolkit"
+    },
+    {
       "source": "/api/session-controls",
       "destination": "/api/data?endpoint=session-controls"
     },
