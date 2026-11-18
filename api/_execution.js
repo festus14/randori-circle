@@ -10,10 +10,13 @@
 //   with all egress denied, authenticated by the deployment's Vercel OIDC token.
 // - `piston`: a self-hosted Piston-compatible endpoint at EXECUTION_API_URL.
 // Anything else (including unset) leaves execution unavailable and fails closed.
-import { Writable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 
 export const EXECUTION_PROVIDERS = Object.freeze(['vercel-sandbox', 'piston']);
 export const MAX_EXECUTION_OUTPUT_BYTES = 256 * 1024;
+export const MAX_EXECUTION_STDIN_BYTES = 20_000;
+export const PISTON_COMPILE_TIMEOUT_MS = 1_000;
+export const PISTON_RUN_TIMEOUT_MS = 10_000;
 export const PISTON_REQUEST_TIMEOUT_MS = 12_000;
 export const SANDBOX_CREATE_TIMEOUT_MS = 20_000;
 export const SANDBOX_COMMAND_TIMEOUT_MS = 10_000;
@@ -48,6 +51,31 @@ export class ExecutionFailedError extends Error {
     this.name = 'ExecutionFailedError';
     this.code = 'execution_failed';
   }
+}
+
+export class ExecutionInputError extends Error {
+  constructor(message, status = 400) {
+    super(message);
+    this.name = 'ExecutionInputError';
+    this.status = status;
+  }
+}
+
+export function executionStdinEnabled(env = process.env) {
+  return env.EXECUTION_STDIN_ENABLED === 'true';
+}
+
+/** Absent stdin preserves catalogue-only runs; even empty stdin is an opt-in. */
+export function validateExecutionStdin(request, env = process.env) {
+  if (!Object.prototype.hasOwnProperty.call(request, 'stdin')) return undefined;
+  if (!executionStdinEnabled(env)) throw new ExecutionInputError('custom stdin is unavailable', 404);
+  if (typeof request.stdin !== 'string') throw new ExecutionInputError('stdin must be a string');
+  // Reject lossy UTF-8 conversion instead of silently changing caller input.
+  if (!request.stdin.isWellFormed()) throw new ExecutionInputError('stdin must be well-formed Unicode');
+  if (Buffer.byteLength(request.stdin, 'utf8') > MAX_EXECUTION_STDIN_BYTES) {
+    throw new ExecutionInputError(`stdin exceeds the ${MAX_EXECUTION_STDIN_BYTES}-byte limit`, 413);
+  }
+  return request.stdin;
 }
 
 function retiredHost(hostname) {
@@ -117,7 +145,7 @@ async function loadVercelSandboxSdk() {
   return import('@vercel/sandbox');
 }
 
-async function runInVercelSandbox({ language, source }, { loadSandboxSdk = loadVercelSandboxSdk } = {}) {
+async function runInVercelSandbox({ language, source, stdin }, { loadSandboxSdk = loadVercelSandboxSdk } = {}) {
   const runtime = SANDBOX_RUNTIMES[language];
   let Sandbox;
   try {
@@ -137,7 +165,7 @@ async function runInVercelSandbox({ language, source }, { loadSandboxSdk = loadV
       timeout: SANDBOX_SESSION_TIMEOUT_MS,
       networkPolicy: 'deny-all',
       persistent: false,
-      tags: { app: 'randori-circle', purpose: 'catalog-evaluation' },
+      tags: { app: 'randori-circle', purpose: stdin === undefined ? 'catalog-evaluation' : 'private-stdin' },
       signal: createController.signal,
     });
   } catch (error) {
@@ -148,6 +176,7 @@ async function runInVercelSandbox({ language, source }, { loadSandboxSdk = loadV
     clearTimeout(createTimer);
   }
 
+  const input = stdin === undefined ? null : Readable.from([Buffer.from(stdin, 'utf8')]);
   const commandController = new AbortController();
   let timedOut = false;
   const collector = boundedCollector(MAX_EXECUTION_OUTPUT_BYTES, () => commandController.abort());
@@ -160,6 +189,7 @@ async function runInVercelSandbox({ language, source }, { loadSandboxSdk = loadV
       const finished = await sandbox.runCommand({
         cmd: runtime.cmd,
         args: [filename],
+        ...(input ? { stdin: input } : {}),
         stdout: collector.stdout,
         stderr: collector.stderr,
         signal: commandController.signal,
@@ -184,6 +214,7 @@ async function runInVercelSandbox({ language, source }, { loadSandboxSdk = loadV
     throw new ExecutionFailedError('sandbox execution failed', { cause: error });
   } finally {
     clearTimeout(commandTimer);
+    input?.destroy();
     // Delete stops the microVM and discards its filesystem. Failure here must
     // not change the evaluation result; the session timeout is the backstop.
     try { await sandbox.delete(); } catch { try { await sandbox.stop(); } catch {} }
@@ -219,7 +250,7 @@ async function readBoundedJson(response, controller) {
   try { return JSON.parse(text); } catch (error) { throw new ExecutionFailedError('execution response was not JSON', { cause: error }); }
 }
 
-async function runInPiston({ language, source }, { url, token, fetchImpl = globalThis.fetch } = {}) {
+async function runInPiston({ language, source, stdin }, { url, token, fetchImpl = globalThis.fetch } = {}) {
   const version = PISTON_RUNTIMES[language];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PISTON_REQUEST_TIMEOUT_MS);
@@ -231,7 +262,16 @@ async function runInPiston({ language, source }, { url, token, fetchImpl = globa
       response = await fetchImpl(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ language, version, files: [{ name: LANGUAGE_FILES[language], content: source }] }),
+        body: JSON.stringify({
+          language, version, files: [{ name: LANGUAGE_FILES[language], content: source }],
+          ...(stdin === undefined ? {} : { stdin }),
+          // A request abort alone cannot kill a remote process. The self-hosted
+          // provider must enforce these wall/CPU deadlines, even on disconnect.
+          compile_timeout: PISTON_COMPILE_TIMEOUT_MS,
+          compile_cpu_time: PISTON_COMPILE_TIMEOUT_MS,
+          run_timeout: PISTON_RUN_TIMEOUT_MS,
+          run_cpu_time: PISTON_RUN_TIMEOUT_MS,
+        }),
         signal: controller.signal,
         redirect: 'error',
       });
@@ -251,7 +291,7 @@ async function runInPiston({ language, source }, { url, token, fetchImpl = globa
       stderr: String(run.stderr || ''),
       code: Number.isInteger(run.code) ? run.code : null,
       signal: typeof run.signal === 'string' ? run.signal.slice(0, 64) : null,
-      timedOut: false,
+      timedOut: run.status === 'TO' || run.signal === 'SIGKILL',
     };
   } catch (error) {
     if (error instanceof ExecutionUnavailableError || error instanceof ExecutionFailedError) throw error;
@@ -263,21 +303,51 @@ async function runInPiston({ language, source }, { url, token, fetchImpl = globa
 
 /**
  * Execute one generated harness file in the configured isolated provider.
- * @param {{language: 'javascript'|'python', source: string}} request
+ * @param {{language: 'javascript'|'python', source: string, stdin?: string}} request
  * @param {{env?: object, fetchImpl?: typeof fetch, loadSandboxSdk?: () => Promise<any>}} [options]
  */
 export async function executeProgram(request, { env = process.env, fetchImpl, loadSandboxSdk } = {}) {
   const language = request?.language;
   if (!Object.prototype.hasOwnProperty.call(LANGUAGE_FILES, language)) throw new TypeError('unsupported execution language');
   if (typeof request.source !== 'string' || !request.source) throw new TypeError('execution source is required');
+  const stdin = validateExecutionStdin(request, env);
+  const program = { language, source: request.source, ...(stdin === undefined ? {} : { stdin }) };
   const resolved = resolveExecutionProvider(env);
   if (!resolved.configured) throw new ExecutionUnavailableError(resolved.reason || 'code execution is unavailable');
-  if (resolved.provider === 'vercel-sandbox') return runInVercelSandbox(request, { loadSandboxSdk });
-  return runInPiston(request, {
+  if (resolved.provider === 'vercel-sandbox') return runInVercelSandbox(program, { loadSandboxSdk });
+  return runInPiston(program, {
     url: resolved.url,
     token: String(env.EXECUTION_API_TOKEN || '').trim() || null,
     fetchImpl: fetchImpl || globalThis.fetch,
   });
+}
+
+// Custom execution never sees the verification harness/marker. Run in parallel
+// so adding stdin does not double the lease's provider deadline. Wait for BOTH
+// cleanups before releasing the shared per-account lease, including on failure.
+export async function executePracticePrograms({ language, harness, code, stdin }, options = {}) {
+  const env = options.env || process.env;
+  const customRequest = { language, source: code, ...(stdin === undefined ? {} : { stdin }) };
+  validateExecutionStdin(customRequest, env);
+  if (stdin === undefined) {
+    return { run: await executeProgram({ language, source: harness }, options), custom: undefined };
+  }
+  const [verified, privateRun] = await Promise.allSettled([
+    executeProgram({ language, source: harness }, options),
+    executeProgram(customRequest, options),
+  ]);
+  if (verified.status === 'rejected') throw verified.reason;
+  // Provider errors can contain submitted bytes. Neither log nor return them.
+  const custom = privateRun.status === 'rejected'
+    ? { ok: false, error: 'custom execution failed', code: 'execution_failed' }
+    : {
+      ok: true,
+      stdout: privateRun.value.stdout,
+      stderr: privateRun.value.stderr,
+      exit_code: privateRun.value.code,
+      timed_out: privateRun.value.timedOut === true,
+    };
+  return { run: verified.value, custom };
 }
 
 // ----- Harness generation and result normalisation -----

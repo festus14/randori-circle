@@ -219,6 +219,7 @@ test('the self-hosted Piston provider posts one file with an optional bearer tok
   assert.equal(requests[0].options.redirect, 'error');
   assert.deepEqual(JSON.parse(requests[0].options.body), {
     language: 'python', version: '3.10.0', files: [{ name: 'main.py', content: 'print(1)' }],
+    compile_timeout: 1000, compile_cpu_time: 1000, run_timeout: 10000, run_cpu_time: 10000,
   });
 
   const env = { EXECUTION_PROVIDER: 'piston', EXECUTION_API_URL: PISTON_URL };
@@ -257,6 +258,60 @@ test('the JavaScript harness reports a function that returns nothing as a wrong 
   const thrown = execFileSync(process.execPath, ['-e', thrower], { encoding: 'utf8' }).trim().split('\n')
     .map(line => JSON.parse(line.slice('__P__:'.length)));
   assert.equal(thrown[0].error, 'runtime error', 'a real exception is still an error');
+});
+
+test('stdin reaches Vercel Sandbox as an EOF-terminated stream, never as a file or argument', async () => {
+  for (const stdin of ['', 'private 🙂\r\ninput\n', 'é'.repeat(10_000)]) {
+    const sandbox = fakeSandboxSdk({
+      async runCommand(params) {
+        const chunks = [];
+        for await (const chunk of params.stdin) chunks.push(chunk);
+        params.stdout.write(Buffer.concat(chunks));
+        return { exitCode: 0 };
+      },
+    });
+    const result = await executeProgram({ language: 'javascript', source: 'SCRIPT', stdin }, {
+      env: { ...SANDBOX_ENV, EXECUTION_STDIN_ENABLED: 'true' }, loadSandboxSdk: sandbox.loadSandboxSdk,
+    });
+    assert.equal(result.stdout, stdin);
+    assert.equal(sandbox.calls.writeFiles[0].files.length, 1);
+    assert.equal(sandbox.calls.writeFiles[0].files[0].content.toString(), 'SCRIPT');
+    assert.deepEqual(sandbox.calls.runCommand[0].args, ['main.js']);
+    assert.equal(sandbox.calls.runCommand[0].stdin.destroyed, true);
+    assert.equal(sandbox.calls.deleted, 1);
+    assert.equal(sandbox.calls.create[0].tags.purpose, 'private-stdin');
+  }
+});
+
+test('a real runaway custom process is killed on the sandbox command deadline', async t => {
+  const { spawn } = await import('node:child_process');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let child;
+  const sandbox = fakeSandboxSdk({
+    runCommand(params) {
+      child = spawn(process.execPath, ['-e', 'while (true) {}'], { stdio: 'ignore' });
+      return new Promise((resolve, reject) => {
+        params.signal.addEventListener('abort', () => child.kill('SIGKILL'), { once: true });
+        child.once('error', reject);
+        child.once('exit', (code, signal) => {
+          assert.equal(signal, 'SIGKILL');
+          reject(new Error('aborted'));
+        });
+      });
+    },
+  });
+  const pending = executeProgram({ language: 'javascript', source: 'while (true) {}', stdin: 'private' }, {
+    env: { ...SANDBOX_ENV, EXECUTION_STDIN_ENABLED: 'true' }, loadSandboxSdk: sandbox.loadSandboxSdk,
+  });
+  try {
+    for (let index = 0; index < 10 && !child; index += 1) await new Promise(resolve => setImmediate(resolve));
+    assert.ok(child);
+    t.mock.timers.tick(SANDBOX_COMMAND_TIMEOUT_MS);
+    const result = await pending;
+    assert.equal(result.timedOut, true); assert.equal(result.signal, 'SIGKILL');
+    assert.equal(child.killed, true); assert.equal(sandbox.calls.deleted, 1);
+    assert.equal(sandbox.calls.runCommand[0].stdin.destroyed, true);
+  } finally { child?.kill('SIGKILL'); }
 });
 
 test('harnesses keep answer keys server-side and results are normalised against expected values', () => {

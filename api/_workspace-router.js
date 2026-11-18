@@ -100,7 +100,7 @@ export async function dispatchWorkspaceData(req,res,route){
     const key=getJwtSecret();let result;
     if(route==='messages')result=req.method==='GET'?await stableWorkspaceRead(db,tx=>workspace.readSecondaryMessages(tx,room,{afterId:bounded(queryValue(req,'after_id'),0,Number.MAX_SAFE_INTEGER),limit:bounded(queryValue(req,'limit'),50,50)})):await withWorkspaceRetry(()=>workspace.sendSecondaryMessage(db,room,req.body));
     else if(route==='runs')result=await stableWorkspaceRead(db,tx=>workspace.readSecondaryRuns(tx,room,{afterId:bounded(queryValue(req,'after_id'),0,Number.MAX_SAFE_INTEGER),limit:bounded(queryValue(req,'limit'),20,20),verify:verifySecondaryRun}));
-    else if(route==='execute')result=await executeSecondaryProgram(db,room,req,key);
+    else if(route==='execute'){res.setHeader('Cache-Control','no-store');result=await executeSecondaryProgram(db,room,req,key);}
     else if(route==='session-completion'){
       try{const state=req.method==='GET'?await stableWorkspaceRead(db,tx=>workspace.readSecondaryCompletion(tx,room,key)):await withWorkspaceRetry(()=>workspace.mutateSecondaryCompletion(db,room,req.body,key));result=state?{completion:state.completion}:null;}
       catch(error){if(error instanceof workspace.SecondaryWorkspaceConflictError){res.status(409).json({error:error.message,code:error.code,room_id:room.roomId,completion:error.state});return true;}throw error;}

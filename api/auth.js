@@ -374,6 +374,8 @@ async function handleCapabilities(req,res){
       // Issue #310: advertised only while the flag is on. The diagnostics API
       // still authorizes every request as a global administrator.
       ...(process.env.ADMIN_DIAGNOSTICS_ENABLED==='true'?{adminDiagnostics:true}:{}),
+      // Issue #467: server enforces the same default-off stdin gate on every run.
+      ...(process.env.EXECUTION_STDIN_ENABLED==='true'?{executionStdin:true}:{}),
       // Issue #339: advertised only while the flag (and circle membership) is on.
       ...(accountDeletionEnabled()?{accountDeletion:true}:{}),
       // Issue #372: advertised only while the grace flag is on and migration

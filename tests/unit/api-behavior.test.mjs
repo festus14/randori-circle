@@ -601,7 +601,7 @@ beforeEach(() => {
     'TURSO_AUTH_TOKEN', 'TURSO_DATABASE_URL', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL',
     'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
     'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM',
-    'EXECUTION_PROVIDER', 'EXECUTION_API_URL', 'EXECUTION_API_TOKEN',
+    'EXECUTION_PROVIDER', 'EXECUTION_API_URL', 'EXECUTION_API_TOKEN', 'EXECUTION_STDIN_ENABLED',
   ]) delete process.env[key];
   // Execution tests target the provider abstraction through a self-hosted
   // Piston-compatible endpoint whose transport each test replaces.
@@ -754,6 +754,16 @@ test('auth capabilities report static flags without database access', async () =
     registrationMode:'private_beta',
   });
   assert.equal(executed.length,0);
+
+  for(const flag of ['true','false','TRUE','1']){
+    process.env.EXECUTION_STDIN_ENABLED=flag;
+    const stdinCapabilities=await invoke(authHandler,{
+      url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'randori.example.test'},
+    });
+    assert.equal(stdinCapabilities.body.capabilities.executionStdin,flag==='true'?true:undefined);
+    assert.equal(executed.length,0,'stdin capability is static and never opens a database');
+  }
+  delete process.env.EXECUTION_STDIN_ENABLED;
 
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
