@@ -392,7 +392,7 @@ async function hydrate(identity,epoch){
     if(result.response.status===409&&result.data.code==='session_completed'){ completeIdentity(); return false; }
     // The interviewer has not opened or released this question yet; access
     // changes re-run activation.
-    if(result.response.status===409&&result.data.code==='interview_editing_locked'){ setStatus('held','waiting for the interviewer'); return false; }
+    if(result.response.status===409&&/^interview_(editing_locked|lobby)$/.test(String(result.data.code||''))){ setStatus('held','waiting for the interviewer'); return false; }
     if(!result.response.ok) throw new Error(result.data.error||'code document unavailable');
     const doc=new Y.Doc({gc:true}); const text=doc.getText('code');
     Y.applyUpdate(doc,base64ToBytes(result.data.state),ORIGIN_REMOTE);
@@ -449,7 +449,7 @@ async function drain(){
     if(result.response.status===409&&result.data.code==='session_completed'){
       completeIdentity(); return false;
     }
-    if(result.response.status===409&&result.data.code==='interview_editing_locked'){ setStatus('held'); return false; }
+    if(result.response.status===409&&/^interview_(editing_locked|lobby)$/.test(String(result.data.code||''))){ setStatus('held'); return false; }
     if(!result.response.ok) throw new Error(result.data.error||'code sync failed');
     if(!acceptResponse(result.data,epoch,identity)) throw new Error('invalid code document response');
     const remaining=readQueue(identity); if(remaining[0]===update) remaining.shift(); writeQueue(remaining,identity);

@@ -24,6 +24,7 @@ import {
 // browser keeps it queued and replays it once the interviewer unlocks.
 const EDITING_CLOSED=Object.freeze({ok:false,code:'interview_editing_locked',
   error:'The interviewer has paused candidate editing. Your edits are kept on this device.'});
+const IN_LOBBY=Object.freeze({ok:false,code:'interview_lobby',error:'Waiting for the interviewer to admit you.'});
 
 function authenticatedUserId(payload){
   const userId=Number(payload?.id||payload?.uid);
@@ -99,6 +100,7 @@ export default async function handler(req,res){
       // Foreign/nonexistent workspace requests use the uniform pair 404.
       if(!result) return res.status(404).json({ok:false,error:'code document not found'});
       if(result.terminal) return res.status(409).json({ok:false,code:'session_completed',error:'session is ended; editing is closed'});
+      if(result.lobby) return res.status(409).json(IN_LOBBY);
       if(result.editingClosed) return res.status(409).json(EDITING_CLOSED);
       return res.json({...codeDocumentResponse(result,{afterRevision:input.afterRevision}),
         ...(realtimeRelayConfiguration()?{realtime_relay:true}:{})});

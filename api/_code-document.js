@@ -184,6 +184,13 @@ export function codeDocumentAccessSql(){
 class InterviewEndedError extends Error{}
 class CandidateEditingClosedError extends Error{}
 
+// Interview lobby (#464): the candidate cannot read the interviewer's prepared
+// code before admission, whether or not a document exists yet.
+async function candidateInLobby(db,mode,viewerId,identity){
+  const gate=await readInterviewGate(db,mode,identity);
+  return !!gate&&!gate.live&&!gate.ended&&gate.candidateUserId===viewerId;
+}
+
 // A failed storage-time fence must roll back the whole transaction, including
 // any earlier bootstrap, retention scrub, or CRDT/workspace projection.
 async function assertInterviewStillOpen(db,pair,mode){
@@ -520,6 +527,9 @@ async function readUnchangedCodeDocument(db,viewerId,identity,afterRevision,mode
     if(await interviewTimerEnded(transaction,authorization.pair,mode)){
       await finish(transaction,'rollback'); finished=true; return {done:true,result:{terminal:true}};
     }
+    if(await candidateInLobby(transaction,mode,viewerId,identity)){
+      await finish(transaction,'rollback'); finished=true; return {done:true,result:{lobby:true}};
+    }
     const row=await readRow(transaction,identity);
     if(!row||Number(row.retention_expired)===1){
       await finish(transaction,'commit'); finished=true; return {done:false};
@@ -556,6 +566,9 @@ async function getAuthorizedCodeDocumentUnlocked(db,{viewerId,afterRevision=0,..
       if(!authorization){ await transaction.rollback(); settled=true; return null; }
       if(await interviewTimerEnded(transaction,authorization.pair,mode)){
         await transaction.rollback(); settled=true; return {terminal:true};
+      }
+      if(await candidateInLobby(transaction,mode,viewerId,identity)){
+        await transaction.rollback(); settled=true; return {lobby:true};
       }
       await purgeExpiredCodeDocumentIdentity(transaction,identity);
       let row=await readRow(transaction,identity);

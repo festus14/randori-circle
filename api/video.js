@@ -618,6 +618,15 @@ async function handleWorkspaceGet(req,res,db,userId,room){
   const result=await readAuthorizedWorkspaceSnapshot(db,userId,room);
   if(!result.authorized) return res.status(403).json({ok:false,error:'not a member of this room'});
   const current=await redactExpiredWorkspaceCode(db,room,result.snapshot);
+  // Interview lobby (#464): the candidate sees which exercise is selected but
+  // not the interviewer's prepared code or board. Revision 0 keeps the real
+  // checkpoint newer, so admission delivers it on the next poll.
+  const mode=await resolveInterviewMode(db);
+  const gate=current?await readInterviewGate(db,mode,room):null;
+  if(gate&&!gate.live&&!gate.ended&&gate.candidateUserId===userId){
+    return res.json({ok:true,lobby:true,revision:0,snapshot:afterRevision===0?{...current,revision:0,
+      client_id:'interview-lobby',client_seq:0,code:'',board:{shapes:[]},updated_by:null,updated_at:null}:null});
+  }
   return res.json({
     ok:true,
     snapshot:current && current.revision>afterRevision ? current : null,

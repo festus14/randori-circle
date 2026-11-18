@@ -88,7 +88,7 @@ import {
   validateSessionControlsPostQuery,
 } from './_session-controls.js';
 import { CodeDocumentInputError, codeDocumentAccessSql, readCanonicalCodeForExecution } from './_code-document.js';
-import { materializeScheduledStart } from './_interview-session.js';
+import { InterviewStateChangedError, materializeScheduledStart } from './_interview-session.js';
 import { ensureDataAdminReadiness, ensureDataCircleReadiness, ensureDataHistoryReadiness, ensureDataLogReadiness, ensureDataMeetingLinkReadiness, ensureDataProfileReadiness, ensureDataRunsReadiness, ensureDataSessionCompletionReadiness, ensureDataSessionControlsReadiness, ensureDataStatsReadiness, ensureDataWeeksReadiness, ensureMyPairDataReadiness } from './_data-readiness.js';
 import { circleMembershipEnabled, ensureCircleMembershipReadiness } from './_circle-membership.js';
 import { initializePrimaryCircleData } from './_admin-init.js';
@@ -1764,7 +1764,14 @@ async function handleSchedule(req,res){
       // before the agreement changes, so clearing or replacing a past
       // agreement can never return a started or ended interview to the lobby.
       if(interviewMode?.lobby&&nextValues.agreedTime!==(current.rawAgreedTime??null)){
-        await materializeScheduledStart(transaction,interviewMode,{weekId:room.weekId,pairGroupId:room.pairGroupId,actorId:userId});
+        try{ await materializeScheduledStart(transaction,interviewMode,{weekId:room.weekId,pairGroupId:room.pairGroupId}); }
+        catch(error){
+          if(!(error instanceof InterviewStateChangedError)) throw error;
+          await transaction.rollback(); finished=true;
+          const latest=await fetchAuthorizedScheduleState(db,accessArgs,room.weekId,room.pairGroupId);
+          if(!latest.authorized) return res.status(404).json({error:'pair not found'});
+          return res.status(409).json({error:'schedule changed',room_id:room.roomId,schedule:projectSchedule(latest.state)});
+        }
       }
       const nowUtc=['propose','accept'].includes(mutation.action)
         ?await readScheduleDatabaseNow(transaction):null;

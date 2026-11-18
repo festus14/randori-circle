@@ -30,7 +30,8 @@ class InterviewServer{
   codePosts:Array<{actorId:number;status:number}>=[];
   doc=new Y.Doc(); docRevision=1; persisted='';
   workspaceRevision=1;
-  constructor(){ this.doc.getText('code').insert(0,starter); this.persisted=base64(Y.encodeStateAsUpdate(this.doc)); }
+  constructor(){ this.doc.getText('code').insert(0,`// PREPARED\n${starter}`); this.persisted=base64(Y.encodeStateAsUpdate(this.doc)); }
+  candidateInLobby(actorId:number){ return actorId===CANDIDATE&&!this.live()&&!this.terminal(); }
 
   scheduleRun(){ return !this.admitted&&this.timerState==='paused'&&this.remainingMs===DURATION&&this.scheduledStartMs!==null&&Date.now()>=this.scheduledStartMs; }
   live(){ return this.admitted||this.timerState==='running'||this.remainingMs<DURATION||this.scheduleRun(); }
@@ -88,7 +89,10 @@ class InterviewServer{
   codeDocument(actorId:number){
     return (request:Request)=>{
       const url=new URL(request.url());
-      if(request.method()==='GET') return this.documentResponse(Number(url.searchParams.get('after_revision')||0));
+      if(request.method()==='GET'){
+        if(this.candidateInLobby(actorId)) return {_status:409,ok:false,code:'interview_lobby',error:'Waiting for the interviewer to admit you.'};
+        return this.documentResponse(Number(url.searchParams.get('after_revision')||0));
+      }
       if(this.terminal()){ this.codePosts.push({actorId,status:409}); return {_status:409,ok:false,code:'session_completed',error:'ended'}; }
       if(this.candidateBlocked(actorId)){
         this.codePosts.push({actorId,status:409});
@@ -112,6 +116,10 @@ class InterviewServer{
     return (request:Request)=>{
       const url=new URL(request.url());
       if(request.method()==='GET'&&url.searchParams.get('channel')==='workspace'){
+        if(this.candidateInLobby(actorId)){
+          return {ok:true,lobby:true,revision:0,snapshot:url.searchParams.get('after_revision')==='0'
+            ?{...this.snapshot(),revision:0,client_id:'interview-lobby',client_seq:0,code:'',board:{shapes:[]}}:null};
+        }
         return {ok:true,room_id:room,revision:this.workspaceRevision,snapshot:this.snapshot()};
       }
       if(request.method()!=='POST') return {ok:true,signals:[],after:0,count:0};
@@ -175,6 +183,8 @@ test('scheduled interview moves lobby -> live -> locked -> unlocked -> ended for
     await expect(i.getByTestId('session-controls-admit')).toBeEnabled();
     await expect(i.getByTestId('session-controls-start-pause')).toBeDisabled();
     await expect(c.locator('#editor')).toHaveJSProperty('readOnly',true);
+    await expect(c.locator('#editor')).not.toHaveValue(/PREPARED/);
+    await expect(i.locator('#editor')).toHaveValue(/PREPARED/,{timeout:12_000});
     for(const id of ['#questionSelect','#langSelect','#runBtn']) await expect(c.locator(id)).toBeDisabled();
     await expect(i.locator('#langSelect')).toBeEnabled();
     expect(await c.evaluate(()=>window._randori_session_controls?.mutate('admit'))).toBe(false);
@@ -188,6 +198,7 @@ test('scheduled interview moves lobby -> live -> locked -> unlocked -> ended for
     await expect(c.locator('#questionSelect')).toBeDisabled();
     await expect(c.locator('#langSelect')).toBeDisabled();
     await expect(c.locator('#codeSyncStatus')).toHaveText('synced',{timeout:12_000});
+    await expect(c.locator('#editor')).toHaveValue(/PREPARED/,{timeout:12_000});
     await type(c,'cand-');
     await expect.poll(()=>server.doc.getText('code').toString(),{timeout:12_000}).toContain('cand-');
 

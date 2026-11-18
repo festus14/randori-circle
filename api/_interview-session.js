@@ -140,15 +140,21 @@ export class InterviewStateChangedError extends Error{
 /**
  * Freeze a schedule-derived start (no admission recorded, timer untouched,
  * agreed instant reached) into durable rows: the controls timer runs from the
- * agreed instant and the room records admission by schedule. Call inside a
+ * agreed instant and the room records admission by schedule, both attributed
+ * to the current interviewer. Throws InterviewStateChangedError if the start
+ * changed under the transaction (callers answer 409). Call inside a
  * serialized write transaction after authorization. Idempotent; returns
  * whether it wrote. Nothing else may change the agreed time first, so a
  * later schedule edit can neither rewind nor reopen a started interview.
  */
-export async function materializeScheduledStart(db,mode,{weekId,pairGroupId,actorId}){
+export async function materializeScheduledStart(db,mode,{weekId,pairGroupId}){
   const gate=await readInterviewGate(db,mode,{weekId,pairGroupId});
   if(!gate?.scheduleRun) return false;
   const start=gate.scheduledStartAt;
+  // The schedule, not whoever touched it, started the interview. Attribute
+  // the frozen rows to the current interviewer so `updated_by` stays an
+  // interviewer under ID-95 even when the candidate edits the schedule.
+  const actorId=gate.candidateUserId===gate.userAId?gate.userBId:gate.userAId;
   const stillScheduled=`EXISTS (SELECT 1 FROM (${interviewStateSql()}) st WHERE st.schedule_run=1 AND st.scheduled_start_at=?)`;
   await db.execute({
     sql:`DELETE FROM pair_interview_sessions WHERE week_id=? AND pair_group_id=?

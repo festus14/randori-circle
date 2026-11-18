@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 
 import {
   INTERVIEW_TIMER_DURATION_MS,
+  InterviewStateChangedError,
   interviewModeFrom,
   interviewOpenFence,
   interviewSessionEnabled as interviewFlagEnabled,
@@ -622,6 +623,9 @@ async function mutateAttempt(db,{viewerId,mutation,versionKey,mode}){
     if(INTERVIEW_ACTIONS.has(mutation.action)&&!interviewSessionEnabled()){
       throw new SessionControlsInputError('unsupported session-controls action');
     }
+    // Without migration 26 the lobby commands do not exist for anyone. This
+    // 400 deliberately precedes the role check below so both participants get
+    // the same answer: it cannot be used as an oracle for who is interviewer.
     if(LOBBY_ACTIONS.has(mutation.action)&&!current.lobby){
       throw new SessionControlsInputError('unsupported session-controls action');
     }
@@ -644,9 +648,8 @@ async function mutateAttempt(db,{viewerId,mutation,versionKey,mode}){
     if(current.phase?.scheduleRun){
       // Freeze the schedule-derived start before any other write so the
       // command applies to durable rows and no later schedule edit rewinds it.
-      await materializeScheduledStart(transaction,current.mode,{
-        weekId:mutation.weekId,pairGroupId:mutation.pairGroupId,actorId:viewerId,
-      });
+      try{ await materializeScheduledStart(transaction,current.mode,{weekId:mutation.weekId,pairGroupId:mutation.pairGroupId}); }
+      catch(error){ if(error instanceof InterviewStateChangedError) return await conflictAfterRejectedWrite(); throw error; }
       current=await read();
       if(!current) throw new SessionControlsDataError('session-controls authorization changed');
       if(current.state.terminal) throw terminalConflict(current.state);

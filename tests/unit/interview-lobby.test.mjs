@@ -133,7 +133,7 @@ function interleave(db,pattern,change){
     return target;
   };
   const client={execute:db.execute.bind(db),async transaction(mode){ return wrap(await db.transaction(mode)); }};
-  return {client,wrapped:wrap({execute:db.execute.bind(db),transaction:db.transaction.bind(db)}),seen};
+  return {client,wrapped:wrap({execute:db.execute.bind(db),transaction:client.transaction}),seen};
 }
 
 function workspacePayload(overrides={}){
@@ -336,7 +336,10 @@ test('clearing or replacing an arrived agreement through the schedule API freeze
     assert.equal(view.phase,ended?'ended':'live',`clearing must not return the room to the lobby (ended=${ended})`);
     assert.equal(view.admission,'schedule');
     if(ended) assert.equal(view.end_reason,'timer_expired');
-    assert.equal((await rows('pair_interview_sessions')).length,1);
+    const frozen=await rows('pair_interview_sessions'),[timer]=await rows('pair_session_controls');
+    assert.equal(frozen.length,1);
+    assert.equal(frozen[0].updated_by,INTERVIEWER,'the candidate edited the schedule, but the freeze is attributed to the interviewer');
+    assert.equal(timer.updated_by,INTERVIEWER);
     currentDb.close(); rmSync(currentDirectory,{recursive:true,force:true}); currentDb=null; currentDirectory=null;
   }
 });
@@ -368,8 +371,8 @@ test('candidate CRDT bootstrap, merges and projections are fenced by the lobby a
   await freshDatabase();
   const fresh=new Y.Doc(); fresh.getText('code').insert(0,'lobby;');
   const created=Buffer.from(Y.encodeStateAsUpdate(fresh));
-  assert.deepEqual(await getAuthorizedCodeDocument(currentDb,{viewerId:CANDIDATE,...IDENTITY}),{editingClosed:true},
-    'no candidate bootstrap in the lobby');
+  assert.deepEqual(await getAuthorizedCodeDocument(currentDb,{viewerId:CANDIDATE,...IDENTITY}),{lobby:true},
+    'no candidate bootstrap (or read) in the lobby');
   assert.deepEqual(await merge(CANDIDATE,created),{editingClosed:true});
   assert.deepEqual(await rows('pair_code_documents'),[]);
   const initial=(await getAuthorizedCodeDocument(currentDb,{viewerId:INTERVIEWER,...IDENTITY})).document;
@@ -431,10 +434,20 @@ test('a lock that lands inside the candidate transaction is enforced by the stor
 
 test('the code-document API reports held candidate edits with a stable private 409',async()=>{
   await freshDatabase();
-  const response=await call(codeDocumentHandler,{url:`/api/code-document?room_id=${ROOM}&question_slug=focus-block-rollup&question_version=1&language=javascript`,
+  const read=()=>call(codeDocumentHandler,{url:`/api/code-document?room_id=${ROOM}&question_slug=focus-block-rollup&question_version=1&language=javascript`,
     query:{room_id:ROOM,question_slug:'focus-block-rollup',question_version:'1',language:'javascript'},user:CANDIDATE});
-  assert.equal(response.status,409); assert.equal(response.body.code,'interview_editing_locked');
-  assert.equal(response.headers['cache-control'],'private, no-store');
+  const lobby=await read();
+  assert.equal(lobby.status,409); assert.equal(lobby.body.code,'interview_lobby');
+  assert.equal(lobby.headers['cache-control'],'private, no-store');
+  await run(INTERVIEWER,'admit'); await run(INTERVIEWER,'lock_editing');
+  const locked=await read();
+  assert.equal(locked.status,409); assert.equal(locked.body.code,'interview_editing_locked','a locked candidate cannot bootstrap a document');
+  assert.equal(locked.headers['cache-control'],'private, no-store');
+  const doc=new Y.Doc(); doc.getText('code').insert(0,'held');
+  const post=await call(codeDocumentHandler,{method:'POST',url:'/api/code-document',user:CANDIDATE,body:{room_id:ROOM,
+    question_slug:'focus-block-rollup',question_version:1,language:'javascript',update:Buffer.from(Y.encodeStateAsUpdate(doc)).toString('base64'),
+    client_id:'candidate_client',client_seq:1}});
+  assert.equal(post.status,409); assert.equal(post.body.code,'interview_editing_locked');
 });
 
 test('only the interviewer chooses the room question and language; candidate checkpoints follow the lobby and lock',async()=>{
@@ -539,4 +552,58 @@ test('the lobby closes new candidate execution lookups; the lock does not stop r
   await run(INTERVIEWER,'admit'); await run(INTERVIEWER,'lock_editing');
   const candidate=await lookup(CANDIDATE);
   assert.equal(candidate.lobby,undefined); assert.equal(candidate.stale,false);
+});
+
+test('a candidate in the lobby sees the selection but not the interviewer\'s prepared code or board',async()=>{
+  await freshDatabase();
+  await currentDb.execute({sql:'UPDATE pair_room_snapshots SET code=? WHERE room_id=?',
+    args:[JSON.stringify({code:'// prepared hint',board:{shapes:[{id:'t1',type:'text',x:1,y:1,text:'secret',color:'#ffffff',size:16}]}}),ROOM]});
+  const prepared=(await getAuthorizedCodeDocument(currentDb,{viewerId:INTERVIEWER,...IDENTITY})).document;
+  assert.match(prepared.code,/prepared hint/);
+  const read=(user,after=0)=>call(videoHandler,{url:`/api/video/signal?room_id=${ROOM}&channel=workspace&after_revision=${after}`,
+    query:{room_id:ROOM,channel:'workspace',after_revision:String(after)},user});
+  const lobby=(await read(CANDIDATE)).body;
+  assert.equal(lobby.lobby,true); assert.equal(lobby.revision,0);
+  assert.equal(lobby.snapshot.question_id,'focus-block-rollup'); assert.equal(lobby.snapshot.language,'javascript');
+  assert.equal(lobby.snapshot.code,''); assert.deepEqual(lobby.snapshot.board,{shapes:[]});
+  assert.equal((await read(CANDIDATE,5)).body.snapshot,null);
+  assert.match((await read(INTERVIEWER)).body.snapshot.code,/prepared hint/,'the interviewer reads normally');
+  for(const afterRevision of [0,prepared.revision]){
+    assert.deepEqual(await getAuthorizedCodeDocument(currentDb,{viewerId:CANDIDATE,...IDENTITY,afterRevision}),{lobby:true});
+  }
+  const api=await call(codeDocumentHandler,{url:`/api/code-document?room_id=${ROOM}&question_slug=focus-block-rollup&question_version=1&language=javascript&after_revision=0`,
+    query:{room_id:ROOM,question_slug:'focus-block-rollup',question_version:'1',language:'javascript',after_revision:'0'},user:CANDIDATE});
+  assert.equal(api.status,409); assert.deepEqual(api.body,{ok:false,code:'interview_lobby',error:'Waiting for the interviewer to admit you.'});
+  await run(INTERVIEWER,'admit');
+  const admitted=(await read(CANDIDATE)).body;
+  assert.equal(admitted.lobby,undefined); assert.ok(admitted.revision>0);
+  assert.match(admitted.snapshot.code,/prepared hint/); assert.equal(admitted.snapshot.board.shapes.length,1);
+  assert.match((await getAuthorizedCodeDocument(currentDb,{viewerId:CANDIDATE,...IDENTITY})).document.code,/prepared hint/);
+});
+
+test('a scheduled start that changes under the freeze answers 409, never 503',async()=>{
+  await freshDatabase();
+  await agreeAt(currentDb,-60*1000);
+  const sneak=execute=>execute(`INSERT INTO pair_interview_sessions (week_id,pair_group_id,pair_user_a_id,pair_user_b_id,
+    admission,admitted_at,editing_locked,revision,updated_by,created_at,updated_at)
+    VALUES (10,20,1,2,'interviewer',strftime('%Y-%m-%dT%H:%M:%fZ','now'),0,1,2,strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'))`);
+  const schedule=(await call(dataHandler,{url:'/api/schedule',user:CANDIDATE,query:{endpoint:'schedule',room_id:ROOM}})).body.schedule;
+  const raced=interleave(currentDb,/INSERT INTO pair_session_controls/,sneak);
+  const original=currentDb; currentDb=raced.wrapped;
+  let response;
+  try{
+    response=await call(dataHandler,{method:'POST',url:'/api/schedule',user:CANDIDATE,query:{endpoint:'schedule'},
+      body:{room_id:ROOM,action:'clear',base_version:schedule.version}});
+  }finally{ currentDb=original; }
+  assert.equal(raced.seen[0].rowsAffected,0);
+  assert.equal(response.status,409); assert.equal(response.body.error,'schedule changed');
+  assert.ok(response.body.schedule.agreed_time,'the agreement was not cleared');
+  assert.deepEqual(await rows('pair_interview_sessions'),[]);
+  const live=await state(INTERVIEWER);
+  const racedControls=interleave(currentDb,/INSERT INTO pair_session_controls/,sneak);
+  const {mutateAuthorizedSessionControls}=await import('../../api/_session-controls.js');
+  await assert.rejects(mutateAuthorizedSessionControls(racedControls.client,{viewerId:INTERVIEWER,versionKey:VERSION_KEY,
+    mutation:{roomId:ROOM,weekId:10,pairGroupId:20,action:'lock_editing',baseVersion:live.version,candidateUserId:null}}),
+  error=>error.code==='session_controls_changed');
+  assert.deepEqual(await rows('pair_session_controls'),[]);
 });
