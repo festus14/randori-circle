@@ -96,6 +96,32 @@ without it: the route returns 503 or the capability is not offered.
 | `EXECUTION_API_TOKEN` | Bearer token sent to the Piston endpoint | No | unset | Yes | Vercel |
 | `EXECUTION_STDIN_ENABLED` | Optional private stdin/script execution alongside verified catalogue cases; 20,000 UTF-8 bytes, request-only response, 60-second private UI window ([usage](../README.md#private-custom-stdin-dark-launch)) | No | false | No | Vercel; literal `true` only |
 
+### Realtime code relay (optional, default off)
+
+Supabase is a relay only, never a second document store. Configuration validity
+also requires the existing `JWT_SECRET` to be at least 32 bytes. Relay-specific
+subject/rate HMAC keys are separately derived from that app secret, not from
+the ECDSA scalar: provider key/kid rotation preserves pseudonyms and quotas;
+app-secret rotation rekeys both alongside the existing global sign-out. Configuration
+advertises `realtimeRelay` in `/api/auth/capabilities` and `realtime_relay` on
+primary document GETs; it does not prove provider key/policy setup. The token
+endpoint independently authorizes each exact live primary two-human document.
+[Setup and rollback](CONFLICT_FREE_CODE_DOCUMENTS.md#supabase-provider-setup-and-rollback)
+are operator-owned; no request-path DDL or Turso migration.
+
+| Variable | Purpose | Required | Default | Secret | Where set |
+| --- | --- | --- | --- | --- | --- |
+| `SUPABASE_URL` | Root HTTPS origin of the dedicated relay-only Supabase project (`https://<ref>.supabase.co`); no custom host/path/credentials | With relay flag | unset (relay unavailable) | No | Vercel Production + Development; orchestrator provisioned, not checked by this branch |
+| `SUPABASE_PUBLISHABLE_KEY` | Browser-safe `sb_publishable_…` project key for the WebSocket handshake; legacy JWT, service-role and `sb_secret_…` keys are rejected | With relay flag | unset | No | Vercel Production + Development; orchestrator provisioned |
+| `SUPABASE_REALTIME_SIGNING_JWK` | Private EC/P-256 JWK JSON with `x`, `y`, `d`; optional `alg=ES256`, `use=sig`, `kid` must match configured kid. Signs room-bound join JWTs; never reaches clients/logs. Import the matching key into Supabase and rotate to it first | With relay flag | unset | Yes, sensitive and server-only | Vercel; trusted operator's private local key file, never GitHub/CI |
+| `SUPABASE_REALTIME_SIGNING_KID` | Exact Supabase imported signing-key identifier used in the ES256 JWT header | With signing JWK | unset | No | Vercel; must agree with provider key and any JWK `kid` |
+
+`npm run dev` explicitly turns the relay off and clears all four provider values;
+its credential-free local runtime must never inherit a production signing key.
+The CRDT bundle contains a minimal Phoenix v1 private-broadcast transport, not a
+Supabase SDK/CDN. CSP permits only `wss://*.supabase.co` for this provider, while
+runtime configuration restricts each connection to the configured project.
+
 ### AI providers (AI is off)
 
 | Variable | Purpose | Required | Default | Secret | Where set |
@@ -156,7 +182,7 @@ production state in the [feature flag table](#feature-flags):
 `CIRCLE_HEALTH_ENABLED`, `ADMIN_DIAGNOSTICS_ENABLED`,
 `ACCOUNT_DELETION_ENABLED`, `ACCOUNT_DELETION_GRACE_ENABLED`,
 `DATA_EXPORT_ENABLED`,
-`OUTBOX_PII_RETENTION_ENABLED` and `AI_ENABLED`.
+`OUTBOX_PII_RETENTION_ENABLED`, `REALTIME_RELAY_ENABLED` and `AI_ENABLED`.
 `ALLOW_OPEN_SIGNUP` is the exception: it is development-only, works only in
 the local runtime and is ignored when `NODE_ENV=production`.
 
@@ -431,6 +457,7 @@ them off cannot undo.
 | `DATA_EXPORT_ENABLED` | Download my data in Edit profile (`GET /api/auth/account/export`): a JSON archive of the member's own data, partners by display name only | off | Off (observed: no `dataExport`) | none | ID-90 ([data export](DATA_EXPORT.md)) | Safe; nothing is stored. Turning it off hides the endpoint, the capability and the UI |
 | `OUTBOX_PII_RETENTION_ENABLED` | Hourly removal of recipient addresses and sealed links from delivered or suppressed outbox rows after 7 days and from dead letters after 30 | off | On (owner) | The matching privacy policy text (live since 2026-10-22) | ID-83 | Stops further redaction. **Irreversible:** redacted rows cannot be restored and redacted dead letters stay non-replayable |
 | `EXECUTION_STDIN_ENABLED` | Private stdin script run alongside the server-owned cases; `executionStdin` capability and Results controls | off | New dark-launch flag; not deployed or observed | A configured isolated execution provider; self-hosted Piston must enforce deadlines and ephemeral cleanup | ID-94 ([usage](../README.md#private-custom-stdin-dark-launch)) | Safe; rejects new stdin requests with 404. In-flight runs finish within existing provider caps; no private data is stored |
+| `REALTIME_RELAY_ENABLED` | Sub-second Yjs update broadcasts in private Supabase channels for canonical primary two-human rooms; HTTPS authority and polling stay active | off | Not enabled by this branch; provider values owner-reported only (2026-11-18) | All four `SUPABASE_*` values above, imported/rotated ES256 key, public channels disabled, reviewed Realtime RLS applied; existing code-document schema | ID-96 ([code relay](CONFLICT_FREE_CODE_DOCUMENTS.md#supabase-relay-only-transport-461)) | Unset/set `false` and redeploy: no capability or new tokens; existing clients close on the next primary GET/at renewal. For immediate revocation revoke the imported key/provider connections first; retain HTTPS documents and SQL deny fences |
 | `AI_ENABLED` | Consent-gated AI feedback in `api/ai.js` | off | Off (privacy policy says AI is off) | `GROQ_API_KEY` or `OPENAI_API_KEY`; privacy and consent review ([#7](https://github.com/festus14/randori-circle/issues/7)) | ID-41 | AI routes return 503 |
 | `ALLOW_OPEN_SIGNUP` | Open password signup for development | off | Ignored in production (`NODE_ENV=production`) | Not production; circle membership off | none | Safe |
 | `OUTBOX_IMMEDIATE_DELIVERY` | Sending mail right after commit, instead of waiting for the cron (three-state, see above) | on when `VERCEL=1` | Not observable (expected unset, so on) | none | ID-64 | Set `false` and redeploy: mail waits for the scheduled `/api/cron/outbox` |

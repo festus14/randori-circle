@@ -33,6 +33,8 @@ mock.module('../../api/_active-circle.js',{exports:{
 mock.module('../../api/_data-readiness.js',{exports:{
   ensureCodeDocumentReadiness:async()=>{ if(state.readinessThrows) throw new Error('schema not ready'); },
 }});
+mock.module('../../api/_realtime-relay.js',{exports:{realtimeRelayConfiguration:()=>null}});
+mock.module('../../api/_realtime-relay-api.js',{exports:{handleRelayToken:()=>{ throw new Error('unexpected relay route'); }}});
 mock.module('../../api/_code-document.js',{exports:{
   CodeDocumentInputError,CodeDocumentDataError,
   parseCodeDocumentQuery:()=>{ if(state.throwFrom==='parse') throw state.error; return {afterRevision:2,roomId:'r'}; },

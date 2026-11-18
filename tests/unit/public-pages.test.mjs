@@ -87,7 +87,7 @@ for (const [path, html] of Object.entries(pages)) {
     // The privacy policy was updated for the durable deletion ledger
     // (issue #383); the terms keep their earlier date.
     if(path === '/privacy'){
-      assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-10-28">28 October 2026<\/time><\/p>/u);
+      assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-11-18">18 November 2026<\/time><\/p>/u);
     }else{
       assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-10-22">22 October 2026<\/time><\/p>/u);
     }
@@ -163,6 +163,13 @@ test('the privacy policy carries the Google API Services User Data Policy disclo
   assert.match(text, /openid email profile/u);
   assert.match(text, /not sold/u);
   assert.match(text, /not used for advertising/u);
+});
+
+test('the privacy policy discloses the default-off relay without claiming it stores durable documents',()=>{
+  const text=visibleText(pages['/privacy']);
+  assert.match(text,/Supabase Realtime.*optional, disabled-by-default relay for shared-editor changes/u);
+  assert.match(text,/saved editor state stays in Turso through our authenticated server/u);
+  assert.match(text,/We do not send chat, whiteboards, audio or video through this relay/u);
 });
 
 test('the privacy policy states the retention gaps and providers the code really has', () => {

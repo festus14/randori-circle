@@ -1050,7 +1050,8 @@ test('every static vercel.json API rewrite reaches the same handler and endpoint
     const routed=await response.json();
     const query={...routed.query};
     if(query.endpoint===undefined&&implicitEndpoints.has(rewrite.source)) query.endpoint=implicitEndpoints.get(rewrite.source);
-    assert.equal(routed.handler,destination.pathname.slice('/api/'.length),rewrite.source);
+    const handlerName=destination.pathname.slice('/api/'.length);
+    assert.equal(routed.handler,handlerName==='code-document'?'codeDocument':handlerName,rewrite.source);
     assert.deepEqual(query,Object.fromEntries(destination.searchParams),rewrite.source);
   }
 });
@@ -1075,6 +1076,11 @@ test('runtime environment disables ambient providers and restores the caller env
     LEETCODE_INGESTION_AUTHORIZED:'true',
     RUN_ATTESTATION_SECRET:'ambient-run-attestation-secret',
     RUN_ATTESTATION_PREVIOUS_SECRETS:'ambient-previous-attestation-secrets',
+    REALTIME_RELAY_ENABLED:'true',
+    SUPABASE_URL:'https://relay-test.supabase.co',
+    SUPABASE_PUBLISHABLE_KEY:'sb_publishable_ambient_test_key_461',
+    SUPABASE_REALTIME_SIGNING_JWK:'{"test":"ambient-signing-material"}',
+    SUPABASE_REALTIME_SIGNING_KID:'ambient-test-kid',
     EXECUTION_PROVIDER:'vercel-sandbox',
     EXECUTION_API_URL:'https://ambient-runner.example.test/api/v2/execute',
     EXECUTION_API_TOKEN:'ambient-execution-token',
@@ -1100,6 +1106,11 @@ test('runtime environment disables ambient providers and restores the caller env
           aiEnabled:envTarget.AI_ENABLED,
           runAttestationSecret:envTarget.RUN_ATTESTATION_SECRET,
           previousAttestationSecrets:envTarget.RUN_ATTESTATION_PREVIOUS_SECRETS,
+          relayEnabled:envTarget.REALTIME_RELAY_ENABLED,
+          relayUrl:envTarget.SUPABASE_URL,
+          relayPublicKey:envTarget.SUPABASE_PUBLISHABLE_KEY,
+          relaySigningJwk:envTarget.SUPABASE_REALTIME_SIGNING_JWK,
+          relaySigningKid:envTarget.SUPABASE_REALTIME_SIGNING_KID,
           executionProvider:envTarget.EXECUTION_PROVIDER,
           executionUrl:envTarget.EXECUTION_API_URL,
           executionToken:envTarget.EXECUTION_API_TOKEN,
@@ -1125,6 +1136,11 @@ test('runtime environment disables ambient providers and restores the caller env
     aiEnabled:'false',
     runAttestationSecret:'',
     previousAttestationSecrets:'',
+    relayEnabled:'false',
+    relayUrl:'',
+    relayPublicKey:'',
+    relaySigningJwk:'',
+    relaySigningKid:'',
     executionProvider:'',
     executionUrl:'',
     executionToken:'',

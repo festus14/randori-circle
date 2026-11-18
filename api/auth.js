@@ -11,6 +11,7 @@ import {
   verifyRequestAuth,
   verifySignedRequestAuth,
 } from './_db.js';
+import { realtimeRelayConfiguration } from './_realtime-relay.js';
 import { ensureAuthReadiness } from './_auth-readiness.js';
 import bcrypt from 'bcryptjs';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -370,6 +371,7 @@ async function handleCapabilities(req,res){
       googleOAuth,
       recentAuthMaxAgeSeconds:10*60,
       identityManagement,
+      ...(realtimeRelayConfiguration()?{realtimeRelay:true}:{}),
       ...(inviteRequests?{inviteRequests:true}:{}),
       // Issue #310: advertised only while the flag is on. The diagnostics API
       // still authorizes every request as a global administrator.

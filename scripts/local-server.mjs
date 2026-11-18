@@ -661,6 +661,7 @@ function apiRoute(pathname,query){
     '/api/ai':['ai',null],
     '/api/video':['video',null],
     '/api/code-document':['codeDocument',null],
+    '/api/code-document/relay-token':['codeDocument','relay-token'],
   };
   if(direct[pathname]){
     const [handler,endpoint]=direct[pathname];
@@ -996,6 +997,11 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
     OPENAI_API_KEY:'',
     SENTRY_DSN:'',
     NEXT_PUBLIC_SENTRY_DSN:'',
+    REALTIME_RELAY_ENABLED:'false',
+    SUPABASE_URL:'',
+    SUPABASE_PUBLISHABLE_KEY:'',
+    SUPABASE_REALTIME_SIGNING_JWK:'',
+    SUPABASE_REALTIME_SIGNING_KID:'',
     // Code execution stays unavailable locally: the loopback runtime never
     // inherits a hosted sandbox or remote execution endpoint.
     EXECUTION_PROVIDER:'',

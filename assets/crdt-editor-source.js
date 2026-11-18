@@ -1,5 +1,7 @@
 import * as Y from 'yjs';
 import { MonacoBinding } from 'y-monaco';
+import { createCodeRelay } from './realtime-relay.mjs';
+import { applyValidatedRelayUpdate } from './realtime-yjs.mjs';
 
 const PENDING_KEY='randori-crdt-pending-v1';
 const CLIENT_KEY='randori-crdt-client-v1';
@@ -13,11 +15,12 @@ const VERSION=/^[a-f0-9]{64}$/;
 const ROOM={test:room=>window.RandoriWorkspaceScope?.canonicalRoom?.(room)===true};
 const ORIGIN_REMOTE=Symbol('remote');
 const ORIGIN_PENDING=Symbol('pending');
+const ORIGIN_RELAY=Symbol('relay');
 const memoryQueues=new Map();
 const state={epoch:0,room:null,identity:null,actorId:null,doc:null,text:null,binding:null,
   textObserver:null,textareaHandler:null,textareaKeyHandler:null,updateHandler:null,undoManager:null,revision:0,version:null,
   hydrated:false,inFlight:false,controller:null,pollTimer:null,retryMs:500,status:'local',completed:false,
-  awaitingRoom:false,hydrationLockEpoch:null};
+  awaitingRoom:false,hydrationLockEpoch:null,relay:null,relayEnabled:false};
 
 function actorId(){
   const id=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0);
@@ -308,6 +311,39 @@ function acceptResponse(data,epoch,identity,{apply=true}={}){
   return true;
 }
 
+function configureRelay(data,epoch,identity){
+  state.relayEnabled=data?.realtime_relay===true&&/^week_[1-9]\d*_pair_[1-9]\d*$/.test(identity.room);
+  if(!state.relayEnabled||!matches(epoch,identity)||!navigator.onLine){
+    state.relay?.stop(); state.relay=null; return;
+  }
+  if(state.relay) return;
+  try{
+    state.relay=createCodeRelay({identity,mergeUpdates:Y.mergeUpdates,
+      isCurrent:()=>matches(epoch,identity)&&state.hydrated&&navigator.onLine,
+      fetchToken:signal=>{
+        // Primary relay joins need the session-circle fence even when the
+        // secondary-workspace fetch wrapper is disabled. The server compares
+        // this cached version with live authority; it is never authorization.
+        const version=window._randori_circle_control?.scheduleContext?.()?.contextVersion;
+        return fetch('/api/code-document/relay-token',{
+          method:'POST',credentials:'same-origin',cache:'no-store',signal,
+          headers:{'content-type':'application/json',
+            ...(Number.isSafeInteger(version)&&version>=0?{'X-Randori-Circle-Context-Version':String(version)}:{})},
+          body:JSON.stringify({room_id:identity.room,question_slug:identity.questionSlug,
+            question_version:identity.questionVersion,language:identity.language}),
+        });
+      },
+      onUpdate:update=>{
+        if(matches(epoch,identity)&&state.doc) applyValidatedRelayUpdate(state.doc,update,ORIGIN_RELAY);
+        // The doc update handler queues this for HTTPS and disables Run. Relay
+        // bytes never alter revision/version or count as acknowledgement.
+      },
+      onFallback:()=>{ if(matches(epoch,identity)) schedule(0); },
+    });
+    state.relay.start();
+  }catch{ state.relay=null; } // crypto/WebSocket unavailable: polling unchanged
+}
+
 function schedule(delay=POLL_MS){
   if(state.pollTimer!==null) clearTimeout(state.pollTimer);
   if(!state.identity||document.visibilityState!=='visible'||state.completed) return;
@@ -359,6 +395,7 @@ async function hydrate(identity,epoch){
       const persisted=writeQueue(queue,identity);
       if(!persisted&&!navigator.onLine) setStatus('error','not saved locally — keep this tab open');
       else setStatus(navigator.onLine?'syncing':'offline');
+      if(origin!==ORIGIN_RELAY) state.relay?.send(update);
       schedule(SEND_DEBOUNCE_MS);
     };
     doc.on('update',state.updateHandler);
@@ -373,6 +410,7 @@ async function hydrate(identity,epoch){
     if(readQueue(identity).length) { setStatus(navigator.onLine?'syncing':'offline'); await drain(); }
     else setStatus('synced');
     clearLegacyDraft(identity);
+    configureRelay(result.data,epoch,identity);
     schedule();
     window.dispatchEvent(new CustomEvent('randori:code-document-hydrated',{detail:{room:identity.room,revision:state.revision}}));
     return true;
@@ -429,12 +467,14 @@ async function poll(){
     if(result.response.status===409&&result.data.code==='session_completed'){ completeIdentity(); return; }
     if(!result.response.ok) throw new Error(result.data.error||'poll failed');
     if(!acceptResponse(result.data,epoch,identity,{apply:result.data.changed!==false})) throw new Error('invalid poll response');
+    configureRelay(result.data,epoch,identity);
     state.retryMs=500; setStatus('synced');
   }catch{ if(matches(epoch,identity)) setStatus(navigator.onLine?'retry':'offline'); }
   schedule(state.status==='retry'?state.retryMs:POLL_MS);
 }
 
 function disposeDocument(){
+  state.relay?.stop(); state.relay=null; state.relayEnabled=false;
   state.controller?.abort(); state.controller=null;
   if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
   state.binding?.destroy?.(); state.binding=null;
@@ -555,7 +595,10 @@ document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible') activate();
   else if(state.identity){ state.epoch+=1; disposeDocument(); setStatus('offline','paused while this tab is hidden'); }
 });
-window.addEventListener('offline',()=>setStatus('offline'));
+window.addEventListener('offline',()=>{
+  state.relay?.stop(); state.relay=null;
+  setStatus('offline');
+});
 window.addEventListener('online',()=>{
   if(state.identity&&state.hydrated){ setStatus('connecting'); schedule(0); }
   else if(state.identity) activate();
@@ -575,5 +618,6 @@ window._randori_crdt={activate,deactivate,poll,flush,fence:fenceIdentityChange,
   ownsCodeFor(room){ return !!state.identity&&state.identity.room===room; },
   reconcile(){ return poll(); },get acknowledged(){ return isAcknowledged(); },
   get documentVersion(){ return isAcknowledged()?state.version:null; },get room(){ return state.room; },
+  get relayConnected(){ return state.relay?.connected===true; },
   get identity(){ return state.identity?{...state.identity}:null; },get status(){ return state.status; },
 };

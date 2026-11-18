@@ -173,6 +173,9 @@ leaves normal catalogue runs unchanged. No migration or request-path DDL.
   call set-up, Vercel Sandbox for code execution, Sentry for error reporting
   (production only), and cdnjs, jsDelivr and unpkg, which serve the code
   editor and formatter to the browser.
+- **Realtime code relay (optional):** Supabase Realtime private broadcasts,
+  behind `REALTIME_RELAY_ENABLED=false` by default. It never stores the code
+  document or acknowledges Run; authenticated HTTPS remains authoritative.
 - **Scheduled jobs:**
 
 | Job | Schedule | Runs on |
@@ -287,6 +290,15 @@ the code reads: purpose, whether it is required, default, whether it is secret,
 and where it is set. It also has the feature flag table with production state
 and how to switch each flag off safely. [`.env.example`](.env.example) is the
 matching template.
+
+For optional sub-second pair-code relay, configure `SUPABASE_URL` and the
+browser-safe `SUPABASE_PUBLISHABLE_KEY`, plus server-only sensitive
+`SUPABASE_REALTIME_SIGNING_JWK` (private ES256/P-256 JWK) and
+`SUPABASE_REALTIME_SIGNING_KID`. Keep `REALTIME_RELAY_ENABLED=false` until the
+orchestrator imports/rotates the matching provider signing key, disables public
+channels, applies the reviewed SQL and completes the two-browser canary.
+[Provider setup and rollback](docs/CONFLICT_FREE_CODE_DOCUMENTS.md#supabase-provider-setup-and-rollback)
+include the exact SQL operations. No new Turso migration is required.
 
 ## Security baseline
 
