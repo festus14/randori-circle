@@ -22,10 +22,13 @@ made on page load or per exercise.
 | Go | **not supported** on stock images | go 1.16.2, installed offline by the operator | `EXECUTION_LANGUAGE_GO_ENABLED` |
 
 SDK 3.8.0 declares managed Node/Python and other base images, but does not promise
-an offline Go compiler in them. No runtime package install, provider network
-access, vendored interpreter, mutable toolchain snapshot or dependency on #483
-is introduced. A future Vercel Go capability must explicitly add a verified
-pristine snapshot/image and its runtime pin before changing this matrix.
+an offline Go compiler in them. The rebase retains #483's durable admission and
+pristine snapshots. TypeScript may restore the existing **JavaScript Node 24
+snapshot**: its source is syntax-stripped before dispatch and its `main.cts`
+command uses that same interpreter, with no extra compiler/runtime state. Every
+run still creates and discards a fresh deny-all VM; no member-run VM is reused.
+Go has no Vercel image/snapshot capability and stays Piston-only. No runtime
+package install, vendored interpreter or mutable toolchain snapshot is added.
 
 The operator must provision the exact Piston runtime packages before enabling
 its flags. A missing package fails the smoke and must leave that language dark;
@@ -61,8 +64,9 @@ without results, hence failed. Return empty slices rather than nil when `[]` is
 expected; nil encodes as JSON null. Struct fields must be exported with JSON tags.
 Go stdout is reserved for the harness: exactly one frame per case, in index order.
 Duplicate, reordered, malformed, extra/non-frame or incomplete stdout invalidates
-**all** case passes before signing or persisting results. Return values instead of
-printing debug output. Legacy JS/Python framing is unchanged. The requester's
+**all** case passes before signing or persisting results. Entirely empty stdout
+reports `no result` for every case. Return values instead of printing debug
+output. Legacy JS/Python framing is unchanged. The requester's
 execute response includes only a fixed `compile_failed` category for Go; raw
 compiler text is not returned because it can echo submitted code or server
 harness/case bytes. That category stays out of attestations and shared feeds.
@@ -79,6 +83,11 @@ Go `stdin` with a clear message before leases/provider calls. Go catalogue runs
 remain one execution. Provider-owned private command-log retention must still be
 reviewed before enabling `EXECUTION_STDIN_ENABLED`.
 
+All languages share #483's server-derived execution context, durable admission,
+lease/permit checks, spend reservation and provider-stop/cleanup accounting.
+One Go compile+run is **one provider unit**; rejected Go stdin spends zero.
+TypeScript plus private stdin reserves **two units together before either VM
+starts**, then waits for both cleanup receipts. No new language bypasses admission.
 All languages share the 256 KiB provider response/output cap, normalizer, eight
 server-owned cases, attestation, acknowledged code-document versions and verified
 run-feed projection. Expected outputs/oracles never enter a provider harness or
@@ -135,17 +144,32 @@ rest parameters fail explicitly rather than being altered by a loose regex.
 The protected `execution-smoke` route runs one trivial program per enabled,
 provider-supported language. Its **existing** atomic claim, 30-minute spacing,
 schedule slot per 20 hours and deploy slot per 24 hours are unchanged. At most
-four languages run concurrently. Default cost remains two runs per claim;
-TypeScript adds one Vercel creation (three total); Piston with both additions
-performs four runs. Disabled/unsupported languages cost zero. A new language
-missing from an old cached result is `result_missing`, never a passing cache.
-The workflow assessor validates/fails on every advertised language, not only JS/PY.
+four languages run concurrently. Combined budget (unchanged claim windows):
+
+- Measurement off: two default runs/claim; three on Vercel with TypeScript; four
+  on Piston with TypeScript and Go enabled.
+- Measurement on: pair **only JS/Python**, four runs/claim; TypeScript adds one
+  ordinary run, **five total**, not a second cold/warm pair. Its startup is not
+  pooled into the JS/Python snapshot cohort. Go/Piston never enables measurement.
+- At the existing conservative 70-claims/month ceiling, measured Vercel costs
+  280 creations without TypeScript or 350 with it, all charged to admission's
+  global provider-unit budget. Ordinary Piston has at most 280 runs at that ceiling.
+
+Disabled/unsupported languages cost zero. The busy/quota classification stays
+**deferred**, never evidence of a provider pass; store failures stay alerts.
+A new language missing from an old cached result is `result_missing`, never an
+inherited pass. The assessor checks every enabled language and still validates
+paired latency regressions for the unchanged JS/Python cohort.
 
 The opt-in CLI keeps its existing maximum of five creations per invocation:
 unset `EXECUTION_SMOKE_LANGUAGE` runs the old JS/PY good+broken references and
 Vercel egress probe. Select `typescript` or `go` to run that language's good and
 broken references instead (two runs plus one egress probe on Vercel, two on
-Piston). The selector refuses disabled/unsupported targets. It is never in tests.
+Piston). The selector refuses disabled/unsupported targets. Measurement reuses
+those same good/broken JS/Python calls as cold/snapshot samples (no extra calls);
+targeted TypeScript/Go still run only good+broken programs, not latency pairs.
+All calls, including the egress probe, use the same durable ops admission. The
+CLI remains excluded from tests and is never invoked by ordinary gates.
 
 1. Merge/deploy with both flags off. Verify the normal JS/PY journey and gates.
 2. In the controlled canary deployment, enable **one** supported language flag.
@@ -153,8 +177,9 @@ Piston). The selector refuses disabled/unsupported targets. It is never in tests
    Before enabling Go, verify the **deployed** execute function `maxDuration`
    exceeds the 22-second provider request ceiling plus authorization, quota, DB
    persistence and cleanup overhead. The smoke handler also needs room for its
-   existing 45-second language watchdog. `vercel.json` declares no `maxDuration`;
-   do not assume the platform default or an operator setting was checked here.
+   existing 45-second watchdog, or 90-second paired-measurement watchdog when
+   measurement is enabled. `vercel.json` declares no `maxDuration`; do not assume
+   the platform default or an operator setting was checked here.
 3. Run the existing execution-smoke workflow against that deployment under the
    approved operator setup. Require the new language's actual `status=ok`, not
    `throttled`, and use the targeted CLI reference canary plus editor → sandbox

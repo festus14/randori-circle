@@ -14,9 +14,11 @@ name: execution-smoke
 #
 # ID-103: when EXECUTION_QUEUE_ENABLED=true and server-side
 # EXECUTION_WARM_MEASURE_ENABLED=true, the same throttled claim runs one cold
-# and one snapshot sample per language (four creations, not two). The assessor
-# reports aggregate create-latency p50/p95 for the current snapshot cohort and
-# fails a regression once >=20 pairs/language exist. No new workflow secret,
+# and one snapshot sample per JS/Python runtime (four creations, not two).
+# TypeScript adds one ordinary run, never a new pair: five total when enabled.
+# The assessor reports aggregate create-latency p50/p95 for the existing cohort
+# and fails a regression once >=20 pairs/runtime exist. Busy/quota defers without
+# asserting a provider pass; store failures alert. No new workflow secret,
 # unbounded load test, client-supplied program, or provider call outside the API.
 #
 # Only Vercel's own Production deployments trigger it. GitHub records a

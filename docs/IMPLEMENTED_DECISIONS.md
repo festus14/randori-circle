@@ -6098,6 +6098,10 @@ no persisted state or provider configuration needs repair.
 
 ## ID-103: Bound execution admission and spend with a durable retry queue and pristine runtime snapshots
 
+**Amended by ID-104:** TypeScript/Go use this same admission flow. Paired smoke
+measurement remains JS/Python-only; TypeScript adds one ordinary run per claim,
+so the combined measured Vercel budget is five, not six creations.
+
 Status: implemented behind default-off `EXECUTION_QUEUE_ENABLED`; issue #468,
 epic #460. No migration. ID-101 (#480) and ID-102 (#465) remain reserved by
 parallel work. Base `e4eca0d`, schema v26.
@@ -6233,10 +6237,10 @@ branch, initial JS is 957,738 bytes (+1,127 over main 956,611), with the unchang
 
 ## ID-104: Gate TypeScript and Piston-only Go by provider without runtime installs
 
-**Status: Active.** Implements #466 (epic #460), based on main `1eb7078`.
-ID-102 is reserved by #465/#484; ID-103 by #468/#483. No migration or rollout.
+**Status: Active.** Implements #466 (epic #460), rebased onto main `f63ddf3`.
+ID-102 remains reserved by #484; ID-103 (#468/#483) is on main. No migration or rollout.
 
-**Amends ID-62, ID-74, ID-94 and ID-97.** JavaScript/Python are unchanged by
+**Amends ID-62, ID-74, ID-94, ID-97 and ID-103.** JavaScript/Python are unchanged by
 absent/false flags. Literal `EXECUTION_LANGUAGE_TYPESCRIPT_ENABLED=true` enables
 TypeScript on both providers; literal `EXECUTION_LANGUAGE_GO_ENABLED=true`
 enables Go only on self-hosted Piston. The API/catalogue/workspace validators
@@ -6251,9 +6255,9 @@ installed and no provider network is needed. Vercel uses the managed Node 24
 image/strip-types flag. TypeScript is limited to erasable syntax, not runtime
 transforms or type checking. Go uses Piston's pinned offline `go` 1.16.2 with a
 submitted package file and separate server-owned harness, JSON-to-declared-type
-reflection, per-case panic recovery and one JSON return value. Go is explicitly
-excluded from stock Vercel images; future snapshot toolchains need their own
-capability/version evidence and do not depend on #483 here.
+reflection, per-case panic recovery and one JSON return value. Go remains excluded from stock Vercel images;
+future Vercel Go snapshots need their own capability/version evidence. The merged
+#483 admission and pristine-snapshot flow is retained for all supported languages.
 
 **Authority and provenance.** New signatures/starters are deterministic runtime
 adapters of the reviewed canonical JS signature, not bespoke authored exercise
@@ -6294,8 +6298,9 @@ not inferred from mocks. No byte thresholds are changed.
 
 Details and operator/authoring steps: [execution languages](EXECUTION_LANGUAGES.md).
 
-**Byte budget.** On this branch, initial JS is 957,094 bytes (+483 versus
-`1eb7078`) under the unchanged 1,000,000 limit; total JS is 1,379,558 under
+**Byte budget.** After the `f63ddf3` integration, initial JS is 958,292 bytes
+(+554 versus that base; the compile note adds 71 bytes to the original +483
+boundary) under the unchanged 1,000,000 limit; total JS is 1,385,594 under
 1,450,000. The immutable smoke-workflow/assessor digest pins were refreshed for
 this reviewed extension; their permissions, trigger and secret predicates and
 replacement/mutation rejection tests remain intact.
@@ -6312,3 +6317,13 @@ a fixed `compile_failed` category, never raw compiler text. Both Ubuntu catalogu
 jobs require Go; oracle annotations assert supported parameter shapes. Native
 Piston 1.16.2 compatibility and deployed function-duration headroom remain
 explicit operator checks, not claims from modern-Go CI or local mocks.
+
+**Main integration (ID-103).** All languages keep the same server-derived context,
+admission, lease/permit checks, bounded provider deadlines and terminal cleanup
+accounting. Go compile+run costs one unit; TypeScript+stdin costs two, reserved
+before either VM; Go stdin is rejected before admission. TypeScript reuses the
+pristine Node 24 JS snapshot without mixing its latency into the JS/Python cohort.
+Measured smoke remains four JS/Python calls plus one unpaired TypeScript call
+(five total); ordinary smoke remains 2/3 Vercel or up to 4 Piston. All claim
+windows, read-only readiness and byte thresholds remain unchanged. The requester
+gets only a fixed Go compile-failure note; empty Go stdout remains `no result`.

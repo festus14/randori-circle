@@ -220,11 +220,16 @@ Percentile reads cap at 4,096 samples and report truncation.
 The **existing execution-smoke workflow** still invokes the cron-secret-protected
 API; it cannot send custom programs or choose its sample count. When queue and
 warm measurement are both enabled, the existing atomically throttled claim runs
-one cold and one pristine-snapshot trivial program **per language**, checks the
-same output, and records only the paired `Sandbox.create` durations. Thus each
-real claim costs four creations instead of two. The existing 30-minute gap and
-schedule/deploy slots remain, at most 70 claims/month ⇒ **280** creations/month,
-also counted against the global quota. Individual language measurement is bounded
+one cold and one pristine-snapshot trivial program **per JS/Python runtime**,
+checks the same output, and records only paired `Sandbox.create` durations. Thus
+each real claim costs four creations instead of two. With ID-104 TypeScript
+enabled, it adds one ordinary smoke run, not another pair: **five total**. It may
+reuse the pristine JS Node 24 snapshot but never enters the JS/Python latency
+cohort. The existing 30-minute gap and schedule/deploy slots remain, at most 70
+claims/month: **280** creations without TypeScript or **350** with it, all counted
+against the same global quota. With measurement off the totals are 2/3 on
+Vercel without/with TypeScript and up to 4 on Piston with TypeScript+Go.
+Individual runtime measurement is bounded
 at 90 seconds, inside the workflow's existing 100-second HTTP deadline. No PR/load
 workflow is added and nothing contacts a provider in local gates.
 

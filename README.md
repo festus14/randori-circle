@@ -69,6 +69,11 @@ files with one function entrypoint and offline standard-library imports, no
 also supported. Go custom stdin is explicitly unsupported; TypeScript retains
 the private stdin behaviour below.
 
+Script syntax is still erasable-only, and TypeScript may use the pristine Node
+24 JavaScript snapshot under the same durable admission. Go compile+run counts
+one provider unit, while TypeScript plus private stdin reserves two. Details and
+the combined measured/ordinary smoke budgets are in the execution guide.
+
 Rollout, runtime pins, catalogue authoring and smoke budgets:
 [execution languages](docs/EXECUTION_LANGUAGES.md) (ID-104). No production or
 provider calls were made to enable these flags.
