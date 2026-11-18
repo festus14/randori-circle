@@ -43,6 +43,10 @@
       "destination": "/api/code-document?endpoint=relay-token"
     },
     {
+      "source": "/api/code-document/presence",
+      "destination": "/api/code-document?endpoint=presence"
+    },
+    {
       "source": "/api/auth/capabilities",
       "destination": "/api/auth?endpoint=capabilities"
     },
