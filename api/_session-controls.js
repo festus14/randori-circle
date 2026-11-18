@@ -305,8 +305,8 @@ export async function interviewTimerEnded(db,pair){
     &&boundedElapsed(durable.anchorAt,now)>=durable.remainingMs;
 }
 
-// Repeat the time boundary in non-transactional workspace writes so an end
-// racing a snapshot read cannot accept another write after the terminal instant.
+// SQLite time advances even inside a serialized write transaction. Repeat
+// this boundary in each storage statement, not just an earlier clock read.
 export function interviewTimerOpenSql(){
   return interviewSessionEnabled()?`NOT EXISTS (SELECT 1 FROM pair_session_controls control
     WHERE control.week_id=? AND control.pair_group_id=?
@@ -375,6 +375,8 @@ function desiredTransition(current,mutation){
 
 async function writeTransition(transaction,current,{viewerId,mutation,next}){
   const pair=current.pair;
+  const timerGuard=interviewTimerOpenSql();
+  const timerArgs=interviewSessionEnabled()?[pair.weekId,pair.pairGroupId]:[];
   if(!current.row){
     return transaction.execute({
       sql:`WITH access AS (${current.accessSql})
@@ -385,11 +387,11 @@ async function writeTransition(transaction,current,{viewerId,mutation,next}){
         SELECT ?,?,user_a_id,'auth',user_b_id,'auth',NULL,?,'auth',?,?,?,1,?,'auth',?,?
         FROM access
         WHERE is_ai_pair=0 AND user_c_id IS NULL
-          AND user_a_source='auth' AND user_b_source='auth'
+          AND user_a_source='auth' AND user_b_source='auth' AND ${timerGuard}
         ON CONFLICT(week_id,pair_group_id) DO NOTHING
         RETURNING revision`,
       args:[...current.accessArgs,mutation.weekId,mutation.pairGroupId,next.candidateUserId,
-        next.timerState,next.remainingMs,next.anchorAt,viewerId,current.databaseNow,current.databaseNow],
+        next.timerState,next.remainingMs,next.anchorAt,viewerId,current.databaseNow,current.databaseNow,...timerArgs],
     });
   }
   return transaction.execute({
@@ -403,10 +405,11 @@ async function writeTransition(transaction,current,{viewerId,mutation,next}){
           AND user_a_id=pair_session_controls.pair_user_a_id
           AND user_b_id=pair_session_controls.pair_user_b_id
           AND user_a_source='auth' AND user_b_source='auth')
+        AND ${timerGuard}
       RETURNING revision`,
     args:[...current.accessArgs,next.candidateUserId,next.timerState,next.remainingMs,next.anchorAt,
       viewerId,current.databaseNow,mutation.weekId,mutation.pairGroupId,current.row.revision,
-      pair.userAId,pair.userBId],
+      pair.userAId,pair.userBId,...timerArgs],
   });
 }
 
@@ -450,6 +453,11 @@ async function mutateAttempt(db,{viewerId,mutation,versionKey}){
         viewerId,weekId:mutation.weekId,pairGroupId:mutation.pairGroupId,versionKey,
       });
       if(!latest){ await transaction.rollback(); finished=true; return {notFound:true}; }
+      if(latest.state.interview_mode&&latest.state.terminal){
+        throw new SessionControlsConflictError(
+          'interview_session_ended','The interview has ended. Session controls are read-only.',latest.state,
+        );
+      }
       throw new SessionControlsConflictError(
         'session_controls_changed','Session controls changed. Review the latest state.',latest.state,
       );

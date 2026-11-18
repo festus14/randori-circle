@@ -4,7 +4,7 @@ import * as Y from 'yjs';
 import { authPairAccessArgs } from './_pair-access.js';
 import { getPublicExercise } from './_catalog.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
-import { interviewTimerEnded } from './_session-controls.js';
+import { interviewSessionEnabled, interviewTimerEnded, interviewTimerOpenSql } from './_session-controls.js';
 
 export const CODE_DOCUMENT_STATE_LIMIT_BYTES=256*1024;
 export const CODE_DOCUMENT_UPDATE_LIMIT_BYTES=64*1024;
@@ -180,6 +180,14 @@ export function codeDocumentAccessSql(){
     LIMIT 1`;
 }
 
+class InterviewEndedError extends Error{}
+
+// A failed storage-time fence must roll back the whole transaction, including
+// any earlier bootstrap, retention scrub, or CRDT/workspace projection.
+async function assertInterviewStillOpen(db,pair){
+  if(await interviewTimerEnded(db,pair)) throw new InterviewEndedError('interview has ended');
+}
+
 async function completedPair(db,authorization,identity){
   const result=await db.execute({
     sql:`WITH access AS (${authorization.accessSql})
@@ -327,12 +335,14 @@ async function createDocument(db,viewerId,identity,authorization,{clientId='serv
       INSERT INTO pair_code_documents (${DOCUMENT_COLUMNS})
       SELECT ?,?,?,?,?,?,?,?,?,?,'auth',?,'auth',NULL,?,'auth',?,?,
         strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now')
-      WHERE EXISTS (SELECT 1 FROM access)
+      WHERE EXISTS (SELECT 1 FROM access) AND ${interviewTimerOpenSql()}
       ON CONFLICT DO NOTHING`,
     args:[...authorization.accessArgs,identity.weekId,identity.pairGroupId,identity.questionSlug,
       identity.questionVersion,identity.language,state.stateBase64,state.stateHash,state.codeHash,1,
-      authorization.pair.userAId,authorization.pair.userBId,viewerId,clientId,clientSeq],
+      authorization.pair.userAId,authorization.pair.userBId,viewerId,clientId,clientSeq,
+      ...(interviewSessionEnabled()?[identity.weekId,identity.pairGroupId]:[])],
   });
+  await assertInterviewStillOpen(db,authorization.pair);
   return {row:await readRow(db,identity),created:Number(inserted?.rowsAffected)===1};
 }
 
@@ -356,10 +366,12 @@ async function projectWorkspaceCode(db,identity,authorization,{code,revision,vie
     sql:`WITH access AS (${authorization.accessSql}) UPDATE pair_room_snapshots
       SET revision=revision+1,client_id='crdt-projection',client_seq=?,code=?,updated_by=?,updated_at=datetime('now')
       WHERE room_id=? AND week_id=? AND pair_group_id=? AND revision=?
-        AND EXISTS (SELECT 1 FROM access)`,
+        AND EXISTS (SELECT 1 FROM access) AND ${interviewTimerOpenSql()}`,
     args:[...authorization.accessArgs,revision,serialized,viewerId,identity.roomId,identity.weekId,
-      identity.pairGroupId,Number(row.revision)],
+      identity.pairGroupId,Number(row.revision),
+      ...(interviewSessionEnabled()?[identity.weekId,identity.pairGroupId]:[])],
   });
+  await assertInterviewStillOpen(db,authorization.pair);
   return Number(projected?.rowsAffected)===1;
 }
 
@@ -517,10 +529,12 @@ async function getAuthorizedCodeDocumentUnlocked(db,{viewerId,afterRevision=0,..
       let created=false;
       if(!row){ const result=await createDocument(transaction,viewerId,identity,authorization); row=result.row; created=result.created; }
       const document=normalizedRow(row,identity);
+      await assertInterviewStillOpen(transaction,authorization.pair);
       commitStarted=true; await transaction.commit(); settled=true;
       return {document,created,pair:authorization.pair};
     }catch(error){
       if(transaction&&!settled&&!commitStarted){ try{ await transaction.rollback(); settled=true; }catch{} }
+      if(error instanceof InterviewEndedError) return {terminal:true};
       // Document creation is deterministic and ON CONFLICT-safe, so an
       // ambiguous busy commit can be reconciled by the next exact read.
       if(attempt===MAX_TRANSACTION_ATTEMPTS-1||!retryableConflict(error)) throw error;
@@ -569,11 +583,16 @@ async function mergeAuthorizedCodeDocumentUnlocked(db,{viewerId,...input}){
       transaction=await db.transaction('write');
       const authorization=await authorizedPair(transaction,viewerId,input);
       if(!authorization){ await transaction.rollback(); settled=true; return null; }
+      const interview=interviewSessionEnabled();
+      // Peer mode keeps its original retention-before-completion ordering.
+      // Interview mode checks termination first and rolls all work back if
+      // its database-time boundary is crossed by any later storage statement.
+      if(!interview) await purgeExpiredCodeDocumentIdentity(transaction,input);
       if(await completedPair(transaction,authorization,input)){
         await transaction.rollback(); settled=true;
         return {terminal:true};
       }
-      await purgeExpiredCodeDocumentIdentity(transaction,input);
+      if(interview) await purgeExpiredCodeDocumentIdentity(transaction,input);
       let row=await readRow(transaction,input);
       if(!row) row=(await createDocument(transaction,viewerId,input,authorization,{clientId:input.clientId,clientSeq:input.clientSeq})).row;
       const current=normalizedRow(row,input);
@@ -582,6 +601,7 @@ async function mergeAuthorizedCodeDocumentUnlocked(db,{viewerId,...input}){
       catch(error){ throw new CodeDocumentInputError('update is not a valid Yjs update',{cause:error}); }
       const merged=materialize(doc);
       if(merged.stateHash===current.stateHash){
+        await assertInterviewStillOpen(transaction,authorization.pair);
         commitStarted=true; await transaction.commit(); settled=true;
         return {document:current,idempotent:true,pair:authorization.pair};
       }
@@ -590,20 +610,25 @@ async function mergeAuthorizedCodeDocumentUnlocked(db,{viewerId,...input}){
           SET y_state_base64=?,state_hash=?,code_hash=?,revision=revision+1,last_actor_id=?,
             last_actor_source='auth',last_client_id=?,last_client_seq=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
           WHERE week_id=? AND pair_group_id=? AND question_slug=? AND question_version=? AND language=?
-            AND revision=? AND state_hash=? AND EXISTS (SELECT 1 FROM access)`,
+            AND revision=? AND state_hash=? AND EXISTS (SELECT 1 FROM access)
+            AND ${interviewTimerOpenSql()}`,
         args:[...authorization.accessArgs,merged.stateBase64,merged.stateHash,merged.codeHash,viewerId,
           input.clientId,input.clientSeq,input.weekId,input.pairGroupId,input.questionSlug,input.questionVersion,
-          input.language,current.revision,current.stateHash],
+          input.language,current.revision,current.stateHash,
+          ...(interviewSessionEnabled()?[input.weekId,input.pairGroupId]:[])],
       });
+      await assertInterviewStillOpen(transaction,authorization.pair);
       if(Number(updated?.rowsAffected)!==1){ await transaction.rollback(); settled=true; continue; }
       await projectWorkspaceCode(transaction,input,authorization,{
         code:merged.code,revision:current.revision+1,viewerId,
       });
       const document=normalizedRow(await readRow(transaction,input),input);
+      await assertInterviewStillOpen(transaction,authorization.pair);
       commitStarted=true; await transaction.commit(); settled=true;
       return {document,idempotent:false,pair:authorization.pair};
     }catch(error){
       if(transaction&&!settled&&!commitStarted){ try{ await transaction.rollback(); settled=true; }catch{} }
+      if(error instanceof InterviewEndedError) return {terminal:true};
       if(attempt===MAX_TRANSACTION_ATTEMPTS-1||!retryableConflict(error)) throw error;
       try{ await transaction?.close?.(); }catch{}
       transaction=null;

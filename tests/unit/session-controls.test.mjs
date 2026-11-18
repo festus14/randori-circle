@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
+import { delayInterviewWrite, seedExpiringInterview } from '../support/interview-expiry.mjs';
 
 import {
   mutateAuthorizedSessionControls,
@@ -285,6 +286,27 @@ test('unanimous completion freezes the effective timer and rejects every command
     assert.equal(response.status,409);
     assert.equal(response.body.code,'session_controls_completed');
     assert.equal(response.body.session_controls.terminal,true);
+  }
+});
+
+test('interview controls cannot reopen a timer that expires inside the write transaction',async()=>{
+  process.env.INTERVIEW_SESSION_ENABLED='true';
+  for(const action of ['reset','pause','set_candidate','end']){
+    if(currentDb){ currentDb.close(); rmSync(currentDirectory,{recursive:true,force:true}); }
+    currentDb=await readyDatabase();
+    await seedExpiringInterview(currentDb,{userAId:2,userBId:4});
+    const current=await readAuthorizedSessionControls(currentDb,{viewerId:4,weekId:10,pairGroupId:20,versionKey:VERSION_KEY});
+    const stored=(await currentDb.execute('SELECT * FROM pair_session_controls')).rows;
+    const delayed=delayInterviewWrite(currentDb,/UPDATE pair_session_controls SET/);
+    await assert.rejects(mutateAuthorizedSessionControls(delayed.client,{viewerId:4,versionKey:VERSION_KEY,mutation:{
+      roomId:'week_10_pair_20',weekId:10,pairGroupId:20,action,baseVersion:current.state.version,
+      candidateUserId:action==='set_candidate'?4:null,
+    }}),error=>error instanceof SessionControlsConflictError&&error.code==='interview_session_ended'&&error.state.terminal===true);
+    assert.equal(delayed.observations.length,1,action);
+    assert.equal(delayed.observations[0].rowsAffected,0,'the storage-time predicate rejects the UPDATE');
+    assert.deepEqual((await currentDb.execute('SELECT * FROM pair_session_controls')).rows,stored,`${action} must leave the expired timer unchanged`);
+    const late=await readAuthorizedSessionControls(currentDb,{viewerId:2,weekId:10,pairGroupId:20,versionKey:VERSION_KEY});
+    assert.equal(late.state.terminal,true); assert.equal(late.state.end_reason,'timer_expired');
   }
 });
 
