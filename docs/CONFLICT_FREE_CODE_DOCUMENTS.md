@@ -230,7 +230,11 @@ same-origin and `private, no-store`, and reuses the relay token's live-pair
 authority (`authorizeRelayPair`: legacy availability, primary circle context,
 exact two-participant document snapshot, no unanimous completion and, with
 `INTERVIEW_SESSION_ENABLED`, the DB-time timer-open fence). The body is the
-exact document identity plus `state: join|online|leave`. The server upserts one
+exact document identity of a canonical primary room (`week_N_pair_M`) plus
+`state: join|online|leave`. Every state first spends a per-account budget of
+30 requests per database-clock minute (a keyed row in the same table; 429 with
+`Retry-After`), so a hostile client is capped before any pair read. The
+normal cadence is 12 per minute. The server then upserts one
 row per (room, participant) in the existing `auth_rate_limits` table: the key is
 an HMAC of the room and account id with a presence-domain key derived from
 `JWT_SECRET`, `expires_at` is the **database clock** plus 20 seconds, and a
@@ -238,9 +242,11 @@ renewal under four seconds old is a no-op write. It reads only the partner's
 keyed row and returns `{seat, partner_online, ttl_seconds, interval_seconds}`;
 a `join` also returns the partner's already-visible `display_name`/`color` (the
 fields `/api/my-pair` shows this viewer) so direct `/join` links can label the
-partner. `leave` deletes only the caller's row without a pair read, so it also
-works after a terminal state. Expired rows are ignored by every reader and swept
-opportunistically (2% of beats, the existing limiter pattern). Clients beat
+partner. `leave` deletes only the caller's row for that canonical room without
+a pair read, so it also works after a terminal state. Expired rows are ignored
+by every reader. A partner's stale row is deleted by exact key when read, and
+0.5% of beats run a sweep bounded to 32 expired rows (the table has no
+`expires_at` index, so there is never an unbounded delete). Clients beat
 every 5 seconds, or 15 while the relay is live; 401/404 stop presence, 429
 backs off, and a last "online" result degrades to unknown after its TTL.
 
@@ -251,8 +257,11 @@ live region on `<body>` (the room-bar chip is hidden on phones). An explicit
 awareness departure shows "not in the room" until a later HTTPS beat confirms
 otherwise. Monaco renders the partner's selection and caret as decorations with
 the partner's existing colour; the plain editor gets an `aria-hidden` mirror
-overlay. Neither moves the local caret, selection, focus or scroll. Styles are
-injected by the lazy CRDT bundle (the initial CSS budget is unchanged).
+overlay, positioned against the textarea's own parent only while it exists.
+Neither moves the local caret, selection, focus or scroll. Bursts of scroll,
+selection, key and text events coalesce into one animation-frame render.
+Styles are injected by the lazy CRDT bundle (the initial CSS budget is
+unchanged) and removed, with the live region, when presence stops.
 Cursor rendering needs the relay; on polling only "online" is shown.
 
 **Lifecycle and privacy.** Every fence that disposes the document — terminal

@@ -5942,20 +5942,24 @@ Presence, Postgres change or an unbounded table.
   authorization (`authorizeRelayPair`, factored out of the token route). One
   HMAC-keyed row per (room, participant) in existing `auth_rate_limits`,
   DB-clock `expires_at` +20 s, renewals under 4 s are no-op writes, partner read
-  by key, opportunistic expired-row sweep, `leave` deletes only the caller's row.
+  by key. A keyed per-account budget (30/min, 429 + `Retry-After`) precedes any
+  pair read, `leave` included. Stale partner rows are deleted by exact key; a
+  0.5% sweep is bounded to 32 expired rows. `leave` accepts only canonical
+  primary rooms and deletes only the caller's row.
   `join` additionally returns the partner's already-visible display name and
   colour for direct `/join` links. **No migration**, no request DDL.
 - UI: plain-text room-bar status with connection health; polite live region for
   joins/leaves only; Monaco decorations and a plain-editor mirror overlay that
-  never move local caret, selection, focus or scroll. Cursors need the relay;
+  never move local caret, selection, focus or scroll; one animation-frame render
+  per burst of events; injected style and live region removed on teardown. Cursors need the relay;
   polling shows "online" only. Styles injected by the lazy bundle.
 
 **Privacy.** No cursor, code, name or email in the HTTPS body, stored row or
 logs; awareness carries only seat, activity and relative positions, in memory
 and transit. The privacy policy discloses both (same 18 November 2026 date).
 
-**Byte budget.** The CRDT bundle grows from 112,629 to 131,526 bytes
-(awareness, lib0 decoding, presence/UI); JS total 1,291,819 of the unchanged
+**Byte budget.** The CRDT bundle grows from 112,629 to 132,093 bytes
+(awareness, lib0 decoding, presence/UI); JS total 1,293,061 of the unchanged
 1,450,000-byte gate. CSS slices are unchanged; initial JS grows only by the
 168-byte `index.html` label guard (989,161 of 1,000,000).
 

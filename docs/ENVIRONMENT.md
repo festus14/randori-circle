@@ -130,8 +130,9 @@ on primary document GETs. Browsers then send one authenticated, same-origin
 `POST /api/code-document/presence` heartbeat about every five seconds (fifteen
 while the relay is live). The server keeps one HMAC-keyed row per room and
 participant in the existing `auth_rate_limits` table that expires 20 seconds
-after the last beat on the database clock; there is no migration, request DDL,
-cleanup job or cursor data. Live partner cursors/selections additionally need
+after the last beat on the database clock, plus a keyed per-account budget of
+30 requests per minute (429 with `Retry-After`); there is no migration, request
+DDL, cleanup job or cursor data. Live partner cursors/selections additionally need
 `REALTIME_RELAY_ENABLED` and ride the same private channel as Yjs awareness.
 With the relay off the room bar shows only "partner online". The local runtime
 leaves the flag unset (off) unless a developer sets it.

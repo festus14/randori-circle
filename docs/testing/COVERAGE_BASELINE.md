@@ -22,9 +22,10 @@ to get a PR through: add tests instead, or explain the drop in the PR.
 
 The new relay modules `assets/realtime-relay.mjs` and `assets/realtime-yjs.mjs`
 are also included in the existing coverage scope (#461 / ID-96); thresholds and
-exclusions are unchanged. The presence modules `assets/realtime-presence.mjs` and
-`assets/presence-ui.mjs` join that scope the same way (#462 / ID-100). New work is measured with focused tests locally; the
-full coverage gate remains a GitHub Actions merge prerequisite.
+exclusions are unchanged. The presence modules `assets/realtime-presence.mjs`
+and `assets/presence-ui.mjs` join that scope the same way (#462 / ID-100). New
+work is measured with focused tests locally; the full coverage gate remains a
+GitHub Actions merge prerequisite.
 
 The rest of this document records the original 2026-10-19 baseline, the
 measurement fix and the test-writing packages that followed it.
