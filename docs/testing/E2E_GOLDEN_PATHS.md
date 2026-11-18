@@ -55,8 +55,12 @@ and conservative build-input bytes; see [byte budget](../design/TOKENS.md#byte-b
 [ID-101](../IMPLEMENTED_DECISIONS.md#id-101-load-optional-page-tools-at-their-first-use-without-weakening-byte-gates)
 moves landing/recovery controls, bulk invitations, shared email validation and
 calendar generation to first-use requests. Public content is still static and
-controls show pending/retry state. Invitation capability scrubbing and the
-widely used onboarding presentation helpers stay synchronous.
+controls show pending/retry state. Only the optional widgets become inert; core
+invitation, activation, reset and sign-in flows remain usable if loading fails.
+Retry-owned focus parks on the pending message, returns to Retry on failure and
+moves to the heading on success. Signup separately awaits the shared strict email
+rules before validation/submission, even when entered through the header.
+Invitation capability scrubbing and the widely used onboarding helpers stay synchronous.
 
 - `page-weight.spec.ts` retains the anonymous network inventory and editor/CRDT/
   telemetry boundary assertions; it deliberately asserts no transfer-byte gate.

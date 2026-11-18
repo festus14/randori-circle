@@ -43,9 +43,10 @@ test('the current tree passes the adopted #412 thresholds', () => {
   assert.ok(measurement.jsTotal <= BYTE_BUDGET_THRESHOLDS.jsTotal);
   assert.deepEqual(measurement.linkedStylesheets, ['assets/circle-history.css']);
   assert.equal(measurement.assetJsFiles, 32); // 30 .js files plus both served realtime .mjs modules (ID-101).
-  // #479 (ID-101) moved optional page tools out of the initial payload: measured
-  // 990,889 -> 946,767 bytes on 580e90b. Pin the boundary structurally rather than
-  // with an absolute number that unrelated features legitimately move.
+  // Rebasing onto 929cad6 moved the comparison to 998,173 -> 954,051 bytes.
+  // Preserve the structural boundary and at least 40 KB of deliberate initial
+  // headroom. Update this regression guard deliberately, not to mask growth.
+  assert.ok(measurement.jsInitial <= 960_000, 'ID-101 initial-JS headroom guard');
   for (const optional of ['landing', 'bulk-invite', 'calendar-export', 'email-validation']) {
     assert.ok(!measurement.scriptSrcs.includes(`assets/${optional}.js`));
   }

@@ -6022,8 +6022,8 @@ redeploy; clients stop on the next document GET, rows expire in 20 s. Details:
 by #462 and its entry is not invented on this branch. No migration,
 provider call, new dependency or CSP change.
 
-**Context.** At `580e90b`, the adopted file-byte check measured initial JS at
-990,889 bytes against 1,000,000. Pair-room members paid for public forms,
+**Context.** At `929cad6` (after #477), the adopted file-byte check measured
+initial JS at 998,173 bytes against 1,000,000. Pair-room members paid for public forms,
 invitation management and calendar generation even without visiting them.
 
 **Decision.** Keep only a small synchronous `assets/optional-pages.js` bridge
@@ -6031,8 +6031,14 @@ in the shell. Its named, same-origin script loads are promise-deduplicated:
 
 - `landing.js` loads when the router first shows the public landing, invitation,
   activation or password-reset view, not merely when auth capabilities arrive.
-  Static page content remains present. A live pending banner and inert page
-  controls prevent lost clicks; a keyboard-operable retry appears on failure.
+  Static page content remains present. A live pending banner and inert optional
+  widgets prevent lost clicks; core invitation acceptance, activation, password
+  reset and sign-in remain usable when the optional script fails. Sign-in entry
+  points and core recovery visibility belong to the synchronous shell/bridge.
+  A keyboard retry parks focus on the live loading status before hiding the
+  button, returns it to Retry on failure, and moves it to the page heading on
+  success without stealing focus from a control the person chose meanwhile.
+  All four route observers disconnect after the shared module finishes.
   The bridge buffers only the latest capability/recovery values and hydrates the
   real landing API synchronously before publishing it, avoiding stale replay.
 - `bulk-invite.js` loads when an owner first opens its disclosure. Early pastes
@@ -6042,7 +6048,10 @@ in the shell. Its named, same-origin script loads are promise-deduplicated:
   schedule reconciliation renders; duplicate clicks cannot duplicate downloads.
   Actor, circle, cycle, agreement and expiry are checked again after loading.
 - `email-validation.js` loads with public page controls, before the bulk module,
-  or before a single invitation submit. The browser bulk module uses that loaded
+  or before signup or a single invitation submit. Signup waits before validating
+  fields, fails closed without the rules, and fences the wait by modal generation,
+  actor and invitation lifetime. Sign-in/reset retain legacy-address compatibility.
+  The browser bulk module uses that loaded
   validator, not a static dependency URL whose failed evaluation could be cached.
   Validation never silently falls back to weaker rules on a failed lazy load;
   the draft stays retryable.
@@ -6050,7 +6059,11 @@ in the shell. Its named, same-origin script loads are promise-deduplicated:
 A failed/timed-out load rejects, removes its script and clears its promise.
 Only explicit first use/retry starts another request. Retried module URLs have
 an attempt query to avoid cached failed evaluations, never a remote fallback.
-A late classic landing script is idempotent. All loads stay under existing
+Every optional module initializer must be idempotent: removing a timed-out tag
+cannot guarantee that it will not evaluate alongside its `?retry=N` copy.
+Unit tests pin stable browser APIs, single readiness notification and no duplicate
+DOM handlers. The bridge's frozen recovery predicate table is shared with landing
+rather than independently copied. All loads stay under existing
 `script-src 'self'`; invitation token consumption still precedes any telemetry.
 
 **Deliberately eager.** `invite-gate.js` must exist before the head bootstrap

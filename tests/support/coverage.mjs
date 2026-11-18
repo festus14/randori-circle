@@ -29,6 +29,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   // WP-A auth dialog.
   'assets/auth-dialog.js',
+  // First-use page tools; VM unit tests use the canonical file URL for V8 attribution.
+  'assets/optional-pages.js',
   // WP-O onboarding flow and WP-S app shell.
   'assets/onboarding-flow.js', 'assets/app-shell.js',
   // Private stdin controls and retention (#467).

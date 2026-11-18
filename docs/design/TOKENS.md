@@ -307,18 +307,23 @@ with justification in the PR — never silently weaken the check.
 
 ### Optional page boundary (#479 / ID-101)
 
-Measured against `580e90b` on 2026-11-18, in uncompressed bytes:
+Measured against `929cad6` (after #477) on 2026-11-18, in uncompressed bytes:
 
 | Slice | Before | After | Unchanged threshold |
 | --- | ---: | ---: | ---: |
-| `index.html` | 967,113 | 971,332 | 1,000,000 |
+| `index.html` | 972,560 | 977,954 | 1,000,000 |
 | CSS initial | 128,486 | 128,486 | 130,000 |
 | CSS total | 134,993 | 134,993 | 135,000 |
-| JS initial | 990,889 | 946,767 | 1,000,000 |
-| JS total | 1,281,413 | 1,303,981 | 1,450,000 |
+| JS initial | 998,173 | 956,443 | 1,000,000 |
+| JS total | 1,292,564 | 1,317,382 | 1,450,000 |
 
-Initial JS drops **44,122 bytes** (over 40 KB); headroom becomes **53,233
-bytes**. The total now counts `.mjs` as well as `.js`: the two previously
+The initial rebased boundary measured **998,173 → 954,051 bytes**, recovering
+**44,122 bytes** and leaving **45,949 bytes** headroom. Review hardening adds
+2,392 initial bytes: the final net drop is **41,730 bytes** (still over 40 KB),
+with **43,557 bytes** headroom. The structural and `jsInitial <= 960_000`
+regression guards must be updated deliberately, not to hide unrelated growth.
+
+The total now counts `.mjs` as well as `.js`: the two previously
 omitted realtime modules add 11,592 bytes to the old total basis, so the total
 comparison above includes a **tightening**, not a threshold increase. The
 historical #400 table above retains its then-current `.js`-only total basis.
