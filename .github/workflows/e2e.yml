@@ -41,6 +41,12 @@ jobs:
         run: npm run test:migrations
       - name: Run API tests with enforced coverage
         run: npm run test:coverage
+      - name: Let apt wait for the runner's dpkg lock
+        # ubuntu-24.04 images (20261111+) can still hold the dpkg frontend
+        # lock from boot-time apt work, and a timed-out first install attempt
+        # leaves its orphaned apt-get holding it. Wait for the lock instead of
+        # failing the retry immediately with exit code 100.
+        run: echo 'DPkg::Lock::Timeout "240";' | sudo tee /etc/apt/apt.conf.d/99-dpkg-lock-timeout
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
       - name: Run browser tests against checkout
@@ -71,6 +77,12 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Let apt wait for the runner's dpkg lock
+        # ubuntu-24.04 images (20261111+) can still hold the dpkg frontend
+        # lock from boot-time apt work, and a timed-out first install attempt
+        # leaves its orphaned apt-get holding it. Wait for the lock instead of
+        # failing the retry immediately with exit code 100.
+        run: echo 'DPkg::Lock::Timeout "240";' | sudo tee /etc/apt/apt.conf.d/99-dpkg-lock-timeout
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Verify secondary workspace and context cleanup
@@ -115,6 +127,12 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Let apt wait for the runner's dpkg lock
+        # ubuntu-24.04 images (20261111+) can still hold the dpkg frontend
+        # lock from boot-time apt work, and a timed-out first install attempt
+        # leaves its orphaned apt-get holding it. Wait for the lock instead of
+        # failing the retry immediately with exit code 100.
+        run: echo 'DPkg::Lock::Timeout "240";' | sudo tee /etc/apt/apt.conf.d/99-dpkg-lock-timeout
       - name: Install Playwright browser
         # install --with-deps intermittently stalls on apt (two 20-minute
         # hangs on this job). Give each attempt its own timeout so a hung
