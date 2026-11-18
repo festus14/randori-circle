@@ -20,6 +20,11 @@ import {
   parseCodeDocumentQuery,
 } from './_code-document.js';
 
+// Interview lobby/lock (#464): the candidate's edit is held, not merged. The
+// browser keeps it queued and replays it once the interviewer unlocks.
+const EDITING_CLOSED=Object.freeze({ok:false,code:'interview_editing_locked',
+  error:'The interviewer has paused candidate editing. Your edits are kept on this device.'});
+
 function authenticatedUserId(payload){
   const userId=Number(payload?.id||payload?.uid);
   return Number.isSafeInteger(userId)&&userId>0?userId:null;
@@ -94,6 +99,7 @@ export default async function handler(req,res){
       // Foreign/nonexistent workspace requests use the uniform pair 404.
       if(!result) return res.status(404).json({ok:false,error:'code document not found'});
       if(result.terminal) return res.status(409).json({ok:false,code:'session_completed',error:'session is ended; editing is closed'});
+      if(result.editingClosed) return res.status(409).json(EDITING_CLOSED);
       return res.json({...codeDocumentResponse(result,{afterRevision:input.afterRevision}),
         ...(realtimeRelayConfiguration()?{realtime_relay:true}:{})});
     }
@@ -101,6 +107,7 @@ export default async function handler(req,res){
     const result=await mergeAuthorizedCodeDocument(db,{viewerId,...input});
     if(!result) return res.status(404).json({ok:false,error:'code document not found'});
     if(result.terminal) return res.status(409).json({ok:false,code:'session_completed',error:'session is completed'});
+    if(result.editingClosed) return res.status(409).json(EDITING_CLOSED);
     return res.json({...codeDocumentResponse(result),idempotent:result.idempotent});
   }catch(error){ return req.workspace?(await import('./_workspace-router.js')).sendWorkspaceFailure(res,error):sendFailure(res,error); }
 }

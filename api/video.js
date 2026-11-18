@@ -1,4 +1,4 @@
-import { interviewSessionEnabled, interviewTimerOpenSql } from './_session-controls.js';
+import { candidateWorkspaceFence, interviewOpenFence, readInterviewGate, resolveInterviewMode } from './_interview-session.js';
 import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
@@ -483,15 +483,33 @@ async function handleWorkspacePost(req,res,db,auth,room){
     : workspace.question_id;
   const userId=authenticatedUserId(auth);
   if(!userId) return res.status(403).json({ok:false,error:'not a member of this room'});
+  const mode=await resolveInterviewMode(db);
   const outcome=await withWorkspaceLock(room,async()=>{
-    const timerGuard=interviewTimerOpenSql();
-    const timerArgs=interviewSessionEnabled()?[room.weekId,room.pairGroupId]:[];
+    const open=interviewOpenFence(mode,room);
+    const timerGuard=open.sql;
+    const timerArgs=open.args;
     const timerOpen=async()=>{
-      if(!interviewSessionEnabled()) return true;
+      if(!mode.interview) return true;
       const result=await db.execute({sql:`SELECT ${timerGuard} AS timer_open`,args:timerArgs});
       if(result?.rows?.length!==1) throw new Error('interview boundary unavailable');
       return Number(result.rows[0].timer_open)===1;
     };
+    // Interview lobby (#464): the interviewer owns the room's question and
+    // language; the candidate's checkpoint is inert in the lobby and cannot
+    // change code while editing is locked. The same rule is repeated in SQL.
+    const candidateClosed=async(current,projection)=>{
+      const gate=await readInterviewGate(db,mode,room);
+      if(!gate||gate.candidateUserId!==userId) return null;
+      if(!gate.live) return 'interview_lobby';
+      if(!current||current.language!==workspace.language||current.question_id!==workspace.question_id
+        ||(current.question_version??null)!==(workspace.question_version??null)) return 'interview_selection_owned';
+      if(gate.locked&&projection===null&&current.code!==workspace.code) return 'interview_editing_locked';
+      return null;
+    };
+    const candidateFence=(current,projection)=>candidateWorkspaceFence(mode,{
+      weekId:room.weekId,pairGroupId:room.pairGroupId,actorId:userId,insert:!current,
+      language:workspace.language,questionId:storedQuestionId,lockedCode:projection===null?workspace.code:null,
+    });
     const documentsAvailable=workspace.question_version?await hasCodeDocumentTable(db):false;
     for(let attempt=0;attempt<6;attempt+=1){
       try{
@@ -512,6 +530,9 @@ async function handleWorkspacePost(req,res,db,auth,room){
           return {kind:'idempotent',snapshot:current};
         }
         if((current?.revision||0)!==workspace.base_revision) return {kind:'conflict',current};
+        const closedBefore=await candidateClosed(current,projection);
+        if(closedBefore) return {kind:'closed',code:closedBefore,current};
+        const candidate=candidateFence(current,projection);
 
         const documentGuard=documentsAvailable
           ?projection
@@ -532,24 +553,28 @@ async function handleWorkspacePost(req,res,db,auth,room){
             sql:`WITH access AS (${authPairAccessSql()}) UPDATE pair_room_snapshots
               SET revision=revision+1,schema_version=?,client_id=?,client_seq=?,language=?,question_id=?,code=?,updated_by=?,updated_at=datetime('now')
               WHERE room_id=? AND week_id=? AND pair_group_id=? AND revision=?
-                AND EXISTS (SELECT 1 FROM access) ${documentGuard} AND ${timerGuard}`,
+                AND EXISTS (SELECT 1 FROM access) ${documentGuard} AND ${timerGuard} AND ${candidate.sql}`,
             args:[...pairAccessArgs(userId,room),workspace.schema_version,workspace.client_id,
               workspace.client_seq,workspace.language,storedQuestionId,codeEnvelope,userId,
-              room.roomId,room.weekId,room.pairGroupId,workspace.base_revision,...documentArgs,...timerArgs],
+              room.roomId,room.weekId,room.pairGroupId,workspace.base_revision,...documentArgs,...timerArgs,...candidate.args],
           })
           :await db.execute({
             sql:`WITH access AS (${authPairAccessSql()}) INSERT INTO pair_room_snapshots
               (room_id,week_id,pair_group_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by)
-              SELECT ?,?,?,1,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM access) ${documentGuard} AND ${timerGuard}
+              SELECT ?,?,?,1,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM access) ${documentGuard} AND ${timerGuard} AND ${candidate.sql}
               ON CONFLICT DO NOTHING`,
             args:[...pairAccessArgs(userId,room),room.roomId,room.weekId,room.pairGroupId,
               workspace.schema_version,workspace.client_id,workspace.client_seq,workspace.language,
-              storedQuestionId,codeEnvelope,userId,...documentArgs,...timerArgs],
+              storedQuestionId,codeEnvelope,userId,...documentArgs,...timerArgs,...candidate.args],
           });
         const latest=await readAuthorizedWorkspaceSnapshot(db,userId,room);
         if(!latest.authorized) return {kind:'denied'};
         if(Number(writeResult?.rowsAffected)===1) return {kind:'written',snapshot:latest.snapshot};
         if(!await timerOpen()) return {kind:'ended'};
+        if((latest.snapshot?.revision||0)===(current?.revision||0)){
+          const closedAfter=await candidateClosed(latest.snapshot,projection);
+          if(closedAfter) return {kind:'closed',code:closedAfter,current:latest.snapshot};
+        }
         if(latest.snapshot?.client_id===workspace.client_id&&latest.snapshot.client_seq===workspace.client_seq){
           return {kind:'idempotent',snapshot:latest.snapshot};
         }
@@ -562,6 +587,10 @@ async function handleWorkspacePost(req,res,db,auth,room){
     throw new Error('workspace update contention exceeded its retry bound');
   });
   if(outcome.kind==='ended') return res.status(409).json({ok:false,error:'interview has ended',code:'interview_session_ended'});
+  if(outcome.kind==='closed') return res.status(409).json({ok:false,code:outcome.code,current:outcome.current,
+    error:outcome.code==='interview_lobby'?'Waiting for the interviewer to admit you.':
+      outcome.code==='interview_selection_owned'?'The interviewer chooses the question and language.':
+        'The interviewer has paused candidate editing.'});
   if(outcome.kind==='denied') return res.status(403).json({ok:false,error:'not a member of this room'});
   if(outcome.kind==='downgrade') return res.status(409).json({
     ok:false,error:`schema version ${workspace.schema_version} cannot overwrite workspace schema version ${outcome.current.schema_version}`,
