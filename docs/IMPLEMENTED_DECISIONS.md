@@ -135,7 +135,7 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-97; ID-94 is reserved by open PR #470 and ID-95 is on main). Never reuse a number, even if an entry is
+   plus one (currently ID-97). Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
 2. **Check for collisions before you claim it.** Parallel PRs are the
