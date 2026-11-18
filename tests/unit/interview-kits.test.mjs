@@ -262,7 +262,7 @@ async function withRuntime(pair, check) {
     await mkdir(join(root, 'api'));
     await mkdir(join(root, 'data'));
     await writeFile(join(root, 'package.json'), '{"type":"module"}');
-    for (const file of ['_catalog.js', '_catalog-provenance.js', '_catalog-interview-kits.js', '_catalog-random.js']) {
+    for (const file of ['_catalog.js', '_catalog-provenance.js', '_catalog-interview-kits.js', '_catalog-random.js', '_catalog-languages.js', '_execution-languages.js']) {
       await copyFile(new URL(`../../api/${file}`, import.meta.url), join(root, 'api', file));
     }
     await writeFile(join(root, 'data/randori-catalog-v1.json'), JSON.stringify(pair.catalog));

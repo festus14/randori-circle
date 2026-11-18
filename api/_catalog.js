@@ -3,6 +3,8 @@ import { defaultRandom, randomUnit, randomInteger } from './_catalog-random.js';
 import rawCatalog from '../data/randori-catalog-v1.json' with { type: 'json' };
 import rawProvenanceManifest from '../data/randori-catalog-provenance-v1.json' with { type: 'json' };
 import { INTERVIEW_KIT_DEFINITIONS } from './_catalog-interview-kits.js';
+import { deriveExerciseLanguages } from './_catalog-languages.js';
+import { EXECUTION_LANGUAGES, availableExecutionLanguages } from './_execution-languages.js';
 import {
   ProvenanceValidationError,
   validationDate,
@@ -1116,11 +1118,12 @@ function validateSuite(suite, exerciseByKey, path = 'evaluationSuite') {
   requireExactKeys(suite, ['slug', 'version', 'language', 'entrypoint', 'tests'], path);
   requireNonEmptyString(suite.slug, `${path}.slug`);
   requirePositiveInteger(suite.version, `${path}.version`);
-  if (!SUPPORTED_LANGUAGES.includes(suite.language)) fail(`${path}.language`, 'is unsupported');
+  if (!EXECUTION_LANGUAGES.includes(suite.language)) fail(`${path}.language`, 'is unsupported');
   const exercise = exerciseByKey.get(`${suite.slug}@${suite.version}`);
   if (!exercise) fail(path, 'does not match an exercise');
   if (exercise.status !== 'active') fail(path, 'cannot target a retired exercise');
-  if (suite.entrypoint !== exercise.languages[suite.language].entrypoint) {
+  const languages = { ...exercise.languages, ...deriveExerciseLanguages(exercise) };
+  if (suite.entrypoint !== languages[suite.language].entrypoint) {
     fail(`${path}.entrypoint`, 'must match the public language entrypoint');
   }
   if (!Array.isArray(suite.tests) || suite.tests.length < 3) {
@@ -1218,6 +1221,12 @@ export function validateCatalog(
   const exerciseByKey = new Map();
   catalog.exercises.forEach((exercise, index) => {
     validateExercise(exercise, index, today);
+    for (const [language, implementation] of Object.entries(deriveExerciseLanguages(exercise))) {
+      const path = `catalog.exercises[${index}].derivedLanguages.${language}`;
+      requireExactKeys(implementation, ['entrypoint', 'signature', 'starter'], path);
+      for (const field of ['entrypoint', 'signature', 'starter']) requireNonEmptyString(implementation[field], `${path}.${field}`);
+      if (!implementation.signature.includes(implementation.entrypoint) || !implementation.starter.includes(implementation.entrypoint)) fail(path, 'must define the entrypoint');
+    }
     const key = `${exercise.slug}@${exercise.version}`;
     if (exerciseKeys.has(key)) {
       fail(`catalog.exercises[${index}]`, 'duplicates another exercise slug and version');
@@ -1286,7 +1295,8 @@ function publicProjection(exercise) {
     description: exercise.prompt,
     constraints: clone(exercise.constraints),
     examples: clone(exercise.examples),
-    languages: clone(exercise.languages),
+    languages: Object.fromEntries(Object.entries({ ...clone(exercise.languages), ...deriveExerciseLanguages(exercise) })
+      .filter(([language]) => availableExecutionLanguages().includes(language))),
     rightsOwner: exercise.governance.rightsOwner,
     provenance: exercise.governance.provenance,
     reviewDate: exercise.governance.reviewDate,
@@ -1364,8 +1374,9 @@ export function validateEvaluationSuite(suite) {
 /** Create fresh server-owned cases and compute their expected values locally. */
 export function createEvaluationSuite(slug, version, language, options = {}) {
   const exercise = activeExercise(slug, version);
-  if (!exercise || !SUPPORTED_LANGUAGES.includes(language)) return null;
+  if (!exercise || !EXECUTION_LANGUAGES.includes(language)) return null;
   if (!isPlainObject(options)) throw new TypeError('options must be an object');
+  if (!availableExecutionLanguages(options.env || process.env).includes(language)) return null;
   const random = options.random ?? defaultRandom;
   if (typeof random !== 'function') throw new TypeError('random must be a function');
   const definition = SERVER_EXERCISE_DEFINITIONS[`${exercise.slug}@${exercise.version}`];
@@ -1379,7 +1390,7 @@ export function createEvaluationSuite(slug, version, language, options = {}) {
     slug: exercise.slug,
     version: exercise.version,
     language,
-    entrypoint: exercise.languages[language].entrypoint,
+    entrypoint: ({ ...exercise.languages, ...deriveExerciseLanguages(exercise) })[language].entrypoint,
     tests,
   };
   validateSuite(suite, exerciseByKey);

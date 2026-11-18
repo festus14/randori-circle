@@ -1,5 +1,6 @@
 import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth, verifySignedRequestAuth } from './_db.js';
 import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
+import { normalizeExecutionLanguage, executionLanguageEnabled } from './_execution-languages.js';
 import { buildExecutionHarness, executePracticePrograms, ExecutionInputError, ExecutionUnavailableError, executionRuntimeVersion, normalizeRunnerResults, resolveExecutionProvider, validateExecutionStdin } from './_execution.js';
 import { primaryExecutionContext } from './_execution-context.js';
 import { executionQueueEnabled, ExecutionBusyError, sendExecutionBusy } from './_execution-queue.js';
@@ -2637,9 +2638,8 @@ async function handleExecute(req,res){
     throw error;
   }
   const language = String(body.language||body.lang||'javascript').toLowerCase();
-  const map = {js:'javascript', javascript:'javascript', py:'python', python:'python'};
-  const executionLanguage = map[language];
-  if(!executionLanguage) return res.status(400).json({error:'supported languages are javascript and python'});
+  const executionLanguage = normalizeExecutionLanguage(language);
+  if(!executionLanguage || !executionLanguageEnabled(executionLanguage)) return res.status(400).json({error:'supported languages are javascript and python'});
   let code = String(body.code||'');
 
   const questionSlug=String(body.question_slug||body.slug||'').trim().slice(0,120);

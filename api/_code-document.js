@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import * as Y from 'yjs';
 
 import { authPairAccessArgs } from './_pair-access.js';
+import { EXECUTION_LANGUAGES, availableExecutionLanguages } from './_execution-languages.js';
 import { getPublicExercise } from './_catalog.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { candidateCodeFence, interviewOpenFence, readInterviewGate, resolveInterviewMode } from './_interview-session.js';
@@ -18,7 +19,8 @@ const DOCUMENT_VERSION=/^[a-f0-9]{64}$/;
 const CLIENT_ID=/^[A-Za-z0-9_-]{8,64}$/;
 const QUESTION_SLUG=/^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const BASE64=/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-const LANGUAGES=new Set(['javascript','python']);
+// Retention must recognize historical languages even after a rollout is off.
+const LANGUAGES=new Set(EXECUTION_LANGUAGES);
 const MAX_TRANSACTION_ATTEMPTS=4;
 const documentTails=new Map();
 
@@ -78,7 +80,7 @@ function parseIdentity(value){
   const questionVersion=positiveSafeInteger(value.question_version);
   if(!questionVersion) throw new CodeDocumentInputError('positive question_version required');
   const language=typeof value.language==='string'?value.language:'';
-  if(!LANGUAGES.has(language)) throw new CodeDocumentInputError('language must be javascript or python');
+  if(!availableExecutionLanguages().includes(language)) throw new CodeDocumentInputError('language must be javascript or python, or an enabled provider-supported language');
   if(!getPublicExercise(questionSlug,questionVersion)){
     throw new CodeDocumentInputError('question not found or unavailable',{status:404});
   }

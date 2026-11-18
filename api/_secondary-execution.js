@@ -1,3 +1,4 @@
+import { normalizeExecutionLanguage, executionLanguageEnabled } from './_execution-languages.js';
 import { randomBytes } from 'node:crypto';
 import { normalizeMessageTimestamp } from './_messages.js';
 import { createEvaluationSuite, listPublicExercises } from './_catalog.js';
@@ -28,8 +29,8 @@ export async function executeSecondaryProgram(db,room,req,key){
   const stdin=validateExecutionStdin(body);
   if(['week_id','pair_group_id','pg_id','pair_id','circle_id','publication_id','group_id'].some(field=>Object.hasOwn(body,field)))
     throw new SecondaryWorkspaceInputError('room_id cannot be combined with numeric room identifiers');
-  const language=({js:'javascript',javascript:'javascript',py:'python',python:'python'})[String(body.language??body.lang??'javascript').toLowerCase()];
-  if(!language)throw new SecondaryWorkspaceInputError('supported languages are javascript and python');
+  const language=normalizeExecutionLanguage(body.language??body.lang??'javascript');
+  if(!language || !executionLanguageEnabled(language))throw new SecondaryWorkspaceInputError('supported languages are javascript and python');
   const slug=String(body.question_slug??body.slug??'').trim().slice(0,120);if(!slug)throw new SecondaryWorkspaceInputError('question_slug required');
   const questionVersion=Number(body.question_version??body.version??listPublicExercises().find(exercise=>exercise.slug===slug)?.version);
   if(!Number.isSafeInteger(questionVersion)||questionVersion<1)throw new SecondaryWorkspaceInputError('question_version must be a positive integer');

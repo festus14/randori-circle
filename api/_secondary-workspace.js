@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import * as Y from 'yjs';
+import { availableExecutionLanguages } from './_execution-languages.js';
 import { getPublicExercise } from './_catalog.js';
 import { materializeCodeDocument, CodeDocumentInputError, CODE_DOCUMENT_UPDATE_LIMIT_BYTES } from './_code-document.js';
 import { projectSessionControls, SESSION_TIMER_DURATION_MS } from './_session-controls.js';
@@ -145,7 +146,7 @@ export function secondaryDocumentIdentity(body){
   if(typeof questionSlug!=='string'||!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(questionSlug)||questionSlug.length>120)
     throw new SecondaryWorkspaceInputError('valid question_slug required');
   if(!Number.isSafeInteger(Number(questionVersion))||Number(questionVersion)<1)throw new SecondaryWorkspaceInputError('positive question_version required');
-  if(!['javascript','python'].includes(language))throw new SecondaryWorkspaceInputError('language must be javascript or python');
+  if(!availableExecutionLanguages().includes(language))throw new SecondaryWorkspaceInputError('language must be javascript or python, or an enabled provider-supported language');
   if(!getPublicExercise(questionSlug,Number(questionVersion)))throw new SecondaryWorkspaceInputError('question not found or unavailable',404);
   return {questionSlug,questionVersion:Number(questionVersion),language};
 }

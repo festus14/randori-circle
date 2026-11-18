@@ -9098,7 +9098,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const selectedLang=document.getElementById('langSelect').value;
     const selectedQuestion=window._randori_questions?.selectedIdentity?.()||{slug:qSel.value,version:null};
     const entry=codeMap[roomId]||{lang:selectedLang, qId:selectedQuestion.slug, qVersion:selectedQuestion.version, codes:{}, timer:25*60};
-    const lang=['javascript','python'].includes(entry.lang)?entry.lang:selectedLang;
+    const lang=[...document.getElementById('langSelect').options].some(option=>option.value===entry.lang)?entry.lang:selectedLang;
     document.getElementById('langSelect').value=lang;
     const qId=entry.qId||qSel.value;
     const hasStoredCode=!!entry.codes&&Object.prototype.hasOwnProperty.call(entry.codes,lang);
@@ -13402,6 +13402,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const j=await r.json();
       if(r.ok && j.ok && Array.isArray(j.questions)){
         CUSTOM_QUESTIONS=j.questions;
+        if(j.questions.some(q=>q.languages?.typescript||q.languages?.go)) await import('/assets/execution-languages.js');
+        window.RandoriExecutionLanguages?.sync(j.questions);
         catalogueFetchState='loaded';
         exerciseSuggestionsEnabled=j.features?.exercise_suggestions===true;
         if(!exerciseSuggestionsEnabled) exerciseSuggestions?.setEnabled(false);
@@ -13622,6 +13624,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   });
 
   function handleLanguageChange(language){
+    delete document.getElementById('langSelect').dataset.pendingLanguage;
     if(catalogueFetchState!=='loaded') return false;
     window._randori_workspace?.markHydrationEdit?.();
     rememberDraft(activeQuestionSlug,activeQuestionVersion,activeLanguage);
@@ -13637,7 +13640,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function loadRoomState({questionId,questionVersion,language,code,hasStoredCode=false}={}){
     activeLanguage=language||activeLanguage;
-    const languageSelect=document.getElementById('langSelect'); if(languageSelect) languageSelect.value=activeLanguage;
+    const ls=document.getElementById('langSelect'); if(ls){ ls.value=activeLanguage; if(!ls.value) ls.dataset.pendingLanguage=activeLanguage; }
     const desired=String(questionId||qSel?.value||'');
     const desiredVersion=positiveVersion(questionVersion);
     activeQuestionSlug=desired;
@@ -13716,7 +13719,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   const privateStdin=window.RandoriExecutionStdin?.createController({
     doc:document,
-    enabled:()=>window._randori_auth?.capabilities?.executionStdin===true,
+    enabled:()=>window._randori_auth?.capabilities?.executionStdin===true&&document.getElementById('langSelect')?.value!=='go',
     context:executionContextKey,
   })||Object.freeze({selected:()=>false,capture:()=>null,render:()=>{},refresh:()=>false,clear:()=>{},matches:()=>false});
   window._randori_sync_execution_stdin=()=>privateStdin.refresh();
@@ -14991,7 +14994,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         const owned=crdtOwnsCode(room);
         const selectionChanged=!sameSelection(draft(),snapshot);
         if(owned&&selectionChanged) window._randori_crdt?.fence?.(room);
-        const lang=document.getElementById('langSelect'); if(lang) lang.value=snapshot.language;
+        const lang=document.getElementById('langSelect'); if(lang){ lang.value=snapshot.language; if(!lang.value) lang.dataset.pendingLanguage=snapshot.language; }
         const question=document.getElementById('questionSelect');
         if(question) window._randori_questions?.selectWorkspaceQuestion?.(snapshot.question_id,snapshot.question_version);
         if(!owned){

@@ -1,3 +1,4 @@
+import { availableExecutionLanguages } from './_execution-languages.js';
 import { candidateWorkspaceFence, interviewOpenFence, readInterviewGate, resolveInterviewMode } from './_interview-session.js';
 import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
@@ -318,8 +319,8 @@ export function parseWorkspacePayload(value){
   if(!Number.isSafeInteger(payload.client_seq) || payload.client_seq<0){
     return {status:400,error:'client_seq must be a safe non-negative integer'};
   }
-  if(payload.language!=='javascript' && payload.language!=='python'){
-    return {status:400,error:'language must be javascript or python'};
+  if(!availableExecutionLanguages().includes(payload.language)){
+    return {status:400,error:'language must be javascript or python, or an enabled provider-supported language'};
   }
   if(typeof payload.question_id!=='string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(payload.question_id) || payload.question_id.length>120){
     return {status:400,error:'question_id must be a safe lowercase slug of at most 120 characters'};
