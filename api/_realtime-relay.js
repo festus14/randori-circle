@@ -7,6 +7,10 @@ import { codeDocumentAccessSql, CODE_DOCUMENT_RETENTION_DAYS, parseCodeDocumentQ
 export const RELAY_TOKEN_TTL_SECONDS=300;
 export const RELAY_TOKEN_LIMIT=12;
 export const RELAY_TOKEN_WINDOW_SECONDS=300;
+export const RELAY_SESSION_MARGIN_SECONDS=30;
+export class RelaySessionExpiredError extends Error{
+  constructor(){ super('expired or expiring relay session'); this.name='RelaySessionExpiredError'; }
+}
 const KID=/^[A-Za-z0-9_-]{1,128}$/;
 let cached=null;
 
@@ -15,10 +19,11 @@ let cached=null;
 // service-role/secret key. JWTs are minted separately for each private channel.
 export function realtimeRelayConfiguration(env=process.env){
   if(env.REALTIME_RELAY_ENABLED!=='true'||env.RANDORI_LOCAL_RUNTIME==='true') return null;
-  const values=[env.SUPABASE_URL,env.SUPABASE_PUBLISHABLE_KEY,env.SUPABASE_REALTIME_SIGNING_JWK,env.SUPABASE_REALTIME_SIGNING_KID];
+  const values=[env.SUPABASE_URL,env.SUPABASE_PUBLISHABLE_KEY,env.SUPABASE_REALTIME_SIGNING_JWK,env.SUPABASE_REALTIME_SIGNING_KID,env.JWT_SECRET];
   if(cached&&values.every((value,index)=>value===cached.values[index])) return cached.config;
   try{
-    const [rawUrl,publishableKey,rawJwk,kid]=values;
+    const [rawUrl,publishableKey,rawJwk,kid,appSecret]=values;
+    if(typeof appSecret!=='string'||Buffer.byteLength(appSecret,'utf8')<32) return null;
     const url=new URL(rawUrl);
     if(url.protocol!=='https:'||!/^([a-z0-9-]+)\.supabase\.co$/.test(url.hostname)
       ||url.port||url.username||url.password||url.pathname!=='/'||url.search||url.hash
@@ -34,7 +39,11 @@ export function realtimeRelayConfiguration(env=process.env){
     const probe=Buffer.from('randori-realtime-key-check-v1');
     if(!verify('sha256',probe,{key:publicKey,dsaEncoding:'ieee-p1363'},
       sign('sha256',probe,{key:privateKey,dsaEncoding:'ieee-p1363'}))) return null;
-    const config=Object.freeze({url:url.origin,publishableKey,kid,privateKey,subjectKey:Buffer.from(jwk.d,'base64url')});
+    // Independent, domain-separated keys from the existing app secret: never
+    // use the ECDSA scalar for HMAC, and never reset quota on provider-key rotation.
+    const derive=label=>createHmac('sha256',appSecret).update(label).digest();
+    const config=Object.freeze({url:url.origin,publishableKey,kid,privateKey,
+      subjectKey:derive('randori-relay-sub-key-v1'),rateKey:derive('randori-relay-rate-key-v1')});
     cached={values,config};
     return config;
   }catch{ return null; }
@@ -98,7 +107,7 @@ export function mintRelayToken(config,{viewerId,identity,pair,nowSeconds=Math.fl
   if(!Number.isSafeInteger(viewerId)||viewerId<1||!Number.isSafeInteger(nowSeconds)||nowSeconds<1) throw new TypeError('invalid relay token identity');
   const topic=relayTopic(identity,pair),expiresAt=Math.min(nowSeconds+RELAY_TOKEN_TTL_SECONDS,
     Number.isSafeInteger(sessionExpiresAt)?sessionExpiresAt:nowSeconds+RELAY_TOKEN_TTL_SECONDS);
-  if(expiresAt<=nowSeconds) throw new TypeError('expired relay session');
+  if(expiresAt<=nowSeconds+RELAY_SESSION_MARGIN_SECONDS) throw new RelaySessionExpiredError();
   const header=Buffer.from(JSON.stringify({alg:'ES256',typ:'JWT',kid:config.kid})).toString('base64url');
   const claims={iss:`${config.url}/auth/v1`,aud:'authenticated',sub:opaqueSubject(config,viewerId),role:'authenticated',
     iat:nowSeconds,exp:expiresAt,room:topic,room_id:identity.roomId,cycle:identity.weekId,
@@ -112,7 +121,7 @@ export function mintRelayToken(config,{viewerId,identity,pair,nowSeconds=Math.fl
 // Persistent distributed budget, no in-process limiter and no Turso migration.
 // One per-account key expires/reset after five minutes; no raw identifier in storage.
 export async function consumeRelayTokenBudget(db,config,viewerId,nowSeconds=Math.floor(Date.now()/1000)){
-  const key=createHmac('sha256',config.subjectKey).update(`randori-relay-rate-v1\0${viewerId}`).digest('hex');
+  const key=createHmac('sha256',config.rateKey).update(`randori-relay-rate-v1\0${viewerId}`).digest('hex');
   const result=await db.execute({
     sql:`INSERT INTO auth_rate_limits (key,attempts,expires_at) VALUES (?,1,?)
       ON CONFLICT(key) DO UPDATE SET

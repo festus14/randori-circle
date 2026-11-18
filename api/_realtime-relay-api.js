@@ -1,8 +1,10 @@
 import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
-import { multiCircleControlPlaneEnabled, requestMatchesCircleContext, resolveActiveCircleContext } from './_active-circle.js';
-import { consumeRelayTokenBudget, mintRelayToken, parseRelayTokenRequest, readRelayAuthorization, realtimeRelayConfiguration } from './_realtime-relay.js';
+import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, requestMatchesCircleContext, resolveActiveCircleContext, secondaryCircleWorkspaceEnabled } from './_active-circle.js';
+import { consumeRelayTokenBudget, mintRelayToken, parseRelayTokenRequest, readRelayAuthorization, realtimeRelayConfiguration, RELAY_SESSION_MARGIN_SECONDS, RelaySessionExpiredError } from './_realtime-relay.js';
 
 const notFound=res=>res.status(404).json({error:'pair not found'});
+const legacyWorkspaceAvailable=(db,auth)=>!multiCircleControlPlaneEnabled()
+  ||secondaryCircleWorkspaceEnabled()||canUseLegacySinglePrimaryCircleFeatures(db,auth);
 
 export async function handleRelayToken(req,res){
   res.setHeader?.('Cache-Control','private, no-store');
@@ -26,9 +28,14 @@ export async function handleRelayToken(req,res){
     const db=getClient(),auth=await verifyRequestAuth(req,db);
     const viewerId=Number(auth?.id||auth?.uid);
     if(!Number.isSafeInteger(viewerId)||viewerId<1) return res.status(401).json({error:'authentication required'});
+    // Match the browser's renewal margin before spending any token quota.
+    if(!Number.isSafeInteger(auth.exp)||auth.exp-Math.floor(Date.now()/1000)<=RELAY_SESSION_MARGIN_SECONDS) return notFound(res);
     const identity=parseRelayTokenRequest(req.body);
     if(!identity) return notFound(res);
     transaction=await db.transaction('read');
+    // Mirror code-document's legacy availability gate when its workspace
+    // router is disabled; a token must never unlock an unavailable document.
+    if(!await legacyWorkspaceAvailable(transaction,auth)) return notFound(res);
     let context=null;
     if(multiCircleControlPlaneEnabled()){
       context=await resolveActiveCircleContext(transaction,auth);
@@ -44,13 +51,15 @@ export async function handleRelayToken(req,res){
     }
     // Quota consumption or other awaits can cross a DB-time interview end.
     // Reauthorize at issuance, preserving the same participant snapshot.
+    if(!await legacyWorkspaceAvailable(db,auth)) return notFound(res);
     const currentPair=await readRelayAuthorization(db,{viewerId,...identity});
     if(!currentPair||currentPair.userAId!==pair.userAId||currentPair.userBId!==pair.userBId) return notFound(res);
     const relay=mintRelayToken(config,{viewerId,identity,pair,sessionExpiresAt:auth.exp});
     return res.json({ok:true,...relay,...(context?{
       circle_context_version:context.context_version,circle_public_id:context.membership.public_id,
     }:{})});
-  }catch{
+  }catch(error){
+    if(error instanceof RelaySessionExpiredError) return notFound(res);
     // No provider response, JWT, private key, subject or raw exception is logged.
     return res.status(503).json({error:'realtime relay unavailable'});
   }finally{

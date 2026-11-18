@@ -11,13 +11,13 @@ import { relayKeyFixture, RELAY_BODY, RELAY_ENV_KEYS, RELAY_IDENTITY } from '../
 
 const realDb=await import('../../api/_db.js');
 const originalJwt=process.env.JWT_SECRET;
-let db=null,directory=null,authFailure=false,useRealAuth=false;
+let db=null,directory=null,authFailure=false,useRealAuth=false,authExpiresAt=null;
 mock.module('../../api/_db.js',{exports:{...realDb,getClient:()=>db,
   verifyRequestAuth:async req=>{
     if(authFailure) throw new Error('private auth failure');
     if(useRealAuth) return realDb.verifyRequestAuth(req,db);
     const id=Number(req.headers?.['x-test-user']);
-    return Number.isSafeInteger(id)&&id>0?{id,sessionHash:'a'.repeat(64),exp:Math.floor(Date.now()/1000)+3600}:null;
+    return Number.isSafeInteger(id)&&id>0?{id,sessionHash:'a'.repeat(64),exp:authExpiresAt??Math.floor(Date.now()/1000)+3600}:null;
   },
 }});
 const {default:handler}=await import('../../api/code-document.js');
@@ -51,16 +51,16 @@ async function seed(){
 }
 
 beforeEach(()=>{
-  authFailure=false; useRealAuth=false;
+  authFailure=false; useRealAuth=false; authExpiresAt=null;
   for(const name of [...RELAY_ENV_KEYS,'CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED',
-    'SECONDARY_CIRCLE_WORKSPACE_ENABLED','EMAIL_PASSWORD_ACTIVATION_ENABLED','PASSWORD_RESET_ENABLED',
+    'SECONDARY_CIRCLE_WORKSPACE_ENABLED','MULTI_CIRCLE_AVAILABILITY_ENABLED','SECONDARY_CIRCLE_COORDINATION_ENABLED','EMAIL_PASSWORD_ACTIVATION_ENABLED','PASSWORD_RESET_ENABLED',
     'IDENTITY_MANAGEMENT_ENABLED','INVITE_REQUESTS_ENABLED','ACCOUNT_DELETION_GRACE_ENABLED','INTERVIEW_SESSION_ENABLED']) delete process.env[name];
   Object.assign(process.env,key.env);
 });
 afterEach(()=>{
   db?.close(); db=null;
   if(directory) rmSync(directory,{recursive:true,force:true}); directory=null;
-  for(const name of [...RELAY_ENV_KEYS,'CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED','INTERVIEW_SESSION_ENABLED']) delete process.env[name];
+  for(const name of [...RELAY_ENV_KEYS,'CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED','INTERVIEW_SESSION_ENABLED','SECONDARY_CIRCLE_WORKSPACE_ENABLED','MULTI_CIRCLE_AVAILABILITY_ENABLED','SECONDARY_CIRCLE_COORDINATION_ENABLED']) delete process.env[name];
   if(originalJwt===undefined) delete process.env.JWT_SECRET; else process.env.JWT_SECRET=originalJwt;
 });
 
@@ -70,7 +70,7 @@ test('authenticated primary participants receive private short-lived tokens thro
   assert.equal(first.status,200); assert.equal(second.status,200); assert.equal(first.body.topic,second.body.topic);
   assert.equal(first.headers['cache-control'],'private, no-store'); assert.equal(first.headers['x-content-type-options'],'nosniff');
   assert.ok(first.body.token); assert.equal(first.body.ok,true);
-  for(const field of ['privateKey','subjectKey','SUPABASE_REALTIME_SIGNING_JWK','email']) assert.equal(Object.hasOwn(first.body,field),false);
+  for(const field of ['privateKey','subjectKey','rateKey','SUPABASE_REALTIME_SIGNING_JWK','email']) assert.equal(Object.hasOwn(first.body,field),false);
   const rewritten=await invoke({url:'/api/code-document?endpoint=relay-token',query:{endpoint:'relay-token'}});
   assert.equal(rewritten.status,200);
   assert.equal((await db.execute('SELECT count(*) AS n FROM pair_code_documents')).rows[0].n,1);
@@ -174,6 +174,35 @@ test('relay issuance rechecks the same live snapshot after quota work crosses re
   }finally{ db=original; }
 });
 
+test('short or expired app sessions get the uniform 404 without consuming token quota',async()=>{
+  await seed();
+  const now=Math.floor(Date.now()/1000),clock=mock.method(Date,'now',()=>now*1000);
+  try{
+    for(const remaining of [-1,0,1,29,30]){
+      authExpiresAt=now+remaining;
+      const result=await invoke(); assert.equal(result.status,404); assert.deepEqual(result.body,{error:'pair not found'});
+    }
+    assert.equal((await db.execute('SELECT count(*) AS n FROM auth_rate_limits')).rows[0].n,0);
+    authExpiresAt=now+31; assert.equal((await invoke()).status,200,'31 seconds is usable at the client');
+  }finally{ clock.mock.restore(); }
+});
+
+test('a session expiring after preflight maps the mint race to 404, never 503',async()=>{
+  await seed();
+  let now=Math.floor(Date.now()/1000); authExpiresAt=now+31;
+  const clock=mock.method(Date,'now',()=>now*1000),original=db;
+  db=new Proxy(original,{get(target,property){
+    if(property==='execute') return async statement=>{
+      const result=await original.execute(statement);
+      if(typeof statement==='object'&&statement.sql.includes('INSERT INTO auth_rate_limits')) now+=40;
+      return result;
+    };
+    const value=Reflect.get(target,property,target); return typeof value==='function'?value.bind(target):value;
+  }});
+  try{ const result=await invoke(); assert.equal(result.status,404); assert.deepEqual(result.body,{error:'pair not found'}); }
+  finally{ db=original; clock.mock.restore(); }
+});
+
 test('flag off and missing/misconfigured signing material never emit a token or capability',async()=>{
   await seed();
   for(const patch of [{REALTIME_RELAY_ENABLED:'false'},{REALTIME_RELAY_ENABLED:'TRUE'},
@@ -211,6 +240,10 @@ test('per-account token rate limit is durable, shared across rooms and returns R
   assert.equal((await invoke({user:2})).status,200,'partner has a separate budget');
   const path=join(directory,'test.sqlite'); db.close(); db=createClient({url:`file:${path}`});
   assert.equal((await invoke()).status,429,'restart is not a quota reset');
+  const replacement=relayKeyFixture();
+  process.env.SUPABASE_REALTIME_SIGNING_JWK=replacement.env.SUPABASE_REALTIME_SIGNING_JWK;
+  process.env.SUPABASE_REALTIME_SIGNING_KID='rotated-relay-kid';
+  assert.equal((await invoke()).status,429,'provider signing-key rotation is not a quota reset');
   await db.execute('UPDATE auth_rate_limits SET expires_at=0');
   assert.equal((await invoke()).status,200);
 });
@@ -245,6 +278,18 @@ test('active primary membership and live session-circle context fence token issu
   assert.equal((await invoke({headers:{'x-randori-circle-context-version':'0'}})).status,404,'selection required');
   await db.execute({sql:'INSERT INTO auth_session_circle_contexts (session_hash,user_id,circle_id,context_version,updated_at) VALUES (?,1,1,1,?)',args:[hash,now]});
   assert.equal((await invoke({headers:{'x-randori-circle-context-version':'0'}})).status,404,'stale context');
+  const denied=await invoke({headers:{'x-randori-circle-context-version':'1'}});
+  assert.equal(denied.status,404); assert.deepEqual(denied.body,{error:'pair not found'},'two-circle legacy requests cannot unlock relay');
+  const document=await invoke({method:'GET',url:'/api/code-document',query:{...RELAY_BODY,question_version:'1'}});
+  assert.equal(document.status,409); assert.equal(document.body.code,'circle_feature_unavailable');
+  await db.execute("UPDATE circle_memberships SET status='inactive' WHERE circle_id=2 AND user_id=1");
+  assert.equal((await invoke({headers:{'x-randori-circle-context-version':'1'}})).status,200,'single-primary legacy access remains available');
+  await db.execute("UPDATE circle_memberships SET status='active' WHERE circle_id=2 AND user_id=1");
+  // With the primary workspace router enabled, both endpoints can support a
+  // selected primary member who also belongs to a secondary circle.
+  process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
+  process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED='true';
+  process.env.SECONDARY_CIRCLE_WORKSPACE_ENABLED='true';
   const valid=await invoke({headers:{'x-randori-circle-context-version':'1'}});
   assert.equal(valid.status,200); assert.equal(valid.body.circle_context_version,1); assert.equal(valid.body.circle_public_id,'primary-test');
   await db.execute({sql:'UPDATE auth_session_circle_contexts SET circle_id=2,context_version=2 WHERE session_hash=?',args:[hash]});

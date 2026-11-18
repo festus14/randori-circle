@@ -60,6 +60,27 @@ test('ES256 JWT has the room/cycle/context, opaque account subject, kid and <=5-
   assert.throws(()=>mintRelayToken(config,{viewerId:1,identity:RELAY_IDENTITY,pair:RELAY_PAIR,nowSeconds:0}),/identity/);
 });
 
+test('app-derived HMAC purposes are separated from signing and survive provider-key rotation',async()=>{
+  const next=relayKeyFixture();
+  const rotated=realtimeRelayConfiguration({...key.env,SUPABASE_REALTIME_SIGNING_JWK:next.env.SUPABASE_REALTIME_SIGNING_JWK,
+    SUPABASE_REALTIME_SIGNING_KID:'rotated-test-kid'});
+  assert.ok(rotated);
+  assert.notDeepEqual(config.subjectKey,Buffer.from(key.jwk.d,'base64url'));
+  assert.notDeepEqual(config.rateKey,config.subjectKey);
+  assert.deepEqual(rotated.subjectKey,config.subjectKey); assert.deepEqual(rotated.rateKey,config.rateKey);
+  const claims=value=>JSON.parse(Buffer.from(mintRelayToken(value,{viewerId:1,identity:RELAY_IDENTITY,pair:RELAY_PAIR,
+    nowSeconds:1_800_000_000}).token.split('.')[1],'base64url'));
+  assert.equal(claims(rotated).sub,claims(config).sub);
+  const bucketKeys=[];
+  const db={execute:async statement=>{ bucketKeys.push(statement.args[0]); return {rows:[{attempts:1,expires_at:1_800_000_300}]}; }};
+  await consumeRelayTokenBudget(db,config,1,1_800_000_000); await consumeRelayTokenBudget(db,rotated,1,1_800_000_000);
+  assert.equal(bucketKeys[0],bucketKeys[1]);
+  const appRotated=realtimeRelayConfiguration({...key.env,JWT_SECRET:'different-app-secret-at-least-thirty-two-bytes'});
+  assert.notEqual(claims(appRotated).sub,claims(config).sub,'app-secret rotation explicitly changes subject pseudonyms');
+  await consumeRelayTokenBudget(db,appRotated,1,1_800_000_000); assert.notEqual(bucketKeys[2],bucketKeys[0]);
+  assert.equal(realtimeRelayConfiguration({...key.env,JWT_SECRET:'short'}),null);
+});
+
 test('relay topics isolate room, cycle, live pairing snapshot, question version and language',()=>{
   const original=relayTopic(RELAY_IDENTITY,RELAY_PAIR);
   assert.match(original,/^rc-code:v1:week_10_pair_20:[a-f0-9]{64}$/);

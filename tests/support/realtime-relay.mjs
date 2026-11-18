@@ -12,7 +12,8 @@ export function relayKeyFixture(){
   const jwk=privateKey.export({format:'jwk'});
   const env={REALTIME_RELAY_ENABLED:'true',SUPABASE_URL:'https://relay-test.supabase.co',
     SUPABASE_PUBLISHABLE_KEY:'sb_publishable_test_public_key_461',
-    SUPABASE_REALTIME_SIGNING_JWK:JSON.stringify(jwk),SUPABASE_REALTIME_SIGNING_KID:'relay-test-kid'};
+    SUPABASE_REALTIME_SIGNING_JWK:JSON.stringify(jwk),SUPABASE_REALTIME_SIGNING_KID:'relay-test-kid',
+    JWT_SECRET:'relay-fixture-app-secret-at-least-thirty-two-bytes'};
   return {env,jwk,privateKey,publicKey};
 }
 
