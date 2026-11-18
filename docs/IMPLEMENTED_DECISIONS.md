@@ -6299,3 +6299,16 @@ Details and operator/authoring steps: [execution languages](EXECUTION_LANGUAGES.
 1,450,000. The immutable smoke-workflow/assessor digest pins were refreshed for
 this reviewed extension; their permissions, trigger and secret predicates and
 replacement/mutation rejection tests remain intact.
+
+**Review revision (#485).** Independent review caught that the required catalogue
+command had stopped calling the independent JS/Python kit validator. Restore it
+alongside additional-language validation, including the missing-reference and
+public-example/oracle guards; regressions exercise missing Python and all eight
+actual Python invocations. Unsupported TypeScript now returns 400 before any
+lease/quota/provider work, rather than spending a run on embedded errors. Go
+stdout must contain exactly one ordered frame per case; duplicate, malformed,
+extra or partial streams cannot yield verified passes. Only the requester gets
+a fixed `compile_failed` category, never raw compiler text. Both Ubuntu catalogue
+jobs require Go; oracle annotations assert supported parameter shapes. Native
+Piston 1.16.2 compatibility and deployed function-duration headroom remain
+explicit operator checks, not claims from modern-Go CI or local mocks.

@@ -46,7 +46,10 @@ image documentation promises a different Node patch version.
 TypeScript supports erasable types only: no enums, runtime namespaces, parameter
 properties, decorators or JSX. Catalogue functions must not use imports/exports,
 `require`, stdin or top-level script output; the restricted VM is unchanged.
-This is execution, not type checking. Unsupported syntax produces failed cases.
+This is execution, not type checking. Unsupported syntax returns a clear **400**
+after resolving authorized canonical code, before lease, quota or provider work;
+no sandbox is spent just to report eight runtime errors. The same syntax-only
+input check applies to both providers and private TypeScript scripts.
 
 Go uses a submitted `package main` file plus a separate server-owned `main.go`
 harness in the **same fresh sandbox**. Standard-library imports are permitted;
@@ -56,6 +59,13 @@ return value. Variadic functions/multiple returns, decoding errors, panics and
 non-JSON returns fail that case. A compile error or killed run leaves cases
 without results, hence failed. Return empty slices rather than nil when `[]` is
 expected; nil encodes as JSON null. Struct fields must be exported with JSON tags.
+Go stdout is reserved for the harness: exactly one frame per case, in index order.
+Duplicate, reordered, malformed, extra/non-frame or incomplete stdout invalidates
+**all** case passes before signing or persisting results. Return values instead of
+printing debug output. Legacy JS/Python framing is unchanged. The requester's
+execute response includes only a fixed `compile_failed` category for Go; raw
+compiler text is not returned because it can echo submitted code or server
+harness/case bytes. That category stays out of attestations and shared feeds.
 
 Generic Go starters use `interface{}`: numbers decode as `float64`, arrays as
 `[]interface{}`, objects as `map[string]interface{}`, null as nil. Members may
@@ -92,7 +102,12 @@ language starter content or changed question semantics must instead follow
 [versioned provenance review](CATALOG_PROVENANCE.md); do not use this adapter to
 exclude authored content from the canonical hash.
 
-`npm run validate:catalog` checks TypeScript starters and all eight kit references
+`npm run validate:catalog` always calls **both** `validateInterviewKitReferences`
+and `validateAdditionalLanguageReferences`. The independent JS/Python kit gate,
+missing-Python-reference guard and public-example/oracle agreement check are
+mandatory, including while the new language flags are off. Missing `python3`
+fails the command with an actionable error; it is never silently skipped.
+The additional validator checks TypeScript starters and all eight kit references
 against generated cases and public examples in the production harness. Existing
 independent Python/small-input oracle checks remain. Independently authored Go
 references cover all eight kits plus Focus Block Roll-up, Balanced Template
@@ -100,8 +115,20 @@ Markers and Capacity Upgrade Index in `scripts/catalog-go-references.mjs`.
 With an already-installed Go toolchain the validator compiles/runs those exact
 harnesses offline (`GOPROXY=off`, `GOSUMDB=off`, `GOTOOLCHAIN=local`). It otherwise
 prints an explicit Go skip; `CATALOG_REQUIRE_GO=true` makes absence a hard failure.
-The required Ubuntu CI catalogue job sets this flag. No compiler was installed
-or provider contacted on the implementation box, which has no Go toolchain.
+The required Ubuntu 24.04 catalogue job and Ubuntu 26.04 image-drift canary both
+set this flag, so either image losing its Go toolchain fails rather than skipping.
+Go reference coverage is **11 of 27** active exercises; all exercises still share
+the server-owned JS oracle/cases. CI uses the image's modern Go and is not proof
+of the production Piston 1.16.2 pin. Harness/references use `interface{}`, ordinary
+functions and pre-1.16 standard-library APIs, not generics/`any` aliases or other
+post-1.16 language features. Source compatibility was inspected; native Go and
+actual 1.16.2 execution were **not** verified on the compiler-free implementation
+box and must be checked by the operator canary. No compiler was installed or
+provider contacted here.
+
+TypeScript oracle annotation asserts a named function with plain identifier
+parameters; zero-argument functions are supported. Defaults, destructuring and
+rest parameters fail explicitly rather than being altered by a loose regex.
 
 ## Smoke budgets and rollout
 
@@ -123,6 +150,11 @@ Piston). The selector refuses disabled/unsupported targets. It is never in tests
 1. Merge/deploy with both flags off. Verify the normal JS/PY journey and gates.
 2. In the controlled canary deployment, enable **one** supported language flag.
    For Piston first verify the exact installed runtime and isolation/egress policy.
+   Before enabling Go, verify the **deployed** execute function `maxDuration`
+   exceeds the 22-second provider request ceiling plus authorization, quota, DB
+   persistence and cleanup overhead. The smoke handler also needs room for its
+   existing 45-second language watchdog. `vercel.json` declares no `maxDuration`;
+   do not assume the platform default or an operator setting was checked here.
 3. Run the existing execution-smoke workflow against that deployment under the
    approved operator setup. Require the new language's actual `status=ok`, not
    `throttled`, and use the targeted CLI reference canary plus editor → sandbox

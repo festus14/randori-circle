@@ -55,6 +55,8 @@ jobs:
         with:
           python-version: '3.14'
       - name: Validate original exercise catalogue
+        env:
+          CATALOG_REQUIRE_GO: 'true'
         run: npm run validate:catalog
       - name: Enforce runtime DDL boundary
         run: npm run check:runtime-ddl
