@@ -126,11 +126,15 @@ test('unavailable token/transport engages the HTTPS polling fallback without dis
 });
 
 test('terminal, hidden, sign-out, context and selection fences close the socket and stop late delivery',async()=>{
-  for(const reason of ['terminal','hidden','sign-out','scope','selection','room','offline']){
+  for(const reason of ['terminal','interview-terminal','hidden','sign-out','scope','selection','room','offline']){
     const clock=fakeRelayClock(),{Socket,sockets}=mockRelaySockets({clock}),server=store();
     const item=harness({clock,Socket,server}); await initialise(item,clock);
     const socket=sockets[0],oldMessage=socket.onmessage,previous=item.textarea.value;
     if(reason==='terminal') item.event('randori:completion-observed',{room,state:'completed'});
+    else if(reason==='interview-terminal'){
+      item.window._randori_session_controls={ended:true,room,controls:{interviewMode:true}};
+      item.event('randori:interview-ended',{room,reason:'timer_expired'});
+    }
     else if(reason==='hidden') item.hidden();
     else if(reason==='sign-out'){
       item.window._randori_auth.me=null;
@@ -144,7 +148,7 @@ test('terminal, hidden, sign-out, context and selection fences close the socket 
     oldMessage({data:JSON.stringify({topic:socket.topic,event:'broadcast',payload:{type:'broadcast',event:'y-update',
       payload:{sender:'a'.repeat(32),seq:1,update:Buffer.from(Y.encodeStateAsUpdate(doc)).toString('base64')}}})});
     assert.equal(item.textarea.value,previous,reason);
-    if(reason==='terminal') { assert.equal(item.textarea.readOnly,true); assert.equal(item.elements.runBtn.disabled,true); }
+    if(reason==='terminal'||reason==='interview-terminal') { assert.equal(item.textarea.readOnly,true); assert.equal(item.elements.runBtn.disabled,true); }
     item.crdt.deactivate(); server.doc.destroy(); doc.destroy();
   }
 });

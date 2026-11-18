@@ -1,5 +1,6 @@
 import { createHash, createHmac, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 
+import { interviewSessionEnabled, interviewTimerEnded, interviewTimerOpenSql } from './_session-controls.js';
 import { authPairAccessArgs } from './_pair-access.js';
 import { codeDocumentAccessSql, CODE_DOCUMENT_RETENTION_DAYS, parseCodeDocumentQuery } from './_code-document.js';
 
@@ -64,9 +65,11 @@ export async function readRelayAuthorization(db,{viewerId,...identity}){
           WHERE receipt.week_id=access.week_id AND receipt.pair_group_id=access.pair_group_id
             AND receipt.participant_source='auth'
             AND receipt.user_id IN (access.user_a_id,access.user_b_id)) < 2
+        AND ${interviewTimerOpenSql()}
       LIMIT 2`,
     args:[...authPairAccessArgs({userId:viewerId,weekId:identity.weekId,pairGroupId:identity.pairGroupId}),
-      identity.questionSlug,identity.questionVersion,identity.language],
+      identity.questionSlug,identity.questionVersion,identity.language,
+      ...(interviewSessionEnabled()?[identity.weekId,identity.pairGroupId]:[])],
   });
   if(result.rows?.length!==1) return null;
   const row=result.rows[0];
@@ -74,6 +77,7 @@ export async function readRelayAuthorization(db,{viewerId,...identity}){
   if(![weekId,pairGroupId,userAId,userBId].every(value=>Number.isSafeInteger(value)&&value>0)
     ||weekId!==identity.weekId||pairGroupId!==identity.pairGroupId||userAId===userBId
     ||![userAId,userBId].includes(viewerId)) return null;
+  if(await interviewTimerEnded(db,{weekId,pairGroupId,userAId,userBId})) return null;
   return {userAId,userBId};
 }
 

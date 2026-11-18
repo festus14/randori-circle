@@ -42,6 +42,10 @@ export async function handleRelayToken(req,res){
       res.setHeader?.('Retry-After',String(budget.retryAfter));
       return res.status(429).json({error:'relay token rate limited'});
     }
+    // Quota consumption or other awaits can cross a DB-time interview end.
+    // Reauthorize at issuance, preserving the same participant snapshot.
+    const currentPair=await readRelayAuthorization(db,{viewerId,...identity});
+    if(!currentPair||currentPair.userAId!==pair.userAId||currentPair.userBId!==pair.userBId) return notFound(res);
     const relay=mintRelayToken(config,{viewerId,identity,pair,sessionExpiresAt:auth.exp});
     return res.json({ok:true,...relay,...(context?{
       circle_context_version:context.context_version,circle_public_id:context.membership.public_id,

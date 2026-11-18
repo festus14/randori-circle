@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 import { copyMigratedDatabase } from '../support/migrated-db.mjs';
+import { seedExpiringInterview } from '../support/interview-expiry.mjs';
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { relayKeyFixture, RELAY_BODY, RELAY_ENV_KEYS, RELAY_IDENTITY } from '../support/realtime-relay.mjs';
 
@@ -53,13 +54,13 @@ beforeEach(()=>{
   authFailure=false; useRealAuth=false;
   for(const name of [...RELAY_ENV_KEYS,'CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED',
     'SECONDARY_CIRCLE_WORKSPACE_ENABLED','EMAIL_PASSWORD_ACTIVATION_ENABLED','PASSWORD_RESET_ENABLED',
-    'IDENTITY_MANAGEMENT_ENABLED','INVITE_REQUESTS_ENABLED','ACCOUNT_DELETION_GRACE_ENABLED']) delete process.env[name];
+    'IDENTITY_MANAGEMENT_ENABLED','INVITE_REQUESTS_ENABLED','ACCOUNT_DELETION_GRACE_ENABLED','INTERVIEW_SESSION_ENABLED']) delete process.env[name];
   Object.assign(process.env,key.env);
 });
 afterEach(()=>{
   db?.close(); db=null;
   if(directory) rmSync(directory,{recursive:true,force:true}); directory=null;
-  for(const name of [...RELAY_ENV_KEYS,'CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED']) delete process.env[name];
+  for(const name of [...RELAY_ENV_KEYS,'CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED','INTERVIEW_SESSION_ENABLED']) delete process.env[name];
   if(originalJwt===undefined) delete process.env.JWT_SECRET; else process.env.JWT_SECRET=originalJwt;
 });
 
@@ -136,6 +137,41 @@ test('expired stored snapshot and unanimous completion deny new relay tokens',as
       VALUES (10,20,?,'auth',1,2,NULL,'2026-09-20T10:00:00.000Z')`,args:[userId]});
     assert.equal((await invoke()).status,userId===1?200:404);
   }
+});
+
+test('relay issuance rejects explicit interview end and DB-time expiry without inventing completion',async()=>{
+  await seed(); process.env.INTERVIEW_SESSION_ENABLED='true';
+  await seedExpiringInterview(db);
+  assert.equal((await invoke()).status,200);
+  await new Promise(resolve=>setTimeout(resolve,700));
+  const expired=await invoke(); assert.equal(expired.status,404); assert.deepEqual(expired.body,{error:'pair not found'});
+  const durable=await invoke({method:'GET',url:'/api/code-document',query:{...RELAY_BODY,question_version:'1'}});
+  assert.equal(durable.status,409); assert.equal(durable.body.code,'session_completed');
+  await db.execute(`UPDATE pair_session_controls SET timer_state='paused',remaining_ms=0,anchor_at=NULL,
+    revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE week_id=10 AND pair_group_id=20`);
+  assert.equal((await invoke()).status,404);
+  assert.equal((await db.execute('SELECT count(*) AS n FROM session_completion_receipts')).rows[0].n,0);
+  process.env.INTERVIEW_SESSION_ENABLED='false';
+  assert.equal((await invoke()).status,200,'legacy peer mode keeps its resettable expiry semantics');
+});
+
+test('relay issuance rechecks the same live snapshot after quota work crosses real SQLite expiry',async()=>{
+  await seed(); process.env.INTERVIEW_SESSION_ENABLED='true'; await seedExpiringInterview(db);
+  const original=db;
+  let delayed=false;
+  db=new Proxy(original,{get(target,property){
+    if(property==='execute') return async statement=>{
+      const sql=typeof statement==='string'?statement:statement.sql;
+      if(!delayed&&sql.includes('INSERT INTO auth_rate_limits')){ delayed=true; await new Promise(resolve=>setTimeout(resolve,700)); }
+      return original.execute(statement);
+    };
+    const value=Reflect.get(target,property,target); return typeof value==='function'?value.bind(target):value;
+  }});
+  try{
+    const result=await invoke(); assert.equal(delayed,true); assert.equal(result.status,404);
+    assert.deepEqual(result.body,{error:'pair not found'}); assert.equal(Object.hasOwn(result.body,'token'),false);
+    assert.equal((await original.execute('SELECT revision FROM pair_code_documents')).rows[0].revision,1);
+  }finally{ db=original; }
 });
 
 test('flag off and missing/misconfigured signing material never emit a token or capability',async()=>{

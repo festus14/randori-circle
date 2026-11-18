@@ -5501,8 +5501,9 @@ steps: [session controls](SESSION_CONTROLS.md#interview-first-increment-464).
 ## ID-96: Relay pair code updates through private Supabase channels without changing durable authority
 
 Status: implemented behind `REALTIME_RELAY_ENABLED=false` by default; issue #461,
-part of real-time mock-interview epic #460. No dependency on parallel PRs #470,
-#471 or #472. ID-94/ID-95 are reserved by parallel work.
+part of real-time mock-interview epic #460. Rebased onto main `9d5f8f4`, including
+merged PRs #471 (ID-95 interview termination) and #472 (CI apt-lock fix).
+Open PR #470 is not a dependency and reserves ID-94.
 
 **Amends ID-65:** adds only an optional visibility accelerator. The existing
 HTTPS Yjs document, server version, persistence, polling, completion fences,
@@ -5524,8 +5525,11 @@ retain existing transport and never receive a relay token.
   strictly same-origin, authenticated, private/non-cacheable and rate-limited
   through the existing distributed `auth_rate_limits` table (12/account/5 min).
   Source-tagged SQL verifies the live two-person primary pairing snapshot,
-  exact non-expired document identity and nonterminal state; multi-circle
-  context must select primary with an exact context-version header. All denied
+  exact non-expired document identity and nonterminal state. It reuses ID-95's
+  DB-time `interviewTimerOpenSql` fence and normalized timer check, then
+  reauthorizes the same snapshot after quota work so a delayed issuance cannot
+  mint a token after interview expiry/end. Multi-circle context must select
+  primary with an exact context-version header. All denied
   room shapes project the same 404. No bootstrap side effect or request DDL.
 - Mint maximum-five-minute ES256 JWTs with built-in Node crypto, `kid`, opaque
   per-account UUID-shaped `sub`, `role/aud=authenticated`, cycle, exact exercise
@@ -5547,20 +5551,27 @@ retain existing transport and never receive a relay token.
   Heartbeats, join/token deadlines, expiry and errors fail to HTTPS; fresh tokens
   reauthorize at renewal. Identity, visibility, sign-out, offline and terminal
   fences dispose the old socket/timers before late packets can touch the editor.
+  ID-95's `randori:interview-ended` terminal coordinator uses that same disposal;
+  bootstrap/update/projection DB-time fences and terminal GET handling are retained
+  unchanged from main. Timer termination never manufactures completion receipts.
 - `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` are public browser settings,
   only supplied by the server after authorization. Capability discovery is
   conditional on literal flag + complete valid local configuration; actual
   imported-key/RLS correctness is verified by the operator canary, not by a
   server network probe. Local runtime blanks provider credentials and stays off.
 
-**Byte-budget choice.** The provided base measured **1,445,935 JS bytes**, only
-4,065 below the unchanged 1,450,000-byte gate (not the approximate 1.31 MB in
-planning). Minify the existing verified CRDT bundle with the already pinned
-esbuild `0.25.9`, including the tiny broadcast transport, instead of adding an
-SDK or raising any threshold. Source remains reviewable; `check:crdt` builds
-with exactly the same minify settings and rejects drift. No second Yjs runtime,
-Monaco bundle, new package or relaxed coverage exclusion is introduced. The new
-relay and Yjs-validation modules are included in the CI coverage scope.
+**Byte-budget choice.** The original `825ddfb` base measured **1,445,935 JS
+bytes**, only 4,065 below the unchanged 1,450,000-byte gate. After rebasing onto
+`9d5f8f4`, ID-95's whitespace-only build with the merged relay would produce a
+181,362-byte CRDT bundle / 1,332,744 total JS bytes. Full minification with the
+same pinned esbuild `0.25.9` produces **112,536 bundle bytes / 1,263,918 total
+JS bytes**, saving another 68,826 bytes. Both fit, but the relay is meant to be
+small: choose full minification consistently in build:crdt, check:crdt and its
+tests, rather than adding an SDK or raising a threshold. Public properties are
+not mangled; the merged terminal semantics and CRDT behaviour are regression
+covered. Source remains reviewable and the verifier rejects drift. No second
+Yjs runtime, Monaco bundle, new package or relaxed coverage exclusion is
+introduced. The new relay and Yjs-validation modules remain in CI coverage.
 
 **Alternatives.** Bundling the full Supabase client adds unneeded Auth, REST,
 presence and database functionality and consumes the tight unminified budget.

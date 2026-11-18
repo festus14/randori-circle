@@ -104,7 +104,12 @@ version/language identity. A SELECT-only document authorization reuses
 `api/_pair-access.js`'s source-tagged arguments and the HTTPS code authority,
 requiring two distinct `auth` participants, a non-AI/non-triad primary room,
 a present, unexpired document whose participant snapshot still equals the live
-pair, and no unanimous completion. When multi-circle control is enabled, the
+pair, and no unanimous completion. When `INTERVIEW_SESSION_ENABLED=true`, the
+same DB-time timer-open predicate as bootstrap/update/projection also denies
+explicit end and expiry; the normalized timer check fails closed on corrupt
+controls. Issuance reauthorizes the same participant snapshot after quota work,
+so an await crossing expiry does not mint a token. No completion receipt is
+created by timer termination. When multi-circle control is enabled, the
 live session context must select the primary circle and its version header
 must match. Malformed, foreign, stale, missing, secondary, AI and triad rooms
 all get `404 {"error":"pair not found"}`; unavailable storage gets a generic
@@ -158,7 +163,8 @@ error/close, missed heartbeat or expiry starts an immediate HTTPS reconcile and
 a bounded relay retry (1–30 seconds backoff; 404 waits 30 seconds, 429 respects
 bounded `Retry-After`). Tokens renew by closing/rejoining with freshly authorized
 tokens 30 seconds before expiry, not by extending a cached permission.
-Terminal completion/write rejection, hidden tab, sign-out, room/exercise/
+Terminal completion/write rejection or the `randori:interview-ended` coordinator,
+hidden tab, sign-out, room/exercise/
 language/account/circle context changes and offline events close the old socket,
 abort token work and clear transport timers. Late frames are fenced by the same
 CRDT identity/epoch checks. Visibility/reconnect hydrates HTTPS first.
