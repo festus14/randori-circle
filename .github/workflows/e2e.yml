@@ -142,7 +142,17 @@ jobs:
         # attempt is killed and the retry actually runs, instead of the
         # step timeout killing the whole step mid-retry.
         timeout-minutes: 12
-        run: timeout 330 npx playwright install --with-deps ${{ matrix.browser }} || timeout 330 npx playwright install --with-deps ${{ matrix.browser }}
+        # A timed-out first attempt leaves its apt-get child running and holding
+        # the dpkg lock, so the retry used to wait out DPkg::Lock::Timeout and
+        # fail. Clear the orphan and repair dpkg before retrying once.
+        run: |
+          timeout 330 npx playwright install --with-deps ${{ matrix.browser }} && exit 0
+          echo "First Playwright install attempt failed; clearing orphaned apt/dpkg before retrying."
+          sudo pkill -x apt-get || true
+          sudo pkill -x dpkg || true
+          sleep 2
+          sudo dpkg --configure -a || true
+          timeout 330 npx playwright install --with-deps ${{ matrix.browser }}
       - name: Run cross-browser smoke tests
         run: npm run test:e2e -- --project=${{ matrix.project }}
       - name: Upload report
