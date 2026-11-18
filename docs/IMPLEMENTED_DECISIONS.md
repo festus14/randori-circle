@@ -5734,14 +5734,22 @@ approved Daily as the provider and provisioned `DAILY_API_KEY` and
   left on the interview timer (one hour otherwise). The participant label is
   the role (`Interviewer`/`Candidate`), never a display name. Calls go
   through `fetch` with a 5 s timeout and no redirects; any failure is a
-  generic 503 whose log line carries only the stage and HTTP status.
+  generic 503 whose log line carries only the stage, the HTTP status and
+  Daily's fixed `error` code. Rate limiting goes through a shared keyed
+  limiter (`api/_keyed-rate-limit.js`, now also behind product feedback) and
+  answers 429 with `Retry-After` set to the rest of the window. The response
+  carries a server-computed `expires_in`, so the browser's close timer does
+  not depend on the device clock.
 - **Recording is disabled, not built.** Mutual-consent recording is out of
-  scope. Neither the room nor the token sets `enable_recording` or
-  `start_cloud_recording`, and the token hides the recording UI. The privacy
+  scope. Daily's `enable_recording` only names recording modes and is off
+  when unset, so neither the room nor the token sends it or
+  `start_cloud_recording`, and the token hides the recording UI. Every room
+  Daily returns is checked: any recording mode, `max_participants` other
+  than 2, or non-private access fails closed (503, no token). The privacy
   policy says calls are never recorded.
 - **Browser.** No third-party script: Daily Prebuilt loads in a sandboxed
   (`allow-scripts allow-same-origin`) cross-origin iframe with `allow="camera;
-  microphone; autoplay"`. CSP gains only `frame-src 'self'
+  microphone; autoplay; fullscreen"`. CSP gains only `frame-src 'self'
   https://randori-circle.daily.co`; Permissions-Policy delegates camera and
   microphone to that origin; `script-src` and `connect-src` are unchanged.
   The server requires `DAILY_DOMAIN` to be that exact origin, so a different
@@ -5752,7 +5760,8 @@ approved Daily as the provider and provisioned `DAILY_API_KEY` and
   permission prompt until Join, with start-muted and camera-off choices sent
   as token claims. Prebuilt owns in-call mute, camera and leave. Randori's
   Leave and every stop condition (room, scope or account change, sign-out,
-  the ID-95 terminal coordinator, token expiry, page hide) unload the frame.
+  the ID-95 terminal coordinator, unanimous completion, token expiry, page
+  hide) unload the frame.
   A tab hidden before the frame exists abandons the join. A live call
   survives a tab switch. An unavailable endpoint falls back to the pair's
   meeting link and the direct call.
