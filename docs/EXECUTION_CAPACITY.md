@@ -27,7 +27,12 @@ TTL row namespaces (`eq1:`):
   `attempts` holds the DB-clock enqueue millisecond; `expires_at` is UTC seconds.
   Code, stdin, room ids and raw account/circle ids are **not** stored. The operation
   HMAC fences a changed exercise, document version, code or stdin without retaining
-  those bytes. A different tab/operation cannot consume another pending ticket.
+  those bytes. It is non-reversible but confirmable by an operator holding the
+  app secret and a candidate submission; it is not anonymous content. A
+  different tab/operation cannot consume another pending ticket.
+- `o`: short (at most three-second) selection offers. Offered units reserve
+  global/circle/class capacity but spend no provider quota until claimed. The
+  holder's retry promotes the offer to a generation-keyed live lease.
 - `l`: expiring provider-unit lease, with an independent random generation token.
   Release is key-exact; a late cleanup cannot delete a newer generation.
 - `t` / `s`: last-served circle turns and I,I,P weighted turn sequence, 15-minute
@@ -53,19 +58,26 @@ the weighted selector offers two interview turns then one practice turn, with
 round-robin across circles, not arrival-volume advantage for a busy circle.
 All allocations also obey the global and per-circle ceilings.
 
-This is a **retry queue, not a job queue**: only the selected account's live HTTP
-retry can claim its ticket. An unattended selected ticket can delay others until
-its finite expiry. No worker retains submissions, starts abandoned runs or bills
-pre-warmed live VMs in the background. A successful admission is not guaranteed
-under overload: every queued attempt must be admitted or expire/shed, rather than
-wait without bound. Ticket TTL is 15 seconds by default (maximum 20).
+This is a **retry queue, not a job queue**: an ordered fill set reserves every
+eligible free unit, and the selected caller can claim any ticket in that set.
+Other selections become durable **three-second offers** (part of the spend
+reservation, not running VMs). Rotation/last-served turns advance on selection,
+not just successful claims, and unclaimed offers expire/shed quickly. Thus one
+absent head cannot freeze the I,I,P rotation or waste all free capacity. No worker
+retains submissions or starts abandoned runs. Successful admission is not
+guaranteed under overload: the 15-second maximum queue wait (configurable to 20)
+and shorter offer lifetime bound waiting; overload sheds instead of spending.
 
 ## Failure and retry contract
 
-There is no in-function sleep/poll loop. Admission uses bounded reads and returns
-without holding a Vercel function open waiting for provider capacity. Store/lock
-failure or an ambiguous commit fails closed; a possible committed lease expires
-without a provider retry. The selected ticket and quotas commit atomically.
+There is no capacity sleep/poll loop. Admission uses four bounded attempts for
+known SQLite/libSQL conflicts with 30/60/120 ms backoff plus small jitter. Native
+SQLite COMMIT conflicts retry only when the transaction is still demonstrably
+open and rollback is confirmed; remote/lost COMMIT replies never replay quotas.
+Reads/writes use native libSQL batches: a normal admission uses five interactive
+write-lock round trips (begin, snapshot batch, control read, write batch, commit),
+not one RTT per counter or ticket. Scoped batches still validate context before
+execution and again at commit. No Vercel function waits for provider capacity.
 
 - Capacity/full/expired/queued/store/configuration: `503` with
   `{ok:false, code:"execution_busy", reason, retry_after}` and `Retry-After`.
@@ -79,8 +91,10 @@ without a provider retry. The selected ticket and quotas commit atomically.
 The lazy Results UI says **“Execution is busy — retrying in Ns”** for a queued
 ordinary run, plus an explicit Retry execution button. It retries at most the
 15-second client window, only after an explicit busy response. It never retries
-an HTTP failure with unknown outcome. Quotas, shed, expired and store failures
-require an explicit retry. Capability-enabled Run ignores a second click while a
+an HTTP failure with unknown outcome. Explicit `store` busy responses also get
+bounded one-at-a-time retry. Quotas, shed and expired requests stay manual. Daily
+limits display a fixed UTC reset time, with no 24-hour live countdown or disabled
+retry button. Capability-enabled Run ignores a second click while a
 request/preflight is in flight. Context/code change, hidden page, newer Run or a
 removed results panel cancels delayed automatic retry. The retry captures fresh
 code/authority; it never replays a retained POST.
@@ -159,7 +173,11 @@ run by a request, unit test with real SDK, automatic replenisher, or this branch
 validation. It needs the operator's authorized provider/DB credentials. Do not
 supply snapshots from arbitrary third-party builders or member runs: only this
 pristine builder's snapshot is suitable. Storage/session/billing characteristics
-must be checked by the operator before activation. Renew before expiry, and remove
+must be checked by the operator before activation. Before enabling the queue,
+verify exactly one non-archived primary circle exists for unscoped fallback runs.
+Enabled readiness and admin queue configuration report `primary_circle` if that
+precondition is missing; no request creates a circle or changes schema. Renew
+before expiry, and remove
 obsolete snapshots through the provider's normal operator controls.
 
 Snapshots restore saved runtime/filesystem state, **not a promise of retained CPU
@@ -171,8 +189,9 @@ is measured rather than assumed.
 Global-admin `GET /api/admin/diagnostics` (existing `ADMIN_DIAGNOSTICS_ENABLED=true`
 security gate, `Cache-Control:no-store`) extends `cards.execution` with:
 
-- `queue`: current depth and active provider units; exact admitted/shed/quota/
-  finished counts over 15 minutes; wait and provider boundary wall-latency
+- `queue`: current depth, active provider units and offered-unit reservations;
+  recorded admitted/shed/quota/store/configuration/finished counts over 15 minutes;
+  wait and provider boundary wall-latency
   `{samples,p50,p95}` in milliseconds; configured spend ceilings and consumed
   provider units in the current UTC minute/day; sample truncation.
 - `warm`: fixed JavaScript/Python supported/configured booleans only.
@@ -186,8 +205,12 @@ breakdown, code, stdin, output, provider URL or error text leaves this endpoint.
 fixed event names plus bounded numeric metadata. Browser telemetry cannot forge
 `runner` evidence. Queue waits include admitted and expired attempts; provider
 latency includes cleanup and dual-run wall time, not just command CPU time. No
-samples means null percentiles, never zero latency. Counts are exact; percentile
-reads cap at 4,096 samples and report truncation.
+samples means null percentiles, never zero latency. Counts describe **recorded**
+metrics, not guaranteed complete decisions: inserts are bounded best effort,
+batched outside the admission lock, and may be lost when the store itself is
+unwritable. Store/configuration refusals have explicit counters and degrade the
+admin card when recorded; a failed read is unavailable, not a healthy empty queue.
+Percentile reads cap at 4,096 samples and report truncation.
 
 The **existing execution-smoke workflow** still invokes the cron-secret-protected
 API; it cannot send custom programs or choose its sample count. When queue and
@@ -210,6 +233,15 @@ one is faster. Daily/post-deploy claims accumulate samples without an unbounded
 benchmark. The standalone `scripts/execution-smoke.mjs` also reports a cold/warm
 startup pair using its existing reference/broken runs; a single pair is explicitly
 insufficient for p95 acceptance. It is not part of CI and was **not run here**.
+
+### Admission contention in smoke
+
+Queue-enabled admission contention is a distinct `busy` language result, not a
+provider error. The assessor emits `status:"deferred"` and a notice, without
+alerting or asserting a provider pass. A throttled cached busy result remains
+explicitly deferred. Admin smoke status is `busy`, never `passed`, and cannot lift
+an unknown execution card to healthy. Invalid admission configuration remains a
+misconfiguration failure. The existing smoke claim/trigger budget is unchanged.
 
 **Outstanding acceptance evidence:** this provider-free branch cannot demonstrate
 live cold-start p95 improvement. Leave the flag off until the owner performs the

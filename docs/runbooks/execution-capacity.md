@@ -15,7 +15,11 @@ work. This runbook describes operator actions, not actions performed by CI.
    quotas, JWT secret generation or restoring old code. Pause manual provider
    smoke/preparation during the drain. Never mix flag-OFF and flag-ON executors
    against the same provider: the old code cannot participate in the new ceiling.
-3. Choose a provider/project budget. Start with global 4, circle 2, interview share
+3. Before activation, verify exactly one non-archived primary circle exists for
+   unscoped execution. With the queue enabled, `/api/health/ready` and the admin
+   queue configuration fail closed with missing-primary/config errors. Complete
+   the normal primary-circle bootstrap first; no request creates that circle.
+   Choose a provider/project budget. Start with global 4, circle 2, interview share
    2, account 10/min, circle 40/min, global 60/min and **150 provider units/day**.
    Set `EXECUTION_QUEUE_ENABLED=true` and the same config/secret on every execution
    instance. Redeploy, then re-enable the provider. Invalid config/store errors
@@ -70,17 +74,26 @@ statistically sufficient p95 benchmark; never run it in provider-free tests.
   (not a client priority label), then interview share. Share protects new
   admissions, not already-running VMs. Never starve practice; retain enough units
   for its two-unit stdin ticket when applicable.
-- **429 quota:** `retry_after` is the UTC minute/day reset. Do not auto-retry each
+- **429 quota:** `retry_after` is the UTC minute/day reset. Daily refusal returns
+  `quota_window:"day"` and `reset_at`; the UI shows that fixed UTC clock rather
+  than a 24-hour live countdown. Do not auto-retry each
   second. A high daily cap is not an allowance guarantee; lower it for a shared
   project or a tighter remaining monthly budget.
+- **Provider create failures/outage:** a failed or ambiguous create holds its
+  spend lease for the full 90-second backstop; this can deliberately occupy all
+  four default slots even while the provider has no running VMs. Unset provider
+  and drain, rather than deleting leases or raising spend ceilings to compensate.
 - **Capacity stays occupied after a function crash:** wait for the 90-second
   lease backstop and check provider termination. Never delete live lease rows or
   manually decrement counters to recover capacity; that can spend twice.
 - **`configuration_changed`:** mixed limits or app-secret generations were seen
   while tickets/leases existed. Stop new provider runs, drain and redeploy one
   coherent config. Do not bypass the fingerprint fence.
-- **Store/lock failure:** investigate DB availability/latency; the function returns
-  a bounded busy state rather than holding open for a worker. No admission retry
+- **Store/lock failure:** four attempts retry known conflicts with short jitter;
+  ordered fill sets reserve all eligible slots through three-second offers.
+  Investigate persistent DB availability/latency. Store/configuration refusal
+  counts are recorded outside the lock, best effort, and can be lost when writes
+  themselves fail. No admission retry
   is performed on ambiguous commit. Percentile samples may be truncated at high
   volume; the metric flag makes that explicit.
 

@@ -42,6 +42,7 @@ export const STATUS_VIEW = Object.freeze({
 
 // The execution card's provider smoke check (#343, ID-73 addendum).
 export const SMOKE_STATUS_VIEW = Object.freeze({
+  busy: Object.freeze({ label: 'Capacity busy', tone: 'info' }),
   passed: Object.freeze({ label: 'Passed', tone: 'success' }),
   failed: Object.freeze({ label: 'Failed', tone: 'danger' }),
   pending: Object.freeze({ label: 'Running', tone: 'info' }),
@@ -58,6 +59,7 @@ const EXECUTION_SMOKE_CATEGORY_COPY = Object.freeze({
 });
 
 const SMOKE_LANGUAGE_COPY = Object.freeze({
+  busy: 'capacity busy; no provider result',
   ok: 'ok',
   provider_error: 'provider error',
   timeout: 'timed out',
@@ -179,7 +181,7 @@ function executionLines(card) {
     if(queue.ready!==true) lines.push('Execution admission is unavailable; new runs fail closed.');
     else{
       lines.push(`Queue: ${wholeNumber(queue.queueDepth)} waiting · ${wholeNumber(queue.activeUnits)}/${wholeNumber(queue.spend?.globalConcurrency)} active provider units.`);
-      lines.push(`Last 15 min: ${wholeNumber(queue.recent?.admitted)} admitted · ${wholeNumber(queue.recent?.shed)} shed · ${wholeNumber(queue.recent?.quota)} quota refusals.`);
+      lines.push(`Recorded last 15 min (best effort): ${wholeNumber(queue.recent?.admitted)} admitted · ${wholeNumber(queue.recent?.shed)} shed · ${wholeNumber(queue.recent?.quota)} quota refusals · ${wholeNumber(queue.recent?.store)} store / ${wholeNumber(queue.recent?.configuration)} configuration refusals.`);
       lines.push(`Wait p50/p95: ${latency(queue.waitMs?.p50)} / ${latency(queue.waitMs?.p95)} · provider p50/p95: ${latency(queue.providerMs?.p50)} / ${latency(queue.providerMs?.p95)}.`);
       lines.push(`Spend guard: ${wholeNumber(queue.spend?.usedMinuteUnits)}/${wholeNumber(queue.spend?.globalPerMinute)} provider units/min · ${wholeNumber(queue.spend?.usedDayUnits)}/${wholeNumber(queue.spend?.globalPerDay)} units/day (not a currency estimate).`);
     }

@@ -2,7 +2,7 @@
 export function showExecutionBusy({ doc = document, out, error, run, current, automatic = true,
   now = Date.now, schedule = setTimeout, cancel = clearTimeout, privateInput = false }) {
   const seconds = Math.max(1, Math.min(86400, Math.ceil(Number(error.retry_after) || 2)));
-  const retryable = automatic && error.reason === 'queued' && seconds <= 20;
+  const retryable = automatic && ['queued','store'].includes(error.reason) && seconds <= 20;
   const deadline = now() + seconds * 1000;
   let timer = null, stopped = false;
   out.replaceChildren();
@@ -30,6 +30,10 @@ export function showExecutionBusy({ doc = document, out, error, run, current, au
     if (!remaining) { if (retryable) retry(); return; }
     timer = schedule(tick, Math.min(1000, deadline - now()));
   };
-  tick();
+  if(error.reason==='quota'&&(error.quota_window==='day'||seconds>60)){
+    const parsed=Date.parse(error.reset_at),reset=Number.isFinite(parsed)?parsed:deadline;
+    label.textContent=`Daily execution limit reached — resets at ${new Date(reset).toISOString().slice(11,16)} UTC`;
+    button.hidden=true; // no 24-hour ticking announcement or disabled countdown
+  }else tick();
   return stop;
 }

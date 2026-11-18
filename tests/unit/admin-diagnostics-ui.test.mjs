@@ -274,7 +274,7 @@ test('execution card shows the provider state and the latest smoke check', () =>
 
 test('the smoke check view covers every status, language outcome and age', () => {
   assert.equal(smokeView(null), null);
-  assert.deepEqual(Object.keys(SMOKE_STATUS_VIEW), ['passed', 'failed', 'pending', 'none', 'unavailable']);
+  assert.deepEqual(Object.keys(SMOKE_STATUS_VIEW), ['busy', 'passed', 'failed', 'pending', 'none', 'unavailable']);
   const failed = smokeView({ status: 'failed', checkedAt: '2026-10-20T11:00:00.000Z', evidence: fresh(26 * HOUR, HOUR),
     languages: { javascript: { status: 'provider_error' }, python: { status: 'timeout' } } });
   assert.deepEqual([failed.label, failed.tone, failed.lines], ['Failed', 'danger', ['JavaScript: provider error · Python: timed out.']]);

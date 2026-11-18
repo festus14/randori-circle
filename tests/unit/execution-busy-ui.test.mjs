@@ -3,11 +3,11 @@ import { test } from 'node:test';
 import { showExecutionBusy } from '../../assets/execution-busy.js';
 import { cardView } from '../../assets/admin-diagnostics.js';
 import { readFileSync } from 'node:fs';
-function fixture({reason='queued',automatic=true,privateInput=false,seconds=2}={}){
+function fixture({reason='queued',automatic=true,privateInput=false,seconds=2,quotaWindow,resetAt}={}){
   function node(){return{children:[],dataset:{},listeners:{},disabled:false,isConnected:true,textContent:'',appendChild(c){this.children.push(c);},replaceChildren(){this.children=[];},setAttribute(){},addEventListener(name,fn){this.listeners[name]=fn;},click(){this.listeners.click?.();}};}
   const doc={visibilityState:'visible',createElement:node},out=node();
   let now=0,runs=0,current=true,id=0;const timers=new Map();
-  const stop=showExecutionBusy({doc,out,error:{code:'execution_busy',reason,retry_after:seconds},automatic,privateInput,
+  const stop=showExecutionBusy({doc,out,error:{code:'execution_busy',reason,retry_after:seconds,quota_window:quotaWindow,reset_at:resetAt},automatic,privateInput,
     now:()=>now,current:()=>current,run:()=>{runs++;},schedule:(fn,ms)=>{const key=++id;timers.set(key,{fn,at:now+ms});return key;},cancel:key=>timers.delete(key)});
   return{out,doc,stop,get runs(){return runs;},get button(){return out.children[0].children[2];},get label(){return out.children[0].children[0].textContent;},
     tick(ms){now+=ms;for(const[key,timer]of [...timers])if(timer.at<=now){timers.delete(key);timer.fn();}},change(){current=false;},timers};
@@ -20,11 +20,23 @@ test('busy countdown performs exactly one retry, disables early/double clicks an
 });
 
 test('quotas, shed and expired queues offer an explicit retry only, never background provider work',()=>{
-  for(const reason of ['quota','queue_full','queue_expired','already_running','pending_run','store']){
+  for(const reason of ['quota','queue_full','queue_expired','already_running','pending_run']){
     const f=fixture({reason});f.tick(2000);assert.equal(f.runs,0);assert.equal(f.button.disabled,false);
     f.button.click();f.button.click();assert.equal(f.runs,1);
     assert.match(f.out.children[0].children[1].textContent,/not run/);
   }
+});
+
+test('explicit store refusals retry once without duplicating dispatch, private store retries remain manual',()=>{
+  const f=fixture({reason:'store'});assert.match(f.label,/retrying in 2s/);f.tick(2000);assert.equal(f.runs,1);f.button.click();assert.equal(f.runs,1);
+  const privateRun=fixture({reason:'store',automatic:false,privateInput:true});privateRun.tick(2000);assert.equal(privateRun.runs,0);privateRun.button.click();assert.equal(privateRun.runs,1);
+});
+
+test('daily quotas have a fixed reset clock label, no live countdown/timer or disabled retry button',()=>{
+  const f=fixture({reason:'quota',seconds:86400,quotaWindow:'day',resetAt:'2026-11-19T00:00:00.000Z'});
+  assert.equal(f.label,'Daily execution limit reached — resets at 00:00 UTC');assert.equal(f.button.hidden,true);assert.equal(f.button.disabled,false);assert.equal(f.timers.size,0);
+  f.tick(60000);assert.equal(f.label,'Daily execution limit reached — resets at 00:00 UTC');assert.equal(f.runs,0);
+  const malformed=fixture({reason:'quota',seconds:120,resetAt:'<script>'});assert.doesNotMatch(malformed.label,/<script>/);assert.equal(malformed.timers.size,0);
 });
 
 test('private stdin never auto-retries or retains the discarded input',()=>{

@@ -372,6 +372,31 @@ test('busy remains legible when the lazy retry asset cannot load, with a manual 
   await page.locator('#runBtn').click();await expect(page.locator('#runOut')).toContainText('Result: 1/1 passed');expect(calls).toBe(2);
 });
 
+test('explicit store busy response retries once without parallel or duplicate runs',async({page})=>{
+  let calls=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':{ok:true,registrationMode:'private_beta',capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,executionQueue:true}},
+    '/api/auth/me':{ok:true,user:signedInUser},'/api/questions':{ok:true,questions:[originalQuestion],count:1},
+    '/api/execute':async()=>{calls++;return calls===1?{_status:503,ok:false,code:'execution_busy',reason:'store',retry_after:1}
+      :{ok:true,passed_count:1,total_count:1,results:[{idx:0,pass:true}]};},
+  });
+  await resetClientState(page,true);await page.goto('/?view=code',{waitUntil:'domcontentloaded'});
+  await selectQuestion(page,originalQuestion.slug);await setCode(page,correctSolution);await page.locator('#runBtn').click();
+  await expect(page.locator('#runOut')).toContainText('Execution is busy — retrying in');
+  await expect(page.locator('#runOut')).toContainText('Result: 1/1 passed');expect(calls).toBe(2);
+});
+
+test('daily quota shows a fixed reset time, no day-long countdown or automatic retry',async({page})=>{
+  let calls=0;
+  await mockApi(page,{'/api/auth/me':{ok:true,user:signedInUser},'/api/questions':{ok:true,questions:[originalQuestion],count:1},
+    '/api/execute':async()=>{calls++;return{_status:429,ok:false,code:'execution_busy',reason:'quota',quota_window:'day',reset_at:'2026-11-19T00:00:00.000Z',retry_after:86400};}});
+  await resetClientState(page,true);await page.goto('/?view=code',{waitUntil:'domcontentloaded'});
+  await selectQuestion(page,originalQuestion.slug);await setCode(page,correctSolution);await page.clock.install();await page.locator('#runBtn').click();
+  const busy=page.locator('#runOut [data-execution-busy]');await expect(busy).toContainText('Daily execution limit reached — resets at 00:00 UTC');
+  await expect(busy.getByRole('button',{name:'Retry execution',includeHidden:true})).toBeHidden();await expect(busy).not.toContainText('86400s');
+  await page.clock.fastForward(60000);await expect(busy).toContainText('resets at 00:00 UTC');expect(calls).toBe(1);
+});
+
 test('language changes update the active editor and preserve each language draft', async ({ page }) => {
   await mockApi(page, {
     '/api/auth/me': { ok: true, user: signedInUser },

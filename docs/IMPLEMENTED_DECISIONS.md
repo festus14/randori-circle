@@ -6160,3 +6160,41 @@ snapshot SDK contract and measurement cohorts/regressions. Playwright runner tes
 cover countdown, duplicate clicks, explicit quota/shed retry and private-input
 non-replay. Existing provider/stdin/smoke/admin tests and deployability gates remain
 required. Live execution smoke was not run and no provider state was changed.
+
+### ID-103 revision 2: fill sets, bounded contention and recorded refusal health
+
+Independent review reproduced a stale asset-count assertion, lock contention,
+head-of-line idle capacity, frozen interview turns and invisible store refusals.
+The corrected admission path uses an **ordered greedy fill set**, not one global
+winner. Selected but unattended tickets become at-most-three-second offers;
+turns advance on selection, offers reserve units and expire quickly. Practice
+keeps its bounded share even when interview heads stop retrying.
+
+Known conflict codes get four attempts with short backoff/jitter. Native SQLite
+COMMIT conflicts retry only after an open transaction and confirmed rollback
+prove no commit occurred; remote/lost commit outcomes never replay quotas. A
+normal raw-client admission uses five interactive lock RTTs through native
+batches, with metric inserts outside that lock. Scoped batch and commit context
+checks are retained. Recorded counts are explicitly best effort: store failures
+can prevent their own metric write. Store/configuration counters degrade admin
+health when recorded; no exact-total claim is made.
+
+The ticket key embeds an HMAC fingerprint of submitted code/input and operation
+identity. It is **non-reversible but confirmable** by an operator with the app
+secret and a candidate submission, not anonymous content. No raw content is
+stored. Both snapshot settings validate before lease/quota spend. Enabled
+readiness checks the one-active-primary prerequisite for unscoped execution.
+
+An explicit store busy response can retry within the existing 15-second client
+window; private input remains manual. Daily quota shows a fixed UTC reset time,
+not a day-long countdown. Smoke admission contention reports `busy` / `deferred`,
+never a provider error or asserted provider pass. Create failure can deliberately
+hold spend slots for 90 seconds during an outage; drain rather than deleting them.
+
+Regression models use real migrated SQLite files (WAL for independent-reader
+load, no deployment journal changes). Cases cover abandoned heads, abandoned
+interview priority, 8 arrivals/s congestion, 2/16 concurrent clients and lock-RTT
+counts, plus rollback proof, metric privacy, startup prerequisites and store/day
+runner UX. Initial JavaScript stays 999,468 bytes; the 1,000,000-byte threshold,
+SDK version and schema remain unchanged. Provider/performance canary remains an
+operator action and was not run by this revision.
