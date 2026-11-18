@@ -1,11 +1,17 @@
 import { expect, test } from '@playwright/test';
 import {
   mockApi,
+  openRoomPanel,
   resetClientState,
   selectLanguage,
   selectQuestion,
   setCode,
 } from './helpers';
+
+test.beforeEach(async ({ page }) => {
+  // This suite is provider-free, including editor and telemetry CDNs.
+  await page.route(/^https:\/\//, route => route.abort());
+});
 
 const originalQuestion = {
   slug: 'focus-block-rollup',
@@ -127,6 +133,7 @@ test('selects an original exercise and renders authoritative server results with
   await page.locator('#runBtn').click();
 
   await expect(page.locator('#runOut')).toContainText('Result: 3/3 passed');
+  await expect(page.locator('#customStdinPanel')).toBeHidden();
   await expect(page.locator('#runOut')).toContainText('Checked on the server');
   await expect(page.locator('#runOut')).toContainText('Case 1 ✓ pass');
   await expect.poll(() => executePayload).toEqual({
@@ -207,6 +214,83 @@ test('shows a clear unavailable state when no isolated execution provider is rea
       || ''
   ))).toBe(correctSolution);
 });
+
+for (const action of ['clear', 'edit', 'uncheck', 'expiry']) {
+  for (const outcome of ['success', 'failure']) {
+    test(`private ${action} preserves the delayed verified ${outcome}`, async ({ page }) => {
+      let release!: () => void;
+      let started!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const executeStarted = new Promise<void>(resolve => { started = resolve; });
+      // Observe references (not extra body copies) at the native/API boundary.
+      await page.addInitScript(() => {
+        const root=window as typeof window & {__executionInits?: RequestInit[];__executionApiOptions?: Array<{body?:Record<string,unknown>;bodyFactory?:unknown}>};
+        const nativeFetch=window.fetch;
+        root.__executionInits=[];
+        window.fetch=function(input,init){
+          const url=typeof input==='string'?input:input instanceof URL?input.href:input.url;
+          if(new URL(url,location.origin).pathname==='/api/execute'&&init) root.__executionInits?.push(init);
+          return nativeFetch.call(this,input,init);
+        };
+      });
+      if (action === 'expiry') await page.clock.install();
+      await mockApi(page, {
+        '/api/auth/capabilities': { ok: true, registrationMode: 'private_beta', capabilities: {
+          passwordLogin: true, passwordSignup: false, googleOAuth: true, executionStdin: true,
+        } },
+        '/api/auth/me': { ok: true, user: signedInUser },
+        '/api/questions': { ok: true, questions: [originalQuestion], count: 1 },
+        '/api/execute': async request => {
+          expect(request.postDataJSON().stdin).toBe('PRIVATE_INPUT_467');
+          started(); await gate;
+          return outcome === 'success'
+            ? { ok: true, passed_count: 1, total_count: 1, results: [{ idx: 0, pass: true }],
+                custom_run: { ok: true, stdout: 'STALE_PRIVATE_OUTPUT_467', stderr: '', exit_code: 0 } }
+            : { _status: 500, ok: false, error: 'mock verified failure', code: 'execution_failed' };
+        },
+      });
+      await resetClientState(page, true);
+      try {
+        await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
+        if (action === 'expiry') await page.clock.runFor(1500);
+        await selectQuestion(page, originalQuestion.slug);
+        await setCode(page, correctSolution);
+        await openRoomPanel(page, 'results');
+        await page.evaluate(()=>{
+          const root=window as typeof window & {api?:(path:string,options:{body?:Record<string,unknown>;bodyFactory?:unknown})=>Promise<unknown>;__executionApiOptions?:Array<{body?:Record<string,unknown>;bodyFactory?:unknown}>};
+          const api=root.api;root.__executionApiOptions=[];
+          if(api)root.api=(path,options)=>{if(path==='/api/execute')root.__executionApiOptions?.push(options);return api(path,options);};
+        });
+        const assertPrivateCopiesGone=async()=>{
+          const state=await page.evaluate(()=>{
+            const root=window as typeof window & {__executionInits?:RequestInit[];__executionApiOptions?:Array<{body?:Record<string,unknown>;bodyFactory?:unknown}>};
+            const inits=root.__executionInits||[],options=root.__executionApiOptions||[];
+            return {nativeCount:inits.length,nativeClean:inits.every(init=>!Object.hasOwn(init,'body')&&!Object.hasOwn(init,'bodyFactory')),
+              apiClean:options.every(option=>!Object.hasOwn(option,'bodyFactory')&&(!option.body||!Object.hasOwn(option.body,'stdin')))};
+          });
+          expect(state.nativeCount).toBe(1);expect(state.nativeClean).toBe(true);expect(state.apiClean).toBe(true);
+        };
+        await page.locator('#customStdinEnabled').check();
+        await page.locator('#customStdin').fill('PRIVATE_INPUT_467');
+        await page.locator('#runBtn').click();
+        await executeStarted;
+        await assertPrivateCopiesGone(); // The response is still blocked.
+        await expect(page.locator('#customStdin')).toHaveValue('');
+        await expect(page.locator('#runOut')).toContainText('Checking your');
+        if (action === 'clear') await page.locator('#customStdinClear').click();
+        else if (action === 'edit') await page.locator('#customStdin').fill('EDITED_PRIVATE_INPUT');
+        else if (action === 'uncheck') await page.locator('#customStdinEnabled').uncheck();
+        else await page.clock.fastForward(60_001);
+        await assertPrivateCopiesGone(); // Including expiry, before response release.
+        release();
+        await expect(page.locator('#runOut')).toContainText(outcome === 'success' ? 'Result: 1/1 passed' : 'Execution failed: mock verified failure');
+        await expect(page.locator('#runOut')).not.toContainText('Checking your');
+        await expect(page.locator('#customRunOut')).toBeEmpty();
+        await expect(page.locator('#runOut')).not.toContainText('PRIVATE_');
+      } finally { release(); }
+    });
+  }
+}
 
 test('language changes update the active editor and preserve each language draft', async ({ page }) => {
   await mockApi(page, {

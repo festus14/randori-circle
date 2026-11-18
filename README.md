@@ -47,6 +47,114 @@ Not built yet: presence, remote cursors and managed (server-relayed) video.
 Which feature is on in production, and what each flag needs, is in the
 [feature flag table](docs/ENVIRONMENT.md#feature-flags).
 
+## Private custom stdin (dark launch)
+
+`EXECUTION_STDIN_ENABLED=false` is the default. Set it to literal `true` and
+redeploy to expose **Custom input · private** in the editor's Results panel.
+Check **Also run the code as a script with stdin**, enter up to 20,000 UTF-8
+bytes (empty input is allowed), then press **Run**. The script must read stdin
+and print its output. This is an extra isolated execution of the same code,
+not another verified test case; function-only starters print nothing unless
+you add a script entry point. Guard **all** script-only imports and stdin reads:
+the verification harness does not expose Node's `require`/`process`, Python's
+`__name__`, or import/stdin builtins. These complete examples work for
+**Focus Block Roll-up** in both modes; supply custom stdin such as
+`[{"label":"code","minutes":25},{"label":"code","minutes":10}]`.
+
+```javascript
+function rollUpFocusBlocks(blocks) {
+  const result = [];
+  for (const block of blocks) {
+    const previous = result[result.length - 1];
+    if (previous && previous.label === block.label) previous.minutes += block.minutes;
+    else result.push({ ...block });
+  }
+  return result;
+}
+if (typeof require === 'function' && typeof process === 'object') {
+  const blocks = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+  console.log(JSON.stringify(rollUpFocusBlocks(blocks)));
+}
+```
+
+```python
+def roll_up_focus_blocks(blocks):
+    result = []
+    for block in blocks:
+        previous = result[-1] if result else None
+        if previous and previous['label'] == block['label']:
+            previous['minutes'] += block['minutes']
+        else:
+            result.append(dict(block))
+    return result
+
+# The restricted verification namespace has no __name__.
+try:
+    _script_name = __name__
+except Exception:
+    _script_name = None
+if _script_name == '__main__':
+    import json
+    import sys
+    print(json.dumps(roll_up_focus_blocks(json.loads(sys.stdin.read()))))
+```
+
+
+Only the requester receives `custom_run` stdout/stderr in the no-store execute
+response. The room feed, history, attestation and logs keep only the existing
+verified catalogue results, never custom input or raw output. The editor code
+itself is still shared in pair rooms: do not paste private input into it.
+Custom input is not synced, broadcast, or written to browser storage or the
+database. Shared-code flushing and asynchronous circle-context checks finish
+before stdin is captured. At native fetch dispatch, the input is consumed and
+cleared from the textarea, capture token, payload and API/fetch option objects;
+serialized request strings are dropped immediately after the browser takes its
+transport-owned copy. No application-owned stdin copy waits for the response,
+so a stalled flush, preflight or HTTP response cannot extend input retention.
+Private dispatch revalidates after preflights, then uses only an immutable
+canonical `/api/execute` URL and literal `POST`, never the caller's mutable URL
+or Request. Query/hash/routing parameters and encoded or non-canonical private
+targets are rejected before capture; ordinary requests are unchanged.
+Unsent drafts expire after 60 seconds of inactivity; private output expires 60
+seconds after dispatch, never 60 seconds after a delayed response (or immediately
+via **Clear private input and output**). Context changes also clear private data.
+Leaving or hiding the page also clears private data and invalidates its pending
+display. Clearing, editing, unchecking or expiry affects **only** the private
+output: the verified request continues and its summary or error still settles.
+
+Both executions share the existing one-active-run account lease and
+10-requests-per-minute limit. They run in separate isolated environments in
+parallel, so custom code/output cannot alter the server-owned verification
+harness or double its deadline. Each gets the existing 256 KiB output cap and
+10-second command deadline; Vercel Sandbox is non-persistent, egress-denied,
+and deleted on every outcome, with a 60-second session backstop. The custom
+Vercel command additionally passes provider-enforced `timeoutMs=10000`, so the
+provider kills it even if the HTTP caller disconnects. Only the private Piston
+request adds explicit 1-second compile and 10-second run wall/CPU limits;
+HTTP retains its 12-second deadline. Catalogue-only provider calls keep their
+pre-flag shape and behavior. Application memory is request-scoped; no custom
+bytes enter database backups. A custom failure or timeout does not count as a
+verified pass and does not erase completed catalogue results.
+
+**Pre-enable checklist — leave the flag off until all items are verified:**
+
+- Rehearse the guarded examples, caps, timeout, and verified/private separation
+  on the configured provider using non-sensitive fixtures.
+- Verify **Vercel Sandbox command-log retention**, including stdout/stderr
+  accessible through its command-log API, and access controls. Deleting the
+  microVM/filesystem alone does **not** prove those logs are gone. Confirm that
+  private command logs are inaccessible or removed within the 60-second run
+  retention window; if that cannot be demonstrated, do not enable the feature.
+- For self-hosted **Piston**, verify process limits after disconnect, workspace
+  cleanup at completion (60 seconds maximum), and no request-body/stdin/raw
+  output logging anywhere in the provider or its proxies.
+- Only after provider-owned retention and limits are verified may the owner
+  set `EXECUTION_STDIN_ENABLED=true` and redeploy.
+
+Turning the flag off rejects every request containing `stdin` (including an
+empty string) with 404, hides the controls after capabilities reload, and
+leaves normal catalogue runs unchanged. No migration or request-path DDL.
+
 ## How it is built
 
 - **Client:** one `index.html` page plus `assets/*.js|css`, with no build step

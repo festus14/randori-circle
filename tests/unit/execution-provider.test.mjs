@@ -259,6 +259,94 @@ test('the JavaScript harness reports a function that returns nothing as a wrong 
   assert.equal(thrown[0].error, 'runtime error', 'a real exception is still an error');
 });
 
+test('catalogue-only provider calls match the pre-flag main contract exactly', async () => {
+  // Golden request/call shapes from main 825ddfb: no stdin or new limits.
+  for (const flag of [undefined, 'false', 'true']) {
+    const flags = { EXECUTION_STDIN_ENABLED: flag };
+    for (const [language, filename, version, cmd] of [
+      ['javascript', 'main.js', '18.15.0', 'node'],
+      ['python', 'main.py', '3.10.0', 'python3'],
+    ]) {
+      let posted;
+      const request = { language, source: 'CATALOGUE_HARNESS' };
+      const result = await executeProgram(request, {
+        env: { ...flags, EXECUTION_PROVIDER: 'piston', EXECUTION_API_URL: PISTON_URL },
+        fetchImpl: async (_url, options) => {
+          posted = options.body;
+          return new Response(JSON.stringify({ run: { stdout: '', stderr: '', code: null, signal: 'SIGKILL', status: 'TO' } }));
+        },
+      });
+      assert.equal(posted, JSON.stringify({ language, version, files: [{ name: filename, content: request.source }] }));
+      assert.equal(result.timedOut, false, 'catalogue result compatibility is unchanged too');
+      const sandbox = fakeSandboxSdk();
+      await executeProgram(request, { env: { ...SANDBOX_ENV, ...flags }, loadSandboxSdk: sandbox.loadSandboxSdk });
+      const call = sandbox.calls.runCommand[0];
+      assert.deepEqual(Object.keys(call).sort(), ['args', 'cmd', 'signal', 'stderr', 'stdout']);
+      assert.equal(call.cmd, cmd); assert.deepEqual(call.args, [filename]);
+      assert.equal(sandbox.calls.create[0].tags.purpose, 'catalog-evaluation');
+      assert.equal(sandbox.calls.create[0].persistent, false);
+      assert.equal(sandbox.calls.create[0].networkPolicy, 'deny-all');
+      assert.equal(sandbox.calls.writeFiles[0].files[0].content.toString(), request.source);
+      assert.equal(sandbox.calls.deleted, 1);
+    }
+  }
+});
+
+test('stdin reaches Vercel Sandbox as an EOF-terminated stream, never as a file or argument', async () => {
+  for (const stdin of ['', 'private 🙂\r\ninput\n', 'é'.repeat(10_000)]) {
+    const sandbox = fakeSandboxSdk({
+      async runCommand(params) {
+        const chunks = [];
+        for await (const chunk of params.stdin) chunks.push(chunk);
+        params.stdout.write(Buffer.concat(chunks));
+        return { exitCode: 0 };
+      },
+    });
+    const result = await executeProgram({ language: 'javascript', source: 'SCRIPT', stdin }, {
+      env: { ...SANDBOX_ENV, EXECUTION_STDIN_ENABLED: 'true' }, loadSandboxSdk: sandbox.loadSandboxSdk,
+    });
+    assert.equal(result.stdout, stdin);
+    assert.equal(sandbox.calls.writeFiles[0].files.length, 1);
+    assert.equal(sandbox.calls.writeFiles[0].files[0].content.toString(), 'SCRIPT');
+    assert.deepEqual(sandbox.calls.runCommand[0].args, ['main.js']);
+    assert.equal(sandbox.calls.runCommand[0].timeoutMs, SANDBOX_COMMAND_TIMEOUT_MS, 'custom deadline is enforced by the provider, even on HTTP disconnect');
+    assert.equal(sandbox.calls.runCommand[0].stdin.destroyed, true);
+    assert.equal(sandbox.calls.deleted, 1);
+    assert.equal(sandbox.calls.create[0].tags.purpose, 'private-stdin');
+  }
+});
+
+test('a real runaway custom process is killed on the sandbox command deadline', async t => {
+  const { spawn } = await import('node:child_process');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let child;
+  const sandbox = fakeSandboxSdk({
+    runCommand(params) {
+      child = spawn(process.execPath, ['-e', 'while (true) {}'], { stdio: 'ignore' });
+      return new Promise((resolve, reject) => {
+        params.signal.addEventListener('abort', () => child.kill('SIGKILL'), { once: true });
+        child.once('error', reject);
+        child.once('exit', (code, signal) => {
+          assert.equal(signal, 'SIGKILL');
+          reject(new Error('aborted'));
+        });
+      });
+    },
+  });
+  const pending = executeProgram({ language: 'javascript', source: 'while (true) {}', stdin: 'private' }, {
+    env: { ...SANDBOX_ENV, EXECUTION_STDIN_ENABLED: 'true' }, loadSandboxSdk: sandbox.loadSandboxSdk,
+  });
+  try {
+    for (let index = 0; index < 10 && !child; index += 1) await new Promise(resolve => setImmediate(resolve));
+    assert.ok(child);
+    t.mock.timers.tick(SANDBOX_COMMAND_TIMEOUT_MS);
+    const result = await pending;
+    assert.equal(result.timedOut, true); assert.equal(result.signal, 'SIGKILL');
+    assert.equal(child.killed, true); assert.equal(sandbox.calls.deleted, 1);
+    assert.equal(sandbox.calls.runCommand[0].stdin.destroyed, true);
+  } finally { child?.kill('SIGKILL'); }
+});
+
 test('harnesses keep answer keys server-side and results are normalised against expected values', () => {
   const suite = { entrypoint: 'add', tests: [{ args: [1, 2], expected: 3 }, { args: [2, 2], expected: 5 }, { args: [0, 0], expected: 0 }] };
   for (const language of ['javascript', 'python']) {

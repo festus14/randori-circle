@@ -8,18 +8,21 @@ class Node{
   setAttribute(name,value){this[name]=value;}
   remove(){this.removed=true;}
 }
-async function fixture({enabled=true,body=null,version=7,cachedVersion=version}={}){
+async function fixture({enabled=true,body=null,version=7,cachedVersion=version,nativeThrows=false}={}){
   const previous=new Map(['window','document','localStorage'].map(key=>[key,globalThis[key]])),nodes=new Map();
   const host=new Node('section');nodes.set('view-code',host);nodes.set('editor',new Node('textarea'));nodes.set('roomSelect',new Node('select'));
   const store=new Map([['randori-code','private'],['randori-theme','dark'],['randori-board:week_1_pair_2','private']]);
   const storage={get length(){return store.size;},key:index=>[...store.keys()][index],removeItem:key=>store.delete(key)};
   let epoch=1,publicId='dojo-20',actor=1;
   const sent=[],events=[],stopped=[];
-  const root={location:{origin:'https://app.example.test'},fetch:async(input,options)=>{sent.push({input,options});
-      if(input==='/api/circles')return new Response(JSON.stringify({ok:true,context_version:version,active_circle:{public_id:publicId}}));
-      const context=new Headers(options?.headers||input?.headers).get('X-Randori-Circle-Context-Version');
-      if(context!==null&&context!==String(version))return new Response(JSON.stringify({code:'circle_context_changed'}),{status:409});
-      return new Response(JSON.stringify(body||{ok:true,circle_public_id:publicId,circle_context_version:version,circle:{public_id:publicId,name:'Dojo',is_primary:false},room_id:'circle_20_publication_3_group_4'}));},
+  const root={location:{origin:'https://app.example.test'},fetch(input,options){sent.push({input,options});
+      if(nativeThrows)throw new Error('native dispatch failed');
+      return (async()=>{
+        if(input==='/api/circles')return new Response(JSON.stringify({ok:true,context_version:version,active_circle:{public_id:publicId}}));
+        const context=new Headers(options?.headers||input?.headers).get('X-Randori-Circle-Context-Version');
+        if(context!==null&&context!==String(version))return new Response(JSON.stringify({code:'circle_context_changed'}),{status:409});
+        return new Response(JSON.stringify(body||{ok:true,circle_public_id:publicId,circle_context_version:version,circle:{public_id:publicId,name:'Dojo',is_primary:false},room_id:'circle_20_publication_3_group_4'}));
+      })();},
     _randori_auth:{me:{id:1},capabilities:{secondaryCircleWorkspace:enabled}},
     _randori_circle_control:{capturePairing:async()=>({epoch,userId:actor,contextVersion:cachedVersion,circlePublicId:publicId}),
       matchesPairing:(operation,body)=>operation.epoch===epoch&&operation.userId===actor&&operation.contextVersion===cachedVersion&&operation.circlePublicId===publicId
@@ -33,6 +36,129 @@ async function fixture({enabled=true,body=null,version=7,cachedVersion=version}=
   return {root,sent,nodes,store,events,stopped,advanceCurrent(){version++;},switch(){epoch++;version++;cachedVersion++;publicId='dojo-30';root.RandoriWorkspaceScope.reset();},
     close(){for(const [key,value]of previous){if(value===undefined)delete globalThis[key];else globalThis[key]=value;}}};
 }
+test('private body factories erase native init bytes even when dispatch throws synchronously',async()=>{
+  for(const enabled of [false,true]){
+    const f=await fixture({enabled,nativeThrows:true});try{
+      let called=0;
+      const options={method:'POST',headers:{'X-Randori-Circle-Context-Version':'7'},body:'BASE_ONLY',
+        bodyFactory:()=>{called++;return '{"stdin":"PRIVATE_INPUT"}';}};
+      await assert.rejects(f.root.fetch('/api/execute',options),/native dispatch failed/);
+      assert.equal(called,1);assert.equal(f.sent.length,1);
+      assert.equal(Object.hasOwn(f.sent[0].options,'body'),false);
+      assert.equal(Object.hasOwn(f.sent[0].options,'bodyFactory'),false);
+      assert.equal(options.body,'BASE_ONLY');assert.equal(Object.hasOwn(options,'bodyFactory'),false);
+    }finally{f.close();}
+  }
+});
+
+test('private factories fail closed for foreign origins, other endpoints and non-POST methods',async()=>{
+  for(const enabled of [false,true]){
+    const f=await fixture({enabled});try{
+      let called=0;
+      for(const [input,method] of [['https://other.example.test/api/execute','POST'],['/api/messages','POST'],['/api/execute','GET']]){
+        const options={method,bodyFactory:()=>{called++;return 'PRIVATE_INPUT';}};
+        await assert.rejects(f.root.fetch(input,options),/same-origin execute POST/);
+        assert.equal(Object.hasOwn(options,'bodyFactory'),false);
+      }
+      assert.equal(called,0);assert.equal(f.sent.length,0);
+    }finally{f.close();}
+  }
+});
+
+test('private targets reject query, hash and non-canonical path spellings before any preflight',async()=>{
+  const invalid=[
+    '/api/execute?endpoint=messages','/api/execute?endpoint=execute','/api/execute?','/api/execute#messages','/api/execute#',
+    '/api/%65xecute','/api/ex%65cute','/api%2fexecute','/api/execute%3fendpoint=messages',
+    '/api/execute/','/api//execute','/api/./execute','/api/messages/../execute','/api/%2e/execute',
+    'https://user:secret@app.example.test/api/execute',
+  ];
+  for(const enabled of [false,true]){
+    const f=await fixture({enabled});try{
+      let factoryCalls=0,preflights=0;
+      const capture=f.root._randori_circle_control.capturePairing;
+      f.root._randori_circle_control.capturePairing=(...args)=>{preflights++;return capture(...args);};
+      for(const input of invalid){
+        const options={method:'POST',bodyFactory:()=>{factoryCalls++;return 'PRIVATE_INPUT';}};
+        await assert.rejects(f.root.fetch(input,options),/canonical same-origin execute POST/);
+        assert.equal(Object.hasOwn(options,'bodyFactory'),false);
+      }
+      assert.equal(factoryCalls,0);assert.equal(preflights,0);assert.equal(f.sent.length,0);
+    }finally{f.close();}
+  }
+});
+
+test('URL and Request target mutations during held context preflight fail before factory or native I/O',async()=>{
+  for(const kind of ['URL','Request']){
+    for(const replacement of ['https://outside.example.test/receive','https://app.example.test/api/execute?endpoint=messages']){
+      const f=await fixture();let release;try{
+        const canonical='https://app.example.test/api/execute';
+        const input=kind==='URL'?new URL(canonical):new Request(canonical,{method:'POST'});
+        if(kind==='Request')Object.defineProperty(input,'url',{value:canonical,writable:true,configurable:true});
+        const capture=f.root._randori_circle_control.capturePairing;
+        const gate=new Promise(resolve=>{release=resolve;});
+        let started;
+        const entered=new Promise(resolve=>{started=resolve;});
+        f.root._randori_circle_control.capturePairing=async(...args)=>{started();await gate;return capture(...args);};
+        let factoryCalls=0;
+        const options={method:'POST',bodyFactory:()=>{factoryCalls++;return 'PRIVATE_INPUT';}};
+        const pending=f.root.fetch(input,options);
+        const rejected=assert.rejects(pending,/canonical same-origin execute POST/);
+        await entered;
+        if(kind==='URL')input.href=replacement;else input.url=replacement;
+        release();await rejected;
+        assert.equal(factoryCalls,0);assert.equal(f.sent.length,0,'even authority/native reads must not start after target mutation');
+      }finally{release?.();f.close();}
+    }
+  }
+});
+
+test('private POST method mutations during held preflight fail before the factory',async()=>{
+  const f=await fixture();let release;try{
+    const capture=f.root._randori_circle_control.capturePairing;
+    const gate=new Promise(resolve=>{release=resolve;});
+    let entered;
+    const started=new Promise(resolve=>{entered=resolve;});
+    f.root._randori_circle_control.capturePairing=async(...args)=>{entered();await gate;return capture(...args);};
+    let factoryCalls=0;
+    const options={method:'POST',bodyFactory:()=>{factoryCalls++;return 'PRIVATE_INPUT';}};
+    const pending=f.root.fetch('/api/execute',options);
+    const rejected=assert.rejects(pending,/canonical same-origin execute POST/);
+    await started;options.method='GET';release();await rejected;
+    assert.equal(factoryCalls,0);assert.equal(f.sent.length,0);
+  }finally{release?.();f.close();}
+});
+
+test('private native dispatch uses only a pinned canonical string and POST, even if the factory mutates caller objects',async()=>{
+  for(const enabled of [false,true]){
+    const f=await fixture({enabled});try{
+      const canonical='https://app.example.test/api/execute',input=new URL(canonical);
+      const options={method:'post',headers:{'X-Randori-Circle-Context-Version':'7'},bodyFactory:()=>{
+        input.href='https://outside.example.test/receive';options.method='GET';return 'PRIVATE_INPUT';
+      }};
+      const response=await f.root.fetch(input,options);await response.json();
+      assert.equal(f.sent.length,1);assert.equal(typeof f.sent[0].input,'string');
+      assert.equal(f.sent[0].input,canonical);assert.equal(f.sent[0].options.method,'POST');
+      assert.equal(Object.hasOwn(f.sent[0].options,'body'),false);
+    }finally{f.close();}
+  }
+});
+
+test('ordinary mutable targets keep their original transport behavior',async()=>{
+  const f=await fixture();let release;try{
+    const capture=f.root._randori_circle_control.capturePairing;
+    const gate=new Promise(resolve=>{release=resolve;});
+    let entered;
+    const started=new Promise(resolve=>{entered=resolve;});
+    f.root._randori_circle_control.capturePairing=async(...args)=>{entered();await gate;return capture(...args);};
+    const input=new URL('https://app.example.test/api/execute');
+    const options={method:'GET',headers:{'X-Randori-Circle-Context-Version':'7'}};
+    const pending=f.root.fetch(input,options);await started;
+    input.href='https://outside.example.test/ordinary';release();
+    const response=await pending;await response.json();
+    assert.equal(f.sent.length,1);assert.equal(f.sent[0].input,input);assert.equal(f.sent[0].options.method,'GET');
+  }finally{release?.();f.close();}
+});
+
 test('workspace fetch fences all pollers and preserves unrelated requests',async()=>{
   const f=await fixture();try{
     for(const endpoint of ['history','messages','runs','execute','my-pair','pair-recap','session-completion','session-controls','meeting-link','code-document','video/poll','ai/history']){

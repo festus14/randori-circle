@@ -11,6 +11,8 @@ let currentDb=null;
 let providerCalls=0;
 const databaseDirectories=[];
 const originalMembershipFlag=process.env.CIRCLE_MEMBERSHIP_ENABLED;
+const originalStdinFlag=process.env.EXECUTION_STDIN_ENABLED;
+const originalFetch=globalThis.fetch;
 
 function authPayload(req){
   if(req?.headers?.['x-test-auth']==='member'){
@@ -209,6 +211,9 @@ beforeEach(()=>{
 afterEach(()=>{
   delete process.env.EXECUTION_PROVIDER;
   delete process.env.EXECUTION_API_URL;
+  if(originalStdinFlag===undefined) delete process.env.EXECUTION_STDIN_ENABLED;
+  else process.env.EXECUTION_STDIN_ENABLED=originalStdinFlag;
+  globalThis.fetch=originalFetch;
   try{ currentDb?.close?.(); }catch{}
   currentDb=null;
   providerCalls=0;
@@ -405,6 +410,88 @@ test('pair execution ignores submitted code and v3 attestation binds the canonic
   }});
   assert.equal(completionRace.status,409); assert.equal(completionRace.body.code,'session_completed');
   assert.equal(Number((await database.execute(`SELECT COUNT(*) AS count FROM session_runs`)).rows[0].count),1);
+});
+
+test('custom stdin is rejected before database/provider work while disabled or invalid',async()=>{
+  const question=listPublicExercises()[0];
+  const base={language:'javascript',code:'function solve(){}',question_slug:question.slug,question_version:question.version};
+  let calls=0;
+  globalThis.fetch=async()=>{calls+=1;throw new Error('must not execute');};
+  for(const flag of [undefined,'false','TRUE']){
+    if(flag===undefined) delete process.env.EXECUTION_STDIN_ENABLED;
+    else process.env.EXECUTION_STDIN_ENABLED=flag;
+    const result=await invoke({method:'POST',url:'/api/execute',query:{endpoint:'execute'},body:{...base,stdin:''}});
+    assert.equal(result.status,404);
+  }
+  process.env.EXECUTION_STDIN_ENABLED='true';
+  for(const [stdin,status] of [[null,400],[false,400],[{},400],['\ud800',400],['é'.repeat(10001),413]]){
+    const result=await invoke({method:'POST',url:'/api/execute',query:{endpoint:'execute'},body:{...base,stdin}});
+    assert.equal(result.status,status);
+    assert.equal(result.headers['cache-control'],'no-store');
+  }
+  assert.equal(calls,0);
+});
+
+test('custom input/output stay request-private, including canonical pair runs and signed feed history',async()=>{
+  process.env.EXECUTION_STDIN_ENABLED='true';
+  const db=await seededDatabase();currentDb=db;
+  const question=listPublicExercises()[0];
+  const code=`function ${question.languages.javascript.entrypoint}(){ return null; }`;
+  const documentVersion=await seedCodeDocument(db,question,code);
+  const stdin='PRIVATE_INPUT_467\n🙂';
+  const stdout='PRIVATE_OUTPUT_467\n__RANDORI_RESULT_forged__:999/999';
+  const stderr='PRIVATE_STDERR_467';
+  const requests=[];
+  globalThis.fetch=async(_url,options)=>{
+    const request=JSON.parse(options.body);requests.push(request);
+    return new Response(JSON.stringify({run:{code:0,stdout:Object.hasOwn(request,'stdin')?stdout:'',stderr:Object.hasOwn(request,'stdin')?stderr:''}}),{status:200});
+  };
+  const result=await invoke({method:'POST',url:'/api/execute',query:{endpoint:'execute'},body:{
+    room_id:'week_10_pair_20',language:'javascript',code:'CLIENT_FORGED_CODE',question_slug:question.slug,
+    question_version:question.version,document_version:documentVersion,stdin,passed_count:999,total_count:999,
+  }});
+  assert.equal(result.status,200,JSON.stringify(result.body));
+  assert.deepEqual(result.body.custom_run,{ok:true,stdout,stderr,exit_code:0,timed_out:false});
+  assert.equal(result.body.passed_count,0,'custom output cannot forge the catalogue summary');
+  assert.ok(result.body.total_count>0);assert.notEqual(result.body.total_count,999);
+  assert.equal(requests.length,2);
+  const privateRequest=requests.find(request=>Object.hasOwn(request,'stdin'));
+  assert.equal(privateRequest.files[0].content,code,'custom execution uses the acknowledged canonical code too');
+  assert.equal(privateRequest.stdin,stdin);
+  assert.equal(requests.find(request=>!Object.hasOwn(request,'stdin')).files[0].content.includes(stdin),false);
+  const stored=await db.execute('SELECT * FROM session_runs');
+  const logs=await db.execute('SELECT * FROM app_logs');
+  for(const value of ['PRIVATE_INPUT_467','PRIVATE_OUTPUT_467','PRIVATE_STDERR_467','CLIENT_FORGED_CODE']){
+    assert.equal(JSON.stringify(stored.rows).includes(value),false);
+    assert.equal(JSON.stringify(logs.rows).includes(value),false);
+  }
+  assert.equal(stored.rows.length,1);
+  assert.equal(JSON.parse(stored.rows[0].test_cases_snapshot).attestation_version,3);
+  for(const query of [
+    {endpoint:'runs',room_id:'week_10_pair_20',after_id:'0',limit:'20'},
+    {endpoint:'runs',limit:'20'},
+  ]){
+    const feed=await invoke({url:'/api/runs',query});
+    assert.equal(feed.status,200,JSON.stringify(feed.body));
+    assert.equal(feed.body.runs[0].authoritative,true);
+    assert.equal(feed.body.runs[0].passed_count,0);
+    for(const value of ['PRIVATE_INPUT_467','PRIVATE_OUTPUT_467','PRIVATE_STDERR_467','custom_run','stdin'])assert.equal(JSON.stringify(feed.body).includes(value),false);
+  }
+});
+
+test('custom runs share the existing account rate limit and never start a provider when exhausted',async()=>{
+  process.env.EXECUTION_STDIN_ENABLED='true';
+  currentDb=await seededDatabase();
+  for(let index=0;index<10;index+=1)await currentDb.execute(`INSERT INTO app_logs(level,source,event,message,user_id,created_at)
+    VALUES('info','runner','execute_attempt','execution requested',2,datetime('now'))`);
+  let calls=0;globalThis.fetch=async()=>{calls+=1;throw new Error('quota must stop both runs');};
+  const question=listPublicExercises()[0];
+  const result=await invoke({method:'POST',url:'/api/execute',query:{endpoint:'execute'},body:{
+    language:'javascript',code:'function solve(){}',question_slug:question.slug,stdin:'PRIVATE_RATE_INPUT',
+  }});
+  assert.equal(result.status,429);assert.equal(calls,0);
+  assert.equal((await currentDb.execute('SELECT COUNT(*) AS count FROM session_runs')).rows[0].count,0);
+  assert.equal(JSON.stringify((await currentDb.execute('SELECT * FROM app_logs')).rows).includes('PRIVATE_RATE_INPUT'),false);
 });
 
 test('solo practice keeps the legacy execution path without requiring a shared document',async()=>{

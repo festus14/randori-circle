@@ -31,6 +31,8 @@ const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   'assets/auth-dialog.js',
   // WP-O onboarding flow and WP-S app shell.
   'assets/onboarding-flow.js', 'assets/app-shell.js',
+  // Private stdin controls and retention (#467).
+  'assets/execution-stdin.js',
   // Shared email rules and the bulk invite UI (ID-68).
   'assets/email-validation.js', 'assets/bulk-invite.js',
   // Admin diagnostics view (issue #310).

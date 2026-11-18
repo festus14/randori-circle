@@ -1,6 +1,6 @@
 import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth, verifySignedRequestAuth } from './_db.js';
 import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
-import { buildExecutionHarness, executeProgram, ExecutionUnavailableError, executionRuntimeVersion, normalizeRunnerResults, resolveExecutionProvider } from './_execution.js';
+import { buildExecutionHarness, executePracticePrograms, ExecutionInputError, ExecutionUnavailableError, executionRuntimeVersion, normalizeRunnerResults, resolveExecutionProvider, validateExecutionStdin } from './_execution.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
 import { getPairingPublication } from './_pairing-publication.js';
@@ -2605,10 +2605,17 @@ function executionUnavailableBody(language){
 
 async function handleExecute(req,res){
   const _execStart=Date.now();
+  res.setHeader('Cache-Control','no-store');
   if(req.method!=='POST') return res.status(405).json({error:'POST only for execute'});
   const payload=await getAuthPayload(req);
   if(!payload) return res.status(401).json({error:'authentication required'});
   const body = req.body || {};
+  let stdin;
+  try{ stdin=validateExecutionStdin(body); }
+  catch(error){
+    if(error instanceof ExecutionInputError) return res.status(error.status).json({error:error.message});
+    throw error;
+  }
   const language = String(body.language||body.lang||'javascript').toLowerCase();
   const map = {js:'javascript', javascript:'javascript', py:'python', python:'python'};
   const executionLanguage = map[language];
@@ -2741,7 +2748,7 @@ async function handleExecute(req,res){
   }
 
   try{
-    const run = await executeProgram({language:executionLanguage,source:harness});
+    const {run,custom} = await executePracticePrograms({language:executionLanguage,harness,code,stdin});
     const stdout = run.stdout;
     const stderr = run.stderr;
     const results=normalizeRunnerResults(stdout,resultPrefix,testSuite.tests);
@@ -2858,10 +2865,13 @@ async function handleExecute(req,res){
       passed_count:passed,
       total_count:total,
       run_id:runId,
+      // Request-only private response: never spread this into stored results,
+      // attestations, logs, history, or room feed projections.
+      ...(custom === undefined ? {} : { custom_run:custom }),
     });
   }catch(e){
     const unavailable=e instanceof ExecutionUnavailableError;
-    try{ await logServer('error',unavailable?'execute_unavailable':'execute_fail',`${executionProvider.provider} ${executionLanguage} ${unavailable?'unavailable':'request failed'}`,{provider:executionProvider.provider,language:executionLanguage,reason:String(e?.message||'').slice(0,200)},{req,source:'runner',route:req.url,skipEnsure:true}); }catch{}
+    try{ await logServer('error',unavailable?'execute_unavailable':'execute_fail',`${executionProvider.provider} ${executionLanguage} ${unavailable?'unavailable':'request failed'}`,{provider:executionProvider.provider,language:executionLanguage,reason:unavailable?'execution_unavailable':'execution_failed'},{req,source:'runner',route:req.url,skipEnsure:true}); }catch{}
     if(unavailable) return res.status(503).json(executionUnavailableBody(executionLanguage));
     return res.status(500).json({ok:false,error:'code execution failed',code:'execution_failed',language:executionLanguage});
   }finally{

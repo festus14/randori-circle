@@ -15,6 +15,8 @@ import {secondaryChatRetentionClient} from '../../api/_secondary-chat-retention.
 import {chatRetentionEvidenceBindingDigest,enqueueNextChatRetentionRun,setChatRetentionControl,runChatRetentionWorker,
   adoptChatRetentionScope,placeChatRetentionHold,releaseChatRetentionHold} from '../../api/_chat-retention.js';
 import {readWorkspaceHistory} from '../../api/_workspace-history.js';
+import {executeSecondaryProgram,verifySecondaryRun} from '../../api/_secondary-execution.js';
+import {readSecondaryRuns} from '../../api/_secondary-workspace.js';
 import * as Y from 'yjs';
 import {buildDataExport} from '../../api/_data-export.js';
 const KEY='workspace-test-key-at-least-thirty-two-characters',HASH='a'.repeat(64);
@@ -69,6 +71,49 @@ test('secondary chat, snapshots, documents, signals and controls use only the ow
     assert.equal((await buildDataExport(f.db,{userId:2})).secondary_workspace.messages.length,0);
     const history=await readWorkspaceHistory(f.client,f.client.workspaceContext,KEY);assert.equal(history.total,1);assert.equal(history.history[0].circle.public_id,f.secondary.publicId);
   }finally{f.close();}
+});
+
+test('secondary custom runs use the same privacy, flag, cap and verified-feed boundaries',async()=>{
+  const previous={stdin:process.env.EXECUTION_STDIN_ENABLED,provider:process.env.EXECUTION_PROVIDER,url:process.env.EXECUTION_API_URL,fetch:globalThis.fetch};
+  const f=await fixture();try{
+    await mutateSecondarySnapshot(f.client,f.room,snapshotBody(f.room,0,'function rollUpFocusBlocks(){ return []; }'),KEY);
+    const tx=await f.client.transaction('write');let initial;
+    try{initial=await readSecondaryDocument(tx,f.room,identity);await tx.commit();}finally{await tx.close();}
+    const body={room_id:f.room.roomId,language:'javascript',question_slug:identity.questionSlug,question_version:1,
+      code:'FORGED_CLIENT_CODE',document_version:initial.document.version,stdin:'SECONDARY_PRIVATE_INPUT'};
+    const req={body,url:'/api/execute',headers:{},socket:{remoteAddress:'127.0.0.1'}};
+    process.env.EXECUTION_PROVIDER='piston';process.env.EXECUTION_API_URL='https://runner.example.test/execute';
+    process.env.EXECUTION_STDIN_ENABLED='false';
+    await assert.rejects(executeSecondaryProgram(f.client,f.room,req,KEY),{status:404});
+    process.env.EXECUTION_STDIN_ENABLED='true';
+    await assert.rejects(executeSecondaryProgram(f.client,f.room,{...req,body:{...body,stdin:'é'.repeat(10001)}},KEY),{status:413});
+    const requests=[];
+    globalThis.fetch=async(_url,options)=>{
+      const request=JSON.parse(options.body);requests.push(request);
+      return new Response(JSON.stringify({run:{code:0,stdout:Object.hasOwn(request,'stdin')?'SECONDARY_PRIVATE_OUTPUT':'',stderr:''}}));
+    };
+    const result=await executeSecondaryProgram(f.client,f.room,req,KEY);
+    assert.equal(result.custom_run.stdout,'SECONDARY_PRIVATE_OUTPUT');assert.equal(result.passed_count,0);
+    assert.equal(requests.length,2);
+    assert.equal(requests.find(request=>Object.hasOwn(request,'stdin')).files[0].content,initial.document.code);
+    assert.equal(Object.hasOwn(requests[0],'stdin'),false);
+    const runs=await readSecondaryRuns(f.client,f.room,{verify:verifySecondaryRun});
+    assert.equal(runs.runs.length,1);assert.equal(runs.runs[0].authoritative,true);
+    const stored=(await f.db.execute('SELECT * FROM circle_session_runs')).rows;
+    const logs=(await f.db.execute('SELECT * FROM app_logs')).rows;
+    for(const value of ['SECONDARY_PRIVATE_INPUT','SECONDARY_PRIVATE_OUTPUT','FORGED_CLIENT_CODE','custom_run']){
+      assert.equal(JSON.stringify(runs).includes(value),false);
+      assert.equal(JSON.stringify(stored).includes(value),false);
+      assert.equal(JSON.stringify(logs).includes(value),false);
+    }
+    assert.equal((await f.db.execute('SELECT COUNT(*) AS count FROM session_runs')).rows[0].count,0);
+  }finally{
+    globalThis.fetch=previous.fetch;
+    for(const [name,value] of [['EXECUTION_STDIN_ENABLED',previous.stdin],['EXECUTION_PROVIDER',previous.provider],['EXECUTION_API_URL',previous.url]]){
+      if(value===undefined)delete process.env[name];else process.env[name]=value;
+    }
+    f.close();
+  }
 });
 
 test('first receipt freezes the complete secondary group and eligibility; membership and context changes revoke writes',async()=>{

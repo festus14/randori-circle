@@ -282,7 +282,7 @@ class PairRunStore {
   async routeExecute(route: Route, user: TestUser) {
     const request = route.request();
     const body = request.postDataJSON() as Record<string, unknown>;
-    const expectedFields = ['code', 'document_version', 'language', 'question_slug', 'question_version', 'room_id'];
+    const expectedFields = ['code', 'document_version', 'language', 'question_slug', 'question_version', 'room_id', ...(Object.hasOwn(body, 'stdin') ? ['stdin'] : [])];
     if (request.method() !== 'POST' || Object.keys(body).sort().join(',') !== expectedFields.join(',')) {
       await this.fulfill(route, { _status: 400, ok: false, error: 'invalid execute request' });
       return;
@@ -324,6 +324,7 @@ class PairRunStore {
       duration_ms: run.duration_ms,
       results: [0, 1, 2].map(idx => ({ idx, pass: true })),
       execution: { provider: 'vercel-sandbox', code: 0, signal: null, timed_out: false, has_stderr: false },
+      ...(Object.hasOwn(body, 'stdin') ? { custom_run: { ok: true, stdout: `PRIVATE_OUTPUT ${body.stdin}`, stderr: 'PRIVATE_STDERR', exit_code: 0, timed_out: false } } : {}),
     });
   }
 
@@ -452,9 +453,11 @@ async function openPairRoom(
   workspace: WorkspaceStore,
   codeDocuments: CodeDocumentStore,
   authorizedRoom: () => string = () => room,
+  stdinEnabled = false,
 ) {
   await page.route(/^https:\/\//, route => route.abort());
   await mockApi(page, {
+    '/api/auth/capabilities': { ok: true, registrationMode: 'private_beta', capabilities: { passwordLogin: true, passwordSignup: false, googleOAuth: true, executionStdin: stdinEnabled } },
     '/api/auth/me': { ok: true, user },
     '/api/profile': { ok: true, user },
     '/api/questions': { ok: true, questions: [originalQuestionFixture], count: 1 },
@@ -516,7 +519,7 @@ function assertSafeFeedResponses(responses: Array<Record<string, unknown>>) {
   }
 }
 
-test('both pair members see a verified safe room run after execution and refresh', async ({ browser }) => {
+test('both pair members see only the verified summary while custom stdin output stays private', async ({ browser }) => {
   const store = new PairRunStore();
   const workspace = new WorkspaceStore([roomA, roomB]);
   const codeDocuments = new CodeDocumentStore([roomA, roomB]);
@@ -528,10 +531,13 @@ test('both pair members see a verified safe room run after execution and refresh
 
   try {
     await Promise.all([
-      openPairRoom(pages[0], roomA, userA, store, workspace, codeDocuments),
-      openPairRoom(pages[1], roomA, userB, store, workspace, codeDocuments),
+      openPairRoom(pages[0], roomA, userA, store, workspace, codeDocuments, () => roomA, true),
+      openPairRoom(pages[1], roomA, userB, store, workspace, codeDocuments, () => roomA, true),
     ]);
     await setCode(pages[0], submittedCode);
+    const privateInput = 'PRIVATE_INPUT <img src=x onerror=evil()> 🙂';
+    await pages[0].locator('#customStdinEnabled').check();
+    await pages[0].locator('#customStdin').fill(privateInput);
     await pages[0].locator('#runBtn').click();
 
     await expect.poll(() => store.executeBodies).toHaveLength(1);
@@ -542,8 +548,14 @@ test('both pair members see a verified safe room run after execution and refresh
       question_slug: originalQuestionFixture.slug,
       question_version: originalQuestionFixture.version,
       room_id: roomA,
+      stdin: privateInput,
     });
+    await expect(pages[0].locator('#customRunOut')).toContainText(`PRIVATE_OUTPUT ${privateInput}`);
+    await expect(pages[0].locator('#customRunOut img')).toHaveCount(0);
+    await expect(pages[0].locator('#customStdin')).toHaveValue('');
+    await expect(pages[1].locator('#customRunOut')).toBeEmpty();
     for (const page of pages) {
+      expect(await page.evaluate(() => JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)]))).not.toMatch(/PRIVATE_INPUT|PRIVATE_OUTPUT|PRIVATE_STDERR/);
       await expect.poll(() => feedItems(page), { timeout: 10_000 }).toHaveLength(1);
       const list = page.locator('#pairRunsList');
       await expect(list).toContainText('Candidate A');
@@ -551,8 +563,12 @@ test('both pair members see a verified safe room run after execution and refresh
       await expect(list).toContainText('3/3');
       await expect(list).toContainText(/verified/i);
       await expect(list).not.toContainText(/personal-private-run|other-room-private-run/i);
-      await expect(list).not.toContainText(/SOURCE_|HIDDEN_|ATTESTATION_|PROVIDER_|example\.test/i);
+      await expect(list).not.toContainText(/SOURCE_|HIDDEN_|ATTESTATION_|PROVIDER_|PRIVATE_|example\.test/i);
     }
+    expect(JSON.stringify(store.pairFeedResponses)).not.toMatch(/PRIVATE_INPUT|PRIVATE_OUTPUT|PRIVATE_STDERR/);
+    await pages[0].locator('#customStdinClear').click();
+    await expect(pages[0].locator('#customRunOut')).toBeEmpty();
+    await expect(pages[0].locator('#customStdinEnabled')).not.toBeChecked();
 
     expect(store.pairFeedRequests.every(request => request.room_id === roomA && request.limit === 20)).toBe(true);
     assertSafeFeedResponses(store.pairFeedResponses);

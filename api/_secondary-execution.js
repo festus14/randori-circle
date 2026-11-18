@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { normalizeMessageTimestamp } from './_messages.js';
 import { createEvaluationSuite, listPublicExercises } from './_catalog.js';
-import { buildExecutionHarness, executeProgram, executionRuntimeVersion, normalizeRunnerResults, resolveExecutionProvider, ExecutionUnavailableError } from './_execution.js';
+import { buildExecutionHarness, executePracticePrograms, executionRuntimeVersion, normalizeRunnerResults, resolveExecutionProvider, validateExecutionStdin, ExecutionUnavailableError } from './_execution.js';
 import { acquireExecutionLease, releaseExecutionLease, signRunAttestation, verifyRunAttestation } from './data.js';
 import { accessStatement, hash, OWNER_COLUMNS, OWNER_SELECT, readSecondaryCompletion, readSecondaryDocument, SecondaryWorkspaceConflictError, SecondaryWorkspaceInputError } from './_secondary-workspace.js';
 
@@ -24,6 +24,7 @@ export function verifySecondaryRun(row){
 
 export async function executeSecondaryProgram(db,room,req,key){
   const body=req.body||{},viewer=Number(db.workspaceContext.payload.id??db.workspaceContext.payload.uid);
+  const stdin=validateExecutionStdin(body);
   if(['week_id','pair_group_id','pg_id','pair_id','circle_id','publication_id','group_id'].some(field=>Object.hasOwn(body,field)))
     throw new SecondaryWorkspaceInputError('room_id cannot be combined with numeric room identifiers');
   const language=({js:'javascript',javascript:'javascript',py:'python',python:'python'})[String(body.language??body.lang??'javascript').toLowerCase()];
@@ -55,7 +56,7 @@ export async function executeSecondaryProgram(db,room,req,key){
     },{sql:`SELECT COUNT(*) AS count FROM app_logs WHERE user_id=? AND source='runner' AND event='execute_attempt' AND datetime(created_at)>=datetime('now','-1 minute')`,args:[viewer]}],'write');
     if(Number(rate[1].rows[0].count)>10)throw new SecondaryWorkspaceInputError('execution rate limit exceeded',429);
     const prefix=`__RANDORI_RESULT_${randomBytes(16).toString('hex')}__:`,started=Date.now();
-    const run=await executeProgram({language,source:buildExecutionHarness(language,code,suite,prefix)});
+    const {run,custom}=await executePracticePrograms({language,harness:buildExecutionHarness(language,code,suite,prefix),code,stdin});
     const results=normalizeRunnerResults(run.stdout,prefix,suite.tests),passed=results.filter(result=>result.pass===true).length,total=suite.tests.length,duration=Date.now()-started;
     const fields={circleId:room.circleId,publicationId:room.publicationId,groupId:room.groupId,userId:viewer,
       questionSlug:slug,questionVersion,language,codeHash:hash(code),documentRevision:canonical?.revision??null,
@@ -84,6 +85,7 @@ export async function executeSecondaryProgram(db,room,req,key){
     const runtime=executionRuntimeVersion(provider.provider,language);
     return {question_slug:slug,question_version:questionVersion,language,version:runtime,runtime_version:runtime,
       execution:{provider:run.provider,code:Number.isInteger(run.code)?run.code:null,signal:typeof run.signal==='string'?run.signal.slice(0,64):null,timed_out:run.timedOut===true,has_stderr:!!run.stderr},
-      results,passed_count:passed,total_count:total,run_id:inserted.rows[0].id};
+      results,passed_count:passed,total_count:total,run_id:inserted.rows[0].id,
+      ...(custom===undefined?{}:{custom_run:custom})};
   }finally{await releaseExecutionLease(db,viewer,leaseId,req);}
 }
