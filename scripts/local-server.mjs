@@ -742,7 +742,7 @@ function apiRoute(pathname,query){
     if(aiMatch[2]!==undefined) query.id=decodeURIComponent(aiMatch[2]);
     return 'ai';
   }
-  const videoMatch=pathname.match(/^\/api\/video\/(signal|ice|join|leave)$/);
+  const videoMatch=pathname.match(/^\/api\/video\/(signal|ice|join|leave|room)$/);
   if(videoMatch){
     query.endpoint=videoMatch[1];
     return 'video';
@@ -1008,6 +1008,10 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
     EXECUTION_API_URL:'',
     EXECUTION_API_TOKEN:'',
     VERCEL_OIDC_TOKEN:'',
+    // Embedded Daily video (ID-98) is hosted-only: off, with no provider key.
+    DAILY_VIDEO_ENABLED:'false',
+    DAILY_API_KEY:'',
+    DAILY_DOMAIN:'',
     TWILIO_AUTH_TOKEN:'',
     ADMIN_EMAILS:'',
     SIGNUP_ALLOWLIST:'',

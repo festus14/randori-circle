@@ -43,7 +43,12 @@ off by default; no new migration is required. Lobby/admission, scheduled
 auto-start, interviewer-owned question selection and candidate edit locks are
 not included yet ([session controls](docs/SESSION_CONTROLS.md#interview-first-increment-464),
 ID-95 in the decision log).
-Not built yet: presence, remote cursors and managed (server-relayed) video.
+`DAILY_VIDEO_ENABLED=true` (with the server-only `DAILY_API_KEY` and
+`DAILY_DOMAIN`) adds consent-gated in-room audio and video through Daily for
+primary two-person rooms. Calls are never recorded, and the private meeting
+link stays as the fallback. It is off by default and needs no migration
+([embedded video](docs/EMBEDDED_VIDEO.md), ID-98).
+Not built yet: presence and remote cursors.
 Which feature is on in production, and what each flag needs, is in the
 [feature flag table](docs/ENVIRONMENT.md#feature-flags).
 
@@ -170,7 +175,7 @@ leaves normal catalogue runs unchanged. No migration or request-path DDL.
   schedule and invite-request notification mail is sent right after commit.
   Pairing and reminder mail is sent by the outbox worker.
 - **Other providers:** Google OAuth for sign-in, Google public STUN servers for
-  call set-up, Vercel Sandbox for code execution, Sentry for error reporting
+  call set-up, Daily for the embedded interview call (behind its flag), Vercel Sandbox for code execution, Sentry for error reporting
   (production only), and cdnjs, jsDelivr and unpkg, which serve the code
   editor and formatter to the browser.
 - **Realtime code relay (optional):** Supabase Realtime private broadcasts,
@@ -289,7 +294,9 @@ Setting up production from scratch is covered step by step in the
 the code reads: purpose, whether it is required, default, whether it is secret,
 and where it is set. It also has the feature flag table with production state
 and how to switch each flag off safely. [`.env.example`](.env.example) is the
-matching template.
+matching template. Embedded Daily video reads `DAILY_VIDEO_ENABLED`, the
+server-only secret `DAILY_API_KEY` and `DAILY_DOMAIN`; the local runtime
+blanks all three ([embedded video setup](docs/EMBEDDED_VIDEO.md#operator-setup)).
 
 For optional sub-second pair-code relay, configure `SUPABASE_URL` and the
 browser-safe `SUPABASE_PUBLISHABLE_KEY`, plus server-only sensitive

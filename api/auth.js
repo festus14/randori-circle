@@ -84,6 +84,7 @@ import {
 } from './_account-deletion-grace.js';
 import { DELETION_TOKEN_MIGRATION_VERSION, requestAccountDeletionEmail } from './_account-deletion-tokens.js';
 import { schemaFeatureAvailable } from './_schema-capability.js';
+import { dailyVideoEnabled } from './_daily-video.js';
 import {
   DataExportTooLargeError,
   buildDataExport,
@@ -394,6 +395,9 @@ async function handleCapabilities(req,res){
       // Issue #292: advertised only while CIRCLE_HEALTH_ENABLED (and circle
       // membership) is on. The server still checks ownership on every read.
       ...(circleHealthEnabled()?{circleHealth:true}:{}),
+      // Issue #463 (ID-98): advertised only while DAILY_VIDEO_ENABLED is
+      // literally true and the server-only Daily key and domain are valid.
+      ...(dailyVideoEnabled()?{embeddedVideo:true}:{}),
     },
     registrationMode:localIdentity?'local_invite':(verifiedEmailActivation?'verified_invite':(passwordSignup?'local_open':'private_beta')),
   });

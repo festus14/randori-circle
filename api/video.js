@@ -5,6 +5,7 @@ import { parseCanonicalRoomPath } from './_pairing.js';
 import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
 import { readCodeProjectionForWorkspace } from './_code-document.js';
 import { secondaryCircleWorkspaceEnabled } from './_active-circle.js';
+import { dailyVideoConfiguration } from './_daily-video.js';
 
 const WORKSPACE_SCHEMA_VERSION = 3;
 const MAX_WORKSPACE_CODE_BYTES = 20 * 1024;
@@ -748,11 +749,17 @@ async function handleSignal(req,res){
 
 export default async function handler(req,res){
   if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
+  // Embedded video exists only while DAILY_VIDEO_ENABLED and its provider
+  // configuration are valid; otherwise this route keeps its old behaviour.
+  const embeddedVideo=getEndpoint(req)==='room'?dailyVideoConfiguration():null;
   if(secondaryCircleWorkspaceEnabled()){
     try{
       const {prepareWorkspaceRequest,dispatchWorkspaceVideo}=await import('./_workspace-router.js');
       const selected=await prepareWorkspaceRequest(req,res);
-      if(selected?.mode==='secondary')return await dispatchWorkspaceVideo(req,res,selected);
+      if(selected?.mode==='secondary'){
+        if(embeddedVideo) return res.status(404).json({error:'pair not found'});
+        return await dispatchWorkspaceVideo(req,res,selected);
+      }
       if(selected){
         const raw=req.method==='GET'?(req.query?.room_id??new URL(req.url,'http://localhost').searchParams.get('room_id')):req.body?.room_id;
         if(typeof raw==='string'&&raw.startsWith('circle_'))return res.status(404).json({error:'pair not found'});
@@ -770,6 +777,10 @@ export default async function handler(req,res){
         return sendMultiCircleFeatureUnavailable(res);
       }
     }catch{ return res.status(503).json({error:'circle context unavailable'}); }
+  }
+  if(embeddedVideo){
+    const {handleEmbeddedRoom}=await import('./_daily-video-route.js');
+    return handleEmbeddedRoom(req,res,embeddedVideo);
   }
   const ep=getEndpoint(req); const low=(req.url||'').toLowerCase();
   if(!ep || ep==='signal' || ep==='poll' || ep==='signals' || low.includes('/signal') || low.includes('/video') || ep==='ice' || ep==='join' || ep==='leave') return handleSignal(req,res);

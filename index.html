@@ -2614,6 +2614,8 @@ a.btn{text-decoration:none}
           </div>
         </div>
 
+        <section id="embeddedVideoPanel" class="room-section" data-testid="embedded-video" aria-label="Video call" hidden></section>
+
         <div id="roomPanelTabs" class="room-tabs" role="tablist" aria-label="Room panels">
           <button id="roomTab-code" class="rc-tab room-tab" type="button" role="tab" data-room-tab="code" aria-controls="roomPanel-code" aria-selected="true">Code</button>
           <button id="roomTab-problem" class="rc-tab room-tab" type="button" role="tab" data-room-tab="problem" aria-controls="roomPanel-problem" aria-selected="false" tabindex="-1">Problem</button>
@@ -4351,6 +4353,7 @@ async function refreshMe(){
       ||(capabilities.accountDeletion!==undefined&&typeof capabilities.accountDeletion!=='boolean')
       ||(capabilities.dataExport!==undefined&&typeof capabilities.dataExport!=='boolean')
       ||(capabilities.executionStdin!==undefined&&typeof capabilities.executionStdin!=='boolean')
+      ||(capabilities.embeddedVideo!==undefined&&typeof capabilities.embeddedVideo!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
@@ -4372,6 +4375,7 @@ async function refreshMe(){
       accountDeletion:capabilities.accountDeletion===true,
       dataExport:capabilities.dataExport===true,
       executionStdin:capabilities.executionStdin===true,
+      embeddedVideo:capabilities.embeddedVideo===true,
       registrationMode:mode,
     });
   }
@@ -7715,6 +7719,29 @@ async function refreshMe(){
     }).catch(()=>{ dataExportView.loading=null; });
   };
   window.addEventListener('randori:auth-refreshed',()=>window._randori_sync_data_export());
+  // Embedded Daily video (assets/embedded-video.js, issue #463, ID-98):
+  // imported on the first Join only while the server advertises the
+  // capability. The module shows its consent notice before any request.
+  const embeddedVideoView={controller:null,loading:null};
+  window._randori_embedded_video_entry={
+    enabled:()=>authCapabilities.embeddedVideo===true&&!!me,
+    open(){
+      if(!embeddedVideoView.loading) embeddedVideoView.loading=import('/assets/embedded-video.js').then(module=>{
+        embeddedVideoView.controller=module.mountEmbeddedVideo({window,document,host:{
+          room:()=>window._randori_video?.roomId||'',
+          actorId:currentAuthActorId,
+          solo:()=>window._randori_video?.solo===true,
+          ended:()=>window._randori_session_controls?.ended===true,
+          fetch:(url,init)=>fetch(url,init),
+          meetingLinkHref:()=>document.querySelector('#meetingLinkWorkspaceCard [data-testid="meeting-link-join"]')?.href||'',
+          legacyJoin:()=>window._randori_video?.joinVideo?.(),
+        }});
+        window._randori_embedded_video=embeddedVideoView.controller;
+        return embeddedVideoView.controller;
+      }).catch(()=>{ embeddedVideoView.loading=null; return null; });
+      return embeddedVideoView.loading.then(controller=>controller?controller.open():window._randori_video?.joinVideo?.());
+    },
+  };
   Promise.resolve(authCapabilitiesPromise).then(()=>window._randori_sync_data_export(),()=>{});
   window._randori_sync_data_export();
   // Issue #372: the cancel screen for a locked account. Nothing else is
@@ -9775,6 +9802,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function leaveVideo(){
+    try{ window._randori_embedded_video?.teardown?.(); }catch{}
     sendSignal('leave', { peer: webrtcPeerId }, '').catch(()=>{});
     // A normal room leave keeps local capture available for a quick rejoin.
     clearVideoSession();
@@ -9783,11 +9811,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function disposeVideoForAuthoritativeSignOut(){
     // No signaling: an authoritative sign-out may already have invalidated the
     // session, and a best-effort leave request would race identity teardown.
+    try{ window._randori_embedded_video?.teardown?.(); }catch{}
     clearVideoSession({releaseMedia:true});
   }
 
   // hooks
-  document.getElementById('vidJoinBtn')?.addEventListener('click', joinVideo);
+  document.getElementById('vidJoinBtn')?.addEventListener('click', ()=>{
+    const embedded=window._randori_embedded_video_entry;
+    if(embedded?.enabled?.()) return void embedded.open();
+    joinVideo();
+  });
   document.getElementById('vidLeaveBtn')?.addEventListener('click', leaveVideo);
   document.getElementById('vidCamBtn')?.addEventListener('click', async()=>{
     const camEpoch=videoSessionEpoch;
@@ -9876,6 +9909,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     get pollsInFlight(){return videoPollsInFlight},
     get initiatePending(){return videoInitiateTimer!==null},
     get roomSwitchPending(){return videoRoomSwitchTimer!==null},
+    get roomId(){return getVideoRoomId()},
+    get solo(){ try{ return _isSoloPair(); }catch{ return false; } },
     joinVideo,
     disposeForScopeChange:disposeVideoForAuthoritativeSignOut,
     leaveVideo,
