@@ -124,6 +124,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-96](#id-96-relay-pair-code-updates-through-private-supabase-channels-without-changing-durable-authority) | Relay pair code updates through private Supabase channels without changing durable authority | Pairing & Scheduling | Active |
 | [ID-97](#id-97-curate-original-interview-kits-as-versioned-catalogue-metadata) | Curate original interview kits as versioned catalogue metadata | Content & Catalogue | Active |
 | [ID-98](#id-98-embed-consent-gated-daily-video-in-primary-pair-rooms-behind-a-flag) | Embed consent-gated Daily video in primary pair rooms, behind a flag | Pairing & Scheduling | Active |
+| [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) | Add an interview lobby, schedule start, interviewer-owned selection and candidate edit lock | Pairing & Scheduling | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -137,7 +138,7 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-99). Never reuse a number, even if an entry is
+   plus one (currently ID-100). Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
 2. **Check for collisions before you claim it.** Parallel PRs are the
@@ -5436,6 +5437,10 @@ private output versus verified-only feed boundary.
 
 ## ID-95: Scope primary interview controls to the interviewer and close on timer expiry
 
+**Amended by ID-99:** with migration 26 applied, interview rooms open in a
+lobby, the agreed schedule can start them, the interviewer owns question
+selection and can lock candidate editing.
+
 **Status: Active.** Code-only first increment, Part of #464 (epic #460).
 Amends ID-58 only when `INTERVIEW_SESSION_ENABLED=true`; ID-55's unanimous
 participant-receipt completion contract is unchanged.
@@ -5501,6 +5506,10 @@ provider execution already authorized before end keeps its existing bounded
 lifetime; no provider cancellation is introduced. Full contract and canary
 steps: [session controls](SESSION_CONTROLS.md#interview-first-increment-464).
 ## ID-96: Relay pair code updates through private Supabase channels without changing durable authority
+
+**Amended by ID-99:** in interview lobby mode the relay is one-way (the
+interviewer only sends, the candidate only receives), a lobby or locked
+candidate gets no relay token, and a candidate token lives 90 seconds.
 
 Status: implemented behind `REALTIME_RELAY_ENABLED=false` by default; issue #461,
 part of real-time mock-interview epic #460. Rebased onto main `9d5f8f4`, including
@@ -5795,3 +5804,106 @@ expiry (at most an hour, or the interview's remaining time); rooms are not
 deleted early. The real two-browser Daily canary on a preview, and retiring
 the external-link fallback once the embed is proven, remain for the owner.
 Setup and canary steps: [embedded video](EMBEDDED_VIDEO.md#operator-setup).
+
+## ID-99: Add an interview lobby, schedule start, interviewer-owned selection and candidate edit lock
+
+**Amends ID-95 and ID-96.** Status: Active. Completes #464 (epic #460) behind
+the existing `INTERVIEW_SESSION_ENABLED` flag; additive migration 26
+(`interview-lobby-and-edit-lock`). Rebased onto main `705756d`, which includes
+ID-96 (realtime relay), ID-97 (interview kits) and ID-98 (Daily video).
+
+**Context.** ID-95 made the interviewer the only controller and the timer a
+terminal boundary, but the room was live from the first page load, the agreed
+schedule had no effect, either participant could change the question, and the
+candidate could always edit. A durable admission fact and a lock bit have no
+honest home in the existing `pair_session_controls` columns (its CHECKs allow
+only a paused or running timer); encoding them in timer values would make the
+timer contract ambiguous.
+
+**Decision.**
+- Add `pair_interview_sessions` (migration 26, additive under ID-87: one new
+  table, an index and two triggers on that table only). It stores a write-once
+  `admission` (`interviewer` or `schedule`) with `admitted_at`, `editing_locked`
+  and a revision, bound to the pair snapshot. Because an additive migration
+  cannot add invalidation triggers to existing tables, a row whose snapshot no
+  longer matches the live group is ignored by readers and deleted by the next
+  writer; deleting the group cascades. Code reaches the table only through the
+  schema capability, so the flag with v25 keeps ID-95 behaviour exactly.
+- Derive the phase, never store it: live when admitted, when the timer was ever
+  started, or when the strict canonical agreed start has arrived on the
+  database clock; ended per ID-95 or 25 minutes after a schedule-owned start;
+  otherwise lobby. One SQL projection embedded in each storage statement and a
+  JS twin for responses share the definition.
+- Interviewer-only `admit`, `lock_editing` and `unlock_editing` commands use
+  the ID-95 authorization order, uniform 404 denial, strict CAS and a new HMAC
+  domain that binds the interview row and the agreed start but not the derived
+  phase. The timer cannot start in the lobby; `set_candidate` and `end` can.
+- Schedule start needs no cron or per-poll write. Reads derive a timer running
+  from the agreed instant (late joins see the remaining time; joins after the
+  window see an expired room). The first control command or any schedule edit
+  of the agreement freezes the start into durable rows in the same
+  transaction, attributed to the current interviewer, so later schedule edits
+  cannot rewind or reopen a room; a start that changed under the transaction
+  answers 409.
+- The lobby gates candidate reads of prepared work too: workspace reads show
+  the selected exercise with empty code and board at revision 0, and candidate
+  code-document reads answer `409 interview_lobby`.
+- Question ownership is enforced where the selection is written, the workspace
+  checkpoint: the candidate cannot create the first checkpoint, change language
+  or question, or checkpoint from the lobby. Candidate CRDT writes must target
+  the selected question.
+- While the room is in the lobby or locked, candidate CRDT bootstrap, merge and
+  workspace projection (and legacy code checkpoints) are rejected inside the
+  storage statements and re-checked after each one; any failure rolls back the
+  transaction. Held edits are answered `409 interview_editing_locked`; the
+  browser keeps them in the existing pending queue with a visible notice and
+  replays them on unlock. New candidate execution lookups return
+  `409 interview_lobby` in the lobby.
+- The realtime relay (ID-96) cannot bypass the lobby or the lock. Relay
+  packets carry no authenticated sender, so in lobby mode the relay is one-way:
+  the interviewer's browser only sends and drops every inbound packet, and the
+  candidate's browser only receives, never broadcasts and, while held, does
+  not re-queue relayed bytes. The document GET tells each browser its direction; the live
+  controls role must agree. The relay-token SQL refuses a lobby or locked
+  candidate with the uniform 404 before any quota, and a candidate token lives
+  90 seconds, so the lock is re-checked on every renewal. Candidate edits
+  reach the interviewer over the authoritative HTTPS path (polling).
+- Interview kits (ID-97) are catalogue metadata and filters; they add no
+  writer of the room selection. `pair_room_snapshots` keeps exactly one
+  selection writer, the fenced workspace checkpoint, and the candidate's
+  catalogue and kit filters are held disabled with the selectors.
+- Daily video (ID-98) stays available in the lobby: interviews start by
+  talking, and video carries no code or selection.
+- No sub-flag: the lobby is part of the interview mode and the flag is off in
+  production (ENVIRONMENT.md); migration 26 being unapplied is the off switch that
+  keeps ID-95 semantics.
+
+**Alternatives.** Encoding admission/lock in the controls timer (no migration)
+was rejected as ambiguous and unreviewable. A separate `select_question`
+command would add a second writer of the selection beside the workspace
+checkpoint. Materializing the schedule start on the first GET would make reads
+write. A presence heartbeat for "candidate waiting" needs per-poll writes; not
+included.
+
+**Verification.** `tests/unit/migration-interview-session.test.mjs` (additive
+contract, v25 readiness, guards, stale snapshot, cascade);
+`tests/unit/interview-lobby.test.mjs` (lobby projection, candidate/outsider/
+wrong-room/forged denials, admit idempotency and stale versions, lock in lobby
+and live, terminal rejection, schedule start with late join and expiry, a
+real 500 ms/700 ms SQLite schedule boundary for reads and CRDT fences, freezing
+before schedule edits, admit racing the start, CRDT and workspace lock races
+injected inside the write transaction, selection ownership, execution lookups,
+flag-off and v25 behaviour, SQL/JS phase agreement); and
+`tests/unit/interview-relay.test.mjs` (relay-token denial without quota for
+lobby and locked candidates, 90-second candidate TTL refused on renewal after
+a lock, schedule start, per-browser direction, flag-off peers); and
+`tests/e2e/interview-lobby.spec.ts` (two browsers: lobby, admit, lock with a
+held edit, unlock replay, end, late join, a scheduled start, and a mocked
+relay where a forged candidate packet and a locked candidate's edit never
+reach the interviewer's document or persistence).
+
+**Rollout and recovery.** Merge flag-off, apply migration 26 through the
+protected workflow, then canary as in
+[session controls](SESSION_CONTROLS.md#interview-lobby-schedule-start-question-ownership-and-edit-lock-464).
+Roll back by turning the flag off, or by leaving migration 26 unapplied for
+ID-95 behaviour. Never drop the table or edit the ledger.

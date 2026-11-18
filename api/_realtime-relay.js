@@ -1,10 +1,14 @@
 import { createHash, createHmac, createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 
-import { interviewSessionEnabled, interviewTimerEnded, interviewTimerOpenSql } from './_session-controls.js';
+import { interviewTimerEnded } from './_session-controls.js';
+import { candidateRelayFence, interviewOpenFence, readInterviewGate, resolveInterviewMode } from './_interview-session.js';
 import { authPairAccessArgs } from './_pair-access.js';
 import { codeDocumentAccessSql, CODE_DOCUMENT_RETENTION_DAYS, parseCodeDocumentQuery } from './_code-document.js';
 
 export const RELAY_TOKEN_TTL_SECONDS=300;
+// Interview lobby mode (#464): the candidate's token is short-lived and is
+// re-checked against the lobby and edit lock on every renewal.
+export const RELAY_CANDIDATE_TOKEN_TTL_SECONDS=90;
 export const RELAY_TOKEN_LIMIT=12;
 export const RELAY_TOKEN_WINDOW_SECONDS=300;
 export const RELAY_SESSION_MARGIN_SECONDS=30;
@@ -59,7 +63,10 @@ export function parseRelayTokenRequest(body){
 // Reuse the HTTPS document's source-tagged authority, then require its stored
 // participant snapshot to still equal the live pair. This is SELECT-only and
 // never creates/hydrates a document or writes a workspace as a side effect.
-export async function readRelayAuthorization(db,{viewerId,...identity}){
+export async function readRelayAuthorization(db,{viewerId,mode=null,...identity}){
+  const resolved=mode||await resolveInterviewMode(db);
+  const open=interviewOpenFence(resolved,identity);
+  const candidate=candidateRelayFence(resolved,{weekId:identity.weekId,pairGroupId:identity.pairGroupId,actorId:viewerId});
   const result=await db.execute({
     sql:`WITH access AS (${codeDocumentAccessSql()})
       SELECT access.week_id,access.pair_group_id,access.user_a_id,access.user_b_id
@@ -74,11 +81,10 @@ export async function readRelayAuthorization(db,{viewerId,...identity}){
           WHERE receipt.week_id=access.week_id AND receipt.pair_group_id=access.pair_group_id
             AND receipt.participant_source='auth'
             AND receipt.user_id IN (access.user_a_id,access.user_b_id)) < 2
-        AND ${interviewTimerOpenSql()}
+        AND ${open.sql} AND ${candidate.sql}
       LIMIT 2`,
     args:[...authPairAccessArgs({userId:viewerId,weekId:identity.weekId,pairGroupId:identity.pairGroupId}),
-      identity.questionSlug,identity.questionVersion,identity.language,
-      ...(interviewSessionEnabled()?[identity.weekId,identity.pairGroupId]:[])],
+      identity.questionSlug,identity.questionVersion,identity.language,...open.args,...candidate.args],
   });
   if(result.rows?.length!==1) return null;
   const row=result.rows[0];
@@ -86,8 +92,9 @@ export async function readRelayAuthorization(db,{viewerId,...identity}){
   if(![weekId,pairGroupId,userAId,userBId].every(value=>Number.isSafeInteger(value)&&value>0)
     ||weekId!==identity.weekId||pairGroupId!==identity.pairGroupId||userAId===userBId
     ||![userAId,userBId].includes(viewerId)) return null;
-  if(await interviewTimerEnded(db,{weekId,pairGroupId,userAId,userBId})) return null;
-  return {userAId,userBId};
+  if(await interviewTimerEnded(db,{weekId,pairGroupId,userAId,userBId},resolved)) return null;
+  const gate=await readInterviewGate(db,resolved,identity);
+  return gate?{userAId,userBId,role:gate.candidateUserId===viewerId?'candidate':'interviewer'}:{userAId,userBId};
 }
 
 export function relayTopic(identity,pair){
@@ -105,8 +112,9 @@ function opaqueSubject(config,viewerId){
 
 export function mintRelayToken(config,{viewerId,identity,pair,nowSeconds=Math.floor(Date.now()/1000),sessionExpiresAt=null}){
   if(!Number.isSafeInteger(viewerId)||viewerId<1||!Number.isSafeInteger(nowSeconds)||nowSeconds<1) throw new TypeError('invalid relay token identity');
-  const topic=relayTopic(identity,pair),expiresAt=Math.min(nowSeconds+RELAY_TOKEN_TTL_SECONDS,
-    Number.isSafeInteger(sessionExpiresAt)?sessionExpiresAt:nowSeconds+RELAY_TOKEN_TTL_SECONDS);
+  const ttl=pair?.role==='candidate'?RELAY_CANDIDATE_TOKEN_TTL_SECONDS:RELAY_TOKEN_TTL_SECONDS;
+  const topic=relayTopic(identity,pair),expiresAt=Math.min(nowSeconds+ttl,
+    Number.isSafeInteger(sessionExpiresAt)?sessionExpiresAt:nowSeconds+ttl);
   if(expiresAt<=nowSeconds+RELAY_SESSION_MARGIN_SECONDS) throw new RelaySessionExpiredError();
   const header=Buffer.from(JSON.stringify({alg:'ES256',typ:'JWT',kid:config.kid})).toString('base64url');
   const claims={iss:`${config.url}/auth/v1`,aud:'authenticated',sub:opaqueSubject(config,viewerId),role:'authenticated',

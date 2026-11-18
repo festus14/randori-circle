@@ -52,7 +52,10 @@ generation is fenced and the buttons are re-enabled without restarting polling;
 use Refresh to reconcile the server's receipt state. History, recap and metrics
 still require each participant's receipt.
 See [the bounded interview increment](SESSION_CONTROLS.md#interview-first-increment-464)
-for role authority, late joins, rollback behavior and remaining lobby scope.
+for role authority, late joins and rollback behavior. The
+[lobby increment](SESSION_CONTROLS.md#interview-lobby-schedule-start-question-ownership-and-edit-lock-464)
+(ID-99) adds admission, schedule start and the edit lock; a schedule-started
+or interviewer-admitted room records no receipt either.
 
 ## Rollout
 

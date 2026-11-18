@@ -46,6 +46,14 @@ Randori has read-only schema inspection for configured databases, a transactiona
   `additive` migration (ID-87): only new tables and indexes, so code at v22
   stays ready on a v21 database until the protected cutover applies it. See
   `FEEDBACK.md`.
+- Migration v26 (additive) adds `pair_interview_sessions` for the interview
+  lobby, schedule start and candidate edit lock (#464, ID-99). It adds no
+  trigger to an existing table: a row whose pair snapshot no longer matches is
+  ignored and replaced by the runtime, and group deletion cascades. Code at v26
+  keeps ID-95 behaviour on a v25 database. Between merge and the protected
+  apply, `db:status` reports four expected `missing_*` blockers (the table, its
+  index and two triggers) and readiness reports `pending_additive`; neither
+  blocks serving. See `SESSION_CONTROLS.md`.
 
 ## Commands
 

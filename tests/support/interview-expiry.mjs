@@ -39,3 +39,14 @@ export function delayInterviewWrite(db,pattern){
   }};
   return {client,observations};
 }
+
+// With migration 26 applied the room starts in the lobby (#464). Expiry
+// tests that predate the lobby begin from an interviewer-admitted room.
+export async function admitInterview(db,{userAId=1,userBId=2,locked=false}={}){
+  await db.execute({sql:`INSERT INTO pair_interview_sessions
+    (week_id,pair_group_id,pair_user_a_id,pair_user_b_id,admission,admitted_at,editing_locked,
+      revision,updated_by,created_at,updated_at)
+    VALUES (10,20,?,?,'interviewer',strftime('%Y-%m-%dT%H:%M:%fZ','now'),?,1,?,
+      strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+  args:[userAId,userBId,locked?1:0,userBId]});
+}

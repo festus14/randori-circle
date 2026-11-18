@@ -28,6 +28,10 @@ malformed response, too many attempts) the panel says so and offers the
 pair's meeting link (opens outside Randori, `rel="noopener noreferrer"`) and
 the direct browser call.
 
+In interview lobby mode (ID-99) the candidate can join the call from the lobby;
+the lobby gates code, board and selection, not conversation
+([session controls](SESSION_CONTROLS.md#realtime-relay-kits-and-video)).
+
 ## Server contract
 
 `POST /api/video/room` (rewritten to `api/video.js?endpoint=room`; no new

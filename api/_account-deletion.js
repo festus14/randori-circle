@@ -85,6 +85,7 @@ export const ACCOUNT_DATA_INVENTORY=Object.freeze([
   ['pair_schedules',['proposed_times'],'keep','Agreed and proposed times stay in the partner\'s recap; proposer ids are opaque.'],
   ['session_completion_receipts',['user_id'],'keep','Immutable; the partner\'s completed-session count needs both receipts.'],
   ['pair_session_controls',['candidate_user_id','updated_by'],'keep','Interview roles stay in the partner\'s progress.'],
+  ['pair_interview_sessions',['pair_user_a_id','pair_user_b_id','updated_by'],'keep','Interview admission and edit-lock state stays with the partner\'s room; actor ids resolve to the tombstone.'],
   ['pair_messages',['sender_id','message'],'anonymise','Text of every message they sent becomes "Message deleted"; the row keeps the partner\'s conversation in order.'],
   ['session_runs',['user_id','code','test_cases_snapshot','results_json'],'anonymise',
     'Solo runs are deleted. Pair runs keep their verified summary for the partner; code is cleared unless it is the attested shared pair document.'],

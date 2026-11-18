@@ -134,6 +134,7 @@ const EXPLICIT_TABLE_COVERAGE=Object.freeze({
   pair_schedules:{section:'schedules',included:true,reason:'Agreed and proposed times for the member\'s own pair groups.'},
   session_completion_receipts:{section:'session_completions',included:true,reason:'Own completion receipts, partners by display name only.'},
   pair_session_controls:{section:'session_controls',included:true,reason:'Timer and interview-role controls for the member\'s own pair groups, actors by display name.'},
+  pair_interview_sessions:{section:null,included:false,reason:'Operational interview room state (lobby admission time and edit-lock flag); no content, and roles and timer are already exported under session_controls.'},
   pair_messages:{section:'messages',included:true,reason:'Only messages the member sent; a partner\'s messages are the partner\'s data and are never exported.'},
   session_runs:{section:'code_runs',included:true,reason:'Own code runs, solo and pair.'},
   pair_code_documents:{section:null,included:false,reason:'Jointly written pair document; the partner\'s contributions are the partner\'s data.'},

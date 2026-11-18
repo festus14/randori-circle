@@ -8,7 +8,7 @@ import * as Y from 'yjs';
 
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { copyMigratedDatabaseSync, migratedTemplatePath } from '../support/migrated-db.mjs';
-import { delayInterviewWrite, seedExpiringInterview } from '../support/interview-expiry.mjs';
+import { admitInterview, delayInterviewWrite, seedExpiringInterview } from '../support/interview-expiry.mjs';
 import {
   CODE_DOCUMENT_RETENTION_BATCH_LIMIT,
   CodeDocumentDataError,
@@ -78,7 +78,7 @@ test('interview expiry fences CRDT creation, updates and projections inside real
     const item=fixture();
     process.env.INTERVIEW_SESSION_ENABLED='true';
     try{
-      await prepareConnection(item.db); await seed(item.db);
+      await prepareConnection(item.db); await seed(item.db); await admitInterview(item.db);
       let update;
       if(target==='update'||target==='projection'){
         const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
@@ -111,7 +111,7 @@ test('interview early end and database timer expiry close CRDT reads, writes and
     const item=fixture();
     process.env.INTERVIEW_SESSION_ENABLED='true';
     try{
-      await prepareConnection(item.db); await seed(item.db);
+      await prepareConnection(item.db); await seed(item.db); await admitInterview(item.db);
       const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
       const update=updateFromState(initial.state,text=>text.insert(0,'changed;'));
       await item.db.execute({sql:`INSERT INTO pair_session_controls

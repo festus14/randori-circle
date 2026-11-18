@@ -4,7 +4,8 @@ import * as Y from 'yjs';
 import { authPairAccessArgs } from './_pair-access.js';
 import { getPublicExercise } from './_catalog.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
-import { interviewSessionEnabled, interviewTimerEnded, interviewTimerOpenSql } from './_session-controls.js';
+import { candidateCodeFence, interviewOpenFence, readInterviewGate, resolveInterviewMode } from './_interview-session.js';
+import { interviewTimerEnded } from './_session-controls.js';
 
 export const CODE_DOCUMENT_STATE_LIMIT_BYTES=256*1024;
 export const CODE_DOCUMENT_UPDATE_LIMIT_BYTES=64*1024;
@@ -181,14 +182,47 @@ export function codeDocumentAccessSql(){
 }
 
 class InterviewEndedError extends Error{}
+class CandidateEditingClosedError extends Error{}
+
+// Interview lobby (#464): the candidate cannot read the interviewer's prepared
+// code before admission, whether or not a document exists yet. In lobby mode
+// the realtime relay is one-way (ID-96 + ID-99): the interviewer only sends and
+// never applies relayed bytes (any of which may be candidate-origin); the
+// candidate only receives and never broadcasts.
+async function lobbyAccess(db,mode,viewerId,identity){
+  const gate=await readInterviewGate(db,mode,identity);
+  if(!gate) return {lobby:false,relayDirection:null};
+  const candidate=gate.candidateUserId===viewerId;
+  return {lobby:candidate&&!gate.live&&!gate.ended,relayDirection:candidate?'receive':'send'};
+}
 
 // A failed storage-time fence must roll back the whole transaction, including
 // any earlier bootstrap, retention scrub, or CRDT/workspace projection.
-async function assertInterviewStillOpen(db,pair){
-  if(await interviewTimerEnded(db,pair)) throw new InterviewEndedError('interview has ended');
+async function assertInterviewStillOpen(db,pair,mode){
+  if(await interviewTimerEnded(db,pair,mode)) throw new InterviewEndedError('interview has ended');
 }
 
-async function completedPair(db,authorization,identity){
+function candidateFence(mode,viewerId,identity){
+  return candidateCodeFence(mode,{weekId:identity.weekId,pairGroupId:identity.pairGroupId,actorId:viewerId,
+    questionId:`${identity.questionSlug}@${identity.questionVersion}`,language:identity.language});
+}
+
+// Interview lobby/lock (#464): the candidate writes only while live, unlocked
+// and on the selected question. Re-checked after every storage statement of a
+// candidate write; a failure rolls back the whole transaction.
+async function candidateMayWrite(db,mode,viewerId,identity){
+  if(!mode?.lobby) return true;
+  const fence=candidateFence(mode,viewerId,identity);
+  const result=await db.execute({sql:`SELECT ${fence.sql} AS allowed`,args:fence.args});
+  if(result?.rows?.length!==1) throw new CodeDocumentDataError('interview edit boundary is unavailable');
+  return Number(result.rows[0].allowed)===1;
+}
+
+async function assertCandidateMayWrite(db,mode,viewerId,identity){
+  if(!await candidateMayWrite(db,mode,viewerId,identity)) throw new CandidateEditingClosedError('candidate editing is closed');
+}
+
+async function completedPair(db,authorization,identity,mode){
   const result=await db.execute({
     sql:`WITH access AS (${authorization.accessSql})
       SELECT COUNT(*) AS confirmed_count FROM session_completion_receipts receipt
@@ -199,7 +233,7 @@ async function completedPair(db,authorization,identity){
     args:[...authorization.accessArgs,identity.weekId,identity.pairGroupId],
   });
   if(result?.rows?.length!==1) throw new CodeDocumentDataError('completion boundary is unavailable');
-  return Number(result.rows[0].confirmed_count)===2||await interviewTimerEnded(db,authorization.pair);
+  return Number(result.rows[0].confirmed_count)===2||await interviewTimerEnded(db,authorization.pair,mode);
 }
 
 function storedWorkspaceSeed(row,identity){
@@ -320,7 +354,7 @@ async function readRow(db,identity){
   return result.rows[0]||null;
 }
 
-async function createDocument(db,viewerId,identity,authorization,{clientId='server-bootstrap',clientSeq=0}={}){
+async function createDocument(db,viewerId,identity,authorization,{clientId='server-bootstrap',clientSeq=0,mode}={}){
   const workspace=await db.execute({
     sql:`SELECT schema_version,language,question_id,code FROM pair_room_snapshots
       WHERE room_id=? AND week_id=? AND pair_group_id=? LIMIT 1`,
@@ -330,23 +364,31 @@ async function createDocument(db,viewerId,identity,authorization,{clientId='serv
   const doc=new Y.Doc({gc:true});
   if(seed) doc.getText('code').insert(0,seed);
   const state=materialize(doc);
+  const open=interviewOpenFence(mode,identity);
+  const candidate=candidateFence(mode,viewerId,identity);
   const inserted=await db.execute({
     sql:`WITH access AS (${authorization.accessSql})
       INSERT INTO pair_code_documents (${DOCUMENT_COLUMNS})
       SELECT ?,?,?,?,?,?,?,?,?,?,'auth',?,'auth',NULL,?,'auth',?,?,
         strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now')
-      WHERE EXISTS (SELECT 1 FROM access) AND ${interviewTimerOpenSql()}
+      WHERE EXISTS (SELECT 1 FROM access) AND ${open.sql} AND ${candidate.sql}
       ON CONFLICT DO NOTHING`,
     args:[...authorization.accessArgs,identity.weekId,identity.pairGroupId,identity.questionSlug,
       identity.questionVersion,identity.language,state.stateBase64,state.stateHash,state.codeHash,1,
       authorization.pair.userAId,authorization.pair.userBId,viewerId,clientId,clientSeq,
-      ...(interviewSessionEnabled()?[identity.weekId,identity.pairGroupId]:[])],
+      ...open.args,...candidate.args],
   });
-  await assertInterviewStillOpen(db,authorization.pair);
-  return {row:await readRow(db,identity),created:Number(inserted?.rowsAffected)===1};
+  await assertInterviewStillOpen(db,authorization.pair,mode);
+  const created=Number(inserted?.rowsAffected)===1;
+  if(created) await assertCandidateMayWrite(db,mode,viewerId,identity);
+  const row=await readRow(db,identity);
+  // A candidate may not bootstrap a document for the lobby, a locked room or
+  // a question the interviewer has not selected.
+  if(!row&&!await candidateMayWrite(db,mode,viewerId,identity)) throw new CandidateEditingClosedError('candidate editing is closed');
+  return {row,created};
 }
 
-async function projectWorkspaceCode(db,identity,authorization,{code,revision,viewerId}){
+async function projectWorkspaceCode(db,identity,authorization,{code,revision,viewerId,mode}){
   const snapshot=await db.execute({
     sql:`SELECT revision,schema_version,code FROM pair_room_snapshots
       WHERE room_id=? AND week_id=? AND pair_group_id=? AND language=? AND question_id=? LIMIT 1`,
@@ -362,16 +404,18 @@ async function projectWorkspaceCode(db,identity,authorization,{code,revision,vie
     throw new CodeDocumentDataError('stored workspace projection is invalid');
   }
   const serialized=JSON.stringify({code,board:envelope.board});
+  const open=interviewOpenFence(mode,identity);
+  const candidate=candidateFence(mode,viewerId,identity);
   const projected=await db.execute({
     sql:`WITH access AS (${authorization.accessSql}) UPDATE pair_room_snapshots
       SET revision=revision+1,client_id='crdt-projection',client_seq=?,code=?,updated_by=?,updated_at=datetime('now')
       WHERE room_id=? AND week_id=? AND pair_group_id=? AND revision=?
-        AND EXISTS (SELECT 1 FROM access) AND ${interviewTimerOpenSql()}`,
+        AND EXISTS (SELECT 1 FROM access) AND ${open.sql} AND ${candidate.sql}`,
     args:[...authorization.accessArgs,revision,serialized,viewerId,identity.roomId,identity.weekId,
-      identity.pairGroupId,Number(row.revision),
-      ...(interviewSessionEnabled()?[identity.weekId,identity.pairGroupId]:[])],
+      identity.pairGroupId,Number(row.revision),...open.args,...candidate.args],
   });
-  await assertInterviewStillOpen(db,authorization.pair);
+  await assertInterviewStillOpen(db,authorization.pair,mode);
+  await assertCandidateMayWrite(db,mode,viewerId,identity);
   return Number(projected?.rowsAffected)===1;
 }
 
@@ -479,14 +523,18 @@ export async function purgeExpiredCodeDocuments(db,{limit=CODE_DOCUMENT_RETENTIO
   }
 }
 
-async function readUnchangedCodeDocument(db,viewerId,identity,afterRevision){
+async function readUnchangedCodeDocument(db,viewerId,identity,afterRevision,mode){
   const transaction=await db.transaction('read');
   let finished=false;
   try{
     const authorization=await authorizedPair(transaction,viewerId,identity);
     if(!authorization){ await finish(transaction,'rollback'); finished=true; return {done:true,result:null}; }
-    if(await interviewTimerEnded(transaction,authorization.pair)){
+    if(await interviewTimerEnded(transaction,authorization.pair,mode)){
       await finish(transaction,'rollback'); finished=true; return {done:true,result:{terminal:true}};
+    }
+    const access=await lobbyAccess(transaction,mode,viewerId,identity);
+    if(access.lobby){
+      await finish(transaction,'rollback'); finished=true; return {done:true,result:{lobby:true}};
     }
     const row=await readRow(transaction,identity);
     if(!row||Number(row.retention_expired)===1){
@@ -501,7 +549,7 @@ async function readUnchangedCodeDocument(db,viewerId,identity,afterRevision){
       })
       :normalizedRow(row,identity);
     await finish(transaction,'commit'); finished=true;
-    return {done:true,result:{document,created:false,pair:authorization.pair}};
+    return {done:true,result:{document,created:false,pair:authorization.pair,relayDirection:access.relayDirection}};
   }catch(error){
     if(!finished){ try{ await finish(transaction,'rollback'); }catch{} }
     throw error;
@@ -509,8 +557,9 @@ async function readUnchangedCodeDocument(db,viewerId,identity,afterRevision){
 }
 
 async function getAuthorizedCodeDocumentUnlocked(db,{viewerId,afterRevision=0,...identity}){
+  const mode=await resolveInterviewMode(db);
   if(afterRevision>0){
-    const unchanged=await readUnchangedCodeDocument(db,viewerId,identity,afterRevision);
+    const unchanged=await readUnchangedCodeDocument(db,viewerId,identity,afterRevision,mode);
     if(unchanged.done) return unchanged.result;
   }
   for(let attempt=0;attempt<MAX_TRANSACTION_ATTEMPTS;attempt+=1){
@@ -521,20 +570,25 @@ async function getAuthorizedCodeDocumentUnlocked(db,{viewerId,afterRevision=0,..
       transaction=await db.transaction('write');
       const authorization=await authorizedPair(transaction,viewerId,identity);
       if(!authorization){ await transaction.rollback(); settled=true; return null; }
-      if(await interviewTimerEnded(transaction,authorization.pair)){
+      if(await interviewTimerEnded(transaction,authorization.pair,mode)){
         await transaction.rollback(); settled=true; return {terminal:true};
+      }
+      const access=await lobbyAccess(transaction,mode,viewerId,identity);
+      if(access.lobby){
+        await transaction.rollback(); settled=true; return {lobby:true};
       }
       await purgeExpiredCodeDocumentIdentity(transaction,identity);
       let row=await readRow(transaction,identity);
       let created=false;
-      if(!row){ const result=await createDocument(transaction,viewerId,identity,authorization); row=result.row; created=result.created; }
+      if(!row){ const result=await createDocument(transaction,viewerId,identity,authorization,{mode}); row=result.row; created=result.created; }
       const document=normalizedRow(row,identity);
-      await assertInterviewStillOpen(transaction,authorization.pair);
+      await assertInterviewStillOpen(transaction,authorization.pair,mode);
       commitStarted=true; await transaction.commit(); settled=true;
-      return {document,created,pair:authorization.pair};
+      return {document,created,pair:authorization.pair,relayDirection:access.relayDirection};
     }catch(error){
       if(transaction&&!settled&&!commitStarted){ try{ await transaction.rollback(); settled=true; }catch{} }
       if(error instanceof InterviewEndedError) return {terminal:true};
+      if(error instanceof CandidateEditingClosedError) return {editingClosed:true};
       // Document creation is deterministic and ON CONFLICT-safe, so an
       // ambiguous busy commit can be reconciled by the next exact read.
       if(attempt===MAX_TRANSACTION_ATTEMPTS-1||!retryableConflict(error)) throw error;
@@ -575,6 +629,7 @@ function retryDelay(attempt,seed=''){
 }
 
 async function mergeAuthorizedCodeDocumentUnlocked(db,{viewerId,...input}){
+  const mode=await resolveInterviewMode(db);
   for(let attempt=0;attempt<MAX_TRANSACTION_ATTEMPTS;attempt+=1){
     let transaction=null;
     let settled=false;
@@ -583,52 +638,57 @@ async function mergeAuthorizedCodeDocumentUnlocked(db,{viewerId,...input}){
       transaction=await db.transaction('write');
       const authorization=await authorizedPair(transaction,viewerId,input);
       if(!authorization){ await transaction.rollback(); settled=true; return null; }
-      const interview=interviewSessionEnabled();
+      const interview=mode.interview;
       // Peer mode keeps its original retention-before-completion ordering.
       // Interview mode checks termination first and rolls all work back if
       // its database-time boundary is crossed by any later storage statement.
       if(!interview) await purgeExpiredCodeDocumentIdentity(transaction,input);
-      if(await completedPair(transaction,authorization,input)){
+      if(await completedPair(transaction,authorization,input,mode)){
         await transaction.rollback(); settled=true;
         return {terminal:true};
       }
       if(interview) await purgeExpiredCodeDocumentIdentity(transaction,input);
+      // Checked before any merge so a held candidate edit is reported, not merged.
+      await assertCandidateMayWrite(transaction,mode,viewerId,input);
       let row=await readRow(transaction,input);
-      if(!row) row=(await createDocument(transaction,viewerId,input,authorization,{clientId:input.clientId,clientSeq:input.clientSeq})).row;
+      if(!row) row=(await createDocument(transaction,viewerId,input,authorization,{clientId:input.clientId,clientSeq:input.clientSeq,mode})).row;
       const current=normalizedRow(row,input);
       const doc=current.doc;
       try{ Y.applyUpdate(doc,input.update,'client-update'); }
       catch(error){ throw new CodeDocumentInputError('update is not a valid Yjs update',{cause:error}); }
       const merged=materialize(doc);
       if(merged.stateHash===current.stateHash){
-        await assertInterviewStillOpen(transaction,authorization.pair);
+        await assertInterviewStillOpen(transaction,authorization.pair,mode);
         commitStarted=true; await transaction.commit(); settled=true;
         return {document:current,idempotent:true,pair:authorization.pair};
       }
+      const open=interviewOpenFence(mode,input);
+      const candidate=candidateFence(mode,viewerId,input);
       const updated=await transaction.execute({
         sql:`WITH access AS (${authorization.accessSql}) UPDATE pair_code_documents
           SET y_state_base64=?,state_hash=?,code_hash=?,revision=revision+1,last_actor_id=?,
             last_actor_source='auth',last_client_id=?,last_client_seq=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
           WHERE week_id=? AND pair_group_id=? AND question_slug=? AND question_version=? AND language=?
             AND revision=? AND state_hash=? AND EXISTS (SELECT 1 FROM access)
-            AND ${interviewTimerOpenSql()}`,
+            AND ${open.sql} AND ${candidate.sql}`,
         args:[...authorization.accessArgs,merged.stateBase64,merged.stateHash,merged.codeHash,viewerId,
           input.clientId,input.clientSeq,input.weekId,input.pairGroupId,input.questionSlug,input.questionVersion,
-          input.language,current.revision,current.stateHash,
-          ...(interviewSessionEnabled()?[input.weekId,input.pairGroupId]:[])],
+          input.language,current.revision,current.stateHash,...open.args,...candidate.args],
       });
-      await assertInterviewStillOpen(transaction,authorization.pair);
+      await assertInterviewStillOpen(transaction,authorization.pair,mode);
+      await assertCandidateMayWrite(transaction,mode,viewerId,input);
       if(Number(updated?.rowsAffected)!==1){ await transaction.rollback(); settled=true; continue; }
       await projectWorkspaceCode(transaction,input,authorization,{
-        code:merged.code,revision:current.revision+1,viewerId,
+        code:merged.code,revision:current.revision+1,viewerId,mode,
       });
       const document=normalizedRow(await readRow(transaction,input),input);
-      await assertInterviewStillOpen(transaction,authorization.pair);
+      await assertInterviewStillOpen(transaction,authorization.pair,mode);
       commitStarted=true; await transaction.commit(); settled=true;
       return {document,idempotent:false,pair:authorization.pair};
     }catch(error){
       if(transaction&&!settled&&!commitStarted){ try{ await transaction.rollback(); settled=true; }catch{} }
       if(error instanceof InterviewEndedError) return {terminal:true};
+      if(error instanceof CandidateEditingClosedError) return {editingClosed:true};
       if(attempt===MAX_TRANSACTION_ATTEMPTS-1||!retryableConflict(error)) throw error;
       try{ await transaction?.close?.(); }catch{}
       transaction=null;
@@ -660,6 +720,7 @@ async function withDocumentLock(request,operation){
 
 async function readCanonicalCodeForExecutionUnlocked(db,{viewerId,room,questionSlug,questionVersion,language,documentVersion}){
   const identity={...room,questionSlug,questionVersion,language};
+  const mode=await resolveInterviewMode(db);
   for(let attempt=0;attempt<MAX_TRANSACTION_ATTEMPTS;attempt+=1){
     let transaction=null; let settled=false; let commitStarted=false;
     try{
@@ -670,9 +731,15 @@ async function readCanonicalCodeForExecutionUnlocked(db,{viewerId,room,questionS
         await transaction.rollback(); settled=true;
         throw new CodeDocumentInputError('valid document_version required');
       }
-      if(await completedPair(transaction,authorization,identity)){
+      if(await completedPair(transaction,authorization,identity,mode)){
         commitStarted=true; await transaction.commit(); settled=true;
         return {eligible:true,terminal:true,pair:authorization.pair};
+      }
+      // The candidate's workspace is inert in the lobby (#464): no new runs.
+      const gate=await readInterviewGate(transaction,mode,identity);
+      if(gate&&!gate.live&&gate.candidateUserId===viewerId){
+        commitStarted=true; await transaction.commit(); settled=true;
+        return {eligible:true,lobby:true,pair:authorization.pair};
       }
       const row=await readRow(transaction,identity);
       if(!row||Number(row.retention_expired)===1){

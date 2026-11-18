@@ -1,5 +1,6 @@
 import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, requestMatchesCircleContext, resolveActiveCircleContext, secondaryCircleWorkspaceEnabled } from './_active-circle.js';
+import { resolveInterviewMode } from './_interview-session.js';
 import { consumeRelayTokenBudget, mintRelayToken, parseRelayTokenRequest, readRelayAuthorization, realtimeRelayConfiguration, RELAY_SESSION_MARGIN_SECONDS, RelaySessionExpiredError } from './_realtime-relay.js';
 
 const notFound=res=>res.status(404).json({error:'pair not found'});
@@ -41,7 +42,9 @@ export async function handleRelayToken(req,res){
       context=await resolveActiveCircleContext(transaction,auth);
       if(!context.ok||context.membership?.is_primary!==true||!requestMatchesCircleContext(req,context)) return notFound(res);
     }
-    const pair=await readRelayAuthorization(transaction,{viewerId,...identity});
+    // The lobby/lock gate runs here, before any quota is spent (#464).
+    const mode=await resolveInterviewMode(db);
+    const pair=await readRelayAuthorization(transaction,{viewerId,mode,...identity});
     if(!pair) return notFound(res);
     await transaction.commit(); await transaction.close?.(); transaction=null;
     const budget=await consumeRelayTokenBudget(db,config,viewerId);
@@ -52,9 +55,9 @@ export async function handleRelayToken(req,res){
     // Quota consumption or other awaits can cross a DB-time interview end.
     // Reauthorize at issuance, preserving the same participant snapshot.
     if(!await legacyWorkspaceAvailable(db,auth)) return notFound(res);
-    const currentPair=await readRelayAuthorization(db,{viewerId,...identity});
+    const currentPair=await readRelayAuthorization(db,{viewerId,mode,...identity});
     if(!currentPair||currentPair.userAId!==pair.userAId||currentPair.userBId!==pair.userBId) return notFound(res);
-    const relay=mintRelayToken(config,{viewerId,identity,pair,sessionExpiresAt:auth.exp});
+    const relay=mintRelayToken(config,{viewerId,identity,pair:currentPair,sessionExpiresAt:auth.exp});
     return res.json({ok:true,...relay,...(context?{
       circle_context_version:context.context_version,circle_public_id:context.membership.public_id,
     }:{})});

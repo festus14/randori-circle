@@ -36,13 +36,15 @@ still serves `/api/*` (ID-80).
   and delete their own account. App admins have a read-only Diagnostics view.
 
 Built but switched off: secondary circles (multi-circle), AI coaching and the
-first interview-lifecycle increment. `INTERVIEW_SESSION_ENABLED=true` changes
-primary two-person rooms to interviewer-only role/timer/end controls and a
-25-minute timer whose expiry ends the interview for both participants. It is
-off by default; no new migration is required. Lobby/admission, scheduled
-auto-start, interviewer-owned question selection and candidate edit locks are
-not included yet ([session controls](docs/SESSION_CONTROLS.md#interview-first-increment-464),
-ID-95 in the decision log).
+interview lifecycle. `INTERVIEW_SESSION_ENABLED=true` changes primary
+two-person rooms to interviewer-only role/timer/end controls and a 25-minute
+timer whose expiry ends the interview for both participants
+([ID-95](docs/SESSION_CONTROLS.md#interview-first-increment-464)). Once additive
+migration 26 is applied, rooms also open in a lobby: the interviewer admits
+the candidate or the agreed schedule starts the interview, the interviewer
+owns question and language selection, and can lock candidate editing
+([ID-99](docs/SESSION_CONTROLS.md#interview-lobby-schedule-start-question-ownership-and-edit-lock-464)).
+It is off by default.
 `DAILY_VIDEO_ENABLED=true` (with the server-only `DAILY_API_KEY` and
 `DAILY_DOMAIN`) adds consent-gated in-room audio and video through Daily for
 primary two-person rooms. Calls are never recorded, and the private meeting

@@ -2771,6 +2771,8 @@ a.btn{text-decoration:none}
                   </label>
                   <button id="sessionControlsStartPause" class="btn" data-testid="session-controls-start-pause" type="button">Start</button>
                   <button id="sessionControlsReset" class="btn secondary" data-testid="session-controls-reset" type="button">Reset to 25:00</button>
+                  <button id="sessionControlsAdmit" class="btn" data-testid="session-controls-admit" type="button" hidden>Admit candidate</button>
+                  <button id="sessionControlsLock" class="btn secondary" data-testid="session-controls-lock" type="button" aria-pressed="false" hidden>Lock candidate editing</button>
                   <button id="sessionControlsEnd" class="btn secondary" data-testid="session-controls-end" type="button" hidden>End interview for both</button>
                   <button id="sessionControlsRetry" class="btn secondary" data-testid="session-controls-retry" type="button" hidden>Retry</button>
                 </div>
@@ -14812,11 +14814,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       ? window._randori_questions?.custom?.find?.(question=>question.slug===selection.slug)?.version
       : null;
     const questionVersion=selection.version??legacyVersion;
+    // Interview lobby (#464): the interviewer owns the selection, so a
+    // candidate checkpoint always carries the authoritative one (none: no save).
+    const owned=window._randori_session_controls?.selectionOwned===true?state.authoritative||{language:'javascript',question_id:'',question_version:null}:null;
     return {
       code:String(currentCode()),
-      language:String(document.getElementById('langSelect')?.value||'javascript'),
-      question_id:String(selection.slug||''),
-      question_version:Number.isInteger(questionVersion)&&questionVersion>0?questionVersion:null,
+      language:owned?owned.language:String(document.getElementById('langSelect')?.value||'javascript'),
+      question_id:owned?owned.question_id:String(selection.slug||''),
+      question_version:owned?owned.question_version:Number.isInteger(questionVersion)&&questionVersion>0?questionVersion:null,
       board:window._randori_board?.snapshot?.()||null,
     };
   }
@@ -14935,7 +14940,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     state.hydrationDirtyCode=false;
     state.hydrationDirtyBoard=false;
     state.forceBoardUpgrade=false;
-    state.syncBlocked=false;
+    state.syncBlocked=false; state.held=false;
     state.authoritative=null;
     state.pending=null;
     window._randori_board?.setSyncState?.('connecting');
@@ -15055,6 +15060,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   async function drainSave(){
     saveTimer=null;
+    // Lobby: keep the candidate's local changes pending until admission.
+    if(window._randori_session_controls?.inLobby===true||state.held) return;
     if(window._randori_session_controls?.ended===true||state.inFlight||!state.pending||!state.room||!signedIn()||activeRoom()!==state.room) return;
     const flags=state.pending;
     const change=composeChange(flags);
@@ -15085,12 +15092,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         return;
       }
       if(response.status===409){
+        const owned=data.code==='interview_selection_owned',held=/^interview_(lobby|editing_locked)$/.test(String(data.code||''));
         if(next.snapshot&&next.revision>=state.revision){
-          const preserveCode=request.codeDirty||!!state.pending?.codeDirty;
+          const preserveCode=!owned&&(request.codeDirty||!!state.pending?.codeDirty);
           const preserveBoard=request.boardDirty||!!state.pending?.boardDirty||next.snapshot.schema_version<3;
           if(next.snapshot.schema_version<3) state.forceBoardUpgrade=true;
           applySnapshot(next.snapshot,next.revision,room,epoch,{code:!preserveCode,board:!preserveBoard});
         }
+        // Held changes resume on the next access change, not on a retry budget.
+        if(held){ discardPending=true; state.pending=flags; state.held=true; return; }
         retryLater=true;
         return;
       }
@@ -15134,6 +15144,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!guard()) return false;
     if(!room||window._randori_session_controls?.ended===true) return true;
     if(!signedIn()||!canonical(room)||activeRoom()!==room) return false;
+    // Nothing of the candidate's can be checkpointed in the lobby or before the
+    // interviewer's first checkpoint; local changes stay pending.
+    if(window._randori_session_controls?.inLobby===true||window._randori_session_controls?.selectionOwned===true&&!state.authoritative) return true;
     // Turn the board's gesture debounce into a workspace edit while the old
     // room is still active, then wait for its CAS write to be acknowledged.
     window._randori_board?.flush?.();
@@ -15199,6 +15212,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // Generic persistence events also come from catalogue/Monaco setup. Only
     // direct user input/change handlers below may claim a pre-hydration edit.
     scheduleSave('code');
+  });
+  window.addEventListener('randori:interview-access',event=>{
+    if(String(event.detail?.room||'')===String(state.room||'')&&!event.detail.inLobby&&!event.detail.editBlocked){ state.held=false; scheduleSave('resume'); }
   });
   window.addEventListener('randori:code-document-hydrated',event=>{
     if(String(event.detail?.room||'')!==String(state.room||'')) return;
@@ -15469,6 +15485,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const startPause=document.getElementById('sessionControlsStartPause');
   const resetButton=document.getElementById('sessionControlsReset');
   const endButton=document.getElementById('sessionControlsEnd');
+  const admitButton=document.getElementById('sessionControlsAdmit');
+  const lockButton=document.getElementById('sessionControlsLock');
   const retry=document.getElementById('sessionControlsRetry');
   const toolbarRole=document.getElementById('roleToggle');
   const toolbarTimer=document.getElementById('timerBtn');
@@ -15558,8 +15576,17 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       ||raw.can_control!==(raw.viewer_role==='interviewer'&&!raw.terminal)
       ||![null,'timer_expired','interviewer_ended','completed'].includes(raw.end_reason)
       ||raw.terminal!==(raw.end_reason!==null))) return null;
+    // Lobby/lock (#464): the server decides phase and who may edit.
+    const lobby=raw.lobby_mode===true;
+    if(raw.lobby_mode!==undefined&&(!lobby||raw.interview_mode!==true
+      ||!['lobby','live','ended'].includes(raw.phase)||(raw.phase==='ended')!==raw.terminal
+      ||typeof raw.editing_locked!=='boolean'||typeof raw.can_edit!=='boolean'
+      ||![null,'interviewer','schedule'].includes(raw.admission)
+      ||raw.scheduled_start_at!==null&&!validInstant(raw.scheduled_start_at))) return null;
     return {
       interviewMode:raw.interview_mode===true,canControl:raw.interview_mode===true?raw.can_control:!raw.terminal,
+      lobbyMode:lobby,phase:lobby?raw.phase:null,editingLocked:lobby&&raw.editing_locked,canEdit:!lobby||raw.can_edit,
+      admission:lobby?raw.admission:null,scheduledStartAt:lobby?raw.scheduled_start_at:null,
       endReason:raw.end_reason||null,
       timerState:raw.timer_state,remainingMs:remaining,durationMs:duration,
       candidateUserId:candidateId,partnerUserId:partnerId,viewerRole:raw.viewer_role,
@@ -15587,9 +15614,22 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function clearPoll(){
     if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
   }
+  // One access signal for the editor, selection and CRDT queue (#464).
+  let lastAccess='';
+  function gate(){
+    const c=state.controls,on=!!c?.lobbyMode&&!c.terminal&&actorId()===state.actorId&&window._randori_authorized_room===state.room;
+    return {editBlocked:on&&!c.canEdit,selectionOwned:on&&c.viewerRole==='candidate',inLobby:on&&c.phase==='lobby'&&c.viewerRole==='candidate'};
+  }
+  function announceAccess(){
+    const detail={room:state.room,...gate()},access=JSON.stringify(detail);
+    if(access===lastAccess) return;
+    lastAccess=access;
+    window.dispatchEvent(new CustomEvent('randori:interview-access',{detail}));
+  }
   function hide(){
     clearTick(); clearPoll();
-    if(endButton){ endButton.hidden=true; endButton.disabled=true; }
+    for(const button of [endButton,admitButton,lockButton]) if(button){ button.hidden=true; button.disabled=true; }
+    announceAccess();
     if(card){ card.hidden=true; card.setAttribute('aria-busy','false'); }
     if(toolbarRole){ toolbarRole.disabled=true; toolbarRole.textContent='Role'; }
     if(toolbarTimer){ toolbarTimer.disabled=true; toolbarTimer.removeAttribute('data-running'); const label=toolbarTimer.querySelector('#timerText'); if(label) label.textContent='25:00'; }
@@ -15642,7 +15682,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(candidate){ candidate.replaceChildren(); candidate.disabled=true; }
       if(startPause){ startPause.disabled=true; startPause.textContent='Start'; }
       if(resetButton) resetButton.disabled=true;
-      if(endButton){ endButton.hidden=true; endButton.disabled=true; }
+      for(const button of [endButton,admitButton,lockButton]) if(button){ button.hidden=true; button.disabled=true; }
       if(retry){ retry.hidden=state.busy; retry.disabled=state.busy; }
       if(status) status.textContent=state.message||(state.busy?'Loading shared controls…':'Shared controls unavailable — retry.');
       if(toolbarRole) toolbarRole.disabled=true;
@@ -15663,9 +15703,17 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       candidate.disabled=state.busy||!controls.canControl;
     }
     const remaining=effectiveRemaining();
+    const lobby=controls.phase==='lobby';
     if(startPause){
       startPause.textContent=controls.timerState==='running'&&remaining>0?'Pause':'Start';
-      startPause.disabled=state.busy||!controls.canControl||remaining===0;
+      startPause.disabled=state.busy||!controls.canControl||remaining===0||lobby;
+    }
+    const owner=controls.lobbyMode&&controls.viewerRole==='interviewer';
+    if(admitButton){ admitButton.hidden=!owner||!lobby; admitButton.disabled=state.busy||!controls.canControl; }
+    if(lockButton){
+      lockButton.hidden=!owner||controls.terminal; lockButton.disabled=state.busy||!controls.canControl;
+      lockButton.textContent=controls.editingLocked?'Unlock candidate editing':'Lock candidate editing';
+      lockButton.setAttribute('aria-pressed',String(controls.editingLocked));
     }
     if(resetButton) resetButton.disabled=state.busy||!controls.canControl;
     if(endButton){ endButton.hidden=!controls.interviewMode; endButton.disabled=state.busy||!controls.canControl; }
@@ -15675,16 +15723,19 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       toolbarRole.textContent=controls.viewerRole==='candidate'?'Candidate':'Interviewer';
       toolbarRole.setAttribute('aria-label',`You are ${controls.viewerRole}; switch shared participant roles`);
     }
-    if(toolbarTimer) toolbarTimer.disabled=state.busy||!controls.canControl||remaining===0;
+    if(toolbarTimer) toolbarTimer.disabled=state.busy||!controls.canControl||remaining===0||lobby;
+    const starts=controls.scheduledStartAt&&lobby?` It starts automatically at ${new Date(controls.scheduledStartAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}.`:'';
     if(status){
-      status.textContent=state.message||(controls.terminal
+      status.textContent=state.message||(lobby?(owner?`Your candidate is in the lobby. Admit them when you are ready.${starts}`
+        :`You are in the lobby. The interviewer will admit you.${starts}`):controls.terminal
         ?(controls.interviewMode?'Interview ended. Controls are read-only. Each participant must confirm completion below.':
           'Session completed. The shared timer and roles are now read-only.')
         :(remaining===0?'Time is up. Reset the timer to begin another focus block.'
-          :(controls.interviewMode&&!controls.canControl?'The interviewer controls the shared timer and roles.':
+          :(controls.editingLocked&&!controls.canEdit?'The interviewer has paused your editing. Unsynced edits stay on this device until editing resumes.':
+            controls.interviewMode&&!controls.canControl?'The interviewer controls the shared timer and roles.':
             controls.timerState==='running'?'Shared focus timer is running.':'Shared focus timer is paused.')));
     }
-    renderTimer(); scheduleTick(); schedulePoll();
+    renderTimer(); scheduleTick(); schedulePoll(); announceAccess();
     if(controls.interviewMode&&controls.terminal){
       window.dispatchEvent(new CustomEvent('randori:interview-ended',{detail:{room:state.room,actorId:state.actorId}}));
     }
@@ -15741,7 +15792,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       state.controls=controls; state.completionVersion=controls.completionVersion;
       state.receivedAt=Date.now(); state.busy=false;
       state.message=priorControls&&priorControls.candidateUserId!==controls.candidateUserId
-        ?`Participant roles updated. You are ${controls.viewerRole}.`:'';
+        ?`Participant roles updated. You are ${controls.viewerRole}.`
+        :priorControls?.phase==='lobby'&&controls.phase==='live'?(controls.admission==='schedule'?'The interview started on schedule.':'The interviewer admitted you. The interview is live.')
+        :priorControls&&priorControls.editingLocked!==controls.editingLocked&&controls.viewerRole==='candidate'?(controls.editingLocked?'':'Editing resumed. Held edits are syncing.'):'';
       render(); return true;
     }catch(error){
       if(error?.name!=='AbortError'&&matchesIdentity(scope)){
@@ -15762,8 +15815,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   async function mutate(action,candidateUserId=null){
     const controls=state.controls;
     if(!controls||state.busy||!controls.canControl
-      ||!['start','pause','reset','set_candidate','end'].includes(action)
-      ||action==='end'&&!controls.interviewMode) return false;
+      ||!['start','pause','reset','set_candidate','end','admit','lock_editing','unlock_editing'].includes(action)
+      ||action==='end'&&!controls.interviewMode||/_editing|admit/.test(action)&&!controls.lobbyMode) return false;
     state.requestEpoch+=1; state.controller?.abort();
     const controller=new AbortController(); state.controller=controller;
     state.busy=true; state.message='Saving shared controls…'; const scope=identityScope(); render();
@@ -15786,7 +15839,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       state.controls=next; state.completionVersion=next.completionVersion; state.receivedAt=Date.now();
       state.busy=false;
       state.message=action==='start'?'Shared timer started.':action==='pause'?'Shared timer paused.':
-        action==='reset'?'Shared timer reset to 25 minutes.':action==='end'?'Interview ended for both participants. Confirm completion below.':'Participant roles updated.';
+        action==='reset'?'Shared timer reset to 25 minutes.':action==='end'?'Interview ended for both participants. Confirm completion below.':
+        action==='admit'?'Candidate admitted. The interview is live.':action==='lock_editing'?'Candidate editing is locked.':
+        action==='unlock_editing'?'Candidate editing is unlocked.':'Participant roles updated.';
       render(); return true;
     }catch(error){
       if(error?.name!=='AbortError'&&matchesMutation(scope)){
@@ -15811,6 +15866,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   candidate?.addEventListener('change',()=>{ mutate('set_candidate',Number(candidate.value)); });
   startPause?.addEventListener('click',toggleTimer);
   resetButton?.addEventListener('click',()=>mutate('reset'));
+  admitButton?.addEventListener('click',()=>mutate('admit'));
+  lockButton?.addEventListener('click',()=>mutate(state.controls?.editingLocked?'unlock_editing':'lock_editing'));
   endButton?.addEventListener('click',()=>{
     if(state.controls?.canControl&&window.confirm('End this interview for both participants? It cannot be restarted while interview mode is enabled.')) mutate('end');
   });
@@ -15850,6 +15907,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   window.addEventListener('randori:workspace-scope-reset',()=>reset());
   window._randori_session_controls={load,mutate,reset,normalize,toggleTimer,toggleCandidate,
     get ended(){return !!state.controls?.interviewMode&&state.controls.terminal&&actorId()===state.actorId&&window._randori_authorized_room===state.room;},
+    // Candidate-only gates; the server enforces the same rules.
+    get editBlocked(){return gate().editBlocked;},get selectionOwned(){return gate().selectionOwned;},get inLobby(){return gate().inLobby;},
     get room(){return state.room;},get controls(){return state.controls?{...state.controls}:null;},
     get remainingMs(){return effectiveRemaining();}};
 })();

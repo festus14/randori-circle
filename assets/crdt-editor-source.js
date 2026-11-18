@@ -20,7 +20,25 @@ const memoryQueues=new Map();
 const state={epoch:0,room:null,identity:null,actorId:null,doc:null,text:null,binding:null,
   textObserver:null,textareaHandler:null,textareaKeyHandler:null,updateHandler:null,undoManager:null,revision:0,version:null,
   hydrated:false,inFlight:false,controller:null,pollTimer:null,retryMs:500,status:'local',completed:false,
-  awaitingRoom:false,hydrationLockEpoch:null,relay:null,relayEnabled:false};
+  awaitingRoom:false,hydrationLockEpoch:null,relay:null,relayEnabled:false,relayDirection:null};
+
+// Interview lobby/lock (#464): while the server holds candidate editing, the
+// editor is read-only and queued edits stay on this device; they are replayed
+// (merged) once editing resumes. Nothing queued is silently discarded.
+function blocked(){ return window._randori_session_controls?.editBlocked===true; }
+// Lobby mode makes the relay one-way (#464 + ID-96). Relay packets carry no
+// authenticated sender, so the interviewer never applies any of them (a locked
+// or lobby candidate cannot reach the interviewer's document through the
+// relay) and the candidate never broadcasts. While held, the candidate does not
+// re-queue relayed bytes (the interviewer persists their own edits); otherwise
+// it keeps ID-96's receiver redundancy so dependent edits stay ordered.
+function lobbyRole(role){
+  const controls=window._randori_session_controls?.controls;
+  return state.relayDirection===(role==='interviewer'?'send':'receive')||controls?.lobbyMode===true&&controls.viewerRole===role;
+}
+const relayInbound=()=>!lobbyRole('interviewer');
+const relayOutbound=()=>!lobbyRole('candidate');
+const relayQueued=()=>!blocked();
 
 function actorId(){
   const id=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0);
@@ -178,10 +196,11 @@ function setStatus(value,message=''){
   if(state.completed&&value!=='error') return;
   state.status=value;
   const node=document.getElementById('codeSyncStatus');
-  const labels={local:'not shared',connecting:'connecting…',syncing:'syncing…',synced:'synced',offline:'offline — changes queued',retry:'sync interrupted — retrying',error:'sync unavailable'};
+  const labels={local:'not shared',connecting:'connecting…',syncing:'syncing…',synced:'synced',offline:'offline — changes queued',retry:'sync interrupted — retrying',error:'sync unavailable',
+    held:'editing paused by the interviewer — unsynced edits kept on this device'};
   if(node){ node.dataset.state=value; node.textContent=message||labels[value]||value; }
   const run=document.getElementById('runBtn');
-  if(run&&(state.identity||state.awaitingRoom)) run.disabled=!isAcknowledged();
+  if(run&&(state.identity||state.awaitingRoom)) run.disabled=!isAcknowledged()||window._randori_session_controls?.inLobby===true;
   window.dispatchEvent(new CustomEvent('randori:code-sync-state',{detail:{room:state.room,state:value,acknowledged:isAcknowledged()}}));
 }
 
@@ -191,13 +210,14 @@ function isAcknowledged(){
 }
 
 function setEditorReadOnly(readOnly){
-  readOnly=readOnly||window._randori_session_controls?.ended===true;
+  readOnly=readOnly||window._randori_session_controls?.ended===true||blocked();
   try{ window._randori_code?.getEditor?.()?.updateOptions?.({readOnly}); }catch{}
   const textarea=document.getElementById('editor'); if(textarea) textarea.readOnly=readOnly;
 }
 
 function completeIdentity(){
   const identity=state.identity;
+  const lost=!!identity&&readQueue(identity).length>0;
   state.completed=true;
   if(identity) writeQueue([],identity);
   disposeDocument();
@@ -206,7 +226,7 @@ function completeIdentity(){
   // not attendance. Only known peer mode or observed receipts justify "completed".
   const completed=window._randori_session_completion?.completion?.state==='completed'
     ||window._randori_session_controls?.controls?.interviewMode===false;
-  setStatus('error',completed?'session completed — editing closed':'interview ended — editing closed');
+  setStatus('error',`${completed?'session completed':'interview ended'} — editing closed${lost?'; unsynced edits were not saved':''}`);
 }
 
 function currentCode(){
@@ -313,6 +333,7 @@ function acceptResponse(data,epoch,identity,{apply=true}={}){
 
 function configureRelay(data,epoch,identity){
   state.relayEnabled=data?.realtime_relay===true&&/^week_[1-9]\d*_pair_[1-9]\d*$/.test(identity.room);
+  state.relayDirection=['send','receive'].includes(data?.realtime_relay_direction)?data.realtime_relay_direction:null;
   if(!state.relayEnabled||!matches(epoch,identity)||!navigator.onLine){
     state.relay?.stop(); state.relay=null; return;
   }
@@ -334,7 +355,7 @@ function configureRelay(data,epoch,identity){
         });
       },
       onUpdate:update=>{
-        if(matches(epoch,identity)&&state.doc) applyValidatedRelayUpdate(state.doc,update,ORIGIN_RELAY);
+        if(matches(epoch,identity)&&state.doc&&relayInbound()) applyValidatedRelayUpdate(state.doc,update,ORIGIN_RELAY);
         // The doc update handler queues this for HTTPS and disables Run. Relay
         // bytes never alter revision/version or count as acknowledgement.
       },
@@ -383,6 +404,9 @@ async function hydrate(identity,epoch){
     if(result.stale) return false;
     if(result.response.status===401||result.response.status===404){ deactivate(); return false; }
     if(result.response.status===409&&result.data.code==='session_completed'){ completeIdentity(); return false; }
+    // The interviewer has not opened or released this question yet; access
+    // changes re-run activation.
+    if(result.response.status===409&&/^interview_(editing_locked|lobby)$/.test(String(result.data.code||''))){ setStatus('held','waiting for the interviewer'); return false; }
     if(!result.response.ok) throw new Error(result.data.error||'code document unavailable');
     const doc=new Y.Doc({gc:true}); const text=doc.getText('code');
     Y.applyUpdate(doc,base64ToBytes(result.data.state),ORIGIN_REMOTE);
@@ -391,11 +415,13 @@ async function hydrate(identity,epoch){
     state.version=result.data.document_version;
     state.updateHandler=(update,origin)=>{
       if(state.completed||origin===ORIGIN_REMOTE||origin===ORIGIN_PENDING||!sameIdentity(identity,state.identity)) return;
+      // The sender persists its own edits; in lobby mode a receiver never re-sends them.
+      if(origin===ORIGIN_RELAY&&!relayQueued()) return;
       const queue=readQueue(identity); queue.push(bytesToBase64(update));
       const persisted=writeQueue(queue,identity);
       if(!persisted&&!navigator.onLine) setStatus('error','not saved locally — keep this tab open');
       else setStatus(navigator.onLine?'syncing':'offline');
-      if(origin!==ORIGIN_RELAY) state.relay?.send(update);
+      if(origin!==ORIGIN_RELAY&&relayOutbound()) state.relay?.send(update);
       schedule(SEND_DEBOUNCE_MS);
     };
     doc.on('update',state.updateHandler);
@@ -424,6 +450,7 @@ async function drain(){
   const identity=state.identity,epoch=state.epoch;
   if(!identity||!state.hydrated||state.inFlight||!navigator.onLine||state.completed) return false;
   const queue=readQueue(identity); if(!queue.length){ setStatus('synced'); return true; }
+  if(blocked()){ setStatus('held'); return false; }
   state.inFlight=true; setStatus('syncing');
   const update=queue[0];
   try{
@@ -438,6 +465,7 @@ async function drain(){
     if(result.response.status===409&&result.data.code==='session_completed'){
       completeIdentity(); return false;
     }
+    if(result.response.status===409&&/^interview_(editing_locked|lobby)$/.test(String(result.data.code||''))){ setStatus('held'); return false; }
     if(!result.response.ok) throw new Error(result.data.error||'code sync failed');
     if(!acceptResponse(result.data,epoch,identity)) throw new Error('invalid code document response');
     const remaining=readQueue(identity); if(remaining[0]===update) remaining.shift(); writeQueue(remaining,identity);
@@ -449,7 +477,7 @@ async function drain(){
   }finally{
     if(epoch===state.epoch) state.inFlight=false;
     if(matches(epoch,identity)){
-      if(readQueue(identity).length&&navigator.onLine) schedule(state.status==='retry'?state.retryMs:0);
+      if(readQueue(identity).length&&navigator.onLine) schedule(state.status==='retry'?state.retryMs:state.status==='held'?POLL_MS:0);
       else if(!readQueue(identity).length) setStatus('synced');
     }
   }
@@ -458,7 +486,7 @@ async function drain(){
 async function poll(){
   const identity=state.identity,epoch=state.epoch;
   if(!identity||!state.hydrated||document.visibilityState!=='visible'||state.completed) return;
-  if(readQueue(identity).length){ await drain(); schedule(state.status==='retry'?state.retryMs:POLL_MS); return; }
+  if(readQueue(identity).length&&!blocked()){ await drain(); schedule(state.status==='retry'?state.retryMs:POLL_MS); return; }
   if(!navigator.onLine){ setStatus('offline'); schedule(); return; }
   try{
     const result=await fetchJson(endpoint(identity,{afterRevision:state.revision}),{},epoch,identity);
@@ -468,13 +496,13 @@ async function poll(){
     if(!result.response.ok) throw new Error(result.data.error||'poll failed');
     if(!acceptResponse(result.data,epoch,identity,{apply:result.data.changed!==false})) throw new Error('invalid poll response');
     configureRelay(result.data,epoch,identity);
-    state.retryMs=500; setStatus('synced');
+    state.retryMs=500; setStatus(readQueue(identity).length?'held':'synced');
   }catch{ if(matches(epoch,identity)) setStatus(navigator.onLine?'retry':'offline'); }
   schedule(state.status==='retry'?state.retryMs:POLL_MS);
 }
 
 function disposeDocument(){
-  state.relay?.stop(); state.relay=null; state.relayEnabled=false;
+  state.relay?.stop(); state.relay=null; state.relayEnabled=false; state.relayDirection=null;
   state.controller?.abort(); state.controller=null;
   if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
   state.binding?.destroy?.(); state.binding=null;
@@ -581,6 +609,12 @@ window.addEventListener('randori:monaco-ready',()=>{ if(state.hydrated) attachEd
 window.addEventListener('randori:auth-refreshed',scheduleActivation);
 window.addEventListener('randori:interview-ended',event=>{
   if(event.detail?.room===state.room&&window._randori_session_controls?.ended===true) completeIdentity();
+});
+window.addEventListener('randori:interview-access',event=>{
+  if(event.detail?.room!==state.room&&event.detail?.room!==window._randori_authorized_room) return;
+  setEditorReadOnly(state.hydrationLockEpoch!==null);
+  if(blocked()){ if(state.identity&&readQueue().length) setStatus('held'); return; }
+  if(state.hydrated) schedule(0); else scheduleActivation();
 });
 window.addEventListener('randori:completion-observed',event=>{
   if(event.detail?.room===state.room&&event.detail?.state==='completed'){

@@ -176,6 +176,13 @@ const PLAN_METADATA=Object.freeze([
   "operationsChecksum": "1130da89e0e33b48fdc60427c8cfe14d112597023c88b7db26f5e37beb12a6e9",
   "checksum": "a594451181260b34d2d87564e70c0b7b11f2cd36a77abd2ebcdcf3b6d8dfd333"
 }),
+  Object.freeze({
+    version:26,
+    name:'interview-lobby-and-edit-lock',
+    description:'Additive per-pair interview admission (lobby, interviewer or schedule) and candidate edit lock bound to a source-authenticated pair snapshot (#464).',
+    operationsChecksum:'8d7d70b1d6b2dfe0827f108891cc7808a504ac11975dca4f34c47dfdb0988b81',
+    checksum:'892717efad7a119b02b5eb616c311e00e955fc1731ecda625b281a240837af19',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){
