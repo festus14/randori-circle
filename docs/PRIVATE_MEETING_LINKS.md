@@ -1,5 +1,10 @@
 # Private external meeting links
 
+While [embedded video](EMBEDDED_VIDEO.md) (`DAILY_VIDEO_ENABLED`, ID-98) is
+being proven, this link stays fully supported and is the embed's fallback:
+when the in-room call is unavailable, the room offers this link (and the
+direct browser call) instead. Nothing here changes when the flag is on.
+
 ## Product and API contract
 
 Randori stores one provider-neutral HTTPS meeting URL for the canonical primary

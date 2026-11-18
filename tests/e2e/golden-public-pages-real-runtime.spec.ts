@@ -13,7 +13,8 @@ import {newGoldenPage,openSignin,signInOwner,startGoldenRuntime,waitForAppFetche
 
 const PAGES=[
   // The privacy policy was last updated for the optional realtime relay
-  // disclosure (issue #461); the terms keep their earlier date.
+  // (issue #461) and embedded Daily video (issue #463) disclosures; the
+  // terms keep their earlier date.
   {path:'/privacy',heading:'Privacy Policy',landingLink:'landing-privacy-policy-link',menuItem:'Privacy Policy',updated:'18 November 2026'},
   {path:'/terms',heading:'Terms of Service',landingLink:'landing-terms-link',menuItem:'Terms of Service',updated:'22 October 2026'},
 ] as const;
