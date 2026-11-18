@@ -165,6 +165,7 @@ function outboxLines(card) {
 
 function executionLines(card) {
   const lines = [];
+  const latency=value=>Number.isSafeInteger(value)&&value>=0?`${value} ms`:'unknown';
   if (card.configured === true) lines.push(`Provider: ${String(card.provider || 'unknown')}.`);
   else if (card.reason === 'unsupported') lines.push('The configured execution provider is not supported, so Run is unavailable.');
   else if (card.reason === 'misconfigured') lines.push(`Provider ${String(card.provider || '')} has no valid endpoint, so Run is unavailable.`);
@@ -173,6 +174,21 @@ function executionLines(card) {
   lines.push(`Last 24 h: ${wholeNumber(recent.success)} succeeded, ${wholeNumber(recent.failed)} failed, ${wholeNumber(recent.unavailable)} unavailable.`);
   lines.push(card.lastOutcome ? `Latest run: ${String(card.lastOutcome)}.` : 'No runs recorded yet.');
   if (EXECUTION_SMOKE_CATEGORY_COPY[card.category]) lines.push(EXECUTION_SMOKE_CATEGORY_COPY[card.category]);
+  const queue=record(card.queue);
+  if(queue?.enabled){
+    if(queue.ready!==true) lines.push('Execution admission is unavailable; new runs fail closed.');
+    else{
+      lines.push(`Queue: ${wholeNumber(queue.queueDepth)} waiting · ${wholeNumber(queue.activeUnits)}/${wholeNumber(queue.spend?.globalConcurrency)} active provider units.`);
+      lines.push(`Last 15 min: ${wholeNumber(queue.recent?.admitted)} admitted · ${wholeNumber(queue.recent?.shed)} shed · ${wholeNumber(queue.recent?.quota)} quota refusals.`);
+      lines.push(`Wait p50/p95: ${latency(queue.waitMs?.p50)} / ${latency(queue.waitMs?.p95)} · provider p50/p95: ${latency(queue.providerMs?.p50)} / ${latency(queue.providerMs?.p95)}.`);
+      lines.push(`Spend guard: ${wholeNumber(queue.spend?.usedMinuteUnits)}/${wholeNumber(queue.spend?.globalPerMinute)} provider units/min · ${wholeNumber(queue.spend?.usedDayUnits)}/${wholeNumber(queue.spend?.globalPerDay)} units/day (not a currency estimate).`);
+    }
+    for(const [key,name] of SMOKE_LANGUAGES){
+      lines.push(`${name} pristine snapshot: ${card.warm?.[key]?.configured===true?'configured':'not configured'}.`);
+      const sample=card.coldStart?.languages?.[key];
+      if(sample) lines.push(`${name} cold/snapshot create p95: ${latency(sample.cold?.p95)} / ${latency(sample.snapshot?.p95)} (${wholeNumber(sample.cold?.samples)} pairs; ${sample.sufficient?'measured':'need 20 pairs'}).`);
+    }
+  }
   return lines;
 }
 

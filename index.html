@@ -4354,6 +4354,7 @@ async function refreshMe(){
       ||(capabilities.accountDeletion!==undefined&&typeof capabilities.accountDeletion!=='boolean')
       ||(capabilities.dataExport!==undefined&&typeof capabilities.dataExport!=='boolean')
       ||(capabilities.executionStdin!==undefined&&typeof capabilities.executionStdin!=='boolean')
+      ||(capabilities.executionQueue!==undefined&&typeof capabilities.executionQueue!=='boolean')
       ||(capabilities.embeddedVideo!==undefined&&typeof capabilities.embeddedVideo!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
@@ -4376,6 +4377,7 @@ async function refreshMe(){
       accountDeletion:capabilities.accountDeletion===true,
       dataExport:capabilities.dataExport===true,
       executionStdin:capabilities.executionStdin===true,
+      ...(capabilities.executionQueue===true?{executionQueue:true}:{}),
       embeddedVideo:capabilities.embeddedVideo===true,
       registrationMode:mode,
     });
@@ -13691,6 +13693,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const pairRunsStatus=document.getElementById('pairRunsStatus');
   const pairRunsState={room:null,epoch:0,after:0,items:[],abort:null,inFlight:false,blocked:false,refreshQueued:false};
   let verifiedRunEpoch=0;
+  let verifiedRunPending=false,busyRetryUntil=0;
   function executionContextKey(){
     const actor=window._randori_auth?.me?.id||window._randori_auth?.me?.uid;
     if(!actor) return null;
@@ -13703,6 +13706,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // newer Run or a changed execution context makes this response obsolete.
   function settleVerifiedRun(operation){
     if(operation.epoch!==verifiedRunEpoch) return false;
+    verifiedRunPending=false;
     window._randori_ui?.hideLoader?.();
     if(operation.context!==executionContextKey()){
       runOut?.replaceChildren();
@@ -13895,6 +13899,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return editor?.value||'';
   }
   async function upgradedRun(){
+    if(verifiedRunPending&&window._randori_auth?.capabilities?.executionQueue===true) return;
     if(window._randori_session_controls?.ended===true) return;
     try{
     // The selected identity survives a filter that hides it, so Run keeps
@@ -13912,6 +13917,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       try{ if(window._randori_ui && window._randori_ui.showLoader) window._randori_ui.showLoader('Running '+lang+'…'); }catch{}
       (async()=>{
         const verifiedOperation={epoch:++verifiedRunEpoch,context:executionContextKey()};
+        verifiedRunPending=true;
         let privateOperation=null;
         try{
           let apiFn = window.api || null;
@@ -13985,6 +13991,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         }catch(e){
           if(!settleVerifiedRun(verifiedOperation)) return;
           privateStdin.render(privateOperation,null);
+          if(e?.code==='execution_busy'&&runOutEl){
+            const current=()=>verifiedOperation.epoch===verifiedRunEpoch&&verifiedOperation.context===executionContextKey()&&getEditorCode()===code;
+            if(!busyRetryUntil) busyRetryUntil=Date.now()+15000;
+            const busy=await import('/assets/execution-busy.js').catch(()=>null);
+            if(!current()) return;
+            if(!busy){runOutEl.textContent='Execution is busy — use Run to retry. Your code was not run.';return;}
+            busy.showExecutionBusy({out:runOutEl,error:e,current,run:upgradedRun,
+              automatic:!privateOperation&&Date.now()<busyRetryUntil,privateInput:!!privateOperation});
+            return;
+          }
           if(e && e.code==='execution_unavailable'){
             if(runOutEl){ runOutEl.innerHTML='<div class="test run-summary" data-status="partial" data-execution-unavailable><div class="small"><b>Code execution is temporarily unavailable.</b> Your code was not run and nothing was recorded.<div class="small muted">Your editor contents are kept — try again in a few minutes.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
             if(window.toast) window.toast('Code execution is temporarily unavailable');
@@ -14019,7 +14035,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   if(runBtn){
-    runBtn.onclick = upgradedRun;
+    runBtn.onclick = ()=>{busyRetryUntil=0;return upgradedRun();};
   }
 
   async function fetchMyRuns(limit=10, slugFilter=null){
