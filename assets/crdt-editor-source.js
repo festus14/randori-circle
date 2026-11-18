@@ -411,13 +411,29 @@ function mergedPresence(presence){
   return {presence:online===true?'online':online===false?'away':'unknown',peer:null};
 }
 
+// The summary is cheap and synchronous; the DOM work (mirror rebuild and
+// reflow) is coalesced to one animation frame however many events arrive.
 function renderPresence(){
   const presence=state.presence;
   if(!presence?.view) return;
   const {presence:value,peer}=mergedPresence(presence);
   const health=!navigator.onLine?'offline':presence.relayLive?'live':presence.fallback?.healthy===false?'offline':'polling';
   presence.summary={presence:value,health,status:peer?.status||null,selection:peer?.selection||null};
-  try{ presence.view.render({...presence.summary,text:state.text?.toString()||''}); }catch{}
+  if(presence.frame!=null) return;
+  const draw=()=>{
+    presence.frame=null;
+    if(state.presence!==presence) return;
+    try{ presence.view.render({...presence.summary,text:state.text?.toString()||''}); }catch{}
+  };
+  presence.frame=typeof window.requestAnimationFrame==='function'
+    ?{raf:window.requestAnimationFrame(draw)}:{timer:setTimeout(draw,16)};
+}
+
+function cancelPresenceFrame(presence){
+  const frame=presence.frame;
+  presence.frame=null;
+  if(frame?.raf!=null) window.cancelAnimationFrame?.(frame.raf);
+  if(frame?.timer!=null) clearTimeout(frame.timer);
 }
 
 function unbindPresenceEditor(presence){
@@ -466,7 +482,7 @@ function bindPresenceEditor(){
 function configurePresence(data,epoch,identity){
   if(data?.presence!==true||!PRIMARY_ROOM.test(identity.room)||!matches(epoch,identity)){ stopPresence(); return; }
   if(state.presence) return;
-  const presence={relayLive:false,session:null,fallback:null,view:null,localSelection:null,editorCleanup:[],summary:null};
+  const presence={relayLive:false,session:null,fallback:null,view:null,localSelection:null,editorCleanup:[],summary:null,frame:null};
   state.presence=presence;
   try{ presence.view=createPresenceView({room:identity.room,partner:()=>presence.fallback?.partner||null}); }catch{ presence.view=null; }
   presence.textObserver=()=>{ if(state.presence===presence) renderPresence(); };
@@ -501,6 +517,7 @@ function stopPresence({leave=true}={}){
   try{ presence.fallback?.stop({leave}); }catch{}
   unbindPresenceEditor(presence);
   try{ state.text?.unobserve(presence.textObserver); }catch{}
+  cancelPresenceFrame(presence);
   try{ presence.view?.destroy(); }catch{}
 }
 

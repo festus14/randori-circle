@@ -147,6 +147,14 @@ test('replayed, own-seat, phantom and over-cap peers cannot create or extend pre
   for(let index=11;index<11+PRESENCE_MAX_PEERS;index+=1) session.receive(encodeEntries([{clientID:index,clock:1,state:state()}]));
   assert.ok(session.size.states<=PRESENCE_MAX_PEERS+1,'bounded peer map');
   assert.equal(session.receive(encodeEntries([{clientID:500,clock:1,state:state()}])),false);
+  // One multi-entry frame cannot overshoot the cap either (3 tracked + 4 new).
+  session.connection(false); session.connection(true);
+  for(const clientID of [601,602,603]) assert.equal(session.receive(encodeEntries([{clientID,clock:1,state:state()}])),true);
+  assert.equal(session.size.states,4);
+  assert.equal(session.receive(encodeEntries([604,605,606,607].map(clientID=>({clientID,clock:1,state:state()})))),false);
+  assert.equal(session.size.states,4,'frame rejected whole');
+  assert.equal(session.receive(encodeEntries([{clientID:604,clock:1,state:state()}])),true,'the fourth peer still fits');
+  assert.equal(session.receive(encodeEntries([{clientID:605,clock:1,state:state()},{clientID:601,clock:2,state:state()}])),false);
   assert.equal(session.receive(encodeEntries([{clientID:session.clientID,clock:99,state:state()}])),false);
   // Disconnect drops every remote cursor immediately.
   session.connection(false); assert.equal(session.size.states,1);

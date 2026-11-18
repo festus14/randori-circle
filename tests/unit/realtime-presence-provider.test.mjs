@@ -46,7 +46,8 @@ function store({relay=true,presence=true}={}){
 function harness({clock,Socket,server,id}){
   const window=target(),document=target();
   const textarea={...target(),value:'',readOnly:false,selectionStart:0,selectionEnd:0,selectionDirection:'forward',setSelectionRange(){}};
-  const presenceText={textContent:'you alone',parentElement:null};
+  const presenceText={_text:'you alone',writes:0,parentElement:null,
+    get textContent(){ return this._text; },set textContent(value){ this.writes+=1; this._text=value; }};
   const elements={editor:textarea,langSelect:{...target(),value:'javascript'},questionSelect:target(),
     codeSyncStatus:{dataset:{},textContent:''},runBtn:{disabled:false},presenceText};
   const storage=new Map();
@@ -100,6 +101,11 @@ test('bundled presence: live partner join, cursor, then departure on hidden tab 
   assert.deepEqual(plain(right.crdt.presence.selection),{anchor:9,head:15});
   assert.equal(right.textarea.selectionStart,0); assert.equal(right.textarea.selectionEnd,0);
   assert.equal(right.elements.presenceText.textContent,'One is here · line 1 · live');
+  // Bursts of selection/scroll/text events coalesce into one DOM render.
+  await pump(clock,300); const writes=right.elements.presenceText.writes;
+  for(let index=0;index<8;index+=1){ right.textarea.dispatchEvent({type:'scroll'}); right.textarea.dispatchEvent({type:'keyup'}); }
+  clock.advance(16); await settleRelayPromises();
+  assert.equal(right.elements.presenceText.writes-writes,1,'one frame for sixteen events');
   left.select(9,15,'backward'); await pump(clock,300);
   assert.deepEqual(plain(right.crdt.presence.selection),{anchor:15,head:9});
   // Partner edits move the remote cursor with the text (relative positions).

@@ -129,11 +129,12 @@ export function createPresenceSession({doc,text,seat,send,onChange=()=>{},now=Da
       if(destroyed||!connected) return false;
       const entries=parseAwarenessUpdate(update,{localClientId:awareness.clientID});
       if(!entries) return false;
+      // Unknown clients must arrive with a state (no meta for phantom
+      // removals), and every admission in this frame counts toward the cap.
+      let admitted=0;
       for(const {clientID,state} of entries){
-        // Unknown clients must arrive with a state (no meta for phantom
-        // removals) and cannot exceed the peer cap.
         if(!awareness.states.has(clientID)&&(state===null
-          ||awareness.states.size-1>=PRESENCE_MAX_PEERS)) return false;
+          ||awareness.states.size-1+(++admitted)>PRESENCE_MAX_PEERS)) return false;
       }
       const before=new Map(entries.map(({clientID})=>[clientID,awareness.meta.get(clientID)?.clock??-1]));
       const time=now();

@@ -46,17 +46,17 @@ export function presenceLabel({name,presence,status=null,line=null,health}){
 
 export function createPresenceView({document=globalThis.document,window=globalThis.window,room,partner=()=>null}={}){
   const identity=()=>partnerIdentity(room,window?._randori_pair_cache,partner());
-  let destroyed=false,lastPresent=null,decorations=null,layer=null,announcer=null,styleColor=null;
+  let destroyed=false,lastPresent=null,decorations=null,layer=null,announcer=null,styleColor=null,style=null;
+  let wrapper=null,wrapperPosition='';
   const byId=key=>{ try{ return document?.getElementById?.(key)||null; }catch{ return null; } };
   const create=(tag)=>{ try{ return document?.createElement?.(tag)||null; }catch{ return null; } };
   const ensureStyle=color=>{
     if(styleColor===color) return;
-    let style=byId(STYLE_ID);
+    style=style||byId(STYLE_ID);
     if(!style){ style=create('style'); if(!style) return; style.id=STYLE_ID; document.head?.appendChild?.(style); }
     styleColor=color;
     // Colour is validated as #rrggbb above; nothing else is interpolated.
-    style.textContent=`#roomPanel-code{position:relative}`
-      +`.rc-remote-selection{background:${soft(color)}}`
+    style.textContent=`.rc-remote-selection{background:${soft(color)}}`
       +`.rc-remote-caret{position:relative;display:inline-block;width:0;height:1.25em;margin-left:-1px;`
       +`border-left:2px solid ${color};vertical-align:text-bottom}`
       +`#${LAYER_ID}{position:absolute;overflow:hidden;pointer-events:none;color:transparent;`
@@ -75,7 +75,14 @@ export function createPresenceView({document=globalThis.document,window=globalTh
     return announcer;
   };
   const clearMonaco=()=>{ try{ decorations?.clear?.(); }catch{} decorations=null; };
-  const clearLayer=()=>{ try{ layer?.remove?.(); }catch{} layer=null; };
+  // The overlay positions against the textarea's own parent, made a
+  // containing block only while the overlay exists (no global layout rule).
+  const clearLayer=()=>{
+    try{ layer?.remove?.(); }catch{}
+    layer=null;
+    if(wrapper?.style){ wrapper.style.position=wrapperPosition; }
+    wrapper=null; wrapperPosition='';
+  };
   const renderMonaco=(editor,selection)=>{
     const monaco=window?.monaco,model=editor?.getModel?.();
     if(!monaco?.Range||!model||typeof editor.createDecorationsCollection!=='function'){ clearMonaco(); return false; }
@@ -100,6 +107,11 @@ export function createPresenceView({document=globalThis.document,window=globalTh
     if(!layer){
       layer=create('div'); if(!layer) return;
       layer.id=LAYER_ID; layer.setAttribute?.('aria-hidden','true'); layer.dataset.testid='remote-cursor-layer';
+      wrapper=textarea.parentElement||null;
+      if(wrapper?.style){
+        wrapperPosition=wrapper.style.position||'';
+        if(window.getComputedStyle(wrapper).position==='static') wrapper.style.position='relative';
+      }
       textarea.insertAdjacentElement?.('afterend',layer);
     }
     const computed=window.getComputedStyle(textarea);
@@ -152,7 +164,9 @@ export function createPresenceView({document=globalThis.document,window=globalTh
       const label=byId('presenceText'),host=label?.parentElement||null;
       if(host?.dataset){ delete host.dataset.partner; delete host.dataset.health; }
       const dot=host?.querySelector?.('.dot'); if(dot?.style) dot.style.background='';
-      if(announcer) announcer.textContent='';
+      // Leave no presence DOM behind: the next session recreates both.
+      for(const node of [announcer,style||byId(STYLE_ID)]) try{ node?.remove?.(); }catch{}
+      announcer=null; style=null; styleColor=null;
       try{ window?._randori_refresh_presence?.(); }catch{}
     },
   };

@@ -52,7 +52,7 @@ test('labels state who is here, activity, cursor line and connection health in p
 test('the view announces joins and leaves once, not per tick, and restores the bar on teardown',()=>{
   const dom=fakeDom(); let refreshed=0;
   const window={_randori_pair_cache:{room_id:room,partner:{display_name:'Two',color:'#123456'}},
-    _randori_refresh_presence:()=>{ refreshed+=1; },getComputedStyle:()=>({fontFamily:'mono',lineHeight:'1.6',paddingTop:'16px'})};
+    _randori_refresh_presence:()=>{ refreshed+=1; },getComputedStyle:node=>node===dom.pane?{position:node.style.position||'static'}:({fontFamily:'mono',lineHeight:'1.6',paddingTop:'16px'})};
   const view=createPresenceView({document:dom.document,window,room});
   view.render({presence:'unknown',health:'polling',selection:null,text:''});
   const announcer=dom.byId.get('presenceAnnouncer');
@@ -73,6 +73,8 @@ test('the view announces joins and leaves once, not per tick, and restores the b
   // Plain-editor overlay: caret after the forward selection, no local caret change.
   const layer=dom.byId.get('rcRemoteCursorLayer');
   assert.ok(layer); assert.equal(layer.attributes['aria-hidden'],'true');
+  assert.equal(dom.pane.style.position,'relative','only the textarea wrapper becomes a containing block');
+  assert.doesNotMatch(dom.byId.get('rcPresenceStyle').textContent,/roomPanel-code/,'no global layout rule');
   const inner=layer.children[0];
   assert.equal(inner.style.transform,'translate(0px,-12px)','follows textarea scroll');
   const [before,mark,caret]=inner.children;
@@ -86,12 +88,16 @@ test('the view announces joins and leaves once, not per tick, and restores the b
   dom.textarea.style.display='none';
   view.render({presence:'here',status:'idle',health:'live',selection:{anchor:4,head:4},text:dom.textarea.value});
   assert.equal(dom.byId.get('rcRemoteCursorLayer'),undefined,'hidden editor has no overlay');
+  assert.equal(dom.pane.style.position,'','wrapper position restored');
   dom.textarea.style.display='';
   view.render({presence:'away',health:'live',selection:{anchor:4,head:4},text:''});
   assert.equal(live.textContent,'Two left the room'); assert.equal(dom.host.dot.style.background,'');
   assert.equal(dom.byId.get('rcRemoteCursorLayer'),undefined,'absent partner has no cursor');
   view.destroy(); view.destroy();
-  assert.equal(refreshed,1); assert.equal(dom.host.dataset.partner,undefined); assert.equal(live.textContent,'');
+  assert.equal(refreshed,1); assert.equal(dom.host.dataset.partner,undefined);
+  assert.equal(dom.byId.get('presenceAnnouncer'),undefined,'announcer removed');
+  assert.equal(dom.byId.get('rcPresenceStyle'),undefined,'injected style removed');
+  assert.equal(live.parentNode,null);
   view.render({presence:'here',health:'live',selection:null,text:''});
   assert.equal(dom.host.dataset.partner,undefined,'destroyed view ignores renders');
 });
