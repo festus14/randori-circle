@@ -65,6 +65,100 @@ test('private factories fail closed for foreign origins, other endpoints and non
   }
 });
 
+test('private targets reject query, hash and non-canonical path spellings before any preflight',async()=>{
+  const invalid=[
+    '/api/execute?endpoint=messages','/api/execute?endpoint=execute','/api/execute?','/api/execute#messages','/api/execute#',
+    '/api/%65xecute','/api/ex%65cute','/api%2fexecute','/api/execute%3fendpoint=messages',
+    '/api/execute/','/api//execute','/api/./execute','/api/messages/../execute','/api/%2e/execute',
+    'https://user:secret@app.example.test/api/execute',
+  ];
+  for(const enabled of [false,true]){
+    const f=await fixture({enabled});try{
+      let factoryCalls=0,preflights=0;
+      const capture=f.root._randori_circle_control.capturePairing;
+      f.root._randori_circle_control.capturePairing=(...args)=>{preflights++;return capture(...args);};
+      for(const input of invalid){
+        const options={method:'POST',bodyFactory:()=>{factoryCalls++;return 'PRIVATE_INPUT';}};
+        await assert.rejects(f.root.fetch(input,options),/canonical same-origin execute POST/);
+        assert.equal(Object.hasOwn(options,'bodyFactory'),false);
+      }
+      assert.equal(factoryCalls,0);assert.equal(preflights,0);assert.equal(f.sent.length,0);
+    }finally{f.close();}
+  }
+});
+
+test('URL and Request target mutations during held context preflight fail before factory or native I/O',async()=>{
+  for(const kind of ['URL','Request']){
+    for(const replacement of ['https://outside.example.test/receive','https://app.example.test/api/execute?endpoint=messages']){
+      const f=await fixture();let release;try{
+        const canonical='https://app.example.test/api/execute';
+        const input=kind==='URL'?new URL(canonical):new Request(canonical,{method:'POST'});
+        if(kind==='Request')Object.defineProperty(input,'url',{value:canonical,writable:true,configurable:true});
+        const capture=f.root._randori_circle_control.capturePairing;
+        const gate=new Promise(resolve=>{release=resolve;});
+        let started;
+        const entered=new Promise(resolve=>{started=resolve;});
+        f.root._randori_circle_control.capturePairing=async(...args)=>{started();await gate;return capture(...args);};
+        let factoryCalls=0;
+        const options={method:'POST',bodyFactory:()=>{factoryCalls++;return 'PRIVATE_INPUT';}};
+        const pending=f.root.fetch(input,options);
+        const rejected=assert.rejects(pending,/canonical same-origin execute POST/);
+        await entered;
+        if(kind==='URL')input.href=replacement;else input.url=replacement;
+        release();await rejected;
+        assert.equal(factoryCalls,0);assert.equal(f.sent.length,0,'even authority/native reads must not start after target mutation');
+      }finally{release?.();f.close();}
+    }
+  }
+});
+
+test('private POST method mutations during held preflight fail before the factory',async()=>{
+  const f=await fixture();let release;try{
+    const capture=f.root._randori_circle_control.capturePairing;
+    const gate=new Promise(resolve=>{release=resolve;});
+    let entered;
+    const started=new Promise(resolve=>{entered=resolve;});
+    f.root._randori_circle_control.capturePairing=async(...args)=>{entered();await gate;return capture(...args);};
+    let factoryCalls=0;
+    const options={method:'POST',bodyFactory:()=>{factoryCalls++;return 'PRIVATE_INPUT';}};
+    const pending=f.root.fetch('/api/execute',options);
+    const rejected=assert.rejects(pending,/canonical same-origin execute POST/);
+    await started;options.method='GET';release();await rejected;
+    assert.equal(factoryCalls,0);assert.equal(f.sent.length,0);
+  }finally{release?.();f.close();}
+});
+
+test('private native dispatch uses only a pinned canonical string and POST, even if the factory mutates caller objects',async()=>{
+  for(const enabled of [false,true]){
+    const f=await fixture({enabled});try{
+      const canonical='https://app.example.test/api/execute',input=new URL(canonical);
+      const options={method:'post',headers:{'X-Randori-Circle-Context-Version':'7'},bodyFactory:()=>{
+        input.href='https://outside.example.test/receive';options.method='GET';return 'PRIVATE_INPUT';
+      }};
+      const response=await f.root.fetch(input,options);await response.json();
+      assert.equal(f.sent.length,1);assert.equal(typeof f.sent[0].input,'string');
+      assert.equal(f.sent[0].input,canonical);assert.equal(f.sent[0].options.method,'POST');
+      assert.equal(Object.hasOwn(f.sent[0].options,'body'),false);
+    }finally{f.close();}
+  }
+});
+
+test('ordinary mutable targets keep their original transport behavior',async()=>{
+  const f=await fixture();let release;try{
+    const capture=f.root._randori_circle_control.capturePairing;
+    const gate=new Promise(resolve=>{release=resolve;});
+    let entered;
+    const started=new Promise(resolve=>{entered=resolve;});
+    f.root._randori_circle_control.capturePairing=async(...args)=>{entered();await gate;return capture(...args);};
+    const input=new URL('https://app.example.test/api/execute');
+    const options={method:'GET',headers:{'X-Randori-Circle-Context-Version':'7'}};
+    const pending=f.root.fetch(input,options);await started;
+    input.href='https://outside.example.test/ordinary';release();
+    const response=await pending;await response.json();
+    assert.equal(f.sent.length,1);assert.equal(f.sent[0].input,input);assert.equal(f.sent[0].options.method,'GET');
+  }finally{release?.();f.close();}
+});
+
 test('workspace fetch fences all pollers and preserves unrelated requests',async()=>{
   const f=await fixture();try{
     for(const endpoint of ['history','messages','runs','execute','my-pair','pair-recap','session-completion','session-controls','meeting-link','code-document','video/poll','ai/history']){

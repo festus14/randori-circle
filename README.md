@@ -111,6 +111,10 @@ cleared from the textarea, capture token, payload and API/fetch option objects;
 serialized request strings are dropped immediately after the browser takes its
 transport-owned copy. No application-owned stdin copy waits for the response,
 so a stalled flush, preflight or HTTP response cannot extend input retention.
+Private dispatch revalidates after preflights, then uses only an immutable
+canonical `/api/execute` URL and literal `POST`, never the caller's mutable URL
+or Request. Query/hash/routing parameters and encoded or non-canonical private
+targets are rejected before capture; ordinary requests are unchanged.
 Unsent drafts expire after 60 seconds of inactivity; private output expires 60
 seconds after dispatch, never 60 seconds after a delayed response (or immediately
 via **Clear private input and output**). Context changes also clear private data.

@@ -5354,7 +5354,13 @@ and asynchronous circle authority checks finish before capture. A lazy body
 factory then captures stdin only at native fetch dispatch, synchronously
 serializes it, and drops the textarea, capture-token, payload and API/fetch-init
 copies immediately. Factory closures retain no stdin after dispatch, and the
-browser owns only its necessary transport copy. A pending flush, context
+browser owns only its necessary transport copy. Private targets are checked
+before/after asynchronous preflights and immediately before capture; native
+dispatch receives only a pinned canonical `/api/execute` URL string and literal
+`POST`, never mutable caller URL/Request objects. Query/hash/routing parameters,
+encoded-path variants and non-canonical spellings are rejected without factory
+or execution calls. Ordinary non-private requests retain their original behavior.
+A pending flush, context
 preflight or HTTP response therefore cannot prolong application-owned input
 retention. Private output expires within 60 seconds of dispatch, never from
 response settlement. Explicit clear,

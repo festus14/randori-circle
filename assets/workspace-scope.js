@@ -60,27 +60,38 @@
   // Private execution bodies are constructed only after async context checks.
   // Native fetch takes its transport-owned copy synchronously; erase our init
   // immediately, not when the response settles. Never forward the factory.
-  function dispatch(input,options,bodyFactory){
+  function dispatch(input,options,bodyFactory,privateTarget){
     if(!bodyFactory) return originalFetch(input,options);
-    const init={...options};
+    const init={...options,method:'POST'};
     delete init.bodyFactory;
     try{
       init.body=bodyFactory();
-      return originalFetch(input,init);
+      return originalFetch(privateTarget,init);
     }finally{ delete init.body; }
   }
   root.fetch=async function workspaceFetch(input,options){
     let bodyFactory=typeof options?.bodyFactory==='function'?options.bodyFactory:null;
+    let privateTarget=null,validatePrivateTarget=null;
     if(bodyFactory){
       delete options.bodyFactory;
-      const target=new URL(typeof input==='string'||input instanceof URL?String(input):input.url,root.location.origin);
-      if(target.origin!==root.location.origin||target.pathname!=='/api/execute'||String(options.method||input?.method||'GET').toUpperCase()!=='POST'){
-        throw new TypeError('private execution requires a same-origin execute POST');
-      }
+      privateTarget=new URL('/api/execute',root.location.origin).href;
+      // Accept only the literal path or its canonical absolute spelling: no
+      // routing query/hash, encoded path, credentials or mutable destination.
+      validatePrivateTarget=()=>{
+        const raw=typeof input==='string'||input instanceof URL?String(input):input?.url;
+        const method=String(options.method||input?.method||'GET').toUpperCase();
+        if((raw!=='/api/execute'&&raw!==privateTarget)||new URL(raw,root.location.origin).href!==privateTarget
+          ||new URL('/api/execute',root.location.origin).href!==privateTarget||method!=='POST'){
+          throw new TypeError('private execution requires a canonical same-origin execute POST');
+        }
+      };
+      validatePrivateTarget();
     }
     const send=(init=options)=>{
-      try{ return dispatch(input,init,bodyFactory); }
-      finally{ bodyFactory=null; }
+      try{
+        validatePrivateTarget?.();
+        return dispatch(input,init,bodyFactory,privateTarget);
+      }finally{ bodyFactory=null; }
     };
     if(!enabled()) return send();
     const url=new URL(typeof input==='string'||input instanceof URL?String(input):input.url,root.location.origin);
@@ -89,6 +100,7 @@
     const id=Number(root._randori_auth?.me?.id||root._randori_auth?.me?.uid||0);
     if(!id) return send();
     const started=generation,operation=await control.capturePairing(id);
+    validatePrivateTarget?.(); // Reject mutation before any authority/native I/O.
     const matches=()=>started===generation&&control.matchesPairing(operation);
     if(!matches()) throw new DOMException('circle context changed','AbortError');
     options=options||{};
