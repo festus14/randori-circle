@@ -78,7 +78,7 @@ test('the Problem panel keeps the hooks used by tests and adds browse states', (
 
 test('filters normalise, detect activity and match title, tags, difficulty, pattern and language', () => {
   assert.deepEqual(view.normalizeFilters({ search: '  hi ', difficulty: 'Weird', type: '', language: null }),
-    { search: 'hi', difficulty: 'all', type: 'all', language: 'all' });
+    { search: 'hi', difficulty: 'all', type: 'all', language: 'all', kit: 'all', track: 'all' });
   assert.equal(view.filtersActive({}), false);
   assert.equal(view.filtersActive(view.DEFAULT_FILTERS), false);
   assert.equal(view.filtersActive({ search: ' x ' }), true);
@@ -294,6 +294,42 @@ test('problem statement renders title, badges, prose, examples and constraints f
 
   assert.equal(view.renderStatement(doc, {}, question()), true);
   assert.equal(view.renderStatement(doc, targets, null), false);
+});
+
+test('kit and track filters combine with discovery, difficulty and language, including multi-kit records', () => {
+  const backend = { id: 'backend-data-processing', title: 'Backend data processing', track: 'backend' };
+  const frontend = { id: 'frontend-state-logic', title: 'Frontend state logic', track: 'frontend' };
+  const list = [question({ kits: [backend] }), question({ slug: 'hard', difficulty: 'Hard', kits: [frontend] }),
+    question({ slug: 'both', kits: [backend, frontend] }), question({ slug: 'unassigned' })];
+  assert.equal(view.filtersActive({ kit: backend.id }), true);
+  assert.equal(view.filtersActive({ track: 'frontend' }), true);
+  assert.deepEqual(view.filterQuestions(list, { kit: backend.id }).map(q => q.slug), ['capacity-upgrade-index', 'both']);
+  assert.deepEqual(view.filterQuestions(list, { track: 'frontend', difficulty: 'Hard', language: 'python' }).map(q => q.slug), ['hard']);
+  assert.deepEqual(view.filterQuestions(list, { kit: backend.id, track: 'frontend' }), [], 'kit and track must match the same membership');
+  assert.deepEqual(view.filterQuestions(list, { search: 'backend data' }).map(q => q.slug), ['capacity-upgrade-index', 'both']);
+  assert.deepEqual(view.filterQuestions(list, { kit: 'unknown' }), []);
+  assert.equal(view.matchesFilters(null, { track: 'backend' }), false);
+  assert.deepEqual(view.questionKits({ kits: [null, 'backend', {}, { id: 'x', title: 'X' }] }), []);
+  assert.deepEqual(view.kitOptions(list), [{ value: backend.id, label: backend.title }, { value: frontend.id, label: frontend.title }]);
+  assert.deepEqual(view.kitOptions(list, 'frontend'), [{ value: frontend.id, label: frontend.title }]);
+  assert.deepEqual(view.trackOptions(list), [{ value: 'backend', label: 'Backend' }, { value: 'frontend', label: 'Frontend' }]);
+  assert.deepEqual(view.kitOptions(null), []);
+  assert.deepEqual(view.trackOptions(null), []);
+  for (const id of ['catalogKit', 'catalogTrack']) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /catalogueView\.DEFAULT_FILTERS/);
+});
+
+test('kit labels on cards and statements remain bounded text, never HTML', () => {
+  const q = question({ kits: [{ id: 'x', title: '<img src=x onerror=alert(1)>', track: 'frontend' }] });
+  const card = view.exerciseCard(q);
+  const item = view.buildExerciseCard(doc, card);
+  const chip = item.byClass('catalog-chip--kit')[0];
+  assert.equal(chip.textContent, '<img src=x onerror=alert(1)>');
+  assert.equal(chip.byTag('img').length, 0);
+  const badges = new FakeNode('div');
+  view.renderStatement(doc, { badges }, q);
+  assert.equal(badges.byClass('catalog-chip--kit')[0].textContent, '<img src=x onerror=alert(1)>');
+  assert.equal(view.exerciseCard(question({ kits: [{ id: 'long', title: 'x'.repeat(300), track: 'backend' }] })).kits[0].length, 120);
 });
 
 test('every exercise in the published catalogue produces a readable card and examples', () => {

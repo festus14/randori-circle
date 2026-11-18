@@ -2672,6 +2672,12 @@ a.btn{text-decoration:none}
                   <label class="small muted catalog-search">Search
                     <input id="catalogSearch" data-testid="catalog-search" class="input" type="search" autocomplete="off" placeholder="Title, pattern or topic" />
                   </label>
+                  <label class="small muted">Track
+                    <select id="catalogTrack" data-testid="catalog-track" class="select"><option value="all">All</option></select>
+                  </label>
+                  <label class="small muted">Interview kit
+                    <select id="catalogKit" data-testid="catalog-kit" class="select"><option value="all">All</option></select>
+                  </label>
                   <label class="small muted">Difficulty
                     <select id="catalogDifficulty" data-testid="catalog-difficulty" class="select"><option value="all">All</option><option value="Easy">Easy</option><option value="Medium">Medium</option><option value="Hard">Hard</option></select>
                   </label>
@@ -12816,7 +12822,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   let activeQuestionVersion=null;
   let activeLanguage=document.getElementById('langSelect')?.value||'javascript';
   const catalogueView=window._randori_catalogue_view;
-  const catalogueFilterState={search:'',difficulty:'all',type:'all',language:'all',visibleSlugs:[]};
+  const catalogueFilterState={...catalogueView.DEFAULT_FILTERS,visibleSlugs:[]};
   let catalogueFailureReason='error';
   const CATALOGUE_FILTER_EMPTY='__randori_catalog_filter_empty__';
   const sessionDrafts=new Map();
@@ -13164,6 +13170,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function updateCatalogueFilterControls(){
     fillFilterSelect(document.getElementById('catalogType'),catalogueView.patternOptions(CUSTOM_QUESTIONS),'type');
     fillFilterSelect(document.getElementById('catalogLanguage'),catalogueView.languageOptions(CUSTOM_QUESTIONS),'language');
+    fillFilterSelect(document.getElementById('catalogTrack'),catalogueView.trackOptions(CUSTOM_QUESTIONS),'track');
+    fillFilterSelect(document.getElementById('catalogKit'),catalogueView.kitOptions(CUSTOM_QUESTIONS,catalogueFilterState.track),'kit');
   }
 
   function updateCatalogueFilterFeedback(count){
@@ -13408,6 +13416,19 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     catalogueFilterState.language=String(catalogLanguage.value||'all');
     applyCatalogueFilters();
   });
+  const catalogKit=document.getElementById('catalogKit');
+  const catalogTrack=document.getElementById('catalogTrack');
+  catalogKit?.addEventListener('change',()=>{
+    catalogueFilterState.kit=String(catalogKit.value||'all');
+    applyCatalogueFilters();
+  });
+  catalogTrack?.addEventListener('change',()=>{
+    catalogueFilterState.track=String(catalogTrack.value||'all');
+    // A track change clears only an incompatible kit. It still uses the same
+    // browsing/selection path and cannot confer interviewer ownership.
+    updateCatalogueFilterControls();
+    applyCatalogueFilters();
+  });
   // Filtering is browsing: show the cards (and any empty state) as soon as
   // the user narrows the list. Clearing leaves the disclosure as it is.
   function revealCatalogueList(){
@@ -13416,11 +13437,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   ['input','change'].forEach(type=>document.querySelector('[data-testid="catalog-filters"]')?.addEventListener(type,revealCatalogueList));
   function resetCatalogueFilters(){
-    Object.assign(catalogueFilterState,{search:'',difficulty:'all',type:'all',language:'all'});
+    Object.assign(catalogueFilterState,catalogueView.DEFAULT_FILTERS);
     if(catalogSearch) catalogSearch.value='';
     if(catalogDifficulty) catalogDifficulty.value='all';
     if(catalogType) catalogType.value='all';
     if(catalogLanguage) catalogLanguage.value='all';
+    updateCatalogueFilterControls();
     applyCatalogueFilters();
   }
   function clearCatalogueFilters(){
@@ -13974,6 +13996,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         search:catalogueFilterState.search,
         difficulty:catalogueFilterState.difficulty,
         type:catalogueFilterState.type,
+        language:catalogueFilterState.language,
+        kit:catalogueFilterState.kit,
+        track:catalogueFilterState.track,
         visibleSlugs:Object.freeze([...catalogueFilterState.visibleSlugs]),
       });
     },
