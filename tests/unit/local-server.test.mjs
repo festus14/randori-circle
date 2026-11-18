@@ -1085,6 +1085,9 @@ test('runtime environment disables ambient providers and restores the caller env
     EXECUTION_API_URL:'https://ambient-runner.example.test/api/v2/execute',
     EXECUTION_API_TOKEN:'ambient-execution-token',
     VERCEL_OIDC_TOKEN:'ambient-oidc-token',
+    DAILY_VIDEO_ENABLED:'true',
+    DAILY_API_KEY:'ambient-daily-api-key-0123456789',
+    DAILY_DOMAIN:'randori-circle.daily.co',
   };
   const config=resolveLocalServerConfig({rootDir:directory,argv:[],env:envTarget});
   const original={...envTarget};
@@ -1115,6 +1118,9 @@ test('runtime environment disables ambient providers and restores the caller env
           executionUrl:envTarget.EXECUTION_API_URL,
           executionToken:envTarget.EXECUTION_API_TOKEN,
           oidcToken:envTarget.VERCEL_OIDC_TOKEN,
+          dailyVideo:envTarget.DAILY_VIDEO_ENABLED,
+          dailyKey:envTarget.DAILY_API_KEY,
+          dailyDomain:envTarget.DAILY_DOMAIN,
           membershipEnabled:envTarget.CIRCLE_MEMBERSHIP_ENABLED,
           localIdentity:envTarget.RANDORI_LOCAL_IDENTITY,
           openSignup:envTarget.ALLOW_OPEN_SIGNUP,
@@ -1145,6 +1151,9 @@ test('runtime environment disables ambient providers and restores the caller env
     executionUrl:'',
     executionToken:'',
     oidcToken:'',
+    dailyVideo:'false',
+    dailyKey:'',
+    dailyDomain:'',
     membershipEnabled:'true',
     localIdentity:'true',
     openSignup:'false',
