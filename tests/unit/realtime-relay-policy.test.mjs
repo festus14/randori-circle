@@ -7,7 +7,8 @@ const rollback=readFileSync(new URL('../../supabase/realtime-authorization-rollb
 const vercel=JSON.parse(readFileSync(new URL('../../vercel.json',import.meta.url),'utf8'));
 const policy=name=>apply.match(new RegExp(`CREATE POLICY ${name} ON realtime\\.messages\\s+([\\s\\S]*?);`))?.[1];
 
-test('reviewed Realtime SQL has private room-bound broadcast-only grants plus all-role restrictive fences',()=>{
+test('reviewed Realtime SQL has room-bound broadcast permissive policies plus all-role restrictive fences',()=>{
+  assert.match(apply,/BEGIN;[\s\S]*DO \$rc_owner\$[\s\S]*pg_has_role\(current_user,relation\.relowner,'USAGE'\)[\s\S]*RAISE EXCEPTION 'Applying role must own realtime\.messages'[\s\S]*ALTER TABLE realtime\.messages ENABLE ROW LEVEL SECURITY;[\s\S]*COMMIT;/);
   assert.match(apply,/BEGIN;[\s\S]*ALTER TABLE realtime\.messages ENABLE ROW LEVEL SECURITY;[\s\S]*COMMIT;/);
   assert.equal((apply.match(/CREATE POLICY /g)||[]).length,4);
   for(const [action,kind,clause] of [['read','SELECT','USING'],['write','INSERT','WITH CHECK']]){
@@ -26,7 +27,7 @@ test('reviewed Realtime SQL has private room-bound broadcast-only grants plus al
   }
 });
 
-test('provider rollback removes grants but retains deny-all restrictive policies and RLS',()=>{
+test('provider rollback removes permissive policies but retains deny-all restrictive policies and RLS',()=>{
   assert.match(rollback,/DROP POLICY IF EXISTS rc_code_relay_read ON realtime\.messages;/);
   assert.match(rollback,/DROP POLICY IF EXISTS rc_code_relay_write ON realtime\.messages;/);
   assert.match(rollback,/ALTER POLICY rc_code_relay_read_scope ON realtime\.messages USING \(false\);/);

@@ -99,6 +99,10 @@ without it: the route returns 503 or the capability is not offered.
 ### Realtime code relay (optional, default off)
 
 Supabase is a relay only, never a second document store. Configuration validity
+also requires the existing `JWT_SECRET` to be at least 32 bytes. Relay-specific
+subject/rate HMAC keys are separately derived from that app secret, not from
+the ECDSA scalar: provider key/kid rotation preserves pseudonyms and quotas;
+app-secret rotation rekeys both alongside the existing global sign-out. Configuration
 advertises `realtimeRelay` in `/api/auth/capabilities` and `realtime_relay` on
 primary document GETs; it does not prove provider key/policy setup. The token
 endpoint independently authorizes each exact live primary two-human document.

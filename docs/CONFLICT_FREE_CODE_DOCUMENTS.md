@@ -111,14 +111,22 @@ controls. Issuance reauthorizes the same participant snapshot after quota work,
 so an await crossing expiry does not mint a token. No completion receipt is
 created by timer termination. When multi-circle control is enabled, the
 live session context must select the primary circle and its version header
-must match. Malformed, foreign, stale, missing, secondary, AI and triad rooms
+must match. When the workspace router is disabled, the same single-primary
+legacy availability gate as the HTTPS endpoint is required: two active circles
+cannot receive a token for an unavailable document. Authenticated sessions with
+30 seconds or less remaining return that same 404 before quota is consumed;
+a session-expiry race at minting also maps to 404 rather than 503. Malformed, foreign, stale, missing, secondary, AI and triad rooms
 all get `404 {"error":"pair not found"}`; unavailable storage gets a generic
 503. Tokens never bootstrap a document or write the workspace.
 
 Node built-in crypto signs ES256/P-256 JOSE `r || s` JWTs, with `kid`, `iat`,
 `exp` (maximum 300 seconds, also capped by session expiry), `role` and audience
 `authenticated`, the provider `/auth/v1` issuer, and an opaque UUID-shaped
-per-account `sub` keyed from the private signing material. There are no account
+per-account `sub` keyed with a relay-specific HMAC key derived from the existing
+`JWT_SECRET` (at least 32 bytes), separate from the rate-limit key and ES256
+signing key. ECDSA key/kid rotation leaves subjects and quotas unchanged;
+`JWT_SECRET` rotation changes subjects and counter keys as part of the existing
+global app sign-out. There are no account
 numbers, names, emails or app-session credentials in the JWT. The `room` claim
 is exactly the **unprefixed** channel topic:
 `rc-code:v1:<canonical-room>:<sha256-context>`. Its hash binds the cycle, live
@@ -159,10 +167,12 @@ rate-limited or missed relay updates remain safe in that queue/polling path.
 **Fallback and lifecycle:** HTTPS polling remains active every 1.2 seconds,
 even with a healthy relay; the relay accelerates visibility, not authority.
 A token 404/429/503, 5-second token/join timeout, refused private join, socket
-error/close, missed heartbeat or expiry starts an immediate HTTPS reconcile and
-a bounded relay retry (1–30 seconds backoff; 404 waits 30 seconds, 429 respects
-bounded `Retry-After`). Tokens renew by closing/rejoining with freshly authorized
-tokens 30 seconds before expiry, not by extending a cached permission.
+error/close or missed heartbeat starts an immediate HTTPS reconcile and
+bounded relay retry (1–30 seconds backoff; 404 waits 30 seconds, 429 respects
+bounded `Retry-After`). Planned renewal closes/rejoins with freshly authorized
+tokens 30 seconds before expiry directly: it does not count as a failure,
+double backoff, add a one-second delay or force an extra HTTPS reconcile.
+Regular HTTPS polling remains active through that brief fresh join.
 Terminal completion/write rejection or the `randori:interview-ended` coordinator,
 hidden tab, sign-out, room/exercise/
 language/account/circle context changes and offline events close the old socket,
@@ -191,7 +201,7 @@ CI or this implementation. Do not contact a real project from unit/e2e tests.
    legacy HS256 JWT secret or the Randori session signing secret. Disable
    **public channel access** in the project's Realtime settings. Inspect all
    policies/roles on `realtime.messages` and ensure the project exposes no
-   application data/tables through other `authenticated` grants; imported JWTs
+   application data/tables through other `authenticated` permissive policies; imported JWTs
    are not Supabase Auth users and this project is for relay only.
 3. Generate a private P-256 JWK on a trusted operator machine, with Node 24's
    `generateKeyPairSync('ec', {namedCurve:'prime256v1'})` and
@@ -207,10 +217,17 @@ CI or this implementation. Do not contact a real project from unit/e2e tests.
    optional `alg`/`use` must be `ES256`/`sig`. Never put `d` in a browser asset,
    public env prefix or committed file. Use a separate key/project per
    environment if previews must not join production channels.
-5. In the **Supabase Dashboard SQL Editor**, review and execute the entire
+5. In the **Supabase Dashboard SQL Editor**, first check the applying role and
+   table owner with `SELECT current_user, tableowner FROM pg_tables WHERE
+   schemaname='realtime' AND tablename='messages';`. Use the owning role (or its
+   active inherited ownership role); stop if ownership is unavailable—do not
+   widen permissions or remove the RLS statement. Then review and execute the entire
    [`supabase/realtime-authorization.sql`](../supabase/realtime-authorization.sql)
-   against the relay project. The transaction enables RLS and installs two
-   authenticated broadcast grants plus restrictive read/write fences for
+   against the relay project. Its ownership preflight and first mutating
+   `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` run inside `BEGIN`/`COMMIT`, so
+   an ownership failure rolls back before any policies change. The transaction
+   enables RLS and installs two authenticated broadcast permissive policies
+   plus restrictive read/write fences for
    **all roles**, so another permissive policy cannot widen room scope or
    allow a publishable/anonymous key. Supabase's trusted service role can
    bypass RLS; it must never reach a browser. Reapplying this file safely
@@ -237,7 +254,7 @@ CI or this implementation. Do not contact a real project from unit/e2e tests.
    JWTs or cached channel authorization (up to the 300-second token lifetime).
    After step 5 was applied, review and execute the entire
    [`supabase/realtime-authorization-rollback.sql`](../supabase/realtime-authorization-rollback.sql)
-   in the Dashboard SQL Editor: it removes the two grants and changes both
+   in the Dashboard SQL Editor: it removes the two permissive policies and changes both
    restrictive fences to `false`. **Do not drop restrictive policies or disable
    RLS**, because a pre-existing permissive policy could then reopen access.
    Recovery is reapplying the reviewed apply file and a freshly matched

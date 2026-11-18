@@ -5,6 +5,18 @@
 -- Restrictive policies are intentional: another permissive authenticated policy
 -- must not widen this token's room scope or grant presence/database messages.
 BEGIN;
+-- Fail before ALTER/policy writes unless this role has active table ownership.
+DO $rc_owner$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_class relation JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+    WHERE namespace.nspname='realtime' AND relation.relname='messages'
+      AND relation.relkind IN ('r','p') AND pg_has_role(current_user,relation.relowner,'USAGE')
+  ) THEN
+    RAISE EXCEPTION 'Applying role must own realtime.messages';
+  END IF;
+END;
+$rc_owner$;
 ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS rc_code_relay_read ON realtime.messages;
 DROP POLICY IF EXISTS rc_code_relay_write ON realtime.messages;

@@ -5529,7 +5529,10 @@ retain existing transport and never receive a relay token.
   DB-time `interviewTimerOpenSql` fence and normalized timer check, then
   reauthorizes the same snapshot after quota work so a delayed issuance cannot
   mint a token after interview expiry/end. Multi-circle context must select
-  primary with an exact context-version header. All denied
+  primary with an exact context-version header. Without the workspace router,
+  require the same single-primary legacy availability gate as the HTTPS endpoint.
+  Reject authenticated sessions with at most 30 seconds left before spending
+  quota; typed late expiry errors also become the same uniform 404. All denied
   room shapes project the same 404. No bootstrap side effect or request DDL.
 - Mint maximum-five-minute ES256 JWTs with built-in Node crypto, `kid`, opaque
   per-account UUID-shaped `sub`, `role/aud=authenticated`, cycle, exact exercise
@@ -5537,19 +5540,28 @@ retain existing transport and never receive a relay token.
   `SUPABASE_REALTIME_SIGNING_JWK` is sensitive server-only private P-256 JSON;
   `SUPABASE_REALTIME_SIGNING_KID` must equal the imported provider key's kid.
   No app-session token, name, email or account number goes to Supabase.
-- Ship reviewed operator-only Realtime SQL: authenticated read/broadcast grants
+  `sub` and quota keys use separate relay-domain HMAC derivations of the existing
+  `JWT_SECRET` (at least 32 bytes), never the ECDSA private scalar. Routine
+  provider JWK/kid rotation therefore leaves pseudonymous subjects and quota
+  counters stable. Rotating `JWT_SECRET` deliberately changes both identifiers
+  and counter keys alongside the existing global app sign-out; already-issued
+  provider JWTs still need their normal expiry/provider revocation boundary.
+- Ship reviewed operator-only Realtime SQL: authenticated read/broadcast
+  permissive policies
   and restrictive all-role topic/expiry/broadcast-only fences. Never permit
   public channels or use service-role secrets in the browser. The dedicated
   relay project must not expose other application data through authenticated
-  RLS grants. Existing channel authorization is cached; short lifetimes and
+  RLS permissive policies. Existing channel authorization is cached; short lifetimes and
   fresh joins bound normal revocation, not an immediate global kill switch.
 - Implement the small Phoenix v1 JSON broadcast protocol locally, wire-checked
   against `@supabase/realtime-js@2.15.4`. No SDK/CDN/dependency added. Send only
   bounded canonical-base64 Yjs bytes, a random per-document-session nonce and
   monotonic sequence; coalesce 50 ms, cap 20 messages/s and validate received
   updates on a disposable Y.Doc. Do not turn sequence into a Yjs ordering key.
-  Heartbeats, join/token deadlines, expiry and errors fail to HTTPS; fresh tokens
-  reauthorize at renewal. Identity, visibility, sign-out, offline and terminal
+  Heartbeats, join/token deadlines and errors fail to HTTPS. Planned renewal
+  closes/rejoins immediately with fresh authorization, without a failure,
+  backoff increase, one-second delay or extra reconcile. Identity, visibility,
+  sign-out, offline and terminal
   fences dispose the old socket/timers before late packets can touch the editor.
   ID-95's `randori:interview-ended` terminal coordinator uses that same disposal;
   bootstrap/update/projection DB-time fences and terminal GET handling are retained
@@ -5563,9 +5575,9 @@ retain existing transport and never receive a relay token.
 **Byte-budget choice.** The original `825ddfb` base measured **1,445,935 JS
 bytes**, only 4,065 below the unchanged 1,450,000-byte gate. After rebasing onto
 `9d5f8f4`, ID-95's whitespace-only build with the merged relay would produce a
-181,362-byte CRDT bundle / 1,332,744 total JS bytes. Full minification with the
-same pinned esbuild `0.25.9` produces **112,536 bundle bytes / 1,263,918 total
-JS bytes**, saving another 68,826 bytes. Both fit, but the relay is meant to be
+181,529-byte CRDT bundle / 1,332,911 total JS bytes. Full minification with the
+same pinned esbuild `0.25.9` produces **112,629 bundle bytes / 1,264,011 total
+JS bytes**, saving another 68,900 bytes. Both fit, but the relay is meant to be
 small: choose full minification consistently in build:crdt, check:crdt and its
 tests, rather than adding an SDK or raising a threshold. Public properties are
 not mangled; the merged terminal semantics and CRDT behaviour are regression
@@ -5604,8 +5616,11 @@ the optional relay's data flow before activation.
 Routine rollback unsets/sets the flag false and redeploys, preserving every
 HTTPS document and Turso ledger. Provider lockdown revokes the imported key and
 disconnects active provider sessions when immediate cutoff is needed, then applies
-`supabase/realtime-authorization-rollback.sql`: remove grants and keep restrictive
+`supabase/realtime-authorization-rollback.sql`: remove permissive policies and keep restrictive
 **deny-all** fences. Do not disable RLS or drop restrictive policies, which could
-unmask broad permissive policies. Reapply the reviewed policies and matched key,
+unmask broad permissive policies. Before applying, the Dashboard SQL role must
+have active ownership of `realtime.messages`; the ownership preflight and RLS
+ALTER fail safely inside the apply transaction if it does not. Reapply the
+reviewed policies and matched key,
 canary, then enable deliberately. This branch neither contacts Supabase nor
 changes Vercel/production/provider state.
