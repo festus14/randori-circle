@@ -85,7 +85,7 @@ test('the bundled original catalogue passes strict validation', () => {
   assert.equal(Object.hasOwn(raw, 'evaluationSuites'), false);
   assert.doesNotMatch(JSON.stringify(raw), /"evaluationSuites"|"serverTests"|"tests":/);
   const result = validateCatalog(raw);
-  assert.deepEqual(result, { valid: true, exerciseCount: 20 });
+  assert.deepEqual(result, { valid: true, exerciseCount: 28 });
   assert.deepEqual(SUPPORTED_LANGUAGES, ['javascript', 'python']);
 });
 
@@ -120,12 +120,12 @@ test('a warm runtime rechecks review expiry on every catalogue operation', () =>
   } finally {
     globalThis.Date = RealDate;
   }
-  assert.equal(listPublicExercises().length, 19);
+  assert.equal(listPublicExercises().length, 27);
 });
 
 test('public listing returns full active exercises without server-owned test data', () => {
   const exercises = listPublicExercises();
-  assert.equal(exercises.length, 19);
+  assert.equal(exercises.length, 27);
   assert.deepEqual(
     exercises.map(exercise => exercise.slug),
     [
@@ -148,6 +148,14 @@ test('public listing returns full active exercises without server-owned test dat
       'coaching-route-sums',
       'command-message-segmentation',
       'resilient-network-budget',
+      'delivery-receipt-ledger',
+      'shard-window-audit',
+      'retry-lane-dispatch',
+      'shard-fence-planner',
+      'panel-notice-counters',
+      'draft-revision-fold',
+      'viewport-anchor-walk',
+      'focus-shortcut-tour',
     ],
   );
   for (const exercise of exercises) {
@@ -1041,6 +1049,6 @@ test('validation rejects runtime definitions for unknown exercises and unsupport
   assertCatalogError(() => validateCatalog(unknown, definitions), /does not match an exercise slug and version/);
 
   const schema = freshCatalog();
-  schema.schemaVersion = 2;
-  assertCatalogError(() => validateCatalog(schema), /schemaVersion: must equal 1/);
+  schema.schemaVersion = 3;
+  assertCatalogError(() => validateCatalog(schema), /schemaVersion: must equal 1 or 2/);
 });

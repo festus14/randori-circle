@@ -17,9 +17,9 @@ try {
     slug: 'focus-block-rollup',
     version: 1,
     reference,
-    date: '2026-09-19',
+    date: '2026-11-18',
     reason: `Concurrent takedown ${reference}.`,
-    now: '2026-09-19',
+    now: '2026-11-18',
     dryRun: false,
   }, {
     catalogUrl: pathToFileURL(catalogPath),
@@ -27,7 +27,7 @@ try {
     lockUrl: pathToFileURL(lockPath),
     repositoryRootUrl: pathToFileURL(repositoryRootPath),
     dataRootUrl: pathToFileURL(dataRootPath),
-    lockNow: '2026-09-19T12:00:00.000Z',
+    lockNow: '2026-11-18T12:00:00.000Z',
     holdLockMs: Number(holdLockMs),
   });
   process.stdout.write(`${JSON.stringify({ ok: true, changed: result.changed })}\n`);

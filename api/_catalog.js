@@ -2,6 +2,7 @@ import { randomInt } from 'node:crypto';
 
 import rawCatalog from '../data/randori-catalog-v1.json' with { type: 'json' };
 import rawProvenanceManifest from '../data/randori-catalog-provenance-v1.json' with { type: 'json' };
+import { INTERVIEW_KIT_DEFINITIONS } from './_catalog-interview-kits.js';
 import {
   ProvenanceValidationError,
   validationDate,
@@ -471,6 +472,7 @@ function resilientNetworkBudget(nodeCount, existingLinks, proposals) {
 }
 
 const SERVER_EXERCISE_DEFINITIONS = {
+  ...INTERVIEW_KIT_DEFINITIONS,
   'focus-block-rollup@1': {
     generateArgs(random, caseIndex) {
       if (caseIndex === 0) return [[]];
@@ -1175,6 +1177,33 @@ function validateRuntimeDefinitions(definitions, exerciseByKey) {
   }
 }
 
+function validateKits(kits, exerciseByKey) {
+  if (!Array.isArray(kits) || kits.length > 16) fail('catalog.kits', 'must be an array of at most 16 kits');
+  const ids = new Set();
+  kits.forEach((kit, index) => {
+    const path = `catalog.kits[${index}]`;
+    requireExactKeys(kit, ['id', 'title', 'track', 'description', 'exerciseKeys'], path);
+    for (const field of ['id', 'title', 'track', 'description']) {
+      requireNonEmptyString(kit[field], `${path}.${field}`);
+      const maximum = field === 'description' ? 300 : field === 'title' ? 120 : 60;
+      if (kit[field].length > maximum || /[<>\p{Cc}\p{Cf}]/u.test(kit[field])) {
+        fail(`${path}.${field}`, `must be plain single-line text of at most ${maximum} characters`);
+      }
+    }
+    if (!SLUG_PATTERN.test(kit.id) || kit.id === 'all') fail(`${path}.id`, 'must be a kebab-case id other than all');
+    if (!SLUG_PATTERN.test(kit.track) || kit.track === 'all') fail(`${path}.track`, 'must be a kebab-case track other than all');
+    if (ids.has(kit.id)) fail(`${path}.id`, 'must be unique');
+    ids.add(kit.id);
+    validateStringArray(kit.exerciseKeys, `${path}.exerciseKeys`, { minimum: 1 });
+    if (kit.exerciseKeys.length > 100) fail(`${path}.exerciseKeys`, 'must contain at most 100 entries');
+    for (const key of kit.exerciseKeys) {
+      // Retired exact versions remain valid editorial history. Membership must
+      // never make a retired exercise active or obstruct a two-file takedown.
+      if (!exerciseByKey.has(key)) fail(`${path}.exerciseKeys`, `must reference an exact known exercise: ${key}`);
+    }
+  });
+}
+
 /** Validate a complete catalogue or throw CatalogValidationError at the first invalid field. */
 export function validateCatalog(
   catalog,
@@ -1183,8 +1212,10 @@ export function validateCatalog(
   options = {},
 ) {
   const today = validationDate(options.now ?? new Date());
-  requireExactKeys(catalog, ['schemaVersion', 'catalog', 'exercises'], 'catalog');
-  if (catalog.schemaVersion !== 1) fail('catalog.schemaVersion', 'must equal 1');
+  if (![1, 2].includes(catalog?.schemaVersion)) fail('catalog.schemaVersion', 'must equal 1 or 2');
+  requireExactKeys(catalog, catalog.schemaVersion === 2
+    ? ['schemaVersion', 'catalog', 'exercises', 'kits']
+    : ['schemaVersion', 'catalog', 'exercises'], 'catalog');
   requireExactKeys(catalog.catalog, ['id', 'title', 'contentPolicy', 'supportedLanguages'], 'catalog.catalog');
   requireNonEmptyString(catalog.catalog.id, 'catalog.catalog.id');
   requireNonEmptyString(catalog.catalog.title, 'catalog.catalog.title');
@@ -1228,6 +1259,8 @@ export function validateCatalog(
     }
   });
 
+  if (catalog.schemaVersion === 2) validateKits(catalog.kits, exerciseByKey);
+
   try {
     validateProvenanceManifest(provenanceManifest, catalog, options);
   } catch (error) {
@@ -1263,6 +1296,9 @@ function publicProjection(exercise) {
     difficulty: exercise.difficulty,
     type: exercise.type,
     tags: clone(exercise.tags),
+    kits: (catalog.kits || [])
+      .filter(kit => kit.exerciseKeys.includes(`${exercise.slug}@${exercise.version}`))
+      .map(({ id, title, track }) => ({ id, title, track })),
     prompt: exercise.prompt,
     description: exercise.prompt,
     constraints: clone(exercise.constraints),

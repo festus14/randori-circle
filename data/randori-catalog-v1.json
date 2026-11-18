@@ -1,5 +1,21 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "kits": [
+    {
+      "id": "backend-data-processing",
+      "title": "Backend data processing",
+      "track": "backend",
+      "description": "Practise ingestion, time-window reporting, dispatch and batch planning across three difficulty tiers.",
+      "exerciseKeys": ["delivery-receipt-ledger@1", "shard-window-audit@1", "retry-lane-dispatch@1", "shard-fence-planner@1", "message-frequency-leaders@1", "release-feed-merge@1", "resilient-network-budget@1"]
+    },
+    {
+      "id": "frontend-state-logic",
+      "title": "Frontend state logic",
+      "track": "frontend",
+      "description": "Practise notification reducers, revision conflict handling, viewport anchoring and keyboard navigation planning.",
+      "exerciseKeys": ["panel-notice-counters@1", "draft-revision-fold@1", "viewport-anchor-walk@1", "focus-shortcut-tour@1", "balanced-template-markers@1", "command-prefix-census@1", "command-message-segmentation@1"]
+    }
+  ],
   "catalog": {
     "id": "randori-original-v1",
     "title": "Randori Circle Original Interview Exercises",
@@ -1174,6 +1190,222 @@
         "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
         "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
         "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "delivery-receipt-ledger",
+      "version": 1,
+      "status": "active",
+      "title": "Delivery Receipt Ledger",
+      "difficulty": "Easy",
+      "type": "hash-map",
+      "tags": ["hash-maps", "deduplication", "sorting"],
+      "prompt": "A parcel rehearsal service receives receipts in arrival order. Each receipt has id, destination and units. Only the first receipt with a given id counts, even if later receipts with that id name a different destination or number of units. Total the counted units for each destination. Return objects {destination, units} sorted by destination in ascending ASCII order. Include destinations whose counted total is zero; return an empty list when there are no receipts.",
+      "constraints": ["0 <= receipts.length <= 2000", "id and destination are non-empty strings of at most 20 lowercase ASCII letters or digits", "units is an integer from 0 to 1000; ids may repeat and destinations are case-sensitive"],
+      "examples": [
+        {"input": [[{"id":"r1","destination":"zinc","units":5},{"id":"r1","destination":"amber","units":90},{"id":"r2","destination":"amber","units":3},{"id":"r3","destination":"zinc","units":2}]], "output": [{"destination":"amber","units":3},{"destination":"zinc","units":7}], "explanation": "The second r1 receipt is ignored before grouping by destination."},
+        {"input": [[{"id":"r0","destination":"blue","units":0}]], "output": [{"destination":"blue","units":0}], "explanation": "A counted zero-unit receipt still creates a destination in the ledger."}
+      ],
+      "languages": {
+        "javascript": {"entrypoint":"deliveryReceiptLedger","signature":"function deliveryReceiptLedger(receipts)","starter":"function deliveryReceiptLedger(receipts) {\n  // Return the sorted destination ledger.\n}\n"},
+        "python": {"entrypoint":"delivery_receipt_ledger","signature":"def delivery_receipt_ledger(receipts):","starter":"def delivery_receipt_ledger(receipts):\n    # Return the sorted destination ledger.\n    pass\n"}
+      },
+      "governance": {
+        "rightsOwner":"Randori Circle project contributors",
+        "provenance":"Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate":"2026-11-18",
+        "attribution":"© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement":{"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown":{"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "shard-window-audit",
+      "version": 1,
+      "status": "active",
+      "title": "Shard Window Audit",
+      "difficulty": "Medium",
+      "type": "prefix-sums",
+      "tags": ["prefix-sums", "binary-search", "sorting"],
+      "prompt": "A rehearsal ingestion service records adjustments [shard, time, delta] in no particular order. An audit query [shard, start, end] asks for the sum of deltas on that shard with start <= time < end. Return one integer per query in the original query order. Every event counts, including duplicate rows and rows at the same time. An unknown shard or an empty time window has sum zero. Negative deltas undo units and must not be discarded.",
+      "constraints": ["0 <= events.length <= 2000 and 0 <= queries.length <= 2000", "Shard names use 1 to 20 lowercase ASCII letters or digits", "Times, start and end are integers from -10000 to 10000 with start <= end", "delta is an integer from -1000 to 1000"],
+      "examples": [
+        {"input": [[["a",4,7],["a",4,-2],["a",8,3],["b",4,99]],[["a",4,8],["a",4,4],["a",8,9],["x",0,10]]], "output": [5,0,3,0], "explanation": "The first window includes both time-four adjustments but excludes time eight; the second window is empty."},
+        {"input": [[["a",-3,-9],["a",-4,6]],[["a",-4,-2],["a",-3,0]]], "output": [-3,-9], "explanation": "Unsorted negative times and negative totals are valid."}
+      ],
+      "languages": {
+        "javascript": {"entrypoint":"shardWindowAudit","signature":"function shardWindowAudit(events, queries)","starter":"function shardWindowAudit(events, queries) {\n  // Return the sum for each audit window.\n}\n"},
+        "python": {"entrypoint":"shard_window_audit","signature":"def shard_window_audit(events, queries):","starter":"def shard_window_audit(events, queries):\n    # Return the sum for each audit window.\n    pass\n"}
+      },
+      "governance": {
+        "rightsOwner":"Randori Circle project contributors",
+        "provenance":"Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate":"2026-11-18",
+        "attribution":"© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement":{"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown":{"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "retry-lane-dispatch",
+      "version": 1,
+      "status": "active",
+      "title": "Retry Lane Dispatch",
+      "difficulty": "Medium",
+      "type": "heap",
+      "tags": ["heaps", "simulation", "sorting"],
+      "prompt": "A service rehearsal has one retry lane and jobs {id, readyAt, duration} supplied in arbitrary order. The lane starts at time zero. Whenever it is free, choose the ready unfinished job with the shortest duration, breaking a tie by ascending ASCII id. A job is ready when readyAt is no greater than the current time. Run the chosen job to completion without interruption. If none is ready, advance to the next readyAt. Return {id, start} for every job in dispatch order, where start is its start time. Jobs that arrive during a run wait for the next choice.",
+      "constraints": ["0 <= jobs.length <= 1000", "Job ids are unique strings of 1 to 20 lowercase ASCII letters or digits", "readyAt is an integer from 0 to 10000 and duration is an integer from 1 to 1000"],
+      "examples": [
+        {"input": [[{"id":"z","readyAt":0,"duration":5},{"id":"b","readyAt":2,"duration":1},{"id":"a","readyAt":2,"duration":1},{"id":"late","readyAt":20,"duration":1}]], "output": [{"id":"z","start":0},{"id":"a","start":5},{"id":"b","start":6},{"id":"late","start":20}], "explanation": "The first run is not interrupted. At time five a wins the tie; after b the lane waits until time twenty."},
+        {"input": [[{"id":"solo","readyAt":8,"duration":2}]], "output": [{"id":"solo","start":8}], "explanation": "The lane waits for the only job instead of starting it at zero."}
+      ],
+      "languages": {
+        "javascript": {"entrypoint":"retryLaneDispatch","signature":"function retryLaneDispatch(jobs)","starter":"function retryLaneDispatch(jobs) {\n  // Return jobs and their start times in dispatch order.\n}\n"},
+        "python": {"entrypoint":"retry_lane_dispatch","signature":"def retry_lane_dispatch(jobs):","starter":"def retry_lane_dispatch(jobs):\n    # Return jobs and their start times in dispatch order.\n    pass\n"}
+      },
+      "governance": {
+        "rightsOwner":"Randori Circle project contributors",
+        "provenance":"Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate":"2026-11-18",
+        "attribution":"© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement":{"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown":{"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "shard-fence-planner",
+      "version": 1,
+      "status": "active",
+      "title": "Shard Fence Planner",
+      "difficulty": "Hard",
+      "type": "dynamic-programming",
+      "tags": ["dynamic-programming", "partitioning", "hash-maps"],
+      "prompt": "An ingestion rehearsal must checkpoint an ordered sequence of events [shard, weight]. Divide the sequence into exactly batches non-empty contiguous batches, preserving event order and using every event once. The cost of a batch is its largest weight plus shardFee for each distinct shard in that batch. Return the minimum total cost. A shard appearing in several batches is charged separately in each. Return -1 if the required number of batches is impossible. An empty sequence with zero batches costs zero. Only the cost is returned, so equally good partitions need no tie-break.",
+      "constraints": ["0 <= events.length <= 180 and 0 <= batches <= 20", "Shard names use 1 to 20 lowercase ASCII letters or digits", "weight is an integer from 1 to 1000 and shardFee is an integer from 0 to 1000"],
+      "examples": [
+        {"input": [[["a",8],["a",1],["b",2],["b",3]],2,3], "output": 17, "explanation": "The two a events cost 8+3 and the two b events cost 3+3. Other split points cost twenty."},
+        {"input": [[["a",5]],2,1], "output": -1, "explanation": "One event cannot form two non-empty batches."}
+      ],
+      "languages": {
+        "javascript": {"entrypoint":"shardFencePlanner","signature":"function shardFencePlanner(events, batches, shardFee)","starter":"function shardFencePlanner(events, batches, shardFee) {\n  // Return the minimum checkpoint cost or -1.\n}\n"},
+        "python": {"entrypoint":"shard_fence_planner","signature":"def shard_fence_planner(events, batches, shard_fee):","starter":"def shard_fence_planner(events, batches, shard_fee):\n    # Return the minimum checkpoint cost or -1.\n    pass\n"}
+      },
+      "governance": {
+        "rightsOwner":"Randori Circle project contributors",
+        "provenance":"Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate":"2026-11-18",
+        "attribution":"© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement":{"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown":{"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "panel-notice-counters",
+      "version": 1,
+      "status": "active",
+      "title": "Panel Notice Counters",
+      "difficulty": "Easy",
+      "type": "state-reducer",
+      "tags": ["hash-maps", "state-machines", "sorting"],
+      "prompt": "A practice dashboard receives events [panel, action] in order. All panels begin with zero unread notices. A notify event increments that panel's count by one. A read event clears that panel's count to zero, even if it has not appeared before. After all events, return objects {panel, unread} for panels with a positive count, sorted by panel in ascending ASCII order. Reading one panel must not clear any other panel, and future notices after a read start counting again.",
+      "constraints": ["0 <= events.length <= 2000", "Panel names use 1 to 20 lowercase ASCII letters or digits", "Every action is exactly notify or read"],
+      "examples": [
+        {"input": [[["z","notify"],["a","notify"],["z","read"],["z","notify"],["a","notify"]]], "output": [{"panel":"a","unread":2},{"panel":"z","unread":1}], "explanation": "The earlier z notice was read, but the later z notice is unread. Neither read affects a."},
+        {"input": [[["a","read"],["a","notify"],["a","read"]]], "output": [], "explanation": "The final read clears the only notice; zero-count panels are omitted."}
+      ],
+      "languages": {
+        "javascript": {"entrypoint":"panelNoticeCounters","signature":"function panelNoticeCounters(events)","starter":"function panelNoticeCounters(events) {\n  // Return sorted positive unread counters.\n}\n"},
+        "python": {"entrypoint":"panel_notice_counters","signature":"def panel_notice_counters(events):","starter":"def panel_notice_counters(events):\n    # Return sorted positive unread counters.\n    pass\n"}
+      },
+      "governance": {
+        "rightsOwner":"Randori Circle project contributors",
+        "provenance":"Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate":"2026-11-18",
+        "attribution":"© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement":{"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown":{"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "draft-revision-fold",
+      "version": 1,
+      "status": "active",
+      "title": "Draft Revision Fold",
+      "difficulty": "Medium",
+      "type": "state-reducer",
+      "tags": ["hash-maps", "versioning", "tombstones"],
+      "prompt": "A rehearsal editor receives full draft updates {id, revision, text} in delivery order, not revision order. For each id, accept its first update and then only updates with a strictly larger revision. Equal revisions keep the first accepted text. A null text is a deletion marker: retain its revision when rejecting stale updates, but omit that draft from the final output. A later larger revision with non-null text restores the draft. Return the accepted non-deleted drafts as {id, revision, text} sorted by id in ascending ASCII order. Empty text is a live draft, not a deletion.",
+      "constraints": ["0 <= updates.length <= 2000", "ids use 1 to 20 lowercase ASCII letters or digits; revision is an integer from 0 to 10000", "text is null or an ASCII string of at most 80 characters"],
+      "examples": [
+        {"input": [[{"id":"a","revision":4,"text":null},{"id":"a","revision":2,"text":"old"},{"id":"b","revision":1,"text":"first"},{"id":"b","revision":1,"text":"tie"}]], "output": [{"id":"b","revision":1,"text":"first"}], "explanation": "The stale update cannot resurrect a, and b keeps the first text at revision one."},
+        {"input": [[{"id":"a","revision":0,"text":""},{"id":"b","revision":4,"text":null},{"id":"b","revision":5,"text":"back"}]], "output": [{"id":"a","revision":0,"text":""},{"id":"b","revision":5,"text":"back"}], "explanation": "An empty string remains live and b is restored by a larger revision."}
+      ],
+      "languages": {
+        "javascript": {"entrypoint":"draftRevisionFold","signature":"function draftRevisionFold(updates)","starter":"function draftRevisionFold(updates) {\n  // Return the sorted live drafts after revision folding.\n}\n"},
+        "python": {"entrypoint":"draft_revision_fold","signature":"def draft_revision_fold(updates):","starter":"def draft_revision_fold(updates):\n    # Return the sorted live drafts after revision folding.\n    pass\n"}
+      },
+      "governance": {
+        "rightsOwner":"Randori Circle project contributors",
+        "provenance":"Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate":"2026-11-18",
+        "attribution":"© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement":{"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown":{"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "viewport-anchor-walk",
+      "version": 1,
+      "status": "active",
+      "title": "Viewport Anchor Walk",
+      "difficulty": "Medium",
+      "type": "simulation",
+      "tags": ["arrays", "state-machines", "prefix-sums"],
+      "prompt": "A rehearsal reading view stacks panels with positive integer pixel heights in fixed order. Its anchor starts at panel zero, inset zero. Process commands in order. A jump command [\"jump\", offset] moves to an absolute zero-based pixel offset in the current stack, clamped to the first or last pixel if outside it. A resize command [\"resize\", panelIndex, height] changes one height while keeping the anchor's panel and inset; if the anchor's panel shrinks below its inset, clamp the inset to its last pixel. Resizing an earlier panel does not change which pixel within the anchored panel is followed. Return [panelIndex, inset] after every command. At an exact boundary a jump lands on the next panel at inset zero.",
+      "constraints": ["1 <= heights.length <= 400 and 0 <= commands.length <= 400", "All initial and resized heights are integers from 1 to 1000; resize indices are valid", "Jump offsets are integers from -1000000 to 1000000"],
+      "examples": [
+        {"input": [[3,8,2],[["jump",9],["resize",1,2],["resize",0,10]]], "output": [[1,6],[1,1],[1,1]], "explanation": "The jump anchors six pixels into panel one. Shrinking it clamps to one; resizing panel zero keeps that anchor."},
+        {"input": [[3,4],[["jump",3],["resize",0,1],["jump",-4],["jump",100]]], "output": [[1,0],[1,0],[0,0],[1,3]], "explanation": "The boundary belongs to panel one. Out-of-range jumps clamp against the resized stack."}
+      ],
+      "languages": {
+        "javascript": {"entrypoint":"viewportAnchorWalk","signature":"function viewportAnchorWalk(heights, commands)","starter":"function viewportAnchorWalk(heights, commands) {\n  // Return the anchor after every command.\n}\n"},
+        "python": {"entrypoint":"viewport_anchor_walk","signature":"def viewport_anchor_walk(heights, commands):","starter":"def viewport_anchor_walk(heights, commands):\n    # Return the anchor after every command.\n    pass\n"}
+      },
+      "governance": {
+        "rightsOwner":"Randori Circle project contributors",
+        "provenance":"Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate":"2026-11-18",
+        "attribution":"© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement":{"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown":{"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "focus-shortcut-tour",
+      "version": 1,
+      "status": "active",
+      "title": "Focus Shortcut Tour",
+      "difficulty": "Hard",
+      "type": "graph-dynamic-programming",
+      "tags": ["graphs", "shortest-paths", "bitmasking"],
+      "prompt": "A keyboard-navigation rehearsal numbers its panels from zero to panelCount-1. Each directed shortcut [from, to, effort] moves focus with the given effort; it does not imply a reverse shortcut. Starting at panel zero, find the least total effort of a walk that visits every panel in required at least once and ends at panelCount-1. Required panels may be visited in any order. A walk may revisit panels or pass through the final panel before finishing there. Merely passing through a required panel counts as a visit. Choose the cheaper shortcut when several join the same ordered pair. Return -1 when no such walk exists, otherwise return its cost only. Visiting the starting panel needs no move.",
+      "constraints": ["1 <= panelCount <= 40 and 0 <= shortcuts.length <= 1600", "0 <= required.length <= 10; required contains distinct valid panel indices", "Shortcuts have valid distinct endpoints and integer effort from 0 to 1000; duplicate directed pairs are allowed"],
+      "examples": [
+        {"input": [4,[[0,1,9],[0,2,1],[2,1,1],[1,3,2],[2,3,9],[0,2,5]],[1,2]], "output": 4, "explanation": "Focus moves 0 to 2 to 1 to 3 for effort four; required order does not prescribe visit order."},
+        {"input": [3,[[0,2,1]],[1]], "output": -1, "explanation": "The finish is reachable but required panel one is not."}
+      ],
+      "languages": {
+        "javascript": {"entrypoint":"focusShortcutTour","signature":"function focusShortcutTour(panelCount, shortcuts, required)","starter":"function focusShortcutTour(panelCount, shortcuts, required) {\n  // Return the least effort for a complete focus walk or -1.\n}\n"},
+        "python": {"entrypoint":"focus_shortcut_tour","signature":"def focus_shortcut_tour(panel_count, shortcuts, required):","starter":"def focus_shortcut_tour(panel_count, shortcuts, required):\n    # Return the least effort for a complete focus walk or -1.\n    pass\n"}
+      },
+      "governance": {
+        "rightsOwner":"Randori Circle project contributors",
+        "provenance":"Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate":"2026-11-18",
+        "attribution":"© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement":{"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown":{"status":"none","requestedAt":null,"reference":null}
       }
     },
     {

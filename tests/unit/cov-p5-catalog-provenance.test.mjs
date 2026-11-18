@@ -23,7 +23,7 @@ import {
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const catalogPath = new URL('../../data/randori-catalog-v1.json', import.meta.url);
 const manifestPath = new URL('../../data/randori-catalog-provenance-v1.json', import.meta.url);
-const NOW = '2026-09-19';
+const NOW = '2026-11-18';
 
 function fixtures() {
   return {
@@ -65,8 +65,8 @@ test('provenance manifest envelope fails closed on shape, schema, and catalogue 
 });
 
 test('validation date rejects an unparseable clock', () => {
-  assert.equal(validationDate(new Date('2026-09-19T23:59:59Z')), NOW);
-  assert.equal(validationDate('2026-09-19T00:00:00Z'), NOW);
+  assert.equal(validationDate(new Date('2026-11-18T23:59:59Z')), NOW);
+  assert.equal(validationDate('2026-11-18T00:00:00Z'), NOW);
   assert.throws(() => validationDate('not-a-date'), /validation\.now: must be a valid date/);
 });
 
@@ -144,15 +144,15 @@ test('review and takedown blocks reject unsupported states and inconsistent even
     manifest.records[0].takedown.reference = 'issue-1';
   }, /clear takedown state must not contain event details/);
   rejects(({ manifest }) => {
-    manifest.records[0].takedown = { status: 'revoked', effectiveAt: '2026-09-19', reference: 'issue-117' };
+    manifest.records[0].takedown = { status: 'revoked', effectiveAt: '2026-11-18', reference: 'issue-117' };
   }, /takedown\.status: must match catalogue governance/);
   rejects(({ catalog, manifest }) => {
     catalog.exercises[0].governance.takedown = { status: 'revoked', requestedAt: '2026-09-18', reference: 'issue-117' };
-    manifest.records[0].takedown = { status: 'revoked', effectiveAt: '2026-09-19', reference: 'issue-117' };
+    manifest.records[0].takedown = { status: 'revoked', effectiveAt: '2026-11-18', reference: 'issue-117' };
   }, /takedown\.effectiveAt: must match catalogue governance/);
   rejects(({ catalog, manifest }) => {
-    catalog.exercises[0].governance.takedown = { status: 'revoked', requestedAt: '2026-09-19', reference: 'issue-117' };
-    manifest.records[0].takedown = { status: 'revoked', effectiveAt: '2026-09-19', reference: 'issue-118' };
+    catalog.exercises[0].governance.takedown = { status: 'revoked', requestedAt: '2026-11-18', reference: 'issue-117' };
+    manifest.records[0].takedown = { status: 'revoked', effectiveAt: '2026-11-18', reference: 'issue-118' };
   }, /takedown\.reference: must match catalogue governance/);
 });
 
@@ -221,7 +221,7 @@ const OPTIONS = Object.freeze({
 
 function urls(paths) {
   const { directory, dataDirectory, ...rest } = paths;
-  return { ...rest, lockNow: '2026-09-19T12:00:00.000Z' };
+  return { ...rest, lockNow: '2026-11-18T12:00:00.000Z' };
 }
 
 async function withFiles(fn) {
@@ -296,7 +296,7 @@ test('file takedown rejects directories, oversized files, and malformed JSON', a
 test('operator lock contention fails closed for live, unsafe, and malformed locks', async () => {
   await withFiles(async paths => {
     const live = {
-      version: 1, pid: process.pid, createdAt: '2026-09-19T11:59:00.000Z',
+      version: 1, pid: process.pid, createdAt: '2026-11-18T11:59:00.000Z',
       nonce: '00000000-0000-4000-8000-000000000000',
     };
     await writeFile(paths.lockUrl, JSON.stringify(live));
