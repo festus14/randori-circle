@@ -12,12 +12,11 @@
     const status = doc.getElementById('customStdinStatus');
     const output = doc.getElementById('customRunOut');
     const clearButton = doc.getElementById('customStdinClear');
-    let identity = context(), epoch = 0, timer = null, expiresAt = 0, abort = null;
+    let identity = context(), epoch = 0, timer = null, expiresAt = 0;
 
     function clear() {
       epoch += 1;
       cancel(timer); timer = null; expiresAt = 0;
-      abort?.abort(); abort = null;
       input.value = ''; checkbox.checked = false; input.disabled = true;
       status.textContent = ''; output.replaceChildren();
     }
@@ -44,11 +43,11 @@
         status.textContent = 'Use well-formed text of at most 20,000 UTF-8 bytes.';
         throw new Error('Custom input exceeds its text or size limit.');
       }
-      epoch += 1; abort?.abort(); abort = new AbortController();
+      epoch += 1;
       output.replaceChildren();
       expireAfterWindow();
       status.textContent = 'Running privately…';
-      return { stdin, epoch, context: identity, signal: abort.signal };
+      return { stdin, epoch, context: identity };
     }
     function render(operation, result) {
       if (!matches(operation)) return;
@@ -79,7 +78,7 @@
     });
     input.addEventListener('input', () => {
       // Editing invalidates delayed results from the prior input.
-      epoch += 1; abort?.abort(); abort = null; output.replaceChildren();
+      epoch += 1; output.replaceChildren();
       const bytes = new TextEncoder().encode(input.value).byteLength;
       status.textContent = `${bytes.toLocaleString()} / 20,000 UTF-8 bytes`;
       expireAfterWindow();

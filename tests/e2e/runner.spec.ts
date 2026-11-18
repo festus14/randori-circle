@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import {
   mockApi,
+  openRoomPanel,
   resetClientState,
   selectLanguage,
   selectQuestion,
@@ -213,6 +214,55 @@ test('shows a clear unavailable state when no isolated execution provider is rea
       || ''
   ))).toBe(correctSolution);
 });
+
+for (const action of ['clear', 'edit', 'uncheck', 'expiry']) {
+  for (const outcome of ['success', 'failure']) {
+    test(`private ${action} preserves the delayed verified ${outcome}`, async ({ page }) => {
+      let release!: () => void;
+      let started!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const executeStarted = new Promise<void>(resolve => { started = resolve; });
+      if (action === 'expiry') await page.clock.install();
+      await mockApi(page, {
+        '/api/auth/capabilities': { ok: true, registrationMode: 'private_beta', capabilities: {
+          passwordLogin: true, passwordSignup: false, googleOAuth: true, executionStdin: true,
+        } },
+        '/api/auth/me': { ok: true, user: signedInUser },
+        '/api/questions': { ok: true, questions: [originalQuestion], count: 1 },
+        '/api/execute': async request => {
+          expect(request.postDataJSON().stdin).toBe('PRIVATE_INPUT_467');
+          started(); await gate;
+          return outcome === 'success'
+            ? { ok: true, passed_count: 1, total_count: 1, results: [{ idx: 0, pass: true }],
+                custom_run: { ok: true, stdout: 'STALE_PRIVATE_OUTPUT_467', stderr: '', exit_code: 0 } }
+            : { _status: 500, ok: false, error: 'mock verified failure', code: 'execution_failed' };
+        },
+      });
+      await resetClientState(page, true);
+      try {
+        await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
+        if (action === 'expiry') await page.clock.runFor(1500);
+        await selectQuestion(page, originalQuestion.slug);
+        await setCode(page, correctSolution);
+        await openRoomPanel(page, 'results');
+        await page.locator('#customStdinEnabled').check();
+        await page.locator('#customStdin').fill('PRIVATE_INPUT_467');
+        await page.locator('#runBtn').click();
+        await executeStarted;
+        await expect(page.locator('#runOut')).toContainText('Checking your');
+        if (action === 'clear') await page.locator('#customStdinClear').click();
+        else if (action === 'edit') await page.locator('#customStdin').fill('EDITED_PRIVATE_INPUT');
+        else if (action === 'uncheck') await page.locator('#customStdinEnabled').uncheck();
+        else await page.clock.fastForward(60_001);
+        release();
+        await expect(page.locator('#runOut')).toContainText(outcome === 'success' ? 'Result: 1/1 passed' : 'Execution failed: mock verified failure');
+        await expect(page.locator('#runOut')).not.toContainText('Checking your');
+        await expect(page.locator('#customRunOut')).toBeEmpty();
+        await expect(page.locator('#runOut')).not.toContainText('PRIVATE_');
+      } finally { release(); }
+    });
+  }
+}
 
 test('language changes update the active editor and preserve each language draft', async ({ page }) => {
   await mockApi(page, {

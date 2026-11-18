@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ExecutionInputError, MAX_EXECUTION_STDIN_BYTES, MAX_EXECUTION_OUTPUT_BYTES,
   PISTON_REQUEST_TIMEOUT_MS, PISTON_RUN_TIMEOUT_MS,
-  executePracticePrograms, executeProgram, executionStdinEnabled, validateExecutionStdin,
+  buildExecutionHarness, executePracticePrograms, executeProgram, executionStdinEnabled, normalizeRunnerResults, validateExecutionStdin,
 } from '../../api/_execution.js';
 
 const env = { EXECUTION_PROVIDER: 'piston', EXECUTION_API_URL: 'https://runner.example.test/execute', EXECUTION_STDIN_ENABLED: 'true' };
@@ -67,6 +67,28 @@ test('each private script reads exact stdin through EOF on both supported runtim
       }
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('README guarded scripts run privately and still load in both restricted verification harnesses', () => {
+  const readme = readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
+  const section = readme.split('## Private custom stdin (dark launch)')[1].split('## How it is built')[0];
+  const blocks = [{ label: 'code', minutes: 25 }, { label: 'code', minutes: 10 }, { label: 'review', minutes: 5 }];
+  const expected = [{ label: 'code', minutes: 35 }, { label: 'review', minutes: 5 }];
+  for (const [language, command, option, entrypoint] of [
+    ['javascript', process.execPath, '-e', 'rollUpFocusBlocks'],
+    ['python', 'python3', '-c', 'roll_up_focus_blocks'],
+  ]) {
+    const source = section.match(new RegExp('```' + language + '\\n([\\s\\S]*?)```'))?.[1];
+    assert.ok(source, `${language} example must be present`);
+    const output = execFileSync(command, [option, source], { input: JSON.stringify(blocks), encoding: 'utf8', timeout: 2000 });
+    assert.deepEqual(JSON.parse(output), expected, `${language} script reads stdin and prints its computed output`);
+    const tests = [{ args: [blocks], expected }, { args: [[]], expected: [] }];
+    const prefix = '__DOC_RESULT__:';
+    const harness = buildExecutionHarness(language, source, { entrypoint, tests }, prefix);
+    const verified = execFileSync(command, [option, harness], { encoding: 'utf8', timeout: 2000 });
+    assert.deepEqual(normalizeRunnerResults(verified, prefix, tests).map(result => result.pass), [true, true],
+      `${language} script-only imports and input reads must not run inside the verification namespace`);
+  }
 });
 
 test('stdin never enters the verified harness and private output cannot forge verified results', async () => {

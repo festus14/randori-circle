@@ -13521,17 +13521,30 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const pairRunsList=document.getElementById('pairRunsList');
   const pairRunsStatus=document.getElementById('pairRunsStatus');
   const pairRunsState={room:null,epoch:0,after:0,items:[],abort:null,inFlight:false,blocked:false,refreshQueued:false};
+  let verifiedRunEpoch=0;
+  function executionContextKey(){
+    const actor=window._randori_auth?.me?.id||window._randori_auth?.me?.uid;
+    if(!actor) return null;
+    const circle=window._randori_circle_control?.scheduleContext?.();
+    const selected=selectedIdentity();
+    return JSON.stringify([actor,activeRoom(),selected.slug,selected.version,
+      document.getElementById('langSelect')?.value,circle?.circlePublicId,circle?.contextVersion]);
+  }
+  // Private clear/edit/expiry never cancels or fences verified results. Only a
+  // newer Run or a changed execution context makes this response obsolete.
+  function settleVerifiedRun(operation){
+    if(operation.epoch!==verifiedRunEpoch) return false;
+    window._randori_ui?.hideLoader?.();
+    if(operation.context!==executionContextKey()){
+      runOut?.replaceChildren();
+      return false;
+    }
+    return true;
+  }
   const privateStdin=window.RandoriExecutionStdin?.createController({
     doc:document,
     enabled:()=>window._randori_auth?.capabilities?.executionStdin===true,
-    context:()=>{
-      const actor=window._randori_auth?.me?.id||window._randori_auth?.me?.uid;
-      if(!actor) return null;
-      const circle=window._randori_circle_control?.scheduleContext?.();
-      const selected=selectedIdentity();
-      return JSON.stringify([actor,activeRoom(),selected.slug,selected.version,
-        document.getElementById('langSelect')?.value,circle?.circlePublicId,circle?.contextVersion]);
-    },
+    context:executionContextKey,
   })||Object.freeze({capture:()=>null,render:()=>{},refresh:()=>false,clear:()=>{},matches:()=>false});
   window._randori_sync_execution_stdin=()=>privateStdin.refresh();
   window.addEventListener('randori:auth-refreshed',()=>privateStdin.refresh());
@@ -13729,6 +13742,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(runOutEl) runOutEl.innerHTML='<div class="small muted"><span class="spinner-sm"></span> Checking your '+escapeHtml(catalogueView.languageLabel(lang))+' code on the server…</div>';
       try{ if(window._randori_ui && window._randori_ui.showLoader) window._randori_ui.showLoader('Running '+lang+'…'); }catch{}
       (async()=>{
+        const verifiedOperation={epoch:++verifiedRunEpoch,context:executionContextKey()};
         let privateOperation=null,executionPayload=null;
         try{
           privateOperation=privateStdin.capture();
@@ -13747,14 +13761,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           }
           let j;
           if(apiFn){
-            j = await apiFn('/api/execute', {method:'POST', body: payload,...(privateOperation?{signal:privateOperation.signal}:{})});
+            j = await apiFn('/api/execute', {method:'POST', body: payload});
           }else{
-            const resp = await fetch('/api/execute', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload),...(privateOperation?{signal:privateOperation.signal}:{})});
+            const resp = await fetch('/api/execute', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
             j = await resp.json().catch(()=>({ok:false, error:'bad json'}));
             if(!resp.ok) throw j;
           }
-          if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader();
-          if(privateOperation&&!privateStdin.matches(privateOperation)) return;
+          if(!settleVerifiedRun(verifiedOperation)) return;
           privateStdin.render(privateOperation,j.custom_run);
           if(executionRoom) window._randori_pair_runs?.refresh?.(executionRoom);
           const results = j.results || [];
@@ -13785,8 +13798,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           // members who are looking at another panel.
           if(window.toast&&!document.getElementById('roomPanel-results')?.checkVisibility?.()) window.toast(summary.headline);
         }catch(e){
-          try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
-          if(privateOperation&&!privateStdin.matches(privateOperation)) return;
+          if(!settleVerifiedRun(verifiedOperation)) return;
           privateStdin.render(privateOperation,null);
           if(e && e.code==='execution_unavailable'){
             if(runOutEl){ runOutEl.innerHTML='<div class="test run-summary" data-status="partial" data-execution-unavailable><div class="small"><b>Code execution is temporarily unavailable.</b> Your code was not run and nothing was recorded.<div class="small muted">Your editor contents are kept — try again in a few minutes.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }

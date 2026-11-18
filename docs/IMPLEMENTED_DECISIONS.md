@@ -5352,15 +5352,21 @@ The separate stdin control never uses editor sync, broadcast or browser storage.
 Its draft expires after 60 seconds of inactivity; the input clears at run
 completion and output expires within 60 seconds of Run. Explicit clear,
 account/room/circle/exercise/language changes, page hiding and page exit clear
-private state and abort pending display; epoch/context/deadline checks discard
-late responses, including after suspended browser timers.
+private state and invalidate pending private display; its epoch/context/deadline
+checks discard late custom output, including after suspended browser timers.
+Private clear, edit, uncheck and expiry never cancel the combined execute request
+or suppress its verified summary/error. Verified responses have an independent
+Run generation and execution-context fence; obsolete loading state is cleared.
 
 Each run has the existing 256 KiB output cap and 10-second command deadline.
 Vercel Sandbox receives no app secrets, denies all egress, is non-persistent,
-and is deleted in `finally` (stop fallback, 60-second session backstop). Stdin
-is streamed, not placed in command arguments, environment variables or files.
-Piston receives explicit 1-second compile and 10-second run wall/CPU caps;
-HTTP aborts at 12 seconds. Self-hosted Piston deployments must enforce process
+and is deleted in `finally` (stop fallback, 60-second session backstop). The
+custom command also passes provider-enforced `timeoutMs=10000`, independently
+of the HTTP abort. Stdin is streamed, not placed in command arguments,
+environment variables or files. Only the private Piston request adds explicit
+1-second compile and 10-second run wall/CPU caps; HTTP aborts at 12 seconds.
+Catalogue-only Piston payloads and Vercel command calls retain the exact
+pre-flag shape and behavior. Self-hosted Piston deployments must enforce process
 limits after caller disconnect, discard execution workspaces at completion
 (60 seconds maximum), and disable input/output logging before flag activation.
 Application bytes are request-scoped rather than queued or stored, so no new
@@ -5376,9 +5382,21 @@ time budget at the cost of a second bounded provider execution per request.
 **Rollout and recovery.** Deploy with the flag off. Rehearse both languages,
 empty and multibyte input, timeout/output overflow, private requester output,
 and both members' verified-only room feeds without real provider credentials
-in CI. The owner may enable and redeploy only after provider retention and
-process limits are verified. Disable and redeploy to reject new stdin requests;
-normal catalogue runs and stored evidence are unchanged. No schema action or
+in CI. Before setting `EXECUTION_STDIN_ENABLED=true`, the owner must verify:
+
+- Vercel Sandbox stdout/stderr **command-log API retention** and access controls.
+  MicroVM/filesystem deletion alone does not prove provider-owned command logs
+  are removed. Logs must become inaccessible or be removed within the 60-second
+  private run window; leave the flag off if that cannot be demonstrated.
+- Piston cleanup at completion (60 seconds maximum), process killing after
+  disconnect, and no request-body/stdin/raw-output logging in the provider and
+  its proxies.
+- The guarded JavaScript/Python examples and verified/private separation on the
+  chosen provider with non-sensitive fixtures.
+
+Only after these checks may the owner enable and redeploy. Disable and redeploy
+to reject new stdin requests; normal catalogue runs and stored evidence are
+unchanged. No schema action or
 request-path DDL is introduced. Usage and the provider contract are in
 [README](../README.md#private-custom-stdin-dark-launch).
 
@@ -5386,8 +5404,12 @@ request-path DDL is introduced. Usage and the provider contract are in
 caps, EOF, real local runaway-process kill, output overflow, fail-closed flag,
 shared quota and concurrent cleanup. Primary and secondary execution tests
 check canonical code, attestation and database/feed privacy. Browser-controller
-tests exercise text-only rendering, expiration and context races; the two-user
-Playwright feed journey checks private output versus the verified summary.
+tests exercise text-only rendering, expiration and context races, including the
+actual inline runner's verified success/error settlement after private clear,
+edit, uncheck and expiry. Provider tests pin the pre-flag catalogue call shapes;
+README examples execute locally both as stdin scripts and restricted verification
+submissions. Playwright checks the same cancellation regressions and the two-user
+private output versus verified-only feed boundary.
 
 ## ID-95: Scope primary interview controls to the interviewer and close on timer expiry
 
