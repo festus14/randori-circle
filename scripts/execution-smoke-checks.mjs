@@ -2,6 +2,14 @@
 // creates real Vercel Sandboxes and is excluded from unit coverage; these
 // helpers hold the parts that decide pass/fail so they can be unit tested.
 
+import { availableExecutionLanguages } from '../api/_execution-languages.js';
+export function smokeLanguages(env = process.env) {
+  const selected = String(env.EXECUTION_SMOKE_LANGUAGE || '').trim().toLowerCase();
+  if (!selected) return ['javascript', 'python']; // <= five real creations incl. egress probe
+  if (!availableExecutionLanguages(env).includes(selected)) throw new Error('selected smoke language is not enabled or provider-supported');
+  return [selected]; // two oracle runs + at most one egress probe
+}
+
 export const DEFAULT_SMOKE_PROVIDER = 'vercel-sandbox';
 
 // Returns the environment the smoke runs with, or a refusal when the live

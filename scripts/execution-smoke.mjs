@@ -15,7 +15,8 @@ import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { createEvaluationSuite } from '../api/_catalog.js';
 import { buildExecutionHarness, executeProgram, normalizeRunnerResults } from '../api/_execution.js';
-import { countPassed, egressFailure, smokeEnvironment, smokeFailureMessage } from './execution-smoke-checks.mjs';
+import { GO_CATALOG_REFERENCES } from './catalog-go-references.mjs';
+import { countPassed, egressFailure, smokeEnvironment, smokeFailureMessage, smokeLanguages } from './execution-smoke-checks.mjs';
 import { getClient } from '../api/_db.js';
 import { warmMeasurementEnabled, summarizeStartupPairs } from '../api/_execution-measurement.js';
 
@@ -32,6 +33,8 @@ const SOLUTIONS = {
   }
   return result;
 }`,
+  typescript: entrypoint => `function ${entrypoint}(blocks: any[]): any[] {\n  const result: any[]=[];\n  for (const block of blocks) {\n    const previous=result.at(-1);\n    if(previous && previous.label===block.label) previous.minutes+=block.minutes;\n    else result.push({...block});\n  }\n  return result;\n}`,
+  go: () => GO_CATALOG_REFERENCES['focus-block-rollup@1'],
   python: entrypoint => `def ${entrypoint}(blocks):
     result=[]
     for block in blocks:
@@ -63,7 +66,7 @@ async function main() {
     ? { env, db: getClient(), executionContext: { ops: true, operation: 'manual-smoke' } } : { env };
   const measure = warmMeasurementEnabled(env);
 
-  for (const language of ['javascript', 'python']) {
+  for (const language of smokeLanguages(env)) {
     const suite = createEvaluationSuite(SLUG, VERSION, language);
     if (!suite) return fail(`catalogue exercise ${SLUG}@${VERSION} is unavailable`);
     const prefix = `__RANDORI_RESULT_${randomBytes(16).toString('hex')}__:`;
@@ -79,11 +82,12 @@ async function main() {
 
     const broken = await executeProgram({
       language,
-      source: buildExecutionHarness(language, language === 'javascript'
-        ? `function ${suite.entrypoint}(){ return null; }`
-        : `def ${suite.entrypoint}(*args):\n    return None`, suite, prefix),
+      source: buildExecutionHarness(language, language === 'go'
+        ? `package main\nfunc ${suite.entrypoint}(blocks interface{}) interface{} { return nil }`
+        : language === 'python' ? `def ${suite.entrypoint}(*args):\n    return None`
+        : `function ${suite.entrypoint}(){ return null; }`, suite, prefix),
     }, options);
-    if(measure){
+    if(measure&&['javascript','python'].includes(language)){
       const pair=run.startup?.mode==='cold'&&broken.startup?.mode==='snapshot'
         ?[{coldMs:run.startup.createMs,snapshotMs:broken.startup.createMs}]:[];
       console.log(`execution smoke: cold-start ${language} ${JSON.stringify(summarizeStartupPairs(pair))}`);
