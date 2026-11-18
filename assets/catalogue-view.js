@@ -16,7 +16,7 @@
 (function installCatalogueView(root) {
   const DIFFICULTIES = Object.freeze(['Easy', 'Medium', 'Hard']);
   const LANGUAGE_LABELS = Object.freeze({ javascript: 'JavaScript', python: 'Python' });
-  const DEFAULT_FILTERS = Object.freeze({ search: '', difficulty: 'all', type: 'all', language: 'all' });
+  const DEFAULT_FILTERS = Object.freeze({ search: '', difficulty: 'all', type: 'all', language: 'all', kit: 'all', track: 'all' });
   const SUMMARY_MAX = 140;
   const MAX_CARD_TAGS = 3;
   const MAX_EXAMPLES = 3;
@@ -37,12 +37,14 @@
       difficulty,
       type: text(state.type) || 'all',
       language: text(state.language) || 'all',
+      kit: text(state.kit) || 'all',
+      track: text(state.track) || 'all',
     };
   }
 
   function filtersActive(state = {}) {
     const filters = normalizeFilters(state);
-    return !!filters.search || filters.difficulty !== 'all' || filters.type !== 'all' || filters.language !== 'all';
+    return !!filters.search || ['difficulty', 'type', 'language', 'kit', 'track'].some(key => filters[key] !== 'all');
   }
 
   function patternLabel(type) {
@@ -83,14 +85,38 @@
     return [];
   }
 
+  function questionKits(question) {
+    return (Array.isArray(question?.kits) ? question.kits : [])
+      .filter(kit => kit && typeof kit === 'object' && text(kit.id) && text(kit.title) && text(kit.track));
+  }
+
+  function kitOptions(questions, track = 'all') {
+    const kits = new Map();
+    for (const question of Array.isArray(questions) ? questions : []) {
+      for (const kit of questionKits(question)) {
+        if (track === 'all' || kit.track === track) kits.set(text(kit.id), text(kit.title));
+      }
+    }
+    return [...kits].sort(([a], [b]) => a.localeCompare(b)).map(([value, label]) => ({ value, label }));
+  }
+
+  function trackOptions(questions) {
+    const tracks = new Set((Array.isArray(questions) ? questions : []).flatMap(question => questionKits(question).map(kit => text(kit.track))));
+    return [...tracks].sort().map(value => ({ value, label: patternLabel(value) }));
+  }
+
   function matchesFilters(question, state = {}) {
     const filters = normalizeFilters(state);
     if (filters.difficulty !== 'all' && text(question?.difficulty) !== filters.difficulty) return false;
     if (filters.type !== 'all' && text(question?.type) !== filters.type) return false;
     if (filters.language !== 'all' && !questionLanguages(question).includes(filters.language)) return false;
+    const kits = questionKits(question);
+    if ((filters.kit !== 'all' || filters.track !== 'all') && !kits.some(kit =>
+      (filters.kit === 'all' || kit.id === filters.kit) && (filters.track === 'all' || kit.track === filters.track))) return false;
     const terms = filters.search.toLocaleLowerCase().split(/\s+/).filter(Boolean);
     if (!terms.length) return true;
-    const searchable = [question?.title, question?.slug, question?.type, ...questionTags(question)]
+    const searchable = [question?.title, question?.slug, question?.type, ...questionTags(question),
+      ...kits.flatMap(kit => [kit.id, kit.title, kit.track])]
       .map(value => text(value).toLocaleLowerCase())
       .join(' ');
     return terms.every(term => searchable.includes(term));
@@ -142,6 +168,7 @@
       summary: summarize(question?.prompt || question?.description),
       languages: questionLanguages(question).map(languageLabel),
       selected: sameExercise(question, selected),
+      ...(questionKits(question).length ? { kits: questionKits(question).map(kit => clip(kit.title, 120)) } : {}),
       ...(marker ? { attempted: marker } : {}),
     };
   }
@@ -314,6 +341,7 @@
     const meta = node(doc, 'span', { className: 'catalog-card-meta' });
     if (card.pattern) meta.append(node(doc, 'span', { className: 'catalog-chip catalog-chip--pattern', textValue: card.pattern }));
     for (const tag of card.tags) meta.append(node(doc, 'span', { className: 'catalog-chip', textValue: tag }));
+    for (const kit of card.kits || []) meta.append(node(doc, 'span', { className: 'catalog-chip catalog-chip--kit', textValue: kit }));
     if (card.attempted) {
       meta.append(node(doc, 'span', {
         className: 'catalog-chip catalog-chip--attempted',
@@ -359,6 +387,7 @@
       const pattern = patternLabel(question.type);
       if (pattern) parts.push(node(doc, 'span', { className: 'rc-badge catalog-pattern', textValue: pattern }));
       if (question.version != null) parts.push(node(doc, 'span', { className: 'catalog-version', textValue: `Version ${question.version}` }));
+      for (const kit of questionKits(question)) parts.push(node(doc, 'span', { className: 'catalog-chip catalog-chip--kit', textValue: clip(kit.title, 120) }));
       badges.replaceChildren(...parts);
       badges.hidden = false;
     }
@@ -418,6 +447,9 @@
     languageLabel,
     questionLanguages,
     questionTags,
+    questionKits,
+    kitOptions,
+    trackOptions,
     matchesFilters,
     filterQuestions,
     patternOptions,

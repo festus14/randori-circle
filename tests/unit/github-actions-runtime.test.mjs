@@ -7,6 +7,7 @@ const workflowRoot=new URL('../../.github/workflows/',import.meta.url);
 const approvedActions=new Map([
   ['actions/checkout','3d3c42e5aac5ba805825da76410c181273ba90b1'], // v7.0.1, node24
   ['actions/setup-node','820762786026740c76f36085b0efc47a31fe5020'], // v7.0.0, node24
+  ['actions/setup-python','6d4fd22b20465ccc0f7354476588e8df7c9ca0e0'], // v7.1.0, node24; action.yml verified at this exact commit
   ['actions/upload-artifact','043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'], // v7.0.1, node24
   ['actions/download-artifact','3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'], // v8.0.1, node24
 ]);
@@ -52,7 +53,7 @@ function assertApprovedWorkflowActions(workflows){
   for(const {name,source} of workflows){
     const references=workflowActionReferences(name,source);
     for(const reference of references){
-      const parsed=/^(actions\/(?:checkout|setup-node|upload-artifact|download-artifact))@([a-f0-9]{40})$/u
+      const parsed=/^(actions\/(?:checkout|setup-node|setup-python|upload-artifact|download-artifact))@([a-f0-9]{40})$/u
         .exec(reference);
       assert.ok(parsed,`${name} must use a reviewed immutable first-party action: ${reference}`);
       const [,action,revision]=parsed;
@@ -116,6 +117,15 @@ test('valid YAML key spacing cannot hide mutable or unapproved actions',()=>{
     ()=>assertApprovedWorkflowActions(explicitEscapedKey),
     /must use a reviewed immutable first-party action/u,
   );
+});
+
+test('Python setup rejects floating tags and an unreviewed runtime revision',()=>{
+  for(const reference of ['actions/setup-python@v7','actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065']){
+    const mutated=workflowSources().map(item=>({...item}));
+    const e2e=mutated.find(item=>item.name==='e2e.yml');
+    e2e.source=e2e.source.replace('actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0',reference);
+    assert.throws(()=>assertApprovedWorkflowActions(mutated),/reviewed immutable|unapproved actions\/setup-python/u);
+  }
 });
 
 test('comments and block scalar text cannot create phantom action references',()=>{

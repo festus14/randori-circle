@@ -254,7 +254,7 @@ test('solo suggestions use only the member\'s own verified runs and completed se
     {slug:'shortest-handoff-path',by_me:true,by_partner:false},
   ]);
   assert.deepEqual(response.body.suggestions.map(item=>item.slug),[
-    'coaching-route-sums','command-message-segmentation','resilient-network-budget',
+    'coaching-route-sums','command-message-segmentation','focus-shortcut-tour',
   ]);
   assert.equal(response.body.suggestions[0].reason.text,
     'You haven’t practised trees yet. One step up from your recent Medium exercises.');
@@ -281,7 +281,7 @@ test('a pair room adds only "attempted by your partner" and never the partner\'s
     {slug:'shortest-handoff-path',by_me:true,by_partner:true},
   ]);
   const suggested=response.body.suggestions.map(item=>item.slug);
-  assert.deepEqual(suggested,['coaching-route-sums','command-message-segmentation','resilient-network-budget']);
+  assert.deepEqual(suggested,['coaching-route-sums','command-message-segmentation','focus-shortcut-tour']);
   assert.ok(suggested.every(slug=>!response.body.attempted.some(marker=>marker.slug===slug)));
   assert.equal(response.body.suggestions[0].reason.text,
     'Neither of you has practised trees yet. One step up from your recent Medium exercises.');

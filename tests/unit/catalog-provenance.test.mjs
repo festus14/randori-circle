@@ -39,8 +39,8 @@ function assertProvenanceError(action, pattern) {
 test('bundled provenance covers every exercise with current canonical hashes', () => {
   const { catalog, manifest } = fixtures();
   assert.deepEqual(
-    validateProvenanceManifest(manifest, catalog, { now: '2026-09-19T12:00:00Z' }),
-    { valid: true, recordCount: 20 },
+    validateProvenanceManifest(manifest, catalog, { now: '2026-11-18T12:00:00Z' }),
+    { valid: true, recordCount: 28 },
   );
   assert.equal(manifest.records.length, catalog.exercises.length);
   assert.equal(manifest.records.every(record => record.source.type === 'original'), true);
@@ -143,56 +143,56 @@ test('active content fails closed when review is expired, rejected, or under tak
   const expired = fixtures();
   expired.manifest.records[0].review.expiresAt = '2026-09-18';
   assertProvenanceError(
-    () => validateProvenanceManifest(expired.manifest, expired.catalog, { now: '2026-09-19' }),
-    /review\.expiresAt: expired before 2026-09-19/,
+    () => validateProvenanceManifest(expired.manifest, expired.catalog, { now: '2026-11-18' }),
+    /review\.expiresAt: expired before 2026-11-18/,
   );
 
   const futureReview = fixtures();
-  futureReview.manifest.records[0].review.reviewedAt = '2026-09-20';
-  futureReview.catalog.exercises[0].governance.reviewDate = '2026-09-20';
+  futureReview.manifest.records[0].review.reviewedAt = '2026-11-19';
+  futureReview.catalog.exercises[0].governance.reviewDate = '2026-11-19';
   assertProvenanceError(
-    () => validateProvenanceManifest(futureReview.manifest, futureReview.catalog, { now: '2026-09-19' }),
+    () => validateProvenanceManifest(futureReview.manifest, futureReview.catalog, { now: '2026-11-18' }),
     /review\.reviewedAt: must not be in the future/,
   );
 
   const unbounded = fixtures();
   unbounded.manifest.records[0].review.expiresAt = '2028-09-18';
   assertProvenanceError(
-    () => validateProvenanceManifest(unbounded.manifest, unbounded.catalog, { now: '2026-09-19' }),
+    () => validateProvenanceManifest(unbounded.manifest, unbounded.catalog, { now: '2026-11-18' }),
     /must be within 366 days/,
   );
 
   const rejected = fixtures();
   rejected.manifest.records[0].review.status = 'rejected';
   assertProvenanceError(
-    () => validateProvenanceManifest(rejected.manifest, rejected.catalog, { now: '2026-09-19' }),
+    () => validateProvenanceManifest(rejected.manifest, rejected.catalog, { now: '2026-11-18' }),
     /active content must be approved/,
   );
 
   const revoked = fixtures();
   revoked.catalog.exercises[0].governance.takedown = {
-    status: 'revoked', requestedAt: '2026-09-19', reference: 'issue-117',
+    status: 'revoked', requestedAt: '2026-11-18', reference: 'issue-117',
   };
   revoked.manifest.records[0].takedown = {
-    status: 'revoked', effectiveAt: '2026-09-19', reference: 'issue-117',
+    status: 'revoked', effectiveAt: '2026-11-18', reference: 'issue-117',
   };
   assertProvenanceError(
-    () => validateProvenanceManifest(revoked.manifest, revoked.catalog, { now: '2026-09-19' }),
+    () => validateProvenanceManifest(revoked.manifest, revoked.catalog, { now: '2026-11-18' }),
     /active content must not be under takedown/,
   );
 
   const futureRevocation = fixtures();
   futureRevocation.catalog.exercises.at(-1).governance.takedown = {
-    status: 'revoked', requestedAt: '2026-09-20', reference: 'issue-117',
+    status: 'revoked', requestedAt: '2026-11-19', reference: 'issue-117',
   };
   futureRevocation.manifest.records.at(-1).takedown = {
-    status: 'revoked', effectiveAt: '2026-09-20', reference: 'issue-117',
+    status: 'revoked', effectiveAt: '2026-11-19', reference: 'issue-117',
   };
   assertProvenanceError(
     () => validateProvenanceManifest(
       futureRevocation.manifest,
       futureRevocation.catalog,
-      { now: '2026-09-19' },
+      { now: '2026-11-18' },
     ),
     /effectiveAt: must not be in the future/,
   );
@@ -242,7 +242,7 @@ test('source policy rejects vague or unsupported rights claims', () => {
   assert.equal(validateProvenanceManifest(
     approvedOpen.manifest,
     approvedOpen.catalog,
-    { now: '2026-09-19' },
+    { now: '2026-11-18' },
   ).valid, true);
 
   const vagueAuthorization = fixtures();
@@ -274,7 +274,7 @@ test('source policy rejects vague or unsupported rights claims', () => {
   assert.equal(validateProvenanceManifest(
     approvedAuthorization.manifest,
     approvedAuthorization.catalog,
-    { now: '2026-09-19' },
+    { now: '2026-11-18' },
   ).valid, true);
 
   const traversalEvidence = structuredClone(approvedAuthorization);
@@ -304,41 +304,41 @@ test('takedown arguments are bounded and reject ambiguous input', () => {
   assert.deepEqual(
     parseTakedownArguments([
       '--slug', 'focus-block-rollup', '--version', '1', '--reference', 'issue-117',
-      '--date', '2026-09-19', '--dry-run',
-    ], { now: '2026-09-19' }),
+      '--date', '2026-11-18', '--dry-run',
+    ], { now: '2026-11-18' }),
     {
-      slug: 'focus-block-rollup', version: 1, reference: 'issue-117', date: '2026-09-19',
+      slug: 'focus-block-rollup', version: 1, reference: 'issue-117', date: '2026-11-18',
       reason: 'Emergency provenance takedown (issue-117).', dryRun: true,
     },
   );
   assert.throws(() => parseTakedownArguments(['--slug', '../escape']), /lowercase kebab-case/);
   assert.throws(() => parseTakedownArguments([
-    '--slug', 'focus-block-rollup', '--version', '1', '--reference', 'issue 117', '--date', '2026-09-19',
+    '--slug', 'focus-block-rollup', '--version', '1', '--reference', 'issue 117', '--date', '2026-11-18',
   ]), /bounded issue or incident reference/);
   assert.throws(() => parseTakedownArguments([
     '--slug', 'focus-block-rollup', '--version', '1', '--reference', 'issue-117', '--date', '2026-02-30',
   ]), /real calendar date/);
   assert.throws(() => parseTakedownArguments([
-    '--slug', 'focus-block-rollup', '--version', '1', '--reference', 'issue-117', '--date', '2026-09-20',
-  ], { now: '2026-09-19' }), /must not be in the future/);
+    '--slug', 'focus-block-rollup', '--version', '1', '--reference', 'issue-117', '--date', '2026-11-19',
+  ], { now: '2026-11-18' }), /must not be in the future/);
 });
 
 test('takedown retires one exact record, validates, and is idempotent', () => {
   const { catalog, manifest } = fixtures();
   const options = {
-    slug: 'focus-block-rollup', version: 1, reference: 'issue-117', date: '2026-09-19',
-    reason: 'Emergency rights review.', now: '2026-09-19',
+    slug: 'focus-block-rollup', version: 1, reference: 'issue-117', date: '2026-11-18',
+    reason: 'Emergency rights review.', now: '2026-11-18',
   };
   const result = applyTakedown(catalog, manifest, options);
   assert.equal(result.changed, true);
   assert.equal(result.catalog.exercises[0].status, 'retired');
   assert.deepEqual(result.catalog.exercises[0].governance.takedown, {
-    status: 'revoked', requestedAt: '2026-09-19', reference: 'issue-117',
+    status: 'revoked', requestedAt: '2026-11-18', reference: 'issue-117',
   });
   assert.deepEqual(result.manifest.records[0].takedown, {
-    status: 'revoked', effectiveAt: '2026-09-19', reference: 'issue-117',
+    status: 'revoked', effectiveAt: '2026-11-18', reference: 'issue-117',
   });
-  assert.equal(validateProvenanceManifest(result.manifest, result.catalog, { now: '2026-09-19' }).valid, true);
+  assert.equal(validateProvenanceManifest(result.manifest, result.catalog, { now: '2026-11-18' }).valid, true);
   assert.equal(applyTakedown(result.catalog, result.manifest, options).changed, false);
   assert.equal(catalog.exercises[0].status, 'active', 'input remains unchanged');
 });
@@ -351,9 +351,9 @@ test('an identical takedown preserves a pre-existing retirement exactly', () => 
     slug: exercise.slug,
     version: exercise.version,
     reference: 'issue-117',
-    date: '2026-09-19',
+    date: '2026-11-18',
     reason: 'This must not replace the prior editorial retirement.',
-    now: '2026-09-19',
+    now: '2026-11-18',
   };
   const first = applyTakedown(catalog, manifest, options);
   assert.equal(first.changed, true);
@@ -366,25 +366,25 @@ test('an identical takedown preserves a pre-existing retirement exactly', () => 
 test('takedown refuses unknown targets and conflicting lifecycle events', () => {
   const unknown = fixtures();
   assert.throws(() => applyTakedown(unknown.catalog, unknown.manifest, {
-    slug: 'missing', version: 1, reference: 'issue-117', date: '2026-09-19', reason: 'Review.',
-    now: '2026-09-19',
+    slug: 'missing', version: 1, reference: 'issue-117', date: '2026-11-18', reason: 'Review.',
+    now: '2026-11-18',
   }), /no catalogue and provenance record found/);
 
   const conflict = fixtures();
   const first = applyTakedown(conflict.catalog, conflict.manifest, {
-    slug: 'focus-block-rollup', version: 1, reference: 'issue-117', date: '2026-09-19', reason: 'Review.',
-    now: '2026-09-19',
+    slug: 'focus-block-rollup', version: 1, reference: 'issue-117', date: '2026-11-18', reason: 'Review.',
+    now: '2026-11-18',
   });
   assert.throws(() => applyTakedown(first.catalog, first.manifest, {
-    slug: 'focus-block-rollup', version: 1, reference: 'issue-118', date: '2026-09-20', reason: 'Review.',
-    now: '2026-09-20',
+    slug: 'focus-block-rollup', version: 1, reference: 'issue-118', date: '2026-11-19', reason: 'Review.',
+    now: '2026-11-19',
   }), /different takedown event/);
 
   const invalidOtherRecord = fixtures();
   invalidOtherRecord.catalog.exercises[1].title = '';
   assert.throws(() => applyTakedown(invalidOtherRecord.catalog, invalidOtherRecord.manifest, {
-    slug: 'focus-block-rollup', version: 1, reference: 'issue-117', date: '2026-09-19', reason: 'Review.',
-    now: '2026-09-19',
+    slug: 'focus-block-rollup', version: 1, reference: 'issue-117', date: '2026-11-18', reason: 'Review.',
+    now: '2026-11-18',
   }), /catalog\.exercises\[1\]\.title/);
 });
 
@@ -410,9 +410,9 @@ function takedownOptions(overrides = {}) {
     slug: 'focus-block-rollup',
     version: 1,
     reference: 'issue-117',
-    date: '2026-09-19',
+    date: '2026-11-18',
     reason: 'Emergency rights review.',
-    now: '2026-09-19',
+    now: '2026-11-18',
     dryRun: false,
     ...overrides,
   };
@@ -424,7 +424,7 @@ test('file takedown writes a validated pair and recovers an interrupted manifest
     await assert.rejects(
       executeTakedown(takedownOptions(), {
         ...paths,
-        lockNow: '2026-09-19T12:00:00.000Z',
+        lockNow: '2026-11-18T12:00:00.000Z',
         afterManifestRename() { throw new Error('simulated interruption'); },
       }),
       /simulated interruption/,
@@ -436,7 +436,7 @@ test('file takedown writes a validated pair and recovers an interrupted manifest
     assert.equal(existsSync(paths.lockUrl), false);
 
     const recovered = await executeTakedown(takedownOptions(), {
-      ...paths, lockNow: '2026-09-19T12:01:00.000Z',
+      ...paths, lockNow: '2026-11-18T12:01:00.000Z',
     });
     assert.equal(recovered.changed, true);
     const finalCatalog = JSON.parse(await readFile(paths.catalogUrl, 'utf8'));
@@ -454,12 +454,12 @@ test('file takedown recovers only a stale dead-process lock and rejects symlink 
     await writeFile(stale.lockUrl, `${JSON.stringify({
       version: 1,
       pid: 2_147_483_647,
-      createdAt: '2026-09-19T11:00:00.000Z',
+      createdAt: '2026-11-18T11:00:00.000Z',
       nonce: '00000000-0000-4000-8000-000000000000',
     })}\n`);
     const result = await executeTakedown(takedownOptions({ dryRun: true }), {
       ...stale,
-      lockNow: '2026-09-19T12:00:00.000Z',
+      lockNow: '2026-11-18T12:00:00.000Z',
       staleLockMs: 1_000,
     });
     assert.equal(result.changed, true);
@@ -476,7 +476,7 @@ test('file takedown recovers only a stale dead-process lock and rejects symlink 
     await symlink(realCatalog, unsafe.catalogUrl);
     await assert.rejects(
       executeTakedown(takedownOptions({ dryRun: true }), {
-        ...unsafe, lockNow: '2026-09-19T12:00:00.000Z',
+        ...unsafe, lockNow: '2026-11-18T12:00:00.000Z',
       }),
       /catalogue path contains a symbolic link/,
     );
@@ -509,7 +509,7 @@ test('file takedown rejects a symlinked data directory before touching files out
         lockUrl,
         repositoryRootUrl: pathToFileURL(`${repositoryDirectory}/`),
         dataRootUrl: pathToFileURL(`${dataDirectory}/`),
-        lockNow: '2026-09-19T12:00:00.000Z',
+        lockNow: '2026-11-18T12:00:00.000Z',
       }),
       /trusted data directory path contains a symbolic link/,
     );
@@ -533,7 +533,7 @@ test('file takedown rejects catalogue targets outside its trusted data directory
       executeTakedown(takedownOptions(), {
         ...paths,
         catalogUrl: outsideCatalogUrl,
-        lockNow: '2026-09-19T12:00:00.000Z',
+        lockNow: '2026-11-18T12:00:00.000Z',
       }),
       /catalogue must stay within the trusted data directory/,
     );
@@ -596,7 +596,7 @@ test('the pre-write digest check rejects a non-cooperating concurrent edit', asy
     const release = new Promise(resolve => { continueWrite = resolve; });
     const operation = executeTakedown(takedownOptions(), {
       ...paths,
-      lockNow: '2026-09-19T12:00:00.000Z',
+      lockNow: '2026-11-18T12:00:00.000Z',
       async afterValidation() {
         markValidated();
         await release;
@@ -626,7 +626,7 @@ test('the operator lock itself cannot be redirected through a symlink', async ()
     await symlink(victim, paths.lockUrl);
     await assert.rejects(
       executeTakedown(takedownOptions({ dryRun: true }), {
-        ...paths, lockNow: '2026-09-19T12:00:00.000Z',
+        ...paths, lockNow: '2026-11-18T12:00:00.000Z',
       }),
       /operator lock path contains a symbolic link/,
     );

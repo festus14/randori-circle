@@ -47,6 +47,12 @@ only return a manual external link. The browser has no bundled fallback
 questions, upload form, or import/paste workflow: it waits for the validated
 server catalogue and otherwise shows an unavailable state.
 
+See [original interview kits](INTERVIEW_KITS.md) for the schema-2 editorial
+membership contract, backend/frontend content, both-language authoring checks,
+and retirement of kit members. The stable catalogue filename and schema-1
+provenance records remain unchanged; kit grouping is not part of exercise
+content hashes. A kit reference never bypasses the active/provenance gate.
+
 ## Validation
 
 Run:
@@ -56,7 +62,10 @@ npm run validate:catalog
 ```
 
 The command validates the manifest, hashes, catalogue schema, review expiry,
-runtime generator coverage, and the runtime access gate. It is included
+runtime generator coverage, and the runtime access gate. For the interview-kit
+pack it also runs generated cases and public examples through the production
+JavaScript and restricted Python harnesses using offline reference solutions;
+Node 24 and `python3` are required, not a provider or network connection. It is included
 in the required Linux `e2e` workflow. A content change without a corresponding
 review and hash update fails closed.
 
