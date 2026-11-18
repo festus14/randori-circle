@@ -97,7 +97,7 @@ and `api/code-document.js` via Vercel filesystem routing.
 | `api/invitations.js` | `/api/invitations/prepare`, `/api/invite-requests`, `/api/invite-requests/decision`, `/api/invitations/:id` (accept / revoke invitations; invite-request intake and owner decision; bare `/api/invitations` is create / list — see the filesystem-routing note above) |
 | `api/members.js` | `/api/members` (owner roster) |
 | `api/circles.js` | `/api/circles` (filesystem routing, no rewrite): circle create / select / archive (multi-circle control plane; off in production) |
-| `api/video.js` | `/api/video/signal`, `/api/video/ice`, `/api/video/join`, `/api/video/leave` |
+| `api/video.js` | `/api/video/signal`, `/api/video/ice`, `/api/video/join`, `/api/video/leave`, `/api/video/room` (embedded Daily video; only while `DAILY_VIDEO_ENABLED`, [embedded video](EMBEDDED_VIDEO.md)) |
 | `api/ai.js` | `/api/ai/analyze`, `/api/ai/feedback`, `/api/ai/feedback/:id`, `/api/ai/history` (off in production) |
 | `api/code-document.js` | `/api/code-document` (filesystem routing, no rewrite): shared Yjs code documents for a pair room |
 
@@ -750,7 +750,10 @@ each step names the route, the table and the doc with the detail.
    (`pair_code_documents`), whiteboard checkpoints, focus timer +
    candidate (`pair_session_controls`), WebRTC signalling
    (`video_signals`, cleared after ~1 hour; media is
-   browser-to-browser via Google STUN). **Run** executes the
+   browser-to-browser via Google STUN), or, behind
+   `DAILY_VIDEO_ENABLED`, a consent-gated Daily Prebuilt frame whose
+   private room and short-lived token come from `/api/video/room`
+   (nothing stored; never recorded). **Run** executes the
    acknowledged document version against server-owned test cases
    in a Vercel Sandbox / Piston sandbox and records a
    `session_runs` row. A session counts as complete only when

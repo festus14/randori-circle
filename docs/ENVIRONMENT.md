@@ -129,6 +129,17 @@ runtime configuration restricts each connection to the configured project.
 | `GROQ_API_KEY` | Primary provider for the consent-gated AI feedback in `api/ai.js` | With `AI_ENABLED=true` (this or `OPENAI_API_KEY`) | unset | Yes | Vercel (leave unset) |
 | `OPENAI_API_KEY` | Fallback AI provider | No | unset | Yes | Vercel (leave unset) |
 
+### Embedded video (Daily)
+
+Read only while `DAILY_VIDEO_ENABLED=true` ([embedded video](EMBEDDED_VIDEO.md), ID-98).
+Both must be valid or the capability is not offered and `/api/video/room`
+keeps its old behaviour.
+
+| Variable | Purpose | Required | Default | Secret | Where set |
+| --- | --- | --- | --- | --- | --- |
+| `DAILY_API_KEY` | Daily REST API key. Used only by the server to create private rooms and mint short-lived meeting tokens; never sent to the browser or logged. 20 to 256 characters of `A-Z a-z 0-9 . _ -` | With `DAILY_VIDEO_ENABLED=true` | unset | Yes | Vercel Production and Development (provisioned); Preview only to canary |
+| `DAILY_DOMAIN` | The Daily subdomain the room frames load from. Must be exactly `randori-circle.daily.co`, the only origin the CSP `frame-src` and Permissions-Policy allow | With `DAILY_VIDEO_ENABLED=true` | unset | No | Vercel Production and Development (provisioned) |
+
 ### Error reporting (Sentry)
 
 | Variable | Purpose | Required | Default | Secret | Where set |
@@ -181,7 +192,7 @@ production state in the [feature flag table](#feature-flags):
 `PROGRESS_DASHBOARD_ENABLED`, `EXERCISE_SUGGESTIONS_ENABLED`, `INTERVIEW_SESSION_ENABLED`,
 `CIRCLE_HEALTH_ENABLED`, `ADMIN_DIAGNOSTICS_ENABLED`,
 `ACCOUNT_DELETION_ENABLED`, `ACCOUNT_DELETION_GRACE_ENABLED`,
-`DATA_EXPORT_ENABLED`,
+`DATA_EXPORT_ENABLED`, `DAILY_VIDEO_ENABLED`,
 `OUTBOX_PII_RETENTION_ENABLED`, `REALTIME_RELAY_ENABLED` and `AI_ENABLED`.
 `ALLOW_OPEN_SIGNUP` is the exception: it is development-only, works only in
 the local runtime and is ignored when `NODE_ENV=production`.
@@ -354,7 +365,8 @@ above. The workflow computes the following nonsecret input itself:
 isolated values: it sets `NODE_ENV=development`, a local `file:` database, a
 generated `JWT_SECRET`, its loopback `APP_URL`, circle membership, password
 reset and invite requests on, and blanks every provider credential (Google,
-Resend, AI, Sentry, execution, `CRON_SECRET`, `ADMIN_EMAILS`,
+Resend, AI, Sentry, execution, Daily video (`DAILY_VIDEO_ENABLED=false`,
+`DAILY_API_KEY` and `DAILY_DOMAIN` blank), `CRON_SECRET`, `ADMIN_EMAILS`,
 `SIGNUP_ALLOWLIST`). It restores the previous values on shutdown and refuses to
 start with `TURSO_AUTH_TOKEN`, a remote database, or any Vercel variable set.
 
@@ -449,6 +461,7 @@ them off cannot undo.
 | `REMINDERS_SESSION_SOON_ENABLED` | One-hour session reminder | off | On (owner) | `REMINDERS_ENABLED` | ID-71 | As above |
 | `PROGRESS_DASHBOARD_ENABLED` | "Your progress" in History and `GET /api/progress` | off | On (owner) | none | ID-76 ([progress dashboard](PROGRESS_DASHBOARD.md)) | Safe; nothing is stored |
 | `INTERVIEW_SESSION_ENABLED` | Interviewer-only roles, timer and end-for-both in eligible primary rooms; timer expiry is terminal | off | Not deployed by this increment | Existing session-control/completion/code-document schema | ID-95 ([session controls](SESSION_CONTROLS.md#interview-first-increment-464)) | Returns to symmetric peer controls; an expired timer can be reset. Reload terminal pages; do not toggle during an interview |
+| `DAILY_VIDEO_ENABLED` | Consent-gated, never-recorded embedded Daily video in primary two-person rooms: `POST /api/video/room` and the `embeddedVideo` capability | off | Not deployed by this change | `DAILY_API_KEY`, `DAILY_DOMAIN=randori-circle.daily.co`; never in the local runtime | ID-98 ([embedded video](EMBEDDED_VIDEO.md)) | Safe: the capability and route disappear, live frames stop at their token expiry, the meeting link and direct call keep working. Only rate-limit counters are stored |
 | `EXERCISE_SUGGESTIONS_ENABLED` | "Attempted" markers and suggested exercises; `GET /api/exercise-suggestions` | off | On (owner) | none | ID-77 | Safe; nothing is stored |
 | `CIRCLE_HEALTH_ENABLED` | Owner-only Circle health card and `GET /api/circle/health` | off | On (observed: `circleHealth`) | `CIRCLE_MEMBERSHIP_ENABLED` | ID-78 ([circle health](CIRCLE_HEALTH.md)) | Safe; nothing is stored |
 | `ADMIN_DIAGNOSTICS_ENABLED` | Read-only admin Diagnostics in the Circle view | off | On (observed: `adminDiagnostics`) | none (still admin-only) | ID-73 | Safe; nothing is stored |

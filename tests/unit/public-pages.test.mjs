@@ -84,8 +84,8 @@ for (const [path, html] of Object.entries(pages)) {
     assert.equal(html.match(/<h1\b/gu)?.length, 1);
     assert.match(html, new RegExp(`<h1>${title}</h1>`, 'u'));
     // The two pages change independently: pin each one's own date.
-    // The privacy policy was updated for the durable deletion ledger
-    // (issue #383); the terms keep their earlier date.
+    // The privacy policy was last updated for embedded Daily video
+    // (issue #463); the terms keep their earlier date.
     if(path === '/privacy'){
       assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-11-18">18 November 2026<\/time><\/p>/u);
     }else{

@@ -123,6 +123,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-95](#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry) | Scope primary interview controls to the interviewer and close on timer expiry | Pairing & Scheduling | Active |
 | [ID-96](#id-96-relay-pair-code-updates-through-private-supabase-channels-without-changing-durable-authority) | Relay pair code updates through private Supabase channels without changing durable authority | Pairing & Scheduling | Active |
 | [ID-97](#id-97-curate-original-interview-kits-as-versioned-catalogue-metadata) | Curate original interview kits as versioned catalogue metadata | Content & Catalogue | Active |
+| [ID-98](#id-98-embed-consent-gated-daily-video-in-primary-pair-rooms-behind-a-flag) | Embed consent-gated Daily video in primary pair rooms, behind a flag | Pairing & Scheduling | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -136,7 +137,7 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-98). Never reuse a number, even if an entry is
+   plus one (currently ID-99). Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
 2. **Check for collisions before you claim it.** Parallel PRs are the
@@ -5699,3 +5700,98 @@ and metadata coherently, with stored question identities never reused. Retired
 kit membership is not activation; restoration still needs a reviewed content
 change. Authoring, renewal and takedown procedures:
 [original interview kits](INTERVIEW_KITS.md).
+## ID-98: Embed consent-gated Daily video in primary pair rooms, behind a flag
+
+**Status: Active.** Closes the scope of #463 (epic #460) behind
+`DAILY_VIDEO_ENABLED`, off by default. No migration. Leaves ID-57's private
+meeting link and the existing WebRTC call in place as fallbacks. ID-94 and
+ID-96 and ID-97 landed first, so this entry took ID-98.
+
+**Context.** Live interviews need built-in audio and video. The room offered
+peer-to-peer WebRTC signalling through `api/video.js` (STUN only, so it fails
+behind many NATs) and a private external meeting link, which takes the pair
+out of the room and outside its authorization and consent boundary. The owner
+approved Daily as the provider and provisioned `DAILY_API_KEY` and
+`DAILY_DOMAIN=randori-circle.daily.co`.
+
+**Decision.**
+- **Server.** One flag-gated `POST /api/video/room` inside `api/video.js`
+  (rewrite `?endpoint=room`; no new serverless function). Its handler module
+  is imported only while the flag is literally `true` and the key and domain
+  are valid, so the route and its imports are unchanged otherwise. It requires
+  a same-origin, authenticated request with exactly `{room_id, camera,
+  microphone}`; rate-limits per account (12) and client network (30) per 15
+  minutes in the existing `auth_rate_limits` table under secret-keyed hashes;
+  then authorizes with the session-controls read (exact two-person,
+  `auth`-source primary pair, active primary membership when on). Non-members,
+  wrong rooms, triads, AI pairs, stale snapshots and secondary rooms share the
+  identical 404. Ended or expired interviews (ID-95's database clock) and
+  completed sessions are 409.
+- **Provider.** Room names are `rc-` plus an HMAC of the canonical room id
+  under a domain label, so they reveal no ids. Rooms are private, two
+  participants, two-hour expiry, no pre-join, knocking, chat, screen share or
+  captions. Tokens are non-owner, eject at expiry, and last at most the time
+  left on the interview timer (one hour otherwise). The participant label is
+  the role (`Interviewer`/`Candidate`), never a display name. Calls go
+  through `fetch` with a 5 s timeout and no redirects; any failure is a
+  generic 503 whose log line carries only the stage, the HTTP status and
+  Daily's fixed `error` code. Rate limiting goes through a shared keyed
+  limiter (`api/_keyed-rate-limit.js`, now also behind product feedback) and
+  answers 429 with `Retry-After` set to the rest of the window. The response
+  carries a server-computed `expires_in`, so the browser's close timer does
+  not depend on the device clock.
+- **Recording is disabled, not built.** Mutual-consent recording is out of
+  scope. Daily's `enable_recording` only names recording modes and is off
+  when unset, so neither the room nor the token sends it or
+  `start_cloud_recording`, and the token hides the recording UI. Every room
+  Daily returns is checked: any recording mode, `max_participants` other
+  than 2, or non-private access fails closed (503, no token). The privacy
+  policy says calls are never recorded.
+- **Browser.** No third-party script: Daily Prebuilt loads in a sandboxed
+  (`allow-scripts allow-same-origin`) cross-origin iframe with `allow="camera;
+  microphone; autoplay; fullscreen"`. CSP gains only `frame-src 'self'
+  https://randori-circle.daily.co`; Permissions-Policy delegates camera and
+  microphone to that origin; `script-src` and `connect-src` are unchanged.
+  The server requires `DAILY_DOMAIN` to be that exact origin, so a different
+  domain fails closed instead of loading a blocked frame. `display-capture` is
+  not delegated because screen share is off. A lazily imported module
+  (`assets/embedded-video.js`, outside the initial byte-budget slice;
+  thresholds unchanged) shows a consent notice first: no request, frame or
+  permission prompt until Join, with start-muted and camera-off choices sent
+  as token claims. Prebuilt owns in-call mute, camera and leave. Randori's
+  Leave and every stop condition (room, scope or account change, sign-out,
+  the ID-95 terminal coordinator, unanimous completion, token expiry, page
+  hide) unload the frame.
+  A tab hidden before the frame exists abandons the join. A live call
+  survives a tab switch. An unavailable endpoint falls back to the pair's
+  meeting link and the direct call.
+- **Local runtime** forces the flag off and blanks the key and domain, and
+  the configuration also refuses `RANDORI_LOCAL_RUNTIME=true`.
+
+**Alternatives considered.** Bundling `daily-js` 0.95 (about 270 kB) would
+exceed the roughly 118 kB left in the JS total budget and add an SDK to the
+app origin for events Prebuilt already handles. A per-pair room table would allow revoking rooms early, but needs a
+migration; derived HMAC names plus short token expiry need none. Display
+names as Daily labels would be friendlier, but they would send personal data
+to a new processor for no functional gain between two people who already
+know each other. Building mutual-consent recording now would add storage,
+retention and consent state for a feature nobody asked to ship first.
+
+**Verification.** `tests/unit/daily-video-api.test.mjs` (flag and
+configuration variants, flag-off route behaviour, request shapes and claims,
+opaque names, the 404 matrix, input and origin checks, terminal and expired
+interviews, token windows, provider failures without leaks, create races,
+rate limits, secondary rooms), `tests/unit/daily-video-capability.test.mjs`
+(capability and header contract), `tests/unit/embedded-video-ui.test.mjs`
+(consent gate, frame attributes, Leave, expiry, fallback, stop conditions,
+abandoned joins) and `tests/e2e/embedded-video.spec.ts` (two browsers with
+the Daily origin routed to a stub page, interview end, fallback link,
+capability off).
+
+**Recovery and remaining scope.** Unset the flag and redeploy: the capability
+and route disappear and the fallbacks work as before; Daily rooms expire on
+their own within two hours. A token already issued stays valid until its
+expiry (at most an hour, or the interview's remaining time); rooms are not
+deleted early. The real two-browser Daily canary on a preview, and retiring
+the external-link fallback once the embed is proven, remain for the owner.
+Setup and canary steps: [embedded video](EMBEDDED_VIDEO.md#operator-setup).
