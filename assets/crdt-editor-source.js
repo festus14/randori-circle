@@ -320,13 +320,19 @@ function configureRelay(data,epoch,identity){
   try{
     state.relay=createCodeRelay({identity,mergeUpdates:Y.mergeUpdates,
       isCurrent:()=>matches(epoch,identity)&&state.hydrated&&navigator.onLine,
-      fetchToken:signal=>fetch('/api/code-document/relay-token',{
-        method:'POST',credentials:'same-origin',cache:'no-store',signal,
-        headers:{'content-type':'application/json'},body:JSON.stringify({
-          room_id:identity.room,question_slug:identity.questionSlug,
-          question_version:identity.questionVersion,language:identity.language,
-        }),
-      }),
+      fetchToken:signal=>{
+        // Primary relay joins need the session-circle fence even when the
+        // secondary-workspace fetch wrapper is disabled. The server compares
+        // this cached version with live authority; it is never authorization.
+        const version=window._randori_circle_control?.scheduleContext?.()?.contextVersion;
+        return fetch('/api/code-document/relay-token',{
+          method:'POST',credentials:'same-origin',cache:'no-store',signal,
+          headers:{'content-type':'application/json',
+            ...(Number.isSafeInteger(version)&&version>=0?{'X-Randori-Circle-Context-Version':String(version)}:{})},
+          body:JSON.stringify({room_id:identity.room,question_slug:identity.questionSlug,
+            question_version:identity.questionVersion,language:identity.language}),
+        });
+      },
       onUpdate:update=>{
         if(matches(epoch,identity)&&state.doc) applyValidatedRelayUpdate(state.doc,update,ORIGIN_RELAY);
         // The doc update handler queues this for HTTPS and disables Run. Relay

@@ -36,13 +36,14 @@ function store(){
     },
   };
 }
-function harness({clock,Socket,server,id=1}={}){
+function harness({clock,Socket,server,id=1,circleContext=null}={}){
   const window=target(),document=target(),textarea={...target(),value:'',readOnly:false,selectionStart:0,selectionEnd:0,setSelectionRange(){}};
   const elements={editor:textarea,langSelect:{...target(),value:'javascript'},questionSelect:target(),
     codeSyncStatus:{dataset:{},textContent:''},runBtn:{disabled:false}};
   const storage=new Map();
   Object.assign(window,{_randori_auth:{me:{id}},_randori_authorized_room:room,
     RandoriWorkspaceScope:{canonicalRoom:value=>/^week_[1-9]\d*_pair_[1-9]\d*$/.test(value),isSolo:()=>false},
+    _randori_circle_control:{scheduleContext:()=>circleContext},
     _randori_questions:{selectedIdentity:()=>({slug:'focus-block-rollup',version:1})},
     _randori_workspace:{hydrated:true,room,flush:async()=>true}});
   Object.assign(document,{readyState:'loading',visibilityState:'visible',getElementById:key=>elements[key]||null});
@@ -82,6 +83,19 @@ test('bundled provider applies relay bytes before persistence but never acknowle
   assert.equal(right.elements.runBtn.disabled,false);
   assert.equal(server.calls.filter(call=>call.options.method==='POST'&&call.path==='/api/code-document').length,2,'both clients persist idempotently over HTTPS');
   left.crdt.deactivate(); right.crdt.deactivate(); server.doc.destroy();
+});
+
+test('primary relay tokens carry the live context-version fence without the secondary-workspace wrapper',async()=>{
+  const clock=fakeRelayClock(),{Socket,sockets}=mockRelaySockets({clock}),server=store();
+  const context={circlePublicId:'primary-test',isPrimary:true,contextVersion:7};
+  const item=harness({clock,Socket,server,circleContext:context});
+  await initialise(item,clock);
+  const tokenCalls=()=>server.calls.filter(call=>call.path.endsWith('/relay-token'));
+  assert.equal(tokenCalls()[0].options.headers['X-Randori-Circle-Context-Version'],'7');
+  context.contextVersion=8; sockets[0].close(); clock.advance(1000); await settleRelayPromises(); clock.advance(30);
+  assert.equal(tokenCalls()[1].options.headers['X-Randori-Circle-Context-Version'],'8','each retry reads the current context fence');
+  assert.equal(item.crdt.relayConnected,true);
+  item.crdt.deactivate(); server.doc.destroy();
 });
 
 test('flag off preserves the polling path exactly; flag withdrawal disposes an existing socket',async()=>{
