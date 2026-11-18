@@ -219,7 +219,6 @@ test('the self-hosted Piston provider posts one file with an optional bearer tok
   assert.equal(requests[0].options.redirect, 'error');
   assert.deepEqual(JSON.parse(requests[0].options.body), {
     language: 'python', version: '3.10.0', files: [{ name: 'main.py', content: 'print(1)' }],
-    compile_timeout: 1000, compile_cpu_time: 1000, run_timeout: 10000, run_cpu_time: 10000,
   });
 
   const env = { EXECUTION_PROVIDER: 'piston', EXECUTION_API_URL: PISTON_URL };
@@ -260,6 +259,39 @@ test('the JavaScript harness reports a function that returns nothing as a wrong 
   assert.equal(thrown[0].error, 'runtime error', 'a real exception is still an error');
 });
 
+test('catalogue-only provider calls match the pre-flag main contract exactly', async () => {
+  // Golden request/call shapes from main 825ddfb: no stdin or new limits.
+  for (const flag of [undefined, 'false', 'true']) {
+    const flags = { EXECUTION_STDIN_ENABLED: flag };
+    for (const [language, filename, version, cmd] of [
+      ['javascript', 'main.js', '18.15.0', 'node'],
+      ['python', 'main.py', '3.10.0', 'python3'],
+    ]) {
+      let posted;
+      const request = { language, source: 'CATALOGUE_HARNESS' };
+      const result = await executeProgram(request, {
+        env: { ...flags, EXECUTION_PROVIDER: 'piston', EXECUTION_API_URL: PISTON_URL },
+        fetchImpl: async (_url, options) => {
+          posted = options.body;
+          return new Response(JSON.stringify({ run: { stdout: '', stderr: '', code: null, signal: 'SIGKILL', status: 'TO' } }));
+        },
+      });
+      assert.equal(posted, JSON.stringify({ language, version, files: [{ name: filename, content: request.source }] }));
+      assert.equal(result.timedOut, false, 'catalogue result compatibility is unchanged too');
+      const sandbox = fakeSandboxSdk();
+      await executeProgram(request, { env: { ...SANDBOX_ENV, ...flags }, loadSandboxSdk: sandbox.loadSandboxSdk });
+      const call = sandbox.calls.runCommand[0];
+      assert.deepEqual(Object.keys(call).sort(), ['args', 'cmd', 'signal', 'stderr', 'stdout']);
+      assert.equal(call.cmd, cmd); assert.deepEqual(call.args, [filename]);
+      assert.equal(sandbox.calls.create[0].tags.purpose, 'catalog-evaluation');
+      assert.equal(sandbox.calls.create[0].persistent, false);
+      assert.equal(sandbox.calls.create[0].networkPolicy, 'deny-all');
+      assert.equal(sandbox.calls.writeFiles[0].files[0].content.toString(), request.source);
+      assert.equal(sandbox.calls.deleted, 1);
+    }
+  }
+});
+
 test('stdin reaches Vercel Sandbox as an EOF-terminated stream, never as a file or argument', async () => {
   for (const stdin of ['', 'private 🙂\r\ninput\n', 'é'.repeat(10_000)]) {
     const sandbox = fakeSandboxSdk({
@@ -277,6 +309,7 @@ test('stdin reaches Vercel Sandbox as an EOF-terminated stream, never as a file 
     assert.equal(sandbox.calls.writeFiles[0].files.length, 1);
     assert.equal(sandbox.calls.writeFiles[0].files[0].content.toString(), 'SCRIPT');
     assert.deepEqual(sandbox.calls.runCommand[0].args, ['main.js']);
+    assert.equal(sandbox.calls.runCommand[0].timeoutMs, SANDBOX_COMMAND_TIMEOUT_MS, 'custom deadline is enforced by the provider, even on HTTP disconnect');
     assert.equal(sandbox.calls.runCommand[0].stdin.destroyed, true);
     assert.equal(sandbox.calls.deleted, 1);
     assert.equal(sandbox.calls.create[0].tags.purpose, 'private-stdin');

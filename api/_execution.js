@@ -189,7 +189,7 @@ async function runInVercelSandbox({ language, source, stdin }, { loadSandboxSdk 
       const finished = await sandbox.runCommand({
         cmd: runtime.cmd,
         args: [filename],
-        ...(input ? { stdin: input } : {}),
+        ...(input ? { stdin: input, timeoutMs: SANDBOX_COMMAND_TIMEOUT_MS } : {}),
         stdout: collector.stdout,
         stderr: collector.stderr,
         signal: commandController.signal,
@@ -264,13 +264,15 @@ async function runInPiston({ language, source, stdin }, { url, token, fetchImpl 
         headers,
         body: JSON.stringify({
           language, version, files: [{ name: LANGUAGE_FILES[language], content: source }],
-          ...(stdin === undefined ? {} : { stdin }),
-          // A request abort alone cannot kill a remote process. The self-hosted
-          // provider must enforce these wall/CPU deadlines, even on disconnect.
-          compile_timeout: PISTON_COMPILE_TIMEOUT_MS,
-          compile_cpu_time: PISTON_COMPILE_TIMEOUT_MS,
-          run_timeout: PISTON_RUN_TIMEOUT_MS,
-          run_cpu_time: PISTON_RUN_TIMEOUT_MS,
+          // Catalogue-only requests preserve the pre-flag payload exactly.
+          // Private processes need explicit remote wall/CPU kill deadlines.
+          ...(stdin === undefined ? {} : {
+            stdin,
+            compile_timeout: PISTON_COMPILE_TIMEOUT_MS,
+            compile_cpu_time: PISTON_COMPILE_TIMEOUT_MS,
+            run_timeout: PISTON_RUN_TIMEOUT_MS,
+            run_cpu_time: PISTON_RUN_TIMEOUT_MS,
+          }),
         }),
         signal: controller.signal,
         redirect: 'error',
@@ -291,7 +293,7 @@ async function runInPiston({ language, source, stdin }, { url, token, fetchImpl 
       stderr: String(run.stderr || ''),
       code: Number.isInteger(run.code) ? run.code : null,
       signal: typeof run.signal === 'string' ? run.signal.slice(0, 64) : null,
-      timedOut: run.status === 'TO' || run.signal === 'SIGKILL',
+      timedOut: stdin !== undefined && (run.status === 'TO' || run.signal === 'SIGKILL'),
     };
   } catch (error) {
     if (error instanceof ExecutionUnavailableError || error instanceof ExecutionFailedError) throw error;
