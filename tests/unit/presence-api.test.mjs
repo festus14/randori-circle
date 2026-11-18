@@ -24,7 +24,7 @@ const {default:authHandler}=await import('../../api/auth.js');
 const {getAuthorizedCodeDocument}=await import('../../api/_code-document.js');
 const presence=await import('../../api/_presence.js');
 const SECRET='presence-test-app-secret-at-least-thirty-two-bytes';
-const BODY={...RELAY_BODY,state:'online'};
+const BODY={room_id:RELAY_BODY.room_id,state:'online'};
 const originHeaders={origin:'https://randori.test',host:'randori.test','x-forwarded-proto':'https','sec-fetch-site':'same-origin'};
 const ENV=[...RELAY_ENV_KEYS,'PRESENCE_ENABLED','INTERVIEW_SESSION_ENABLED','CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED'];
 

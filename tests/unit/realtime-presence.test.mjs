@@ -52,16 +52,16 @@ test('presence states accept only the bounded root-text cursor schema',()=>{
   for(const value of [null,[],{tname:'other'},{...position,type:{client:1,clock:1}},{...position,assoc:2},
     {...position,item:{client:-1,clock:0}},{...position,item:{client:2**32,clock:0}},{...position,item:{client:1}},
     {...position,item:{client:1,clock:1,extra:1}},{...position,name:'Two'}]) assert.equal(validRelativePosition(value),false);
-  const state={v:1,seat:'a',status:'active',sel:{anchor:position,head:position}};
+  const state={v:2,seat:'a',status:'active',sel:{anchor:position,head:position}};
   assert.equal(validPresenceState(state),true);
   assert.equal(validPresenceState({...state,sel:null}),true);
-  for(const value of [null,{},{...state,v:2},{...state,seat:'c'},{...state,status:'typing'},{...state,name:'Two'},
+  for(const value of [null,{},{...state,v:3},{...state,seat:'c'},{...state,status:'typing'},{...state,name:'Two'},
     {...state,email:'two@example.test'},{...state,sel:{anchor:position}},{...state,sel:{anchor:position,head:{tname:'x'}}},
-    {v:1,seat:'a',status:'active'}]) assert.equal(validPresenceState(value),false);
+    {v:2,seat:'a',status:'active'},{...state,v:1}]) assert.equal(validPresenceState(value),false);
 });
 
 test('awareness updates are decoded fully, bounded and never claim the local client',()=>{
-  const state={v:1,seat:'b',status:'idle',sel:null};
+  const state={v:2,seat:'b',status:'idle',sel:null};
   assert.deepEqual(parseAwarenessUpdate(encodeEntries([{clientID:7,clock:3,state}]),{localClientId:1}),[{clientID:7,clock:3,state}]);
   assert.deepEqual(parseAwarenessUpdate(encodeEntries([{clientID:7,clock:4,state:null}])),[{clientID:7,clock:4,state:null}]);
   const many=Array.from({length:5},(_,index)=>({clientID:index+2,clock:1,state}));
@@ -73,7 +73,7 @@ test('awareness updates are decoded fully, bounded and never claim the local cli
     assert.equal(parseAwarenessUpdate(bytes,{localClientId:1}),null);
   // The production encoder is wire-compatible with this validator.
   const doc=new Y.Doc(),awareness=new Awareness(doc);
-  awareness.setLocalState({v:1,seat:'a',status:'active',sel:null});
+  awareness.setLocalState({v:2,seat:'a',status:'active',sel:null});
   assert.equal(parseAwarenessUpdate(encodeAwarenessUpdate(awareness,[doc.clientID]))?.[0].state.seat,'a');
   awareness.destroy(); doc.destroy();
 });
@@ -130,7 +130,7 @@ test('a silent peer expires after the TTL without cleanup; departure removes it 
 test('replayed, own-seat, phantom and over-cap peers cannot create or extend presence',()=>{
   const clock=fakeRelayClock(),{right}=documentPair(),changes=[];
   const session=createPresenceSession({doc:right,text:right.getText('code'),seat:'b',...clock,send:()=>true,onChange:()=>changes.push(1)});
-  const state=(seat='a')=>({v:1,seat,status:'active',sel:null});
+  const state=(seat='a')=>({v:2,seat,status:'active',sel:null});
   assert.equal(session.receive(encodeEntries([{clientID:9,clock:1,state:state()}])),false,'ignored while disconnected');
   session.connection(true);
   assert.equal(session.receive(encodeEntries([{clientID:9,clock:1,state:state()}])),true);
@@ -161,6 +161,26 @@ test('replayed, own-seat, phantom and over-cap peers cannot create or extend pre
   assert.ok(changes.length>0); session.destroy(); session.setSelection(1,1); session.activity();
   assert.equal(session.partner(),null); right.destroy();
   assert.throws(()=>createPresenceSession({seat:'a'}),TypeError);
+});
+
+test('state v2: a locked candidate publishes `locked` without a selection and restores it on unlock',()=>{
+  const {clock,sessions}=directPair();
+  sessions.a.connection(true); sessions.b.connection(true); clock.advance(0);
+  sessions.a.setSelection(4,9); clock.advance(PRESENCE_SEND_MS);
+  assert.deepEqual(sessions.b.partner().selection,{anchor:4,head:9});
+  sessions.a.setLocked(true); clock.advance(PRESENCE_SEND_MS);
+  assert.equal(sessions.a.locked,true);
+  assert.deepEqual({status:sessions.b.partner().status,selection:sessions.b.partner().selection},{status:'locked',selection:null});
+  sessions.a.setSelection(1,2); sessions.a.activity(); clock.advance(PRESENCE_IDLE_MS+2000);
+  assert.equal(sessions.b.partner().status,'locked','neither selection, activity nor idle leaves locked');
+  sessions.a.setLocked(true); sessions.a.setLocked(false); clock.advance(PRESENCE_SEND_MS);
+  assert.deepEqual({status:sessions.b.partner().status,selection:sessions.b.partner().selection},{status:'active',selection:{anchor:1,head:2}});
+  // Strict validation: v1 is refused and locked never carries a selection.
+  assert.equal(validPresenceState({v:1,seat:'a',status:'active',sel:null}),false);
+  assert.equal(validPresenceState({v:2,seat:'a',status:'locked',sel:null}),true);
+  assert.equal(validPresenceState({v:2,seat:'a',status:'locked',sel:{anchor:position,head:position}}),false);
+  for(const session of Object.values(sessions)) session.destroy();
+  sessions.a.setLocked(true);
 });
 
 test('activity state goes idle after a minute without local input and back on input',()=>{

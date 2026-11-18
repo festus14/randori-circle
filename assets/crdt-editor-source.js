@@ -391,24 +391,55 @@ function presenceRelayState(connected){
   renderPresence();
 }
 
+// Interview mode (#464, ID-99): awareness is display-only and never touches
+// the document, so it is exempt from the one-way y-update rule. The
+// interviewer accepts inbound y-awareness (onAwareness is not gated by
+// relayInbound) and the admitted candidate broadcasts it (sendAwareness is
+// not gated by relayOutbound). A lobby or locked candidate holds no relay
+// token at all, and a locked candidate publishes `locked` with no selection.
+const presenceLocked=()=>blocked();
+
 function ensurePresenceSession(presence){
   if(presence.session||state.presence!==presence||!presence.fallback?.seat||!state.doc||!state.text||!state.relay) return;
   try{
     presence.session=createPresenceSession({doc:state.doc,text:state.text,seat:presence.fallback.seat,
-      send:(bytes,options)=>state.relay?.sendAwareness(bytes,options)===true,onChange:()=>{ if(state.presence===presence) renderPresence(); }});
+      send:(bytes,options)=>state.relay?.sendAwareness(bytes,options)===true,
+      onChange:()=>{ if(state.presence!==presence) return; presenceDeparture(presence); renderPresence(); }});
+    presence.session.setLocked(presenceLocked());
     if(presence.localSelection) presence.session.setSelection(...presence.localSelection);
     if(state.relay.connected) presence.session.connection(true);
   }catch{ presence.session=null; } // presence stays at the HTTPS "online" level
 }
 
+// An explicit awareness departure means "left this document's channel" (tab
+// hidden, sign-out, or just another exercise). Room presence belongs to the
+// HTTPS row, so re-check it a second later (after the partner's keepalive
+// leave): a partner who left the room shows as gone within about two seconds,
+// one who only switched exercise stays online.
+function presenceDeparture(presence){
+  const left=presence.session?.partnerLeftAt||0;
+  if(!left||left===presence.seenLeftAt) return;
+  presence.seenLeftAt=left;
+  if(presence.nudgeTimer!==null) clearTimeout(presence.nudgeTimer);
+  presence.nudgeTimer=setTimeout(()=>{
+    presence.nudgeTimer=null;
+    if(state.presence===presence) presence.fallback?.nudge();
+  },1000);
+}
+
 function mergedPresence(presence){
   const peer=presence.session?.partner?.()||null;
   if(peer) return {presence:'here',peer};
-  const fallback=presence.fallback,online=fallback?.partnerOnline;
-  // An explicit awareness departure wins until a later HTTPS beat confirms.
-  const left=presence.session?.partnerLeftAt||0;
-  if(online===true&&left&&fallback.lastSuccessAt<=left+1000) return {presence:'away',peer:null};
+  const online=presence.fallback?.partnerOnline;
   return {presence:online===true?'online':online===false?'away':'unknown',peer:null};
+}
+
+// What the interviewer already knows from its own live controls: the
+// candidate is still in the lobby, or editing is paused.
+function interviewView(){
+  const controls=window._randori_session_controls?.controls;
+  if(!controls?.lobbyMode||controls.terminal||controls.viewerRole!=='interviewer') return {waiting:false,partnerLocked:false};
+  return {waiting:controls.phase==='lobby',partnerLocked:controls.editingLocked===true};
 }
 
 // The summary is cheap and synchronous; the DOM work (mirror rebuild and
@@ -416,9 +447,11 @@ function mergedPresence(presence){
 function renderPresence(){
   const presence=state.presence;
   if(!presence?.view) return;
-  const {presence:value,peer}=mergedPresence(presence);
+  const {presence:value,peer}=mergedPresence(presence),{waiting,partnerLocked}=interviewView();
   const health=!navigator.onLine?'offline':presence.relayLive?'live':presence.fallback?.healthy===false?'offline':'polling';
-  presence.summary={presence:value,health,status:peer?.status||null,selection:peer?.selection||null};
+  const status=partnerLocked&&value!=='away'?'locked':peer?.status||null;
+  presence.summary={presence:value,health,status,waiting:waiting&&value!=='away'&&value!=='unknown',
+    selection:status==='locked'?null:peer?.selection||null};
   if(presence.frame!=null) return;
   const draw=()=>{
     presence.frame=null;
@@ -479,19 +512,38 @@ function bindPresenceEditor(){
   });
 }
 
+// Room presence outlives a document: a same-room re-activation (another
+// exercise or language, admission from the lobby, a held write) swaps only
+// the document-bound parts, so the partner sees no leave/join flicker.
+function detachPresenceDocument(presence){
+  try{ presence.session?.destroy(); }catch{} // null awareness rides the still-open relay
+  presence.session=null; presence.relayLive=false;
+  unbindPresenceEditor(presence);
+  try{ presence.text?.unobserve(presence.textObserver); }catch{}
+  presence.text=null;
+}
+
+function attachPresenceDocument(presence){
+  if(state.text&&presence.text!==state.text){ presence.text=state.text; state.text.observe(presence.textObserver); }
+  bindPresenceEditor();
+  if(state.relay?.connected) presenceRelayState(true);
+}
+
 function configurePresence(data,epoch,identity){
   if(data?.presence!==true||!PRIMARY_ROOM.test(identity.room)||!matches(epoch,identity)){ stopPresence(); return; }
-  if(state.presence) return;
-  const presence={relayLive:false,session:null,fallback:null,view:null,localSelection:null,editorCleanup:[],summary:null,frame:null};
+  if(state.presence?.room===identity.room){ attachPresenceDocument(state.presence); renderPresence(); return; }
+  stopPresence();
+  const presence={room:identity.room,relayLive:false,session:null,fallback:null,view:null,text:null,localSelection:null,
+    editorCleanup:[],summary:null,frame:null,seenLeftAt:0,nudgeTimer:null};
   state.presence=presence;
   try{ presence.view=createPresenceView({room:identity.room,partner:()=>presence.fallback?.partner||null}); }catch{ presence.view=null; }
   presence.textObserver=()=>{ if(state.presence===presence) renderPresence(); };
-  state.text?.observe(presence.textObserver);
   presence.fallback=createFallbackPresence({
+    // Room-scoped: no exercise, language, cursor or code is ever sent here.
     request:(value,signal,options={})=>fetch('/api/code-document/presence',{
       method:'POST',credentials:'same-origin',cache:'no-store',...(signal?{signal}:{}),
       ...(options.keepalive?{keepalive:true}:{}),headers:relayHeaders(),
-      body:JSON.stringify({...documentBody(identity),state:value}),
+      body:JSON.stringify({room_id:identity.room,state:value}),
     }),
     relayConnected:()=>presence.relayLive,
     onChange:info=>{
@@ -502,9 +554,8 @@ function configurePresence(data,epoch,identity){
     },
   });
   window._randori_presence_active=true;
-  bindPresenceEditor();
+  attachPresenceDocument(presence);
   presence.fallback.start();
-  if(state.relay?.connected) presenceRelayState(true);
   renderPresence();
 }
 
@@ -513,12 +564,26 @@ function stopPresence({leave=true}={}){
   if(!presence) return;
   state.presence=null;
   window._randori_presence_active=false;
-  try{ presence.session?.destroy(); }catch{} // null awareness rides the still-open relay
+  detachPresenceDocument(presence);
+  if(presence.nudgeTimer!==null) clearTimeout(presence.nudgeTimer);
   try{ presence.fallback?.stop({leave}); }catch{}
-  unbindPresenceEditor(presence);
-  try{ state.text?.unobserve(presence.textObserver); }catch{}
   cancelPresenceFrame(presence);
   try{ presence.view?.destroy(); }catch{}
+}
+
+// Seat/role or lock changes (#464): drop every remote awareness state at once
+// and re-announce, so nothing stale lingers for the 15 s TTL.
+function resetPresenceForAccess(){
+  const presence=state.presence;
+  if(!presence) return;
+  const session=presence.session;
+  if(session){
+    session.setLocked(presenceLocked());
+    session.connection(false);
+    if(presence.relayLive) session.connection(true);
+  }
+  presence.fallback?.nudge();
+  renderPresence();
 }
 
 function schedule(delay=POLL_MS){
@@ -562,7 +627,13 @@ async function hydrate(identity,epoch){
     if(result.response.status===409&&result.data.code==='session_completed'){ completeIdentity(); return false; }
     // The interviewer has not opened or released this question yet; access
     // changes re-run activation.
-    if(result.response.status===409&&/^interview_(editing_locked|lobby)$/.test(String(result.data.code||''))){ setStatus('held','waiting for the interviewer'); return false; }
+    if(result.response.status===409&&/^interview_(editing_locked|lobby)$/.test(String(result.data.code||''))){
+      setStatus('held','waiting for the interviewer');
+      // A lobby candidate cannot read the document, but may still say "I'm
+      // here" (room-scoped HTTPS presence only: no relay token, no cursor).
+      configurePresence({presence:result.data.presence===true},epoch,identity);
+      return false;
+    }
     if(!result.response.ok) throw new Error(result.data.error||'code document unavailable');
     const doc=new Y.Doc({gc:true}); const text=doc.getText('code');
     Y.applyUpdate(doc,base64ToBytes(result.data.state),ORIGIN_REMOTE);
@@ -659,8 +730,8 @@ async function poll(){
   schedule(state.status==='retry'?state.retryMs:POLL_MS);
 }
 
-function disposeDocument(){
-  stopPresence();
+function disposeDocument({keepPresence=false}={}){
+  if(keepPresence&&state.presence) detachPresenceDocument(state.presence); else stopPresence();
   stopRelay(); state.relayEnabled=false; state.relayDirection=null;
   state.controller?.abort(); state.controller=null;
   if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
@@ -675,8 +746,8 @@ function disposeDocument(){
   state.hydrated=false; state.inFlight=false; state.revision=0; state.version=null;
 }
 
-function deactivate({keepIdentity=false,awaitingRoom=false}={}){
-  state.epoch+=1; disposeDocument();
+function deactivate({keepIdentity=false,awaitingRoom=false,quietRoom=null}={}){
+  state.epoch+=1; disposeDocument({keepPresence:awaitingRoom&&!!quietRoom&&state.presence?.room===quietRoom});
   state.awaitingRoom=awaitingRoom;
   if(!keepIdentity){ state.room=null; state.identity=null; state.actorId=null; state.completed=false; setEditorReadOnly(false); setStatus(awaitingRoom?'connecting':'local'); }
   else setStatus(navigator.onLine?'connecting':'offline');
@@ -685,7 +756,8 @@ function deactivate({keepIdentity=false,awaitingRoom=false}={}){
 
 function fenceIdentityChange(room=window._randori_authorized_room){
   room=String(room||'');
-  deactivate({awaitingRoom:ROOM.test(room)&&!window.RandoriWorkspaceScope?.isSolo?.(room)&&window._randori_authorized_room===room&&!!actorId()});
+  const awaitingRoom=ROOM.test(room)&&!window.RandoriWorkspaceScope?.isSolo?.(room)&&window._randori_authorized_room===room&&!!actorId();
+  deactivate({awaitingRoom,quietRoom:awaitingRoom?room:null});
 }
 
 async function activate(){
@@ -698,7 +770,7 @@ async function activate(){
   if(!owner||!identity||window._randori_workspace?.hydrated!==true
     ||window._randori_workspace?.room!==identity.room||window._randori_authorized_room!==identity.room){
     const awaiting=!!owner&&ROOM.test(room);
-    deactivate({awaitingRoom:awaiting});
+    deactivate({awaitingRoom:awaiting,quietRoom:awaiting?room:null});
     // A first-ever room hydrates with no workspace snapshot, so no selection
     // event follows once the catalogue selection or workspace checkpoint
     // becomes available. Re-check on a bounded cadence while this exact
@@ -716,7 +788,7 @@ async function activate(){
   // The v3 workspace owns code until its exact selection checkpoint is
   // acknowledged. Do not claim CRDT ownership early: doing so would suppress
   // the workspace text write and let an empty bootstrap replace local edits.
-  deactivate({awaitingRoom:true});
+  deactivate({awaitingRoom:true,quietRoom:identity.room});
   const activationEpoch=state.epoch;
   const canApply=()=>activationEpoch===state.epoch&&owner===actorId()
     &&sameIdentity(identity,selectionIdentity())
@@ -771,6 +843,7 @@ window.addEventListener('randori:interview-ended',event=>{
 });
 window.addEventListener('randori:interview-access',event=>{
   if(event.detail?.room!==state.room&&event.detail?.room!==window._randori_authorized_room) return;
+  resetPresenceForAccess();
   setEditorReadOnly(state.hydrationLockEpoch!==null);
   if(blocked()){ if(state.identity&&readQueue().length) setStatus('held'); return; }
   if(state.hydrated) schedule(0); else scheduleActivation();

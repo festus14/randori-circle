@@ -104,7 +104,8 @@ export default async function handler(req,res){
       // Foreign/nonexistent workspace requests use the uniform pair 404.
       if(!result) return res.status(404).json({ok:false,error:'code document not found'});
       if(result.terminal) return res.status(409).json({ok:false,code:'session_completed',error:'session is ended; editing is closed'});
-      if(result.lobby) return res.status(409).json(IN_LOBBY);
+      // #462: a lobby candidate may still report room presence (no document).
+      if(result.lobby) return res.status(409).json({...IN_LOBBY,...(presenceConfiguration()?{presence:true}:{})});
       if(result.editingClosed) return res.status(409).json(EDITING_CLOSED);
       return res.json({...codeDocumentResponse(result,{afterRevision:input.afterRevision}),
         ...(realtimeRelayConfiguration()?{realtime_relay:true,

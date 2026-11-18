@@ -35,11 +35,13 @@ export function lineOf(text,offset){
 
 // The single sentence shown in the room bar. `presence` is the merged view:
 // here (live awareness) | online (HTTPS fallback) | away | unknown.
-export function presenceLabel({name,presence,status=null,line=null,health}){
-  const parts=[presence==='here'?`${name} is here`:presence==='online'?`${name} online`
-    :presence==='away'?`${name} not in the room`:`Checking for ${name}…`];
+export function presenceLabel({name,presence,status=null,line=null,health,waiting=false}){
+  const present=presence==='here'||presence==='online';
+  const parts=[present&&waiting?`${name} is waiting in the lobby`:presence==='here'?`${name} is here`
+    :presence==='online'?`${name} online`:presence==='away'?`${name} not in the room`:`Checking for ${name}…`];
   if(presence==='here'&&status==='idle') parts.push('idle');
-  if(presence==='here'&&Number.isSafeInteger(line)) parts.push(`line ${line}`);
+  if(present&&status==='locked') parts.push('editing paused');
+  else if(presence==='here'&&Number.isSafeInteger(line)) parts.push(`line ${line}`);
   parts.push(health==='live'?'live':health==='offline'?'reconnecting':'polling');
   return parts.join(' · ');
 }
@@ -143,7 +145,7 @@ export function createPresenceView({document=globalThis.document,window=globalTh
       ensureStyle(color);
       const label=byId('presenceText'),host=label?.parentElement||null;
       const line=view.presence==='here'&&view.selection?lineOf(String(view.text||''),view.selection.head):null;
-      if(label) label.textContent=presenceLabel({name,presence:view.presence,status:view.status,line,health:view.health});
+      if(label) label.textContent=presenceLabel({name,presence:view.presence,status:view.status,line,health:view.health,waiting:view.waiting===true});
       if(host?.dataset){ host.dataset.partner=view.presence; host.dataset.health=view.health; }
       const dot=host?.querySelector?.('.dot');
       if(dot?.style) dot.style.background=view.presence==='here'||view.presence==='online'?color:'';

@@ -472,7 +472,7 @@ test('pair presence: join, live remote cursor, leave on hidden tab and TTL expir
     await insertAt(pages[1],0,'// partner\n');
     await expect.poll(()=>store.code(),{timeout:12_000}).toContain('// partner');
     await expect(cursor).toHaveAttribute('data-offset',String(selectionStart+6+'// partner\n'.length));
-    expect(store.presenceCalls.every(call=>Object.keys(call.body).sort().join()==='language,question_slug,question_version,room_id,state')).toBe(true);
+    expect(store.presenceCalls.every(call=>Object.keys(call.body).sort().join()==='room_id,state')).toBe(true);
 
     // Leave: a hidden tab stops presence, says goodbye and deletes its row.
     await pages[0].evaluate(()=>{

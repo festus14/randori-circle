@@ -1,12 +1,15 @@
 import { getClient, verifyRequestAuth } from './_db.js';
 import { clearPresence, consumePresenceBudget, parsePresenceRequest, presenceConfiguration, PRESENCE_INTERVAL_SECONDS,
-  PRESENCE_TTL_SECONDS, readPartnerProfile, recordPresence } from './_presence.js';
+  PRESENCE_TTL_SECONDS, readPartnerProfile, readPresenceAuthorization, recordPresence } from './_presence.js';
+import { resolveInterviewMode } from './_interview-session.js';
 import { authorizeRelayPair, relayOriginAllowed } from './_realtime-relay-api.js';
 
 const notFound=res=>res.status(404).json({error:'pair not found'});
 
 // POST /api/code-document/presence (#462 / ID-100). Same origin, session and
-// live-pair authority as the relay token; grouped in the existing function.
+// circle-context checks as the relay token, with the room-level pair read
+// (readPresenceAuthorization: open interview, not the edit/relay fences);
+// grouped in the existing function.
 // The body carries no cursor, selection, name or free text, and nothing about
 // the request or its outcome is logged.
 export async function handlePresence(req,res){
@@ -36,7 +39,8 @@ export async function handlePresence(req,res){
     // Leaving only deletes the caller's own keyed row for a canonical primary
     // room, so it needs no pair read and still succeeds after a terminal state.
     if(request.state==='leave'){ await clearPresence(db,config,{roomId,viewerId}); return res.json({ok:true}); }
-    const access=await authorizeRelayPair(db,auth,req,{viewerId,...request.identity});
+    const mode=await resolveInterviewMode(db);
+    const access=await authorizeRelayPair(db,auth,req,{viewerId,...request.identity},{mode,read:readPresenceAuthorization});
     if(!access) return notFound(res);
     const {userAId,userBId}=access.pair;
     const seat=viewerId===userAId?'a':'b';

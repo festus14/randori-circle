@@ -16,7 +16,10 @@ export const PRESENCE_MAX_ENTRIES=4;
 export const PRESENCE_FALLBACK_MS=5000;
 export const PRESENCE_FALLBACK_RELAY_MS=15000;
 const SEATS=new Set(['a','b']);
-const STATUSES=new Set(['active','idle']);
+// v2 (#462 on ID-99): `locked` is an interview candidate whose editing the
+// interviewer paused; a locked state never carries a selection.
+export const PRESENCE_STATE_VERSION=2;
+const STATUSES=new Set(['active','idle','locked']);
 const STATE_KEYS=['seat','sel','status','v'];
 const MAX_CLIENT=0xffffffff;
 
@@ -33,8 +36,8 @@ export function validRelativePosition(value){
 }
 
 export function validPresenceState(state){
-  if(!record(state)||Object.keys(state).sort().join()!==STATE_KEYS.join()||state.v!==1
-    ||!SEATS.has(state.seat)||!STATUSES.has(state.status)) return false;
+  if(!record(state)||Object.keys(state).sort().join()!==STATE_KEYS.join()||state.v!==PRESENCE_STATE_VERSION
+    ||!SEATS.has(state.seat)||!STATUSES.has(state.status)||(state.status==='locked'&&state.sel!==null)) return false;
   return state.sel===null||(record(state.sel)&&Object.keys(state.sel).sort().join()==='anchor,head'
     &&validRelativePosition(state.sel.anchor)&&validRelativePosition(state.sel.head));
 }
@@ -77,7 +80,8 @@ export function createPresenceSession({doc,text,seat,send,onChange=()=>{},now=Da
   const seenAt=new Map(),removedAt=new Map();
   let destroyed=false,closing=false,connected=false,lastSent=-Infinity,sendTimer=null,renewTimer=null,sweepTimer=null;
   let lastActivity=now(),selectionKey='null',partnerLeftAt=0;
-  awareness.setLocalState({v:1,seat,status:'active',sel:null});
+  let locked=false,pendingSel=null;
+  awareness.setLocalState({v:PRESENCE_STATE_VERSION,seat,status:'active',sel:null});
   const flush=()=>{
     sendTimer=null;
     if(closing||!connected) return;
@@ -168,6 +172,10 @@ export function createPresenceSession({doc,text,seat,send,onChange=()=>{},now=Da
         sel={anchor:Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(text,clamp(anchorIndex))),
           head:Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(text,clamp(headIndex)))};
       }
+      // A read-only (locked) candidate publishes no live selection; the
+      // latest one is restored when editing resumes.
+      pendingSel=sel;
+      if(locked) return;
       const key=JSON.stringify(sel),local=awareness.getLocalState();
       if(key===selectionKey&&local?.status==='active') return;
       selectionKey=key;
@@ -178,6 +186,14 @@ export function createPresenceSession({doc,text,seat,send,onChange=()=>{},now=Da
       lastActivity=now();
       if(awareness.getLocalState()?.status==='idle') awareness.setLocalStateField('status','active');
     },
+    setLocked(value){
+      if(destroyed||locked===(value===true)) return;
+      locked=value===true;
+      const local=awareness.getLocalState();
+      selectionKey=locked?'null':JSON.stringify(pendingSel);
+      awareness.setLocalState({...local,status:locked?'locked':'active',sel:locked?null:pendingSel});
+    },
+    get locked(){ return locked; },
     // The freshest remote peer on the other seat; another tab of our own seat
     // is never reported as the partner.
     partner(){

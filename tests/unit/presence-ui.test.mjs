@@ -47,6 +47,11 @@ test('labels state who is here, activity, cursor line and connection health in p
   assert.equal(presenceLabel({name:'Two',presence:'online',health:'polling'}),'Two online · polling');
   assert.equal(presenceLabel({name:'Two',presence:'away',health:'offline'}),'Two not in the room · reconnecting');
   assert.equal(presenceLabel({name:'Two',presence:'unknown',health:'polling'}),'Checking for Two… · polling');
+  // Interview mode (#464): the interviewer sees the waiting or paused candidate.
+  assert.equal(presenceLabel({name:'Two',presence:'online',waiting:true,health:'live'}),'Two is waiting in the lobby · live');
+  assert.equal(presenceLabel({name:'Two',presence:'away',waiting:true,health:'live'}),'Two not in the room · live');
+  assert.equal(presenceLabel({name:'Two',presence:'here',status:'locked',line:4,health:'live'}),'Two is here · editing paused · live');
+  assert.equal(presenceLabel({name:'Two',presence:'online',status:'locked',health:'polling'}),'Two online · editing paused · polling');
 });
 
 test('the view announces joins and leaves once, not per tick, and restores the bar on teardown',()=>{
