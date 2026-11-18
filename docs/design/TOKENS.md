@@ -323,6 +323,10 @@ The initial rebased boundary measured **998,173 → 954,051 bytes**, recovering
 with **43,557 bytes** headroom. The structural and `jsInitial <= 960_000`
 regression guards must be updated deliberately, not to hide unrelated growth.
 
+After rebasing onto `e4eca0d` (#481 presence, ID-100): JS initial **998,341 → 956,611**
+bytes; JS total 1,377,551 now also counts the two presence `.mjs` modules
+(four served `.mjs` files in all).
+
 The total now counts `.mjs` as well as `.js`: the two previously
 omitted realtime modules add 11,592 bytes to the old total basis, so the total
 comparison above includes a **tightening**, not a threshold increase. The

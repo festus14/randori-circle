@@ -42,7 +42,7 @@ test('the current tree passes the adopted #412 thresholds', () => {
   assert.ok(measurement.jsInitial <= BYTE_BUDGET_THRESHOLDS.jsInitial);
   assert.ok(measurement.jsTotal <= BYTE_BUDGET_THRESHOLDS.jsTotal);
   assert.deepEqual(measurement.linkedStylesheets, ['assets/circle-history.css']);
-  assert.equal(measurement.assetJsFiles, 32); // 30 .js files plus both served realtime .mjs modules (ID-101).
+  assert.equal(measurement.assetJsFiles, 34); // 30 .js files plus the four served .mjs modules: realtime relay/yjs (ID-96, ID-101) and presence/presence-ui (ID-100).
   // Rebasing onto 929cad6 moved the comparison to 998,173 -> 954,051 bytes.
   // Preserve the structural boundary and at least 40 KB of deliberate initial
   // headroom. Update this regression guard deliberately, not to mask growth.
