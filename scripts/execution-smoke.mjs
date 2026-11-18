@@ -67,7 +67,7 @@ async function main() {
   const measure = warmMeasurementEnabled(env);
 
   for (const language of smokeLanguages(env)) {
-    const suite = createEvaluationSuite(SLUG, VERSION, language);
+    const suite = createEvaluationSuite(SLUG, VERSION, language, { env });
     if (!suite) return fail(`catalogue exercise ${SLUG}@${VERSION} is unavailable`);
     const prefix = `__RANDORI_RESULT_${randomBytes(16).toString('hex')}__:`;
     const started = Date.now();

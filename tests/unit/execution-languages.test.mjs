@@ -10,7 +10,7 @@ import { canonicalExerciseHash } from '../../api/_catalog-provenance.js';
 import { parseCodeDocumentQuery, purgeExpiredCodeDocuments } from '../../api/_code-document.js';
 import { runReferenceProgram, validateAdditionalLanguageReferences } from '../../scripts/validate-interview-kits.mjs';
 import { GO_CATALOG_REFERENCES } from '../../scripts/catalog-go-references.mjs';
-import { smokeLanguages } from '../../scripts/execution-smoke-checks.mjs';
+import { smokeEnvironment, smokeLanguages } from '../../scripts/execution-smoke-checks.mjs';
 import { EXECUTION_SMOKE_EXPECTED_OUTPUT, runExecutionSmoke, throttledExecutionSmokeBody } from '../../api/_execution-smoke.js';
 import { assessExecutionSmoke } from '../../scripts/github-execution-smoke.mjs';
 import { syncLanguageOptions } from '../../assets/execution-languages.js';
@@ -200,6 +200,10 @@ test('lazy language selector uses only server-advertised additions', () => {
 
 test('language smoke targets fit existing budgets, and cache cannot hide new-language failures', async () => {
   assert.deepEqual(smokeLanguages(PISTON), ['javascript', 'python']);
+  const setup = smokeEnvironment({ EXECUTION_LANGUAGE_TYPESCRIPT_ENABLED: 'true', VERCEL_OIDC_TOKEN: 'unused-offline-test-token' });
+  assert.deepEqual(smokeLanguages({ ...setup.env, EXECUTION_SMOKE_LANGUAGE: 'typescript' }), ['typescript']);
+  assert.equal(createEvaluationSuite('focus-block-rollup', 1, 'typescript', { env: setup.env }).tests.length, 8);
+  assert.match(readFileSync(new URL('../../scripts/execution-smoke.mjs', import.meta.url), 'utf8'), /createEvaluationSuite\(SLUG, VERSION, language, \{ env \}\)/);
   assert.deepEqual(smokeLanguages({ ...PISTON, EXECUTION_SMOKE_LANGUAGE: 'go' }), ['go']);
   assert.throws(() => smokeLanguages({ ...TS, EXECUTION_SMOKE_LANGUAGE: 'go' }), /not enabled or provider-supported/);
   const calls = [], writes = [];
