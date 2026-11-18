@@ -78,3 +78,55 @@ test('room and authorization fences reset the terminal display lock, and mountin
   controller.unlock();
   assert.equal(controller.room,null);
 });
+
+test('lobby/lock access holds the candidate selection, editor and lobby Run, and restores them exactly',()=>{
+  const f=fixture();
+  const observed=[];
+  f.root.MutationObserver=class{ constructor(callback){ this.callback=callback; } observe(node){ observed.push([this,node]); } };
+  const gate=f.root._randori_session_controls;
+  Object.assign(gate,{editBlocked:true,selectionOwned:true,inLobby:true});
+  let monaco=null;
+  f.root._randori_code={getEditor:()=>({updateOptions:options=>{ monaco=options.readOnly; }})};
+  const controller=installInterviewSession({window:f.root,document:f.doc});
+  f.event('randori:interview-access',{room:'week_10_pair_999'});
+  assert.equal(f.nodes.get('questionSelect').disabled,false,'another room is ignored');
+  f.event('randori:interview-access',{room:'week_10_pair_20'});
+  for(const id of ['questionSelect','langSelect','editorResetBtn','formatBtn','runBtn']) assert.equal(f.nodes.get(id).disabled,true,id);
+  assert.equal(f.editor.readOnly,true); assert.equal(monaco,true);
+  // Catalogue code re-enabling a held control is recorded and undone.
+  const select=f.nodes.get('questionSelect'); select.disabled=false;
+  const [observer]=observed.find(([,node])=>node===select);
+  observer.callback([{target:select}]);
+  assert.equal(select.disabled,true);
+  Object.assign(gate,{editBlocked:false,inLobby:false});
+  f.event('randori:interview-access',{room:'week_10_pair_20'});
+  assert.equal(f.nodes.get('runBtn').disabled,false,'admission releases Run');
+  assert.equal(f.nodes.get('formatBtn').disabled,true,'formatBtn returns to its own earlier disabled state');
+  assert.equal(f.nodes.get('questionSelect').disabled,true,'the candidate still never chooses the question');
+  assert.equal(f.editor.readOnly,false); assert.equal(monaco,false);
+  Object.assign(gate,{selectionOwned:false});
+  f.event('randori:interview-access',{room:'week_10_pair_20'});
+  assert.equal(select.disabled,false,'the re-enable observed while held is the restored value');
+  assert.equal(f.nodes.get('langSelect').disabled,false);
+  Object.assign(gate,{editBlocked:true,selectionOwned:true,inLobby:true});
+  controller.access({room:'week_10_pair_20'});
+  f.event('randori:room-change');
+  assert.equal(f.nodes.get('langSelect').disabled,false,'a room change releases every hold');
+  assert.equal(f.editor.readOnly,false);
+});
+
+test('access never unlocks a terminal room and leaves the editor to a mounted CRDT',()=>{
+  const f=fixture();
+  f.root._randori_crdt={};
+  const gate=f.root._randori_session_controls;
+  Object.assign(gate,{editBlocked:true,selectionOwned:true,inLobby:false});
+  installInterviewSession({window:f.root,document:f.doc});
+  f.event('randori:interview-access',{room:'week_10_pair_20'});
+  assert.equal(f.editor.readOnly,false,'CRDT owns the editor lock when mounted');
+  assert.equal(f.nodes.get('langSelect').disabled,true);
+  gate.ended=true;
+  f.event('randori:interview-ended',{room:'week_10_pair_20'});
+  f.event('randori:interview-access',{room:'week_10_pair_20'});
+  assert.equal(f.nodes.get('langSelect').disabled,true,'the terminal lock keeps released holds disabled');
+  assert.equal(f.nodes.get('runBtn').disabled,true);
+});
