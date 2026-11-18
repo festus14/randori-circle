@@ -16,7 +16,9 @@ export function installInterviewSession({window:root=globalThis.window,document:
   function access(detail){
     const gate=root._randori_session_controls,mine=!ended()&&!!gate&&detail?.room===gate.room;
     const blocked=mine&&gate.editBlocked===true,want=new Set();
-    if(mine&&gate.selectionOwned===true) for(const id of ['questionSelect','langSelect','editorResetBtn']) want.add(id);
+    // Catalogue and kit filters can move the local selection; the room's stays the interviewer's.
+    if(mine&&gate.selectionOwned===true) for(const id of ['questionSelect','langSelect','editorResetBtn','catalogSearch','catalogTrack',
+      'catalogKit','catalogDifficulty','catalogType','catalogLanguage','catalogClearFilters']) want.add(id);
     if(blocked) for(const id of ['formatBtn','editorResetBtn']) want.add(id);
     if(mine&&gate.inLobby===true) want.add('runBtn');
     for(const [node,value] of held) if(!want.has(node.id)){ if(!locked.has(node)) node.disabled=value; held.delete(node); }

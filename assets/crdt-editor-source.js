@@ -20,12 +20,25 @@ const memoryQueues=new Map();
 const state={epoch:0,room:null,identity:null,actorId:null,doc:null,text:null,binding:null,
   textObserver:null,textareaHandler:null,textareaKeyHandler:null,updateHandler:null,undoManager:null,revision:0,version:null,
   hydrated:false,inFlight:false,controller:null,pollTimer:null,retryMs:500,status:'local',completed:false,
-  awaitingRoom:false,hydrationLockEpoch:null,relay:null,relayEnabled:false};
+  awaitingRoom:false,hydrationLockEpoch:null,relay:null,relayEnabled:false,relayDirection:null};
 
 // Interview lobby/lock (#464): while the server holds candidate editing, the
 // editor is read-only and queued edits stay on this device; they are replayed
 // (merged) once editing resumes. Nothing queued is silently discarded.
 function blocked(){ return window._randori_session_controls?.editBlocked===true; }
+// Lobby mode makes the relay one-way (#464 + ID-96). Relay packets carry no
+// authenticated sender, so the interviewer never applies any of them (a locked
+// or lobby candidate cannot reach the interviewer's document through the
+// relay) and the candidate never broadcasts. While held, the candidate does not
+// re-queue relayed bytes (the interviewer persists their own edits); otherwise
+// it keeps ID-96's receiver redundancy so dependent edits stay ordered.
+function lobbyRole(role){
+  const controls=window._randori_session_controls?.controls;
+  return state.relayDirection===(role==='interviewer'?'send':'receive')||controls?.lobbyMode===true&&controls.viewerRole===role;
+}
+const relayInbound=()=>!lobbyRole('interviewer');
+const relayOutbound=()=>!lobbyRole('candidate');
+const relayQueued=()=>!blocked();
 
 function actorId(){
   const id=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0);
@@ -320,6 +333,7 @@ function acceptResponse(data,epoch,identity,{apply=true}={}){
 
 function configureRelay(data,epoch,identity){
   state.relayEnabled=data?.realtime_relay===true&&/^week_[1-9]\d*_pair_[1-9]\d*$/.test(identity.room);
+  state.relayDirection=['send','receive'].includes(data?.realtime_relay_direction)?data.realtime_relay_direction:null;
   if(!state.relayEnabled||!matches(epoch,identity)||!navigator.onLine){
     state.relay?.stop(); state.relay=null; return;
   }
@@ -341,7 +355,7 @@ function configureRelay(data,epoch,identity){
         });
       },
       onUpdate:update=>{
-        if(matches(epoch,identity)&&state.doc) applyValidatedRelayUpdate(state.doc,update,ORIGIN_RELAY);
+        if(matches(epoch,identity)&&state.doc&&relayInbound()) applyValidatedRelayUpdate(state.doc,update,ORIGIN_RELAY);
         // The doc update handler queues this for HTTPS and disables Run. Relay
         // bytes never alter revision/version or count as acknowledgement.
       },
@@ -401,11 +415,13 @@ async function hydrate(identity,epoch){
     state.version=result.data.document_version;
     state.updateHandler=(update,origin)=>{
       if(state.completed||origin===ORIGIN_REMOTE||origin===ORIGIN_PENDING||!sameIdentity(identity,state.identity)) return;
+      // The sender persists its own edits; in lobby mode a receiver never re-sends them.
+      if(origin===ORIGIN_RELAY&&!relayQueued()) return;
       const queue=readQueue(identity); queue.push(bytesToBase64(update));
       const persisted=writeQueue(queue,identity);
       if(!persisted&&!navigator.onLine) setStatus('error','not saved locally — keep this tab open');
       else setStatus(navigator.onLine?'syncing':'offline');
-      if(origin!==ORIGIN_RELAY) state.relay?.send(update);
+      if(origin!==ORIGIN_RELAY&&relayOutbound()) state.relay?.send(update);
       schedule(SEND_DEBOUNCE_MS);
     };
     doc.on('update',state.updateHandler);
@@ -486,7 +502,7 @@ async function poll(){
 }
 
 function disposeDocument(){
-  state.relay?.stop(); state.relay=null; state.relayEnabled=false;
+  state.relay?.stop(); state.relay=null; state.relayEnabled=false; state.relayDirection=null;
   state.controller?.abort(); state.controller=null;
   if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
   state.binding?.destroy?.(); state.binding=null;

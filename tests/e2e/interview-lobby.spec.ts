@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Browser, BrowserContext, Page, Request, Route, expect, test } from '@playwright/test';
+import { Browser, BrowserContext, Page, Request, Route, WebSocketRoute, expect, test } from '@playwright/test';
 import * as Y from 'yjs';
 
 import { mockApi, openRoomPanel, originalQuestionFixture } from './helpers';
@@ -29,6 +29,8 @@ class InterviewServer{
   workspacePosts:Array<{actorId:number;status:number;code?:string}>=[];
   codePosts:Array<{actorId:number;status:number}>=[];
   doc=new Y.Doc(); docRevision=1; persisted='';
+  relayEnabled=false; relayTokens:Array<{actorId:number;status:number}>=[];
+  peers=new Map<WebSocketRoute,{topic:string;actorId:number}>(); broadcasts:Array<{actorId:number}>=[];
   workspaceRevision=1;
   constructor(){ this.doc.getText('code').insert(0,`// PREPARED\n${starter}`); this.persisted=base64(Y.encodeStateAsUpdate(this.doc)); }
   candidateInLobby(actorId:number){ return actorId===CANDIDATE&&!this.live()&&!this.terminal(); }
@@ -80,9 +82,10 @@ class InterviewServer{
     this.revision+=1;
     return reply(200,this.controls(actorId));
   };
-  documentResponse(after=0){
+  documentResponse(after=0,actorId=0){
     const code=this.doc.getText('code').toString();
-    return {ok:true,changed:this.docRevision!==after,created:false,revision:this.docRevision,
+    return {ok:true,...(this.relayEnabled?{realtime_relay:true,realtime_relay_direction:actorId===CANDIDATE?'receive':'send'}:{}),
+      changed:this.docRevision!==after,created:false,revision:this.docRevision,
       document_version:digest(JSON.stringify([this.docRevision,this.persisted])),state:this.docRevision!==after?this.persisted:null,
       code_hash:digest(code),updated_at:'2026-09-20T10:00:00.000Z'};
   }
@@ -91,7 +94,7 @@ class InterviewServer{
       const url=new URL(request.url());
       if(request.method()==='GET'){
         if(this.candidateInLobby(actorId)) return {_status:409,ok:false,code:'interview_lobby',error:'Waiting for the interviewer to admit you.'};
-        return this.documentResponse(Number(url.searchParams.get('after_revision')||0));
+        return this.documentResponse(Number(url.searchParams.get('after_revision')||0),actorId);
       }
       if(this.terminal()){ this.codePosts.push({actorId,status:409}); return {_status:409,ok:false,code:'session_completed',error:'ended'}; }
       if(this.candidateBlocked(actorId)){
@@ -104,8 +107,42 @@ class InterviewServer{
       this.persisted=base64(Y.encodeStateAsUpdate(this.doc));
       if(this.persisted!==before) this.docRevision+=1;
       this.codePosts.push({actorId,status:200});
-      return {...this.documentResponse(0),idempotent:this.persisted===before};
+      return {...this.documentResponse(0,actorId),idempotent:this.persisted===before};
     };
+  }
+  relayToken(actorId:number){
+    return ()=>{
+      const denied=!this.relayEnabled||this.terminal()||this.candidateBlocked(actorId);
+      this.relayTokens.push({actorId,status:denied?404:200});
+      if(denied) return {_status:404,error:'pair not found'};
+      return {ok:true,url:'https://relay-test.supabase.co',publishable_key:'sb_publishable_test_public_key_461',
+        topic:`rc-code:v1:${room}:${digest('javascript')}`,token:'header.payload.signature',
+        expires_at:Math.floor(Date.now()/1000)+(actorId===CANDIDATE?90:300)};
+    };
+  }
+  relaySocket(actorId:number){
+    return (socket:WebSocketRoute)=>{
+      socket.onClose(()=>this.peers.delete(socket));
+      socket.onMessage(raw=>{
+        const frame=JSON.parse(typeof raw==='string'?raw:raw.toString());
+        if(frame.event==='phx_join'){
+          this.peers.set(socket,{topic:frame.topic,actorId});
+          socket.send(JSON.stringify({topic:frame.topic,event:'phx_reply',ref:frame.ref,join_ref:frame.join_ref,payload:{status:'ok',response:{}}}));
+        }else if(frame.event==='heartbeat') socket.send(JSON.stringify({topic:'phoenix',event:'phx_reply',ref:frame.ref,payload:{status:'ok'}}));
+        else if(frame.event==='broadcast'){
+          this.broadcasts.push({actorId});
+          for(const [peer,info] of this.peers) if(peer!==socket&&info.topic===frame.topic) peer.send(JSON.stringify({topic:info.topic,event:'broadcast',payload:frame.payload,ref:null,join_ref:'1'}));
+        }
+      });
+    };
+  }
+  // What a modified candidate client holding an earlier token could inject.
+  forge(text:string){
+    const doc=new Y.Doc(); Y.applyUpdate(doc,Buffer.from(this.persisted,'base64'));
+    const before=Y.encodeStateVector(doc); doc.getText('code').insert(0,text);
+    const update=base64(Y.encodeStateAsUpdate(doc,before)); doc.destroy();
+    for(const [peer,info] of this.peers) if(info.actorId===INTERVIEWER) peer.send(JSON.stringify({topic:info.topic,event:'broadcast',
+      payload:{type:'broadcast',event:'y-update',payload:{sender:'f'.repeat(32),seq:1,update}},ref:null,join_ref:'1'}));
   }
   snapshot(){
     return {schema_version:3,revision:this.workspaceRevision,client_id:'workspace-server',client_seq:this.workspaceRevision,
@@ -146,7 +183,10 @@ async function open(browser:Browser,server:InterviewServer,actorId:1|2):Promise<
     '/api/session-completion':{ok:true,room_id:room,completion:{state:'not_recorded',viewer_confirmed:false,confirmed_count:0,
       required_count:2,version:'c'.repeat(64),completed_at:null}},
     '/api/video/signal':server.workspace(actorId),'/api/code-document':server.codeDocument(actorId),
+    '/api/code-document/relay-token':server.relayToken(actorId),
   });
+  // routeWebSocket never connects to a server: no Supabase/network access.
+  await page.routeWebSocket('wss://relay-test.supabase.co/realtime/v1/websocket**',server.relaySocket(actorId));
   await page.route(/\/api\/session-controls(?:\?.*)?$/,route=>server.controlsRoute(route,actorId));
   await context.addCookies([{name:'randori_session',value:`session-${actorId}`,url:origin,httpOnly:true,sameSite:'Lax'}]);
   await page.addInitScript(member=>{
@@ -250,5 +290,46 @@ test('the agreed schedule admits the waiting candidate without an interviewer ac
     }
     await expect(candidate.page.locator('#editor')).toHaveJSProperty('readOnly',false);
     expect(server.controlPosts).toHaveLength(0);
+  }finally{ await candidate.context.close(); await interviewer.context.close(); }
+});
+
+test('the realtime relay is one-way in interview mode: a locked candidate never reaches the interviewer document',async({browser})=>{
+  const server=new InterviewServer(); server.relayEnabled=true; server.admitted=true;
+  const candidate=await open(browser,server,CANDIDATE),interviewer=await open(browser,server,INTERVIEWER);
+  try{
+    const c=candidate.page,i=interviewer.page;
+    await expect.poll(()=>c.evaluate(()=>window._randori_crdt?.relayConnected),{timeout:12_000}).toBe(true);
+    await expect.poll(()=>i.evaluate(()=>window._randori_crdt?.relayConnected),{timeout:12_000}).toBe(true);
+    await expect(c.locator('#codeSyncStatus')).toHaveText('synced',{timeout:12_000});
+    // Interviewer -> candidate stays realtime.
+    await type(i,'live-int-');
+    await expect(c.locator('#editor')).toHaveValue(/live-int-/,{timeout:3_000});
+    expect(server.broadcasts.some(item=>item.actorId===INTERVIEWER)).toBe(true);
+    // The candidate never broadcasts; its edits travel over HTTPS only.
+    await type(c,'cand-https-');
+    await expect.poll(()=>server.doc.getText('code').toString(),{timeout:12_000}).toContain('cand-https-');
+    expect(server.broadcasts.filter(item=>item.actorId===CANDIDATE)).toHaveLength(0);
+
+    await i.getByTestId('session-controls-lock').click();
+    await expect(i.getByTestId('session-controls-lock')).toHaveText('Unlock candidate editing');
+    await expect(c.locator('#editor')).toHaveJSProperty('readOnly',true,{timeout:8_000});
+    const before=server.doc.getText('code').toString();
+    // A forged candidate-origin packet (e.g. a stale token and a modified
+    // client) is dropped by the interviewer's browser and never persisted.
+    server.forge('FORGED-');
+    await i.waitForTimeout(2_500);
+    await expect(i.locator('#editor')).not.toHaveValue(/FORGED-/);
+    expect(server.doc.getText('code').toString()).toBe(before);
+    expect(server.codePosts.filter(post=>post.actorId===INTERVIEWER&&post.status===200).length).toBeGreaterThan(0);
+    expect(server.doc.getText('code').toString()).not.toContain('FORGED-');
+    await type(c,'held-');
+    await c.waitForTimeout(1_500);
+    expect(server.broadcasts.filter(item=>item.actorId===CANDIDATE)).toHaveLength(0);
+    await expect(i.locator('#editor')).not.toHaveValue(/held-/);
+    expect(server.doc.getText('code').toString()).not.toContain('held-');
+    await expect.poll(()=>server.relayTokens.some(item=>item.actorId===CANDIDATE&&item.status===404),{timeout:1_000}).toBe(false);
+    await c.evaluate(()=>window._randori_crdt?.deactivate?.());
+    await c.evaluate(()=>window._randori_crdt?.activate?.());
+    await expect.poll(()=>server.relayTokens.some(item=>item.actorId===CANDIDATE&&item.status===404),{timeout:12_000}).toBe(true);
   }finally{ await candidate.context.close(); await interviewer.context.close(); }
 });
