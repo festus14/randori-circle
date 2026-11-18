@@ -292,6 +292,111 @@ for (const action of ['clear', 'edit', 'uncheck', 'expiry']) {
   }
 }
 
+test('busy queue countdown retries once and duplicate Run clicks cannot dispatch parallel requests', async ({ page }) => {
+  let calls=0,release!:()=>void;
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  await mockApi(page, {
+    '/api/auth/capabilities': {ok:true,registrationMode:'private_beta',capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,executionQueue:true}},
+    '/api/auth/me': {ok:true,user:signedInUser},
+    '/api/questions': {ok:true,questions:[originalQuestion],count:1},
+    '/api/execute': async()=>{
+      calls++;
+      if(calls===1){await gate;return {_status:503,ok:false,code:'execution_busy',reason:'queued',retry_after:2};}
+      return {ok:true,passed_count:1,total_count:1,results:[{idx:0,pass:true}]};
+    },
+  });
+  await resetClientState(page,true);
+  try{
+    await page.goto('/?view=code',{waitUntil:'domcontentloaded'});
+    await selectQuestion(page,originalQuestion.slug);await setCode(page,correctSolution);
+    await page.evaluate(()=>{const b=document.querySelector<HTMLButtonElement>('#runBtn');b?.click();b?.click();});
+    await expect.poll(()=>calls).toBe(1);
+    release();
+    const busy=page.locator('#runOut [data-execution-busy]');
+    await expect(busy).toContainText('Execution is busy — retrying in');
+    await expect(busy.getByRole('button',{name:'Retry execution'})).toBeDisabled();
+    await expect(page.locator('#runOut')).not.toContainText('Check your code');
+    await expect(page.locator('#runOut')).toContainText('Result: 1/1 passed');
+    expect(calls).toBe(2);
+    expect(await page.evaluate(()=>import('/assets/execution-busy.js').then(m=>typeof m.showExecutionBusy))).toBe('function');
+  }finally{release();}
+});
+
+for(const reason of ['quota','queue_full','queue_expired']){
+  test(`${reason} is user-legible with an explicit retry and no automatic duplicate`,async({page})=>{
+    let calls=0;
+    await mockApi(page,{
+      '/api/auth/me':{ok:true,user:signedInUser},'/api/questions':{ok:true,questions:[originalQuestion],count:1},
+      '/api/execute':async()=>{calls++;return calls===1
+        ?{_status:reason==='quota'?429:503,ok:false,code:'execution_busy',reason,retry_after:1}
+        :{ok:true,passed_count:1,total_count:1,results:[{idx:0,pass:true}]};},
+    });
+    await resetClientState(page,true);await page.goto('/?view=code',{waitUntil:'domcontentloaded'});
+    await selectQuestion(page,originalQuestion.slug);await setCode(page,correctSolution);await page.locator('#runBtn').click();
+    const busy=page.locator('#runOut [data-execution-busy]');
+    await expect(busy).toContainText(reason==='quota'?'Execution quota reached':'Execution is busy');
+    await expect(busy).toContainText('Your code was not run');
+    const retry=busy.getByRole('button',{name:'Retry execution'});await expect(retry).toBeEnabled();expect(calls).toBe(1);
+    await retry.click();await expect(page.locator('#runOut')).toContainText('Result: 1/1 passed');expect(calls).toBe(2);
+  });
+}
+
+test('a private busy response discards stdin and never auto-replays it',async({page})=>{
+  let calls=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':{ok:true,registrationMode:'private_beta',capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,executionQueue:true,executionStdin:true}},
+    '/api/auth/me':{ok:true,user:signedInUser},'/api/questions':{ok:true,questions:[originalQuestion],count:1},
+    '/api/execute':async request=>{calls++;expect(request.postDataJSON().stdin).toBe('PRIVATE_BUSY_468');
+      return calls===1?{_status:503,ok:false,code:'execution_busy',reason:'queued',retry_after:1}
+        :{ok:true,passed_count:1,total_count:1,results:[{idx:0,pass:true}],custom_run:{ok:true,stdout:'done',exit_code:0}};},
+  });
+  await resetClientState(page,true);await page.goto('/?view=code',{waitUntil:'domcontentloaded'});
+  await selectQuestion(page,originalQuestion.slug);await setCode(page,correctSolution);await openRoomPanel(page,'results');
+  await page.locator('#customStdinEnabled').check();await page.locator('#customStdin').fill('PRIVATE_BUSY_468');await page.locator('#runBtn').click();
+  const busy=page.locator('#runOut [data-execution-busy]');await expect(busy).toContainText('Re-enter private stdin');
+  await expect(page.locator('#customStdin')).toHaveValue('');const retry=busy.getByRole('button',{name:'Retry execution'});
+  await expect(retry).toBeEnabled();expect(calls).toBe(1);
+  await page.locator('#customStdin').fill('PRIVATE_BUSY_468');await retry.click();
+  await expect(page.locator('#runOut')).toContainText('Result: 1/1 passed');expect(calls).toBe(2);
+});
+
+test('busy remains legible when the lazy retry asset cannot load, with a manual Run fallback',async({page})=>{
+  let calls=0;
+  await page.route('**/assets/execution-busy.js',route=>route.abort());
+  await mockApi(page,{'/api/auth/me':{ok:true,user:signedInUser},'/api/questions':{ok:true,questions:[originalQuestion],count:1},
+    '/api/execute':async()=>{calls++;return calls===1?{_status:503,ok:false,code:'execution_busy',reason:'queued',retry_after:2}
+      :{ok:true,passed_count:1,total_count:1,results:[{idx:0,pass:true}]};}});
+  await resetClientState(page,true);await page.goto('/?view=code',{waitUntil:'domcontentloaded'});
+  await selectQuestion(page,originalQuestion.slug);await setCode(page,correctSolution);await page.locator('#runBtn').click();
+  await expect(page.locator('#runOut')).toContainText('Execution is busy — use Run to retry');expect(calls).toBe(1);
+  await page.locator('#runBtn').click();await expect(page.locator('#runOut')).toContainText('Result: 1/1 passed');expect(calls).toBe(2);
+});
+
+test('explicit store busy response retries once without parallel or duplicate runs',async({page})=>{
+  let calls=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':{ok:true,registrationMode:'private_beta',capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,executionQueue:true}},
+    '/api/auth/me':{ok:true,user:signedInUser},'/api/questions':{ok:true,questions:[originalQuestion],count:1},
+    '/api/execute':async()=>{calls++;return calls===1?{_status:503,ok:false,code:'execution_busy',reason:'store',retry_after:1}
+      :{ok:true,passed_count:1,total_count:1,results:[{idx:0,pass:true}]};},
+  });
+  await resetClientState(page,true);await page.goto('/?view=code',{waitUntil:'domcontentloaded'});
+  await selectQuestion(page,originalQuestion.slug);await setCode(page,correctSolution);await page.locator('#runBtn').click();
+  await expect(page.locator('#runOut')).toContainText('Execution is busy — retrying in');
+  await expect(page.locator('#runOut')).toContainText('Result: 1/1 passed');expect(calls).toBe(2);
+});
+
+test('daily quota shows a fixed reset time, no day-long countdown or automatic retry',async({page})=>{
+  let calls=0;
+  await mockApi(page,{'/api/auth/me':{ok:true,user:signedInUser},'/api/questions':{ok:true,questions:[originalQuestion],count:1},
+    '/api/execute':async()=>{calls++;return{_status:429,ok:false,code:'execution_busy',reason:'quota',quota_window:'day',reset_at:'2026-11-19T00:00:00.000Z',retry_after:86400};}});
+  await resetClientState(page,true);await page.goto('/?view=code',{waitUntil:'domcontentloaded'});
+  await selectQuestion(page,originalQuestion.slug);await setCode(page,correctSolution);await page.clock.install();await page.locator('#runBtn').click();
+  const busy=page.locator('#runOut [data-execution-busy]');await expect(busy).toContainText('Daily execution limit reached — resets at 00:00 UTC');
+  await expect(busy.getByRole('button',{name:'Retry execution',includeHidden:true})).toBeHidden();await expect(busy).not.toContainText('86400s');
+  await page.clock.fastForward(60000);await expect(busy).toContainText('resets at 00:00 UTC');expect(calls).toBe(1);
+});
+
 test('language changes update the active editor and preserve each language draft', async ({ page }) => {
   await mockApi(page, {
     '/api/auth/me': { ok: true, user: signedInUser },

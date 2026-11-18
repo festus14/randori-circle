@@ -134,8 +134,8 @@ after(()=>{
 
 test('the fixed programs are trivial and really print the expected marker',()=>{
   assert.deepEqual(EXECUTION_SMOKE_LANGUAGES,['javascript','python']);
-  assert.deepEqual(EXECUTION_SMOKE_STATUSES,['ok','provider_error','timeout','misconfigured','throttled']);
-  assert.deepEqual(EXECUTION_SMOKE_LAST_STATUSES,['ok','provider_error','timeout','misconfigured','result_missing']);
+  assert.deepEqual(EXECUTION_SMOKE_STATUSES,['ok','busy','provider_error','timeout','misconfigured','throttled']);
+  assert.deepEqual(EXECUTION_SMOKE_LAST_STATUSES,['ok','busy','provider_error','timeout','misconfigured','result_missing']);
   assert.deepEqual(EXECUTION_SMOKE_TRIGGER_WINDOWS,{schedule:'-20 hours',deploy:'-1 day'});
   assert.equal(EXECUTION_SMOKE_RESULT_GRACE_SECONDS,165);
   const node=spawnSync(process.execPath,['-e',EXECUTION_SMOKE_PROGRAMS.javascript],{encoding:'utf8'});

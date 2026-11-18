@@ -127,6 +127,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) | Add an interview lobby, schedule start, interviewer-owned selection and candidate edit lock | Pairing & Scheduling | Amended by [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) |
 | [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) | Show pair presence and remote cursors over the private relay, with a TTL heartbeat fallback | Pairing & Scheduling | Active |
 | [ID-101](#id-101-load-optional-page-tools-at-their-first-use-without-weakening-byte-gates) | Load optional page tools at their first use without weakening byte gates | Quality, CI & Testing | Active |
+| [ID-103](#id-103-bound-execution-admission-and-spend-with-a-durable-retry-queue-and-pristine-runtime-snapshots) | Bound execution admission and spend with a durable retry queue and pristine runtime snapshots | Observability & Ops | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -140,7 +141,7 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-103; ID-102 is reserved by parallel work in
+   plus one (currently ID-104; ID-102 is reserved by parallel work in
    #465). Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
@@ -6092,3 +6093,138 @@ request exclusion, first-use retries, double submit and changed-agreement races.
 Existing repository gates remain required. Revert this boundary as one change
 (the bridge, script tags and callers together) if browser behaviour regresses;
 no persisted state or provider configuration needs repair.
+
+## ID-103: Bound execution admission and spend with a durable retry queue and pristine runtime snapshots
+
+Status: implemented behind default-off `EXECUTION_QUEUE_ENABLED`; issue #468,
+epic #460. No migration. ID-101 (#480) and ID-102 (#465) remain reserved by
+parallel work. Base `e4eca0d`, schema v26.
+
+**Context.** Stateless Vercel functions cannot coordinate a spend ceiling or
+fair interview bursts with process-local queues. The ID-94 stdin request creates
+two isolated executions, so counting HTTP requests underestimates provider cost.
+
+**Decision.** Reuse `auth_rate_limits` for bounded HMAC-keyed TTL admission rows.
+One serialized DB transaction selects an eligible circle by least-recent service,
+then FIFO, with I,I,P weighted class turns. It reserves one or two provider units,
+checks account/circle/minute and global minute/day budgets, and commits before
+provider dispatch. Only the server's live non-ended ID-99 primary interview phase
+gets priority. Idle shares can be borrowed; practice keeps enough units to progress,
+including stdin. Global/per-circle ceilings, finite queue size and a non-renewable
+15-second ticket deadline prevent unbounded wait/spend. Retry requests carry code
+only transiently; queued work never retains or runs submissions in the background.
+
+Capacity, shedding, expiry, store and config failures return no-store
+`503 {code:"execution_busy",reason,retry_after}` with `Retry-After`; quota exhaustion
+uses 429. Neither records a wrong-answer run. A lazy Results controller offers
+countdown/explicit retry, fences concurrent clicks and obsolete contexts, and caps
+automatic retries. Private stdin is discarded and must be re-entered; never replayed.
+Ninety-second generation-keyed leases cover create plus provider session backstop.
+Only confirmed cleanup releases early; crash/ambiguous provider work expires safely.
+
+**Pre-warm.** Installed `@vercel/sandbox` 3.8.0 supports `Sandbox.snapshot` and
+`Sandbox.create({source:{type:'snapshot',snapshotId}})` with no `image` alongside.
+An explicit paid operator builder snapshots only a pristine interpreter runtime,
+never a member VM. Per-run restoration is fresh, deny-all and non-persistent.
+Piston remains cold. No automatic replenishment or speculative cold retry is added.
+
+**Observability.** Existing global-admin Diagnostics adds aggregate queue depth,
+admitted/shed/quota counts, wait/provider p50/p95 and configured spend ceilings.
+Metrics have NULL user/route/address fields and no code/output/provider errors.
+The existing protected, throttled execution-smoke workflow can collect cold/warm
+startup pairs (four creations per claim, not two), reports p50/p95 for the current
+snapshot cohort, and refuses a sampled regression. Twenty successful pairs per
+language are required; insufficient samples are explicitly not an improvement claim.
+
+**Alternatives and limits.** A dedicated queue table would require v27, colliding
+with parallel work; process memory cannot coordinate stateless functions. A live
+VM warm pool risks continuous spend and cross-user contamination. This bounded
+retry queue can be delayed by an unattended winning ticket until its expiry and
+sheds overload rather than promising every request a successful run. Provider
+kill/cleanup caps remain prerequisites. No live latency or spend measurement was
+possible in this provider-free environment; p95 improvement and activation remain
+operator rollout evidence, not claimed by local tests.
+
+**Rollout/rollback.** Start off. Unset provider and drain 90 seconds before enabling,
+changing limits/keys or returning to legacy code; do not mix old unguarded executors
+with queued ones. Defaults: global 4, circle 2, interview share 2, account 10/min,
+circle 40/min, global 60/min and 150/day provider units. Unsetting the provider is
+the spend-stop switch; turning admission off alone removes its spend guards.
+No schema, threshold or user-content changes. See [design/configuration](EXECUTION_CAPACITY.md)
+and [operator runbook](runbooks/execution-capacity.md).
+
+**Verification.** Provider-free unit tests cover strict/default-off config, durable
+fairness, SQLite concurrent clients, quotas, two-unit reservation, lease generations,
+expiry/crash/ambiguous commit, live/lobby/ended priority, responses, metrics privacy,
+snapshot SDK contract and measurement cohorts/regressions. Playwright runner tests
+cover countdown, duplicate clicks, explicit quota/shed retry and private-input
+non-replay. Existing provider/stdin/smoke/admin tests and deployability gates remain
+required. Live execution smoke was not run and no provider state was changed.
+
+### ID-103 revision 2: fill sets, bounded contention and recorded refusal health
+
+Independent review reproduced a stale asset-count assertion, lock contention,
+head-of-line idle capacity, frozen interview turns and invisible store refusals.
+The corrected admission path uses an **ordered greedy fill set**, not one global
+winner. Selected but unattended tickets become at-most-three-second offers;
+turns advance on selection, offers reserve units and expire quickly. Practice
+keeps its bounded share even when interview heads stop retrying.
+
+Known conflict codes get four attempts with short backoff/jitter. Native SQLite
+COMMIT conflicts retry only after an open transaction and confirmed rollback
+prove no commit occurred; remote/lost commit outcomes never replay quotas. A
+normal raw-client admission uses five interactive lock RTTs through native
+batches, with metric inserts outside that lock. Scoped batch and commit context
+checks are retained. Recorded counts are explicitly best effort: store failures
+can prevent their own metric write. Store/configuration counters degrade admin
+health when recorded; no exact-total claim is made.
+
+The ticket key embeds an HMAC fingerprint of submitted code/input and operation
+identity. It is **non-reversible but confirmable** by an operator with the app
+secret and a candidate submission, not anonymous content. No raw content is
+stored. Both snapshot settings validate before lease/quota spend. Enabled
+readiness checks the one-active-primary prerequisite for unscoped execution.
+
+An explicit store busy response can retry within the existing 15-second client
+window; private input remains manual. Daily quota shows a fixed UTC reset time,
+not a day-long countdown. Smoke admission contention reports `busy` / `deferred`,
+never a provider error or asserted provider pass. Create failure can deliberately
+hold spend slots for 90 seconds during an outage; drain rather than deleting them.
+
+Regression models use real migrated SQLite files (WAL for independent-reader
+load, no deployment journal changes). Cases cover abandoned heads, abandoned
+interview priority, 8 arrivals/s congestion, 2/16 concurrent clients and lock-RTT
+counts, plus rollback proof, metric privacy, startup prerequisites and store/day
+runner UX. After rebase onto main `1eb7078`, initial JavaScript is **957,738**
+bytes (main 956,611; branch delta +1,127), not the old-base 999,468 figure. The
+1,000,000-byte threshold, SDK version and schema remain unchanged. Provider/performance canary remains an
+operator action and was not run by this revision.
+
+### ID-103 revision 3: execution faults stay outside deployment readiness
+
+Whole-app readiness and admin initialization are restored byte-for-byte to the
+`1eb7078` main readiness implementation. Execution knobs, snapshot ids and its
+primary-circle fallback precondition do not participate in the schema/DB readiness
+result or cache identity. An execution-only fault is refused at execute with the
+documented 503 state and shown on the admin execution card; it must not prevent
+an otherwise valid deployment or primary-circle bootstrap from becoming ready.
+This supersedes revision 2's whole-app execution-readiness check.
+
+A hashed main-source fixture compares GET/HEAD on `/api/health`,
+`/api/health/ready` and `/api/readyz` with queue unset/false, bad execution knobs,
+and zero/two primary circles. Two active primaries require a corrupt schema in
+SQLite; both versions reject that schema for the same reason. A queue-ON case
+proves execution misconfiguration leaves readiness and admin initialization
+unchanged, while execute refuses and diagnostics records the configuration fault.
+
+Store failures in smoke now fail/alert, even when the provider was never called;
+configuration faults also fail. Only genuine capacity/budget contention is
+`busy`/`deferred`. Fresh and cached failure cases are tested separately.
+
+The validated local credential-free file client initializes WAL before exposing
+any query/batch/transaction operation, with fail-closed setup and orderly shutdown.
+Remote clients never receive a journal PRAGMA. The SQL guard restricts this
+local-only statement to `api/_db.js`; no migration or remote journal setting is
+introduced. Real-file and mocked-remote tests cover the boundary. On the rebased
+branch, initial JS is 957,738 bytes (+1,127 over main 956,611), with the unchanged
+1,000,000-byte gate. No provider/performance canary was run.

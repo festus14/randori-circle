@@ -17,12 +17,14 @@
 // messages, and nothing here throws: every failure maps to a category.
 import { performance } from 'node:perf_hooks';
 import { executeProgram, resolveExecutionProvider } from './_execution.js';
+import { ExecutionBusyError, recordExecutionRefusal } from './_execution-queue.js';
+import { sanitizeStartupPair, warmMeasurementEnabled, warmMeasurementCohort, readStartupMeasurement } from './_execution-measurement.js';
 
 export const EXECUTION_SMOKE_LANGUAGES=Object.freeze(['javascript','python']);
-export const EXECUTION_SMOKE_STATUSES=Object.freeze(['ok','provider_error','timeout','misconfigured','throttled']);
+export const EXECUTION_SMOKE_STATUSES=Object.freeze(['ok','busy','provider_error','timeout','misconfigured','throttled']);
 // `lastStatus` of a throttled language: a recorded status, `result_missing`,
 // or null while the latest run is still inside the result grace.
-export const EXECUTION_SMOKE_LAST_STATUSES=Object.freeze(['ok','provider_error','timeout','misconfigured',
+export const EXECUTION_SMOKE_LAST_STATUSES=Object.freeze(['ok','busy','provider_error','timeout','misconfigured',
   'result_missing']);
 export const EXECUTION_SMOKE_MIN_INTERVAL='-30 minutes';
 export const EXECUTION_SMOKE_TRIGGER_WINDOWS=Object.freeze({schedule:'-20 hours',deploy:'-1 day'});
@@ -46,7 +48,7 @@ export const EXECUTION_SMOKE_PROGRAMS=Object.freeze({
 const LOG_SOURCE='runner';
 const CLAIM_EVENT='execution_smoke_claim';
 const RESULT_EVENT='execution_smoke_result';
-const RECORDED_STATUSES=new Set(['ok','provider_error','timeout','misconfigured']);
+const RECORDED_STATUSES=new Set(['ok','busy','provider_error','timeout','misconfigured']);
 const MAX_DURATION_MS=10*60*1000;
 const UNAVAILABLE=Object.freeze({status:503,body:Object.freeze({ok:false,error:'execution smoke unavailable'})});
 const INVALID_REQUEST=Object.freeze({status:400,body:Object.freeze({ok:false,error:'invalid smoke request'})});
@@ -86,6 +88,12 @@ export function parseExecutionSmokeRequest(body){
 export function classifyExecutionError(error){
   let current=error;
   for(let depth=0;current&&depth<5;depth+=1){
+    if(current instanceof ExecutionBusyError){
+      if(['configuration','configuration_changed','primary_circle','state','request_cost'].includes(current.reason))return 'misconfigured';
+      // Infrastructure/store failure is not ordinary capacity contention. It
+      // must fail the smoke even when no provider dispatch was attempted.
+      return ['queued','capacity','queue_full','queue_expired','already_running','pending_run','quota','lease_expired'].includes(current.reason)?'busy':'provider_error';
+    }
     if(current.name==='AbortError'||current.name==='TimeoutError') return 'timeout';
     current=current.cause;
   }
@@ -102,30 +110,42 @@ export function classifyExecutionResult(run){
 /** A throttled language passes only when its cached result passed or that run is still in flight. */
 export function executionSmokeLanguagePasses(entry){
   if(!record(entry)) return false;
-  if(entry.status==='ok') return true;
-  return entry.status==='throttled'&&(entry.lastStatus===null||entry.lastStatus==='ok');
+  if(entry.status==='ok'||entry.status==='busy') return true;
+  return entry.status==='throttled'&&(entry.lastStatus===null||entry.lastStatus==='ok'||entry.lastStatus==='busy');
 }
 
 function allPass(languages){
   return EXECUTION_SMOKE_LANGUAGES.every(language=>executionSmokeLanguagePasses(languages[language]));
 }
 
-async function smokeLanguage(language,{env,execute,monotonic,setTimer,clearTimer,deadlineMs}){
+async function smokeLanguage(language,{env,execute,monotonic,setTimer,clearTimer,deadlineMs,db}){
   const started=monotonic();
-  let status;
+  let status, startup=null, expired=false;
   let timer;
+  const measurement=warmMeasurementEnabled(env);
   try{
-    const attempt=Promise.resolve()
-      .then(()=>execute({language,source:EXECUTION_SMOKE_PROGRAMS[language]},{env}))
-      .then(classifyExecutionResult,classifyExecutionError);
-    const deadline=new Promise(resolve=>{ timer=setTimer(()=>resolve('timeout'),deadlineMs); });
+    const attempt=Promise.resolve().then(async()=>{
+      const options=env.EXECUTION_QUEUE_ENABLED==='true'
+        ?{env,db,executionContext:{ops:true,lane:`smoke-${language}`,operation:`smoke:${language}`}}:{env};
+      const request={language,source:EXECUTION_SMOKE_PROGRAMS[language]};
+      if(!measurement) return classifyExecutionResult(await execute(request,options));
+      const cold=await execute(request,{...options,cold:true});
+      if(classifyExecutionResult(cold)!=='ok') return classifyExecutionResult(cold);
+      if(expired) return 'timeout';
+      const warm=await execute(request,options);
+      if(cold.startup?.mode==='cold'&&warm.startup?.mode==='snapshot'){
+        startup=sanitizeStartupPair({coldMs:cold.startup.createMs,snapshotMs:warm.startup.createMs});
+      }
+      return startup?classifyExecutionResult(warm):'provider_error';
+    }).catch(classifyExecutionError);
+    const deadline=new Promise(resolve=>{ timer=setTimer(()=>{expired=true;resolve('timeout');},measurement?Math.max(90000,deadlineMs):deadlineMs); });
     status=await Promise.race([attempt,deadline]);
   }catch{
     status='provider_error';
   }finally{
     try{ clearTimer(timer); }catch{}
   }
-  return {status,durationMs:elapsed(started,monotonic())};
+  return {status,durationMs:elapsed(started,monotonic()),...(measurement?{startup:status==='ok'?startup:null}:{})};
 }
 
 /**
@@ -154,12 +174,12 @@ export async function claimExecutionSmoke(db,trigger){
 }
 
 /** Record a completed result (statuses and durations only), linked to its claim. Never throws. */
-export async function recordExecutionSmoke(db,claimId,languages){
+export async function recordExecutionSmoke(db,claimId,languages,{cohort=null}={}){
   try{
     await db.execute({
       sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at)
         VALUES (?,?,?,?,?,NULL,NULL,NULL,NULL,datetime('now'))`,
-      args:[allPass(languages)?'info':'warn',LOG_SOURCE,RESULT_EVENT,String(claimId),JSON.stringify(languages)],
+      args:[allPass(languages)?'info':'warn',LOG_SOURCE,RESULT_EVENT,String(claimId),JSON.stringify(cohort?{...languages,_warmCohort:cohort}:languages)],
     });
     return true;
   }catch{
@@ -174,7 +194,7 @@ function storedLanguages(metaJson){
   return Object.fromEntries(EXECUTION_SMOKE_LANGUAGES.map(language=>{
     const entry=record(value[language]);
     return [language,entry&&RECORDED_STATUSES.has(entry.status)
-      ?{status:entry.status,durationMs:boundedDuration(entry.durationMs)}:null];
+      ?{status:entry.status,durationMs:boundedDuration(entry.durationMs),...(Object.hasOwn(entry,'startup')?{startup:sanitizeStartupPair(entry.startup)}:{})}:null];
   }));
 }
 
@@ -280,12 +300,20 @@ export async function runExecutionSmoke({trigger,getDb,env=process.env,execute=e
     }catch{
       return UNAVAILABLE;
     }
-    if(!claimId) return {status:200,body:throttledExecutionSmokeBody(latest)};
-    const options={env,execute,monotonic,setTimer,clearTimer,deadlineMs};
+    let cohort;
+    try{cohort=warmMeasurementCohort(env);}catch{
+      await recordExecutionRefusal(db,'configuration');
+      return {status:200,body:{ok:false,checkedAt:isoNow(clock),languages:Object.fromEntries(
+        EXECUTION_SMOKE_LANGUAGES.map(language=>[language,{status:'misconfigured',durationMs:null}]))}};
+    }
+    if(!claimId) return {status:200,body:{...throttledExecutionSmokeBody(latest),
+      ...(cohort?{coldStart:await readStartupMeasurement(db,env)}:{})}};
+    const options={env,execute,monotonic,setTimer,clearTimer,deadlineMs,db};
     const entries=await Promise.all(EXECUTION_SMOKE_LANGUAGES.map(language=>smokeLanguage(language,options)));
     const languages=Object.fromEntries(EXECUTION_SMOKE_LANGUAGES.map((language,index)=>[language,entries[index]]));
-    await recordExecutionSmoke(db,claimId,languages);
-    return {status:200,body:{ok:allPass(languages),checkedAt:isoNow(clock),languages}};
+    await recordExecutionSmoke(db,claimId,languages,{cohort});
+    return {status:200,body:{ok:allPass(languages),checkedAt:isoNow(clock),languages,
+      ...(cohort?{coldStart:await readStartupMeasurement(db,env)}:{})}};
   }catch{
     return UNAVAILABLE;
   }

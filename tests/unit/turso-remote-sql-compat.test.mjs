@@ -45,8 +45,16 @@ test('ignore_check_constraints is tolerated only through the check-constraint he
   assert.deepEqual(codes("export const X='PRAGMA ignore_check_constraints=ON';", 'db/check-constraint-state.js'), ['unsupported_pragma_argument']);
 });
 
+test('journal_mode WAL is permitted only in the validated local client helper',()=>{
+  assert.deepEqual(TURSO_REMOTE_PRAGMA_ALLOWLIST.journal_mode.files,['api/_db.js']);
+  assert.deepEqual(codes("db.execute('PRAGMA journal_mode=WAL')",'api/_db.js'),['allowed']);
+  assert.deepEqual(codes("db.execute('PRAGMA journal_mode=WAL')",'api/data.js'),['helper_only_pragma']);
+  assert.deepEqual(codes("db.execute('PRAGMA journal_mode=DELETE')",'api/_db.js'),['unsupported_pragma_argument']);
+  assert.deepEqual(codes("db.execute('PRAGMA journal_mode')",'api/_db.js'),['unsupported_pragma_argument']);
+});
+
 test('PRAGMAs outside the allowlist fail, including lowercase and statement batches', () => {
-  assert.deepEqual(codes("db.execute('PRAGMA journal_mode=WAL')"), ['not_allowlisted_pragma']);
+  assert.deepEqual(codes("db.execute('PRAGMA journal_mode=WAL')"), ['helper_only_pragma']);
   assert.deepEqual(codes("db.execute('pragma user_version')"), ['not_allowlisted_pragma']);
   assert.deepEqual(codes("db.batch(['SELECT 1', 'PRAGMA foreign_keys=ON', 'PRAGMA cache_size=-2000'])"),
     ['allowed', 'not_allowlisted_pragma']);

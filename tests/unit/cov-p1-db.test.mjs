@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {afterEach,test} from 'node:test';
 import jwt from 'jsonwebtoken';
+import {createClient} from '@libsql/client';
 
 import {
   closeLocalDevelopmentClient,
@@ -129,7 +130,9 @@ test('local runtime client requires a credential-free file database and observes
   const count=await client.execute('SELECT COUNT(*) AS n FROM t');
   assert.equal(Number(count.rows[0].n),4);
   assert.equal(typeof client.closed,'boolean');
-  assert.deepEqual(seen,['CREATE','INSERT','INSERT','INSERT','SELECT']);
+  assert.deepEqual(seen,['PRAGMA','CREATE','INSERT','INSERT','INSERT','SELECT']);
+  const independent=createClient({url});
+  try{assert.equal((await independent.execute('PRAGMA journal_mode')).rows[0].journal_mode,'wal');}finally{independent.close();}
 
   // A throwing observer never breaks the query, and restoring is idempotent.
   const failing=installLocalDevelopmentSqlObserver(()=>{ throw new Error('observer bug'); });
@@ -138,7 +141,7 @@ test('local runtime client requires a credential-free file database and observes
   failing();
   await client.execute('SELECT 2');
   assert.equal(seen.at(-1),'SELECT');
-  assert.equal(seen.length,6);
+  assert.equal(seen.length,7); // Includes the one-time local WAL setup.
 
   process.env.TURSO_DATABASE_URL=localFile();
   assert.throws(()=>getClient(),/changed without shutdown/);

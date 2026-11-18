@@ -112,7 +112,7 @@ const EXPLICIT_TABLE_COVERAGE=Object.freeze({
   auth_email_activations:{section:null,included:false,reason:'Holds the account-creation password hash and email; a credential artefact, not user content.'},
   auth_identity_audit_events:{section:null,included:false,reason:'Security audit trail of identity changes; ids and codes only, not user content.'},
   account_deletion_requests:{section:'deletion_requests',included:true,reason:'Own deletion requests: when requested, scheduled, cancelled or executed. Ids and unix timestamps only; the row is the member\'s own request history.'},
-  auth_rate_limits:{section:null,included:false,reason:'Secret-keyed rate-limit hashes that expire within 15 minutes.'},
+  auth_rate_limits:{section:null,included:false,reason:'Secret-keyed rate limits and ephemeral presence/execution admission leases; no user content or raw member ids. Member/circle execution dimensions expire within 15 minutes; the aggregate global spend counter resets daily.'},
   circle_memberships:{section:'memberships',included:true,reason:'Own memberships, with the circle and the inviter by display name.'},
   circles:{section:'memberships',included:true,reason:'Circle metadata for circles the member belongs to, plus circles they created but hold no membership for (created_circles), reached through their membership or created_by.'},
   circle_invitations:{section:'invitations',included:true,reason:'Invitations the member sent, accepted, or received (pending invitations addressed to them, matched by email hash), without token or email hashes.'},

@@ -10,12 +10,13 @@
 // response body, the URL, or the secret. Exit codes: 0 healthy, 1 alert.
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { sanitizeStartupMeasurement } from '../api/_execution-measurement.js';
 
 export const EXECUTION_SMOKE_FORMAT='randori.execution-smoke.v1';
 export const EXECUTION_SMOKE_PATH='/api/cron/execution-smoke';
 const LANGUAGES=Object.freeze(['javascript','python']);
-const STATUSES=new Set(['ok','provider_error','timeout','misconfigured','throttled']);
-const LAST_STATUSES=new Set(['ok','provider_error','timeout','misconfigured','result_missing']);
+const STATUSES=new Set(['ok','busy','provider_error','timeout','misconfigured','throttled']);
+const LAST_STATUSES=new Set(['ok','busy','provider_error','timeout','misconfigured','result_missing']);
 const TRIGGERS=new Set(['schedule','deploy']);
 const MAX_RESPONSE_BYTES=64*1024;
 const MAX_TIMEOUT_MS=110_000;
@@ -49,7 +50,7 @@ function smokeTrigger(value){
 }
 
 function languagePasses(entry){
-  return entry.status==='ok'||(entry.status==='throttled'&&(entry.lastStatus===null||entry.lastStatus==='ok'));
+  return entry.status==='ok'||entry.status==='busy'||(entry.status==='throttled'&&(entry.lastStatus===null||entry.lastStatus==='ok'||entry.lastStatus==='busy'));
 }
 
 function parseLanguage(value){
@@ -77,8 +78,12 @@ export function assessExecutionSmoke(value){
     ||(!throttled&&body.checkedAt===null)){
     return {ok:false,category:'malformed_response',languages:null,checkedAt:null,ageSeconds:null};
   }
-  return {ok:pass,category:pass?null:'execution_failed',languages,checkedAt:body.checkedAt,
-    ageSeconds:throttled?ageSeconds:null};
+  const coldStart = body.coldStart === undefined ? undefined : sanitizeStartupMeasurement(body.coldStart);
+  if(coldStart === null) return {ok:false,category:'malformed_response',languages:null,checkedAt:null,ageSeconds:null};
+  const regression = coldStart && Object.values(coldStart.languages).some(entry=>entry.improved === false);
+  const busy=Object.values(languages).some(entry=>entry.status==='busy'||entry.status==='throttled'&&entry.lastStatus==='busy');
+  return {ok:pass&&!regression,category:!pass?'execution_failed':regression?'warm_latency_regression':busy?'execution_busy':null,languages,checkedAt:body.checkedAt,
+    ageSeconds:throttled?ageSeconds:null,...(coldStart?{coldStart}:{})};
 }
 
 async function readBoundedBody(response){
@@ -143,12 +148,13 @@ export async function fetchExecutionSmoke(environment,{fetchImpl=fetch,setTimer=
   }
 }
 
-function result({ok,category,languages=null,checkedAt=null,ageSeconds=null}){
+function result({ok,category,languages=null,checkedAt=null,ageSeconds=null,coldStart}){
   return Object.freeze({ok,kind:'execution-smoke',format:EXECUTION_SMOKE_FORMAT,
-    status:ok?'healthy':'alert',alert:!ok,category,checkedAt,ageSeconds,languages});
+    status:ok?(category==='execution_busy'?'deferred':'healthy'):'alert',alert:!ok,category,checkedAt,ageSeconds,languages,...(coldStart?{coldStart}:{})});
 }
 
 function cachedNotice(outcome){
+  if(outcome.ok&&outcome.category==='execution_busy')return '::notice title=Execution smoke deferred::Admission was busy; no provider pass is asserted.\n';
   if(!outcome.ok||!LANGUAGES.some(language=>outcome.languages[language].status==='throttled')) return '';
   const age=outcome.ageSeconds===null?'at an unknown time':`${outcome.ageSeconds} seconds ago`;
   // The age is a validated integer, so the command cannot be forged.

@@ -16,6 +16,8 @@ import { pathToFileURL } from 'node:url';
 import { createEvaluationSuite } from '../api/_catalog.js';
 import { buildExecutionHarness, executeProgram, normalizeRunnerResults } from '../api/_execution.js';
 import { countPassed, egressFailure, smokeEnvironment, smokeFailureMessage } from './execution-smoke-checks.mjs';
+import { getClient } from '../api/_db.js';
+import { warmMeasurementEnabled, summarizeStartupPairs } from '../api/_execution-measurement.js';
 
 const SLUG = 'focus-block-rollup';
 const VERSION = 1;
@@ -57,6 +59,9 @@ async function main() {
     process.exit(setup.exitCode);
   }
   const { env } = setup;
+  const options = env.EXECUTION_QUEUE_ENABLED === 'true'
+    ? { env, db: getClient(), executionContext: { ops: true, operation: 'manual-smoke' } } : { env };
+  const measure = warmMeasurementEnabled(env);
 
   for (const language of ['javascript', 'python']) {
     const suite = createEvaluationSuite(SLUG, VERSION, language);
@@ -66,7 +71,7 @@ async function main() {
     const run = await executeProgram({
       language,
       source: buildExecutionHarness(language, SOLUTIONS[language](suite.entrypoint), suite, prefix),
-    }, { env });
+    }, { ...options, cold: measure });
     const results = normalizeRunnerResults(run.stdout, prefix, suite.tests);
     const passed = countPassed(results);
     console.log(`execution smoke: ${run.provider} ${language} ${run.runtimeVersion} ${passed}/${suite.tests.length} in ${Date.now() - started}ms (exit ${run.code})`);
@@ -77,13 +82,19 @@ async function main() {
       source: buildExecutionHarness(language, language === 'javascript'
         ? `function ${suite.entrypoint}(){ return null; }`
         : `def ${suite.entrypoint}(*args):\n    return None`, suite, prefix),
-    }, { env });
+    }, options);
+    if(measure){
+      const pair=run.startup?.mode==='cold'&&broken.startup?.mode==='snapshot'
+        ?[{coldMs:run.startup.createMs,snapshotMs:broken.startup.createMs}]:[];
+      console.log(`execution smoke: cold-start ${language} ${JSON.stringify(summarizeStartupPairs(pair))}`);
+      if(!pair.length) fail('cold-start measurement requires both pristine runtime snapshots');
+    }
     const brokenPassed = countPassed(normalizeRunnerResults(broken.stdout, prefix, suite.tests));
     if (brokenPassed !== 0) fail(`${language} broken solution passed ${brokenPassed} case(s)`);
   }
 
   if (env.EXECUTION_PROVIDER === 'vercel-sandbox') {
-    const probe = await executeProgram({ language: 'javascript', source: EGRESS_PROBE }, { env });
+    const probe = await executeProgram({ language: 'javascript', source: EGRESS_PROBE }, options);
     console.log(`execution smoke: egress probe -> ${probe.stdout.trim() || '(no output)'}`);
     const egress = egressFailure(probe);
     if (egress) fail(egress);

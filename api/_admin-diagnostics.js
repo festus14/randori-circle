@@ -21,6 +21,9 @@ import {
 import { APP_LOG_RETENTION_DAYS } from './_app-log-retention.js';
 import { parseEmailProviderReason } from './_email-provider-reason.js';
 import { resolveExecutionProvider } from './_execution.js';
+import { executionQueueEnabled, readExecutionQueueHealth } from './_execution-queue.js';
+import { executionWarmStatus } from './_execution-warm.js';
+import { readStartupMeasurement } from './_execution-measurement.js';
 import { latestExecutionSmokeLanguages, readLatestExecutionSmoke } from './_execution-smoke.js';
 import {
   coalescedDatabaseReadiness,
@@ -361,6 +364,7 @@ export function executionSmokeSummary(latest,nowMs){
   const statuses=Object.values(languages).map(entry=>entry.status);
   let status='failed';
   if(statuses.every(value=>value==='ok')) status='passed';
+  else if(statuses.every(value=>value==='ok'||value==='busy'))status='busy';
   else if(statuses.every(value=>value==='pending')) status='pending';
   const resultAt=latest.saved?parseDiagnosticsInstant(latest.checkedAt):null;
   const claimAt=latest.claimAgeSeconds===null?null:nowMs-latest.claimAgeSeconds*1000;
@@ -409,10 +413,13 @@ async function readExecutionCard(db,nowMs,env){
   if(!configuration.configured){ status='failed'; category=configuration.reason; }
   else if(lastOutcome==='failed'||lastOutcome==='unavailable'){ status='degraded'; category=`last_run_${lastOutcome}`; }
   else if(!lastOutcome){ status='unknown'; category='no_runs'; }
+  const queue=executionQueueEnabled(env)?await readExecutionQueueHealth(db,{env}):null;
+  if(queue&&queue.healthy===false&&status!=='failed'){status='degraded';category=queue.reason||'admission_refused';}
   return Object.freeze({
     status,
     category,
     ...configuration,
+    ...(queue ? { queue, warm: executionWarmStatus(env), coldStart: queue.ready?await readStartupMeasurement(db,env):null } : {}),
     recent24h:Object.freeze(recent24h),
     lastOutcome,
     evidence:evidence(nowMs,latestAt,EXECUTION_EVIDENCE_MAX_AGE_MS),

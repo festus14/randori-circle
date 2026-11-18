@@ -8,6 +8,7 @@ import { executeSecondaryProgram, verifySecondaryRun } from './_secondary-execut
 import * as workspace from './_secondary-workspace.js';
 import { progressDashboardEnabled } from './_progress.js';
 import { ExecutionUnavailableError } from './_execution.js';
+import { ExecutionBusyError, sendExecutionBusy } from './_execution-queue.js';
 import { MeetingLinkInputError } from './_meeting-link.js';
 import { newestRecapActivity, projectRecapWorkspace, MAX_RECAP_RUN_SCAN } from './_pair-recap.js';
 
@@ -20,6 +21,7 @@ export function sendWorkspaceFailure(res,error){
     return res.status(409).json({ok:false,error:error.code==='active_circle_required'?'select an active circle':'circle context changed',code:error.code});
   }
   if(error instanceof MeetingLinkInputError)return res.status(400).json({error:error.message});
+  if(error instanceof ExecutionBusyError)return sendExecutionBusy(res,error);
   if(error instanceof ExecutionUnavailableError)return res.status(503).json({ok:false,error:'code execution is temporarily unavailable; your code was not run',code:'execution_unavailable'});
   if(error instanceof workspace.SecondaryWorkspaceConflictError)return res.status(409).json({error:error.message,code:error.code,...(error.state?.latest_document_version!==undefined?error.state:{})});
   if(Number.isInteger(error?.status)&&error.status>=400&&error.status<500){

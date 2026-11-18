@@ -11,6 +11,33 @@
 // - `piston`: a self-hosted Piston-compatible endpoint at EXECUTION_API_URL.
 // Anything else (including unset) leaves execution unavailable and fails closed.
 import { Readable, Writable } from 'node:stream';
+import { admitExecution, checkExecutionLease, finishExecution, executionQueueEnabled } from './_execution-queue.js';
+import { executionWarmSnapshot } from './_execution-warm.js';
+
+// This process-private permit cannot be supplied in an HTTP request. One
+// combined verified/private request reserves two units before either VM starts.
+const ADMISSION = Symbol('execution admission');
+async function withAdmission(options, units, operation, run) {
+  const env = options.env || process.env;
+  if (!executionQueueEnabled(env) || options[ADMISSION]) return run(options);
+  const db = options.db;
+  const lease = await admitExecution(db, { ...options.executionContext,
+    operation: JSON.stringify([options.executionContext?.operation || '', operation]) }, { env, units });
+  const permit = { db, lease, unsafe: 0, dispatched: false };
+  const started = Date.now();
+  try { return await run({ ...options, [ADMISSION]: permit }); }
+  finally {
+    // Metrics/cleanup-store failure does not hide a result or trigger a second
+    // provider execution. A failed delete leaves the original expiring lease.
+    try { await finishExecution(db, lease, { safeToRelease: permit.unsafe === 0, providerMs: permit.dispatched ? Date.now() - started : null }); } catch {}
+  }
+}
+async function beforeProvider(permit) {
+  await checkExecutionLease(permit.db, permit.lease);
+  permit.unsafe++;
+  permit.dispatched = true;
+}
+function providerStopped(permit) { if (permit) permit.unsafe--; }
 
 export const EXECUTION_PROVIDERS = Object.freeze(['vercel-sandbox', 'piston']);
 export const MAX_EXECUTION_OUTPUT_BYTES = 256 * 1024;
@@ -145,7 +172,7 @@ async function loadVercelSandboxSdk() {
   return import('@vercel/sandbox');
 }
 
-async function runInVercelSandbox({ language, source, stdin }, { loadSandboxSdk = loadVercelSandboxSdk } = {}) {
+async function runInVercelSandbox({ language, source, stdin }, { loadSandboxSdk = loadVercelSandboxSdk, env = process.env, permit, cold = false } = {}) {
   const runtime = SANDBOX_RUNTIMES[language];
   let Sandbox;
   try {
@@ -156,11 +183,14 @@ async function runInVercelSandbox({ language, source, stdin }, { loadSandboxSdk 
   }
 
   let sandbox;
+  const snapshotId = cold ? null : executionWarmSnapshot(language, env);
+  if (permit) await beforeProvider(permit);
+  const createStarted = Date.now();
   const createController = new AbortController();
   const createTimer = setTimeout(() => createController.abort(), SANDBOX_CREATE_TIMEOUT_MS);
   try {
     sandbox = await Sandbox.create({
-      image: runtime.image,
+      ...(snapshotId ? { source: { type: 'snapshot', snapshotId } } : { image: runtime.image }),
       resources: { vcpus: 1 },
       timeout: SANDBOX_SESSION_TIMEOUT_MS,
       networkPolicy: 'deny-all',
@@ -176,6 +206,7 @@ async function runInVercelSandbox({ language, source, stdin }, { loadSandboxSdk 
     clearTimeout(createTimer);
   }
 
+  const startup = { mode: snapshotId ? 'snapshot' : 'cold', createMs: Date.now() - createStarted };
   const input = stdin === undefined ? null : Readable.from([Buffer.from(stdin, 'utf8')]);
   const commandController = new AbortController();
   let timedOut = false;
@@ -189,7 +220,7 @@ async function runInVercelSandbox({ language, source, stdin }, { loadSandboxSdk 
       const finished = await sandbox.runCommand({
         cmd: runtime.cmd,
         args: [filename],
-        ...(input ? { stdin: input, timeoutMs: SANDBOX_COMMAND_TIMEOUT_MS } : {}),
+        ...(input || permit ? { ...(input ? { stdin: input } : {}), timeoutMs: SANDBOX_COMMAND_TIMEOUT_MS } : {}),
         stdout: collector.stdout,
         stderr: collector.stderr,
         signal: commandController.signal,
@@ -208,6 +239,7 @@ async function runInVercelSandbox({ language, source, stdin }, { loadSandboxSdk 
       code: timedOut ? null : exitCode,
       signal: timedOut ? 'SIGKILL' : null,
       timedOut,
+      ...(permit ? { startup } : {}),
     };
   } catch (error) {
     if (error instanceof ExecutionFailedError) throw error;
@@ -217,7 +249,12 @@ async function runInVercelSandbox({ language, source, stdin }, { loadSandboxSdk 
     input?.destroy();
     // Delete stops the microVM and discards its filesystem. Failure here must
     // not change the evaluation result; the session timeout is the backstop.
-    try { await sandbox.delete(); } catch { try { await sandbox.stop(); } catch {} }
+    if (!permit) {
+      try { await sandbox.delete(); } catch { try { await sandbox.stop(); } catch {} }
+    } else {
+      try { await sandbox.delete({ signal: AbortSignal.timeout(5000) }); providerStopped(permit); }
+      catch { try { await sandbox.stop({ signal: AbortSignal.timeout(5000) }); providerStopped(permit); } catch {} }
+    }
   }
 }
 
@@ -250,8 +287,9 @@ async function readBoundedJson(response, controller) {
   try { return JSON.parse(text); } catch (error) { throw new ExecutionFailedError('execution response was not JSON', { cause: error }); }
 }
 
-async function runInPiston({ language, source, stdin }, { url, token, fetchImpl = globalThis.fetch } = {}) {
+async function runInPiston({ language, source, stdin }, { url, token, fetchImpl = globalThis.fetch, permit } = {}) {
   const version = PISTON_RUNTIMES[language];
+  if (permit) await beforeProvider(permit);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PISTON_REQUEST_TIMEOUT_MS);
   try {
@@ -266,8 +304,8 @@ async function runInPiston({ language, source, stdin }, { url, token, fetchImpl 
           language, version, files: [{ name: LANGUAGE_FILES[language], content: source }],
           // Catalogue-only requests preserve the pre-flag payload exactly.
           // Private processes need explicit remote wall/CPU kill deadlines.
-          ...(stdin === undefined ? {} : {
-            stdin,
+          ...(stdin === undefined && !permit ? {} : {
+            ...(stdin === undefined ? {} : { stdin }),
             compile_timeout: PISTON_COMPILE_TIMEOUT_MS,
             compile_cpu_time: PISTON_COMPILE_TIMEOUT_MS,
             run_timeout: PISTON_RUN_TIMEOUT_MS,
@@ -286,6 +324,7 @@ async function runInPiston({ language, source, stdin }, { url, token, fetchImpl 
     }
     const payload = await readBoundedJson(response, controller);
     const run = payload && typeof payload === 'object' && payload.run && typeof payload.run === 'object' ? payload.run : {};
+    if (Number.isInteger(run.code) || typeof run.signal === 'string') providerStopped(permit);
     return {
       provider: 'piston',
       runtimeVersion: version,
@@ -293,7 +332,7 @@ async function runInPiston({ language, source, stdin }, { url, token, fetchImpl 
       stderr: String(run.stderr || ''),
       code: Number.isInteger(run.code) ? run.code : null,
       signal: typeof run.signal === 'string' ? run.signal.slice(0, 64) : null,
-      timedOut: stdin !== undefined && (run.status === 'TO' || run.signal === 'SIGKILL'),
+      timedOut: (stdin !== undefined || !!permit) && (run.status === 'TO' || run.signal === 'SIGKILL'),
     };
   } catch (error) {
     if (error instanceof ExecutionUnavailableError || error instanceof ExecutionFailedError) throw error;
@@ -308,7 +347,8 @@ async function runInPiston({ language, source, stdin }, { url, token, fetchImpl 
  * @param {{language: 'javascript'|'python', source: string, stdin?: string}} request
  * @param {{env?: object, fetchImpl?: typeof fetch, loadSandboxSdk?: () => Promise<any>}} [options]
  */
-export async function executeProgram(request, { env = process.env, fetchImpl, loadSandboxSdk } = {}) {
+export async function executeProgram(request, options = {}) {
+  const { env = process.env, fetchImpl, loadSandboxSdk } = options;
   const language = request?.language;
   if (!Object.prototype.hasOwnProperty.call(LANGUAGE_FILES, language)) throw new TypeError('unsupported execution language');
   if (typeof request.source !== 'string' || !request.source) throw new TypeError('execution source is required');
@@ -316,11 +356,14 @@ export async function executeProgram(request, { env = process.env, fetchImpl, lo
   const program = { language, source: request.source, ...(stdin === undefined ? {} : { stdin }) };
   const resolved = resolveExecutionProvider(env);
   if (!resolved.configured) throw new ExecutionUnavailableError(resolved.reason || 'code execution is unavailable');
-  if (resolved.provider === 'vercel-sandbox') return runInVercelSandbox(program, { loadSandboxSdk });
-  return runInPiston(program, {
-    url: resolved.url,
-    token: String(env.EXECUTION_API_TOKEN || '').trim() || null,
-    fetchImpl: fetchImpl || globalThis.fetch,
+  return withAdmission(options, 1, JSON.stringify(program), async admitted => {
+    const permit = admitted[ADMISSION];
+    if (resolved.provider === 'vercel-sandbox') return runInVercelSandbox(program, { loadSandboxSdk, env, permit, cold: options.cold === true });
+    return runInPiston(program, {
+      url: resolved.url,
+      token: String(env.EXECUTION_API_TOKEN || '').trim() || null,
+      fetchImpl: fetchImpl || globalThis.fetch, permit,
+    });
   });
 }
 
@@ -331,6 +374,11 @@ export async function executePracticePrograms({ language, harness, code, stdin }
   const env = options.env || process.env;
   const customRequest = { language, source: code, ...(stdin === undefined ? {} : { stdin }) };
   validateExecutionStdin(customRequest, env);
+  if (executionQueueEnabled(env) && !options[ADMISSION]) {
+    if (!resolveExecutionProvider(env).configured) throw new ExecutionUnavailableError('code execution is unavailable');
+    return withAdmission(options, stdin === undefined ? 1 : 2, JSON.stringify(customRequest),
+      admitted => executePracticePrograms({ language, harness, code, stdin }, admitted));
+  }
   if (stdin === undefined) {
     return { run: await executeProgram({ language, source: harness }, options), custom: undefined };
   }

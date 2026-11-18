@@ -162,6 +162,19 @@ Turning the flag off rejects every request containing `stdin` (including an
 empty string) with 404, hides the controls after capabilities reload, and
 leaves normal catalogue runs unchanged. No migration or request-path DDL.
 
+## Execution capacity (dark launch)
+
+`EXECUTION_QUEUE_ENABLED=true` adds a durable, bounded retry queue, per-circle
+and account quotas, interview/practice fairness and global provider-unit spend
+ceilings. It defaults **off** and requires **no migration**. Busy/quota responses
+keep the editor intact and never record a wrong-answer run. Optional pristine
+Vercel runtime snapshots use the installed SDK's supported API; performance is
+reported by the existing execution-smoke workflow, not assumed. Live p95 evidence
+and activation remain operator-owned; no provider was called for this change.
+See [design and knobs](docs/EXECUTION_CAPACITY.md) and
+[tuning/rollback runbook](docs/runbooks/execution-capacity.md). Private stdin costs
+two provider units and is never automatically replayed after a busy response.
+
 ## How it is built
 
 - **Client:** one `index.html` page plus `assets/*.{js,mjs,css}`, with no build step
