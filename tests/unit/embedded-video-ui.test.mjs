@@ -78,7 +78,7 @@ function fixture({room=ROOM,actorId=2,ended=false,meetingLink='https://meet.exam
 
 function granted(overrides={}){
   return {status:200,body:{ok:true,room_id:ROOM,provider:'daily',room_url:ROOM_URL,token:TOKEN,
-    expires_at:new Date(Date.now()+10*60*1000).toISOString(),recording:false,...overrides}};
+    expires_at:new Date(Date.now()+10*60*1000).toISOString(),expires_in:600,recording:false,...overrides}};
 }
 
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
@@ -88,7 +88,8 @@ test('the frame URL accepts only a private Daily room on the CSP-allowed origin'
   for(const body of [
     {...granted().body,ok:false},{...granted().body,provider:'other'},{...granted().body,recording:true},
     {...granted().body,room_id:'week_10_pair_21'},{...granted().body,token:'short'},{...granted().body,token:'has space in it 123'},
-    {...granted().body,expires_at:'soon'},{...granted().body,room_url:'https://evil.daily.co/rc-'+'a'.repeat(32)},
+    {...granted().body,expires_at:'soon'},{...granted().body,expires_in:undefined},{...granted().body,expires_in:0},
+    {...granted().body,expires_in:3601},{...granted().body,expires_in:'600'},{...granted().body,expires_in:1.5},{...granted().body,room_url:'https://evil.daily.co/rc-'+'a'.repeat(32)},
     {...granted().body,room_url:'http://randori-circle.daily.co/rc-'+'a'.repeat(32)},
     {...granted().body,room_url:`${DAILY_FRAME_ORIGIN}/week_10_pair_20`},{...granted().body,room_url:`${ROOM_URL}?t=other`},
     {...granted().body,room_url:`${ROOM_URL}#x`},{...granted().body,room_url:'not a url'},null,
@@ -130,7 +131,7 @@ test('Join posts the exact consent choices and loads a sandboxed, media-delegate
   assert.equal(f.controller.phase,'live');
   const [frame]=f.frames();
   assert.equal(frame.src,`${ROOM_URL}?t=${TOKEN}`);
-  assert.equal(frame.getAttribute('allow'),'camera; microphone; autoplay');
+  assert.equal(frame.getAttribute('allow'),'camera; microphone; autoplay; fullscreen');
   assert.equal(frame.getAttribute('sandbox'),'allow-scripts allow-same-origin');
   assert.equal(frame.getAttribute('referrerpolicy'),'no-referrer');
   assert.equal(frame.title,COPY.frameTitle);
@@ -150,18 +151,47 @@ test('Join posts the exact consent choices and loads a sandboxed, media-delegate
   assert.equal(f.section.hidden,true);
 });
 
-test('the call closes itself when the token window ends',async()=>{
-  const f=fixture();
-  f.responses.push(granted({expires_at:new Date(Date.now()+90_000).toISOString()}));
+test('the call closes itself after the server-computed pass lifetime, whatever the device clock says',async()=>{
+  // expires_at disagrees with the device clock in both directions; only
+  // the server's expires_in schedules the close.
+  for(const skewMs of [-6*60*60*1000,6*60*60*1000,0]){
+    const f=fixture();
+    f.responses.push(granted({expires_in:90,expires_at:new Date(Date.now()+skewMs+90_000).toISOString()}));
+    f.controller.open(); f.byTestId('embedded-video-join').click();
+    await tick(); await tick();
+    assert.equal(f.controller.phase,'live',`skew ${skewMs}`);
+    const [[,timer]]=[...f.timers];
+    assert.equal(timer.ms,90_000,`skew ${skewMs}`);
+    const frame=f.controller.frame;
+    timer.fn();
+    assert.equal(frame.removed,true);
+    assert.equal(f.controller.phase,'closed');
+    assert.equal(f.status(),COPY.expired);
+  }
+});
+
+test('unanimous completion closes a live call in peer mode, but not another room\'s',async()=>{
+  const f=fixture(); f.responses.push(granted());
   f.controller.open(); f.byTestId('embedded-video-join').click();
   await tick(); await tick();
-  const [[,timer]]=[...f.timers];
-  assert.ok(timer.ms>85_000&&timer.ms<=90_000);
   const frame=f.controller.frame;
-  timer.fn();
+  f.fire('randori:completion-observed',{room:'week_10_pair_21',state:'completed'});
+  f.fire('randori:completion-observed',{room:ROOM,state:'awaiting_participants'});
+  f.fire('randori:completion-observed',{room:null});
+  assert.equal(f.controller.phase,'live');
+  f.fire('randori:completion-observed',{room:ROOM,state:'completed',completionVersion:'d'.repeat(64)});
   assert.equal(frame.removed,true);
   assert.equal(f.controller.phase,'closed');
-  assert.equal(f.status(),COPY.expired);
+  assert.equal(f.status(),COPY.completed);
+  f.fire('randori:completion-observed',{room:ROOM,state:'completed'});
+  assert.equal(f.status(),COPY.completed,'a repeated observation leaves the closed notice alone');
+  const pending=fixture();
+  pending.controller.open();
+  pending.fire('randori:completion-observed',{room:ROOM,state:'completed'});
+  assert.equal(pending.controller.phase,'closed','a pending consent closes too');
+  const idle=fixture();
+  idle.fire('randori:completion-observed',{room:ROOM,state:'completed'});
+  assert.equal(idle.controller.phase,'idle');
 });
 
 test('an unavailable provider falls back to the external meeting link and the direct call',async()=>{

@@ -13,9 +13,10 @@
 // textContent only.
 export const DAILY_FRAME_ORIGIN='https://randori-circle.daily.co';
 export const ROOM_ENDPOINT='/api/video/room';
-const FRAME_ALLOW='camera; microphone; autoplay';
+const FRAME_ALLOW='camera; microphone; autoplay; fullscreen';
 const FRAME_SANDBOX='allow-scripts allow-same-origin';
-const MAX_TIMER_MS=2**31-1;
+// The server's longest pass (DAILY_TOKEN_MAX_TTL_SECONDS).
+const MAX_PASS_SECONDS=60*60;
 
 export const COPY=Object.freeze({
   title:'Video call',
@@ -51,6 +52,7 @@ export function embeddedFrameUrl(payload,{expectedRoom}={}){
   if(expectedRoom!==undefined&&payload.room_id!==expectedRoom) return null;
   if(typeof payload.token!=='string'||!/^[A-Za-z0-9._-]{16,4096}$/.test(payload.token)) return null;
   if(typeof payload.expires_at!=='string'||!Number.isFinite(Date.parse(payload.expires_at))) return null;
+  if(!Number.isSafeInteger(payload.expires_in)||payload.expires_in<1||payload.expires_in>MAX_PASS_SECONDS) return null;
   let url;
   try{ url=new URL(String(payload.room_url)); }catch{ return null; }
   if(url.origin!==DAILY_FRAME_ORIGIN||!/^\/rc-[a-f0-9]{32}$/.test(url.pathname)
@@ -216,9 +218,10 @@ export function mountEmbeddedVideo({window:root=globalThis.window,document:doc=g
     frame.style.cssText='width:100%;height:min(62vh,520px);border:0;border-radius:10px;background:#111';
     frame.src=src;
     state.frame=frame; state.phase='live'; render();
-    const remaining=Date.parse(payload.expires_at)-Date.now();
+    // expires_in is computed on the server from the database clock, so a
+    // fast or slow device clock cannot end the call early or keep it late.
     state.timer=root.setTimeout(()=>{ state.timer=null; if(epoch===state.epoch) stop('closed',COPY.expired); },
-      Math.max(0,Math.min(MAX_TIMER_MS,remaining)));
+      payload.expires_in*1000);
     return true;
   }
 
@@ -230,9 +233,10 @@ export function mountEmbeddedVideo({window:root=globalThis.window,document:doc=g
 
   // Stop conditions mirror the room's other loops: room or circle change,
   // workspace reset/deactivation, sign-out or a different account, the
-  // interview terminal coordinator, and page unload. A hidden tab before the
-  // frame exists abandons the join so no prompt appears in the background; a
-  // live call survives a tab switch, as a phone call would.
+  // interview terminal coordinator, unanimous completion, and page unload.
+  // A hidden tab before the frame exists abandons the join so no prompt
+  // appears in the background; a live call survives a tab switch, as a
+  // phone call would.
   const stopIfActive=()=>{ if(state.phase!=='idle') stop(); };
   root.addEventListener('randori:room-change',event=>{ if(event?.detail?.roomId!==state.room) stopIfActive(); });
   for(const name of ['randori:workspace-scope-reset','randori:workspace-deactivated','pagehide']) root.addEventListener(name,stopIfActive);
@@ -242,6 +246,12 @@ export function mountEmbeddedVideo({window:root=globalThis.window,document:doc=g
   });
   root.addEventListener('randori:interview-ended',event=>{
     if(state.phase!=='idle'&&event?.detail?.room===state.room) stop('closed',COPY.ended);
+  });
+  // Unanimous completion closes the call in peer mode too, where no
+  // interview-ended event exists.
+  root.addEventListener('randori:completion-observed',event=>{
+    if(state.phase!=='idle'&&state.phase!=='closed'&&event?.detail?.room===state.room
+      &&event.detail.state==='completed') stop('closed',COPY.completed);
   });
   doc.addEventListener?.('visibilitychange',()=>{
     if(doc.visibilityState==='hidden'&&(state.phase==='consent'||state.phase==='joining')) stop();

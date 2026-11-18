@@ -68,7 +68,7 @@ async function openRoom(page:Page,store:Store,actorId:1|2,{embedded=true}:Option
       store.roomPosts.push({actorId,body:request.postDataJSON() as Record<string,unknown>});
       if(store.roomStatus!==200) return {_status:store.roomStatus,error:'embedded video unavailable',code:'embedded_video_unavailable'};
       return {ok:true,room_id:roomId,provider:'daily',room_url:`${dailyOrigin}/${dailyRoom}`,
-        token:`eyJhbGci.actor-${actorId}.signature`,expires_at:new Date(Date.now()+20*60*1000).toISOString(),recording:false};
+        token:`eyJhbGci.actor-${actorId}.signature`,expires_at:new Date(Date.now()+20*60*1000).toISOString(),expires_in:20*60,recording:false};
     },
   });
   await resetClientState(page,true);
@@ -104,7 +104,7 @@ test('interviewer and candidate consent, join the same private room in-page, and
     for(const page of [candidate,interviewer]){
       const frame=page.getByTestId('embedded-video-frame');
       await expect(frame).toHaveAttribute('sandbox','allow-scripts allow-same-origin');
-      await expect(frame).toHaveAttribute('allow','camera; microphone; autoplay');
+      await expect(frame).toHaveAttribute('allow','camera; microphone; autoplay; fullscreen');
       await expect(page.frameLocator('[data-testid="embedded-video-frame"]').getByText('Daily stub room')).toBeVisible();
       await expect(page.getByTestId('embedded-video-status')).toContainText('Live');
       await expect(page.locator('#view-code')).toBeVisible();
