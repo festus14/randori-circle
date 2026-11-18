@@ -24,6 +24,7 @@ class ControlsStore{
   timerState:'paused'|'running'='paused';
   remainingMs=25*60*1000;
   anchorMs:number|null=null;
+  interviewMode=false;
   terminal=false;
   completionVersion=completionVersion;
   requests:Array<{actorId:number;method:string;body:Record<string,unknown>|null;status:number}>=[];
@@ -49,12 +50,15 @@ class ControlsStore{
     const remaining=this.effectiveRemaining();
     const partnerId=actorId===1?2:1;
     const viewerRole=this.candidateId===actorId?'candidate':'interviewer';
+    const terminal=this.terminal||this.interviewMode&&remaining===0;
     return {ok:true,room_id:roomId,session_controls:{
       timer_state:remaining===0?'expired':this.timerState,
       remaining_ms:Math.floor(remaining),duration_ms:25*60*1000,
       candidate_user_id:this.candidateId,partner_user_id:partnerId,
       viewer_role:viewerRole,partner_role:viewerRole==='candidate'?'interviewer':'candidate',
-      terminal:this.terminal,completion_version:this.completionVersion,
+      terminal,completion_version:this.completionVersion,
+      ...(this.interviewMode?{interview_mode:true,can_control:viewerRole==='interviewer'&&!terminal,
+        end_reason:terminal?(this.timerState==='running'?'timer_expired':'interviewer_ended'):null}:{}),
       observed_at:new Date().toISOString(),updated_at:this.revision?new Date().toISOString():null,
       version:this.version(),
     }};
@@ -72,7 +76,11 @@ class ControlsStore{
         await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(readSnapshot)});
         return;
       }
-      if(this.terminal){
+      if(this.interviewMode&&actorId===this.candidateId){
+        this.requests.push({actorId,method:'POST',body,status:404});
+        await route.fulfill({status:404,contentType:'application/json',body:JSON.stringify({error:'pair not found'})}); return;
+      }
+      if(this.terminal||this.interviewMode&&this.effectiveRemaining()===0){
         this.requests.push({actorId,method:'POST',body,status:409});
         await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({
           ...this.payload(actorId),error:'Session controls are read-only.',code:'session_controls_completed',
@@ -96,6 +104,8 @@ class ControlsStore{
           this.remainingMs=this.effectiveRemaining(); this.timerState='paused'; this.anchorMs=null;
         }else if(action==='reset'){
           this.timerState='paused'; this.remainingMs=25*60*1000; this.anchorMs=null;
+        }else if(action==='end'){
+          this.timerState='paused'; this.remainingMs=0; this.anchorMs=null; this.terminal=true;
         }else if(action==='set_candidate') this.candidateId=Number(body.candidate_user_id);
         this.revision+=1;
       }
@@ -142,6 +152,83 @@ async function openWorkspace(page:Page,store:ControlsStore,actorId:1|2){
   await expect(page.getByTestId('session-controls')).toBeVisible();
   await expect(page.getByTestId('session-controls-status')).not.toContainText('Loading');
 }
+
+test('interview mode enforces role affordances, ends both browsers, stops room polling and preserves participant wrap-up',async({browser})=>{
+  const store=new ControlsStore(); store.interviewMode=true;
+  const candidate=await browser.newPage(),interviewer=await browser.newPage();
+  const roomRequests:string[]=[];
+  const track=(request:Request)=>{ if(/\/api\/(session-controls|session-completion|video\/signal|code-document|messages|schedule)(?:\?|$)/.test(request.url())) roomRequests.push(request.url()); };
+  candidate.on('request',track); interviewer.on('request',track);
+  try{
+    await Promise.all([openWorkspace(candidate,store,1),openWorkspace(interviewer,store,2)]);
+    for(const id of ['session-controls-start-pause','session-controls-reset','session-controls-candidate','session-controls-end']) await expect(candidate.getByTestId(id)).toBeDisabled();
+    expect(await candidate.evaluate(()=>window._randori_session_controls?.mutate('set_candidate',2))).toBe(false);
+    expect(store.requests.filter(request=>request.method==='POST')).toHaveLength(0);
+    await interviewer.getByTestId('session-controls-start-pause').click();
+    await expect(interviewer.getByTestId('session-controls-start-pause')).toHaveText('Pause');
+    interviewer.once('dialog',dialog=>dialog.accept());
+    await interviewer.getByTestId('session-controls-end').click();
+    await expect(interviewer.getByTestId('session-controls-status')).toContainText('Interview ended');
+    await expect(candidate.getByTestId('session-controls-status')).toContainText('Interview ended');
+    for(const page of [candidate,interviewer]){
+      await expect(page.locator('#runBtn')).toBeDisabled();
+      await expect(page.locator('#sessionCompletionAction')).toBeVisible();
+      await expect(page.locator('#sessionCompletionRefresh')).toBeVisible();
+    }
+    await candidate.waitForTimeout(500);
+    const count=roomRequests.length;
+    await candidate.waitForTimeout(5500);
+    expect(roomRequests).toHaveLength(count);
+
+    const receipts=new Set<number>();
+    const version=()=>receipts.size===0?completionVersion:(receipts.size===1?'d':'e').repeat(64);
+    for(const [page,actorId] of [[candidate,1],[interviewer,2]] as const){
+      await page.route(/\/api\/session-completion(?:\?.*)?$/,async route=>{
+        const request=route.request();
+        if(request.method()==='POST'){
+          const body=request.postDataJSON();
+          expect(body.base_version).toBe(version());
+          if(body.action==='confirm') receipts.add(actorId); else receipts.delete(actorId);
+        }
+        await route.fulfill({contentType:'application/json',body:JSON.stringify({ok:true,room_id:roomId,completion:{
+          state:receipts.size===2?'completed':receipts.size?'awaiting_participants':'not_recorded',
+          viewer_confirmed:receipts.has(actorId),confirmed_count:receipts.size,required_count:2,
+          version:version(),completed_at:receipts.size===2?new Date().toISOString():null,
+        }})});
+      });
+    }
+    await candidate.locator('#sessionCompletionAction').click();
+    await expect(candidate.locator('#sessionCompletionStatus')).toContainText('You confirmed');
+    await interviewer.locator('#sessionCompletionRefresh').click();
+    await interviewer.locator('#sessionCompletionAction').click();
+    await expect(interviewer.locator('#sessionCompletionStatus')).toContainText('Session completed');
+    await candidate.locator('#sessionCompletionRefresh').click();
+    await expect(candidate.locator('#sessionCompletionStatus')).toContainText('Session completed');
+    expect(receipts.size).toBe(2);
+  }finally{ await candidate.close(); await interviewer.close(); }
+});
+
+test('interview expiry converges for both participants and a late browser without a completion claim',async({browser})=>{
+  const store=new ControlsStore(); store.interviewMode=true;
+  const candidate=await browser.newPage(),interviewer=await browser.newPage(),late=await browser.newPage();
+  try{
+    await Promise.all([openWorkspace(candidate,store,1),openWorkspace(interviewer,store,2)]);
+    store.timerState='running'; store.remainingMs=1200; store.anchorMs=Date.now(); store.revision=1;
+    await Promise.all([candidate,interviewer].map(page=>page.evaluate(()=>window._randori_session_controls?.load())));
+    for(const page of [candidate,interviewer]){
+      await expect(page.getByTestId('session-controls-status')).toContainText('Interview ended');
+      await expect(page.getByTestId('session-controls-countdown')).toHaveText('00:00');
+      await expect(page.getByTestId('session-controls-reset')).toBeDisabled();
+    }
+    await openWorkspace(late,store,1);
+    await expect(late.getByTestId('session-controls-status')).toContainText('Interview ended');
+    await expect(late.locator('#runBtn')).toBeDisabled();
+    await expect(late.locator('#editor')).toHaveJSProperty('readOnly',true);
+    await expect(late.locator('#vidJoinBtn')).toBeDisabled();
+    expect(store.requests.filter(request=>request.method==='POST')).toHaveLength(0);
+    await expect(late.locator('#sessionCompletionStatus')).toContainText('Completion not recorded');
+  }finally{ await candidate.close(); await interviewer.close(); await late.close(); }
+});
 
 test('initial loading and writes remain explicitly blocking',async({page})=>{
   const store=new ControlsStore(); await openWorkspace(page,store,1);

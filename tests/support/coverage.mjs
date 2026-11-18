@@ -43,6 +43,8 @@ const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   'assets/account-deletion.js',
   // Secondary workspace transport and response epoch fencing (#438).
   'assets/workspace-scope.js',
+  // Interview terminal-work coordinator (#464).
+  'assets/interview-session.js',
   // Removed members use the independent public email-proof page (issue #350).
   'assets/deletion-link.js'];
 // Operator tools that cannot run under unit tests; see
