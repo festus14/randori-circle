@@ -12,17 +12,23 @@ export function seededKitRandom(seed = 469) {
   };
 }
 
-export function runReferenceProgram(language, source) {
+export function runReferenceProgram(language, source, { spawn = spawnSync } = {}) {
   const command = language === 'javascript' ? process.execPath : 'python3';
   const args = language === 'javascript' ? ['--input-type=commonjs'] : ['-'];
-  const result = spawnSync(command, args, { input: source, encoding: 'utf8', timeout: 10_000, maxBuffer: 256 * 1024 });
+  const result = spawn(command, args, { input: source, encoding: 'utf8', timeout: 10_000, maxBuffer: 256 * 1024 });
+  if (language === 'python' && result.error?.code === 'ENOENT') {
+    throw new Error('Catalogue reference validation requires python3 on PATH. Install Python 3 locally; CI provisions it with actions/setup-python. No execution provider is needed.');
+  }
   if (result.error || result.status !== 0) throw new Error(`${language} reference process failed: ${result.error?.message || result.stderr}`);
   return result.stdout;
 }
 
 // Offline only. Runs authored references, never member submissions or providers.
-// Checked-in content and generated cases use the exact production harness and
-// result comparator, including Python's restricted builtins/no-import boundary.
+// These checks execute in the exact production harness and result comparator,
+// including Python's restricted builtins/no-import boundary. The JS arm only
+// proves the server oracle executes in that harness; it is not an independent
+// correctness proof. Correctness comes from comparison with the separately
+// authored Python reference plus the independent small-input unit references.
 export function validateInterviewKitReferences(catalog, { seed = 469, runProgram = runReferenceProgram } = {}) {
   let exerciseCount = 0, caseCount = 0;
   for (const exercise of catalog.exercises) {
@@ -42,6 +48,8 @@ export function validateInterviewKitReferences(catalog, { seed = 469, runProgram
       return { id: `example-${index + 1}`, args: example.input, expected: example.output };
     })];
     for (const language of ['javascript', 'python']) {
+      // The JS source below is the oracle itself: this arm checks VM/harness
+      // compatibility, while the separately authored Python arm checks answers.
       const source = language === 'javascript' ? definition.oracle.toString() : PYTHON_KIT_REFERENCES[key];
       const suite = { entrypoint: exercise.languages[language].entrypoint, tests };
       const prefix = '__KIT_REFERENCE__:';

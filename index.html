@@ -12822,7 +12822,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   let activeQuestionVersion=null;
   let activeLanguage=document.getElementById('langSelect')?.value||'javascript';
   const catalogueView=window._randori_catalogue_view;
-  const catalogueFilterState={...catalogueView.DEFAULT_FILTERS,visibleSlugs:[]};
+  const catalogueDefaults=catalogueView.DEFAULT_FILTERS||{search:'',difficulty:'all',type:'all',language:'all',kit:'all',track:'all'};
+  const catalogueFilterState={...catalogueDefaults,visibleSlugs:[]};
   let catalogueFailureReason='error';
   const CATALOGUE_FILTER_EMPTY='__randori_catalog_filter_empty__';
   const sessionDrafts=new Map();
@@ -13437,7 +13438,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   ['input','change'].forEach(type=>document.querySelector('[data-testid="catalog-filters"]')?.addEventListener(type,revealCatalogueList));
   function resetCatalogueFilters(){
-    Object.assign(catalogueFilterState,catalogueView.DEFAULT_FILTERS);
+    Object.assign(catalogueFilterState,catalogueDefaults);
     if(catalogSearch) catalogSearch.value='';
     if(catalogDifficulty) catalogDifficulty.value='all';
     if(catalogType) catalogType.value='all';
