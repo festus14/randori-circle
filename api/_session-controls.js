@@ -1,5 +1,15 @@
 import { createHmac } from 'node:crypto';
 
+import {
+  INTERVIEW_TIMER_DURATION_MS,
+  interviewModeFrom,
+  interviewOpenFence,
+  interviewSessionEnabled as interviewFlagEnabled,
+  interviewStateSql,
+  materializeScheduledStart,
+  readInterviewGate,
+  resolveInterviewMode,
+} from './_interview-session.js';
 import { authPairAccessArgs } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import {
@@ -8,12 +18,16 @@ import {
   sourceTaggedPairAccessSql,
 } from './_session-completion.js';
 
-export const SESSION_TIMER_DURATION_MS=25*60*1000;
+export const SESSION_TIMER_DURATION_MS=INTERVIEW_TIMER_DURATION_MS;
 const OPAQUE_VERSION=/^[a-f0-9]{64}$/;
 const TRANSACTION_ATTEMPTS=4;
-const ACTIONS=new Set(['start','pause','reset','set_candidate','end']);
+const ACTIONS=new Set(['start','pause','reset','set_candidate','end','admit','lock_editing','unlock_editing']);
+// Interview-only commands; admit and the edit lock also need migration 26.
+const INTERVIEW_ACTIONS=new Set(['end','admit','lock_editing','unlock_editing']);
+const LOBBY_ACTIONS=new Set(['admit','lock_editing','unlock_editing']);
 
-export function interviewSessionEnabled(){ return process.env.INTERVIEW_SESSION_ENABLED==='true'; }
+export function interviewSessionEnabled(){ return interviewFlagEnabled(); }
+export { resolveInterviewMode };
 
 export class SessionControlsInputError extends Error{
   constructor(message){ super(message); this.name='SessionControlsInputError'; }
@@ -95,7 +109,7 @@ export function parseSessionControlsMutation(body,{interview=interviewSessionEna
   if(!body||typeof body!=='object'||Array.isArray(body)){
     throw new SessionControlsInputError('request body must be an object');
   }
-  if(!ACTIONS.has(body.action)||body.action==='end'&&!interview) throw new SessionControlsInputError('unsupported session-controls action');
+  if(!ACTIONS.has(body.action)||INTERVIEW_ACTIONS.has(body.action)&&!interview) throw new SessionControlsInputError('unsupported session-controls action');
   const expected=body.action==='set_candidate'
     ?['room_id','action','base_version','candidate_user_id']
     :['room_id','action','base_version'];
@@ -171,6 +185,54 @@ function normalizeControlRow(row,pair){
   });
 }
 
+// A row whose pair snapshot no longer matches the live group is stale: it is
+// ignored here and deleted by the next interview write (no trigger on an
+// existing table invalidates it, see migration 26).
+function normalizeInterviewRow(row,pair){
+  if(!row) return null;
+  if(positiveSafeInteger(row.week_id)!==pair.weekId||positiveSafeInteger(row.pair_group_id)!==pair.pairGroupId){
+    throw new SessionControlsDataError('stored interview state is invalid');
+  }
+  if(positiveSafeInteger(row.pair_user_a_id)!==pair.userAId||positiveSafeInteger(row.pair_user_b_id)!==pair.userBId) return null;
+  const revision=Number(row.revision);
+  const admission=row.admission===null||row.admission===undefined?null:String(row.admission);
+  const locked=Number(row.editing_locked);
+  if(!Number.isSafeInteger(revision)||revision<1||![null,'interviewer','schedule'].includes(admission)
+    ||![0,1].includes(locked)||![pair.userAId,pair.userBId].includes(Number(row.updated_by))
+    ||(admission===null)!==(row.admitted_at===null||row.admitted_at===undefined)){
+    throw new SessionControlsDataError('stored interview state is invalid');
+  }
+  return Object.freeze({
+    admission,admittedAt:admission===null?null:normalizedTimestamp(row.admitted_at,'interview admission'),
+    editingLocked:locked===1,revision,
+    createdAt:normalizedTimestamp(row.created_at,'interview created timestamp'),
+    updatedAt:normalizedTimestamp(row.updated_at,'interview updated timestamp'),
+  });
+}
+
+function canonicalScheduledStart(value){
+  if(typeof value!=='string'||value.length!==24) return null;
+  const epoch=Date.parse(value);
+  return Number.isFinite(epoch)&&new Date(epoch).toISOString()===value?value:null;
+}
+
+// The JS twin of interviewStateSql(): admitted, a started timer, or a reached
+// agreed start make the room live. A reached agreed start with no admission
+// and an untouched timer is a derived timer running from that instant.
+function lobbyPhase(durable,lobby,now){
+  const interviewRow=lobby.interviewRow||null;
+  const start=lobby.scheduledStartAt||null;
+  const started=durable.revision>0&&(durable.timerState==='running'||durable.remainingMs<SESSION_TIMER_DURATION_MS);
+  const admitted=!!interviewRow?.admittedAt;
+  const scheduleRun=!admitted&&!started&&!!start&&now>=start;
+  return Object.freeze({
+    started,admitted,scheduleRun,live:admitted||started||scheduleRun,
+    locked:interviewRow?.editingLocked===true,
+    admission:interviewRow?.admission||(scheduleRun?'schedule':null),
+    effective:scheduleRun?Object.freeze({...durable,timerState:'running',remainingMs:SESSION_TIMER_DURATION_MS,anchorAt:start}):durable,
+  });
+}
+
 function durableState(pair,row){
   return row||Object.freeze({
     weekId:pair.weekId,pairGroupId:pair.pairGroupId,userAId:pair.userAId,userBId:pair.userBId,
@@ -179,25 +241,35 @@ function durableState(pair,row){
   });
 }
 
-function controlsVersion(pair,durable,versionKey,interview){
+function controlsVersion(pair,durable,versionKey,interview,lobby=null){
   if(typeof versionKey!=='string'||versionKey.length<32){
     throw new SessionControlsDataError('session-controls version key is unavailable');
   }
-  return createHmac('sha256',versionKey)
-    .update(`${interview?'randori-interview-controls-v1':'randori-session-controls-v1'}\0${JSON.stringify([
-      pair.weekId,pair.pairGroupId,pair.userAId,pair.userBId,null,
-      durable.candidateUserId,durable.timerState,durable.remainingMs,durable.anchorAt,durable.revision,
-    ])}`,'utf8').digest('hex');
+  // Lobby versions bind the durable interview row and the agreed start (an
+  // input), never the time-derived phase or remaining time.
+  const domain=lobby?'randori-interview-lobby-controls-v1':interview?'randori-interview-controls-v1':'randori-session-controls-v1';
+  const fields=[
+    pair.weekId,pair.pairGroupId,pair.userAId,pair.userBId,null,
+    durable.candidateUserId,durable.timerState,durable.remainingMs,durable.anchorAt,durable.revision,
+  ];
+  if(lobby){
+    const row=lobby.interviewRow||null;
+    fields.push(row?.admission??null,row?.admittedAt??null,row?.editingLocked===true,row?.revision??0,lobby.scheduledStartAt??null);
+  }
+  return createHmac('sha256',versionKey).update(`${domain}\0${JSON.stringify(fields)}`,'utf8').digest('hex');
 }
 
 function boundedElapsed(anchorAt,clockAt){
   return Math.max(0,Date.parse(clockAt)-Date.parse(anchorAt));
 }
 
-export function projectSessionControls(pair,row,{databaseNow,completion,versionKey,interview=false}){
+export function projectSessionControls(pair,row,{databaseNow,completion,versionKey,interview=false,lobby=null}){
   if(!pair||!completion) throw new SessionControlsDataError('session-controls projection is invalid');
+  if(lobby&&!interview) throw new SessionControlsDataError('session-controls projection is invalid');
   const now=normalizedTimestamp(databaseNow,'session-controls database clock');
-  const durable=durableState(pair,normalizeControlRow(row,pair));
+  const stored=durableState(pair,normalizeControlRow(row,pair));
+  const phase=lobby?lobbyPhase(stored,lobby,now):null;
+  const durable=phase?phase.effective:stored;
   if(durable.updatedAt&&Date.parse(now)<Date.parse(durable.updatedAt)){
     throw new SessionControlsDataError('database session-controls clock is invalid');
   }
@@ -216,6 +288,7 @@ export function projectSessionControls(pair,row,{databaseNow,completion,versionK
   const timerState=remainingMs===0?'expired':durable.timerState;
   const viewerRole=durable.candidateUserId===pair.viewerId?'candidate':'interviewer';
   const partnerUserId=pair.viewerId===pair.userAId?pair.userBId:pair.userAId;
+  const terminal=completion.state==='completed'||interview&&remainingMs===0;
   return Object.freeze({
     timer_state:timerState,
     remaining_ms:remainingMs,
@@ -224,17 +297,25 @@ export function projectSessionControls(pair,row,{databaseNow,completion,versionK
     partner_user_id:partnerUserId,
     viewer_role:viewerRole,
     partner_role:viewerRole==='candidate'?'interviewer':'candidate',
-    terminal:completion.state==='completed'||interview&&remainingMs===0,
+    terminal,
     ...(interview?{
       interview_mode:true,
       can_control:viewerRole==='interviewer'&&completion.state!=='completed'&&remainingMs>0,
       end_reason:remainingMs===0?(durable.timerState==='running'?'timer_expired':'interviewer_ended'):
         completion.state==='completed'?'completed':null,
     }:{}),
+    ...(phase?{
+      lobby_mode:true,
+      phase:terminal?'ended':phase.live?'live':'lobby',
+      admission:phase.admission,
+      scheduled_start_at:lobby.scheduledStartAt||null,
+      editing_locked:phase.locked,
+      can_edit:!terminal&&(viewerRole==='interviewer'||phase.live&&!phase.locked),
+    }:{}),
     completion_version:completion.version,
     observed_at:now,
     updated_at:durable.updatedAt,
-    version:controlsVersion(pair,durable,versionKey,interview),
+    version:controlsVersion(pair,stored,versionKey,interview,lobby),
   });
 }
 
@@ -246,8 +327,10 @@ export async function readSessionControlsDatabaseNow(db){
   return normalizedTimestamp(raw,'database session-controls clock');
 }
 
-export async function readAuthorizedSessionControls(db,{viewerId,weekId,pairGroupId,versionKey,interview=interviewSessionEnabled()}){
+export async function readAuthorizedSessionControls(db,{viewerId,weekId,pairGroupId,versionKey,interview=interviewSessionEnabled(),mode=null}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
+  const resolved=mode||(interview?await resolveInterviewMode(db):interviewModeFrom());
+  const lobbyMode=interview&&resolved.lobby===true;
   const accessSql=sourceTaggedPairAccessSql();
   const accessArgs=authPairAccessArgs({userId:viewerId,weekId,pairGroupId});
   const pairResult=await db.execute({sql:accessSql,args:accessArgs});
@@ -281,17 +364,50 @@ export async function readAuthorizedSessionControls(db,{viewerId,weekId,pairGrou
   });
   if(!controlsResult?.rows) throw new SessionControlsDataError('stored session-controls state is invalid');
   const row=controlsResult.rows[0]||null;
+  let lobby=null;
+  if(lobbyMode){
+    const interviewResult=await db.execute({
+      sql:`WITH access AS (${accessSql})
+        SELECT week_id,pair_group_id,pair_user_a_id,pair_user_b_id,admission,admitted_at,editing_locked,
+          revision,updated_by,created_at,updated_at
+        FROM pair_interview_sessions
+        WHERE week_id=? AND pair_group_id=? AND EXISTS (SELECT 1 FROM access)
+        LIMIT 1`,
+      args:[...accessArgs,weekId,pairGroupId],
+    });
+    const scheduleResult=await db.execute({
+      sql:`WITH access AS (${accessSql})
+        SELECT agreed_time FROM pair_schedules
+        WHERE week_id=? AND pair_group_id=? AND EXISTS (SELECT 1 FROM access)
+        LIMIT 1`,
+      args:[...accessArgs,weekId,pairGroupId],
+    });
+    if(!interviewResult?.rows||!scheduleResult?.rows) throw new SessionControlsDataError('stored interview state is invalid');
+    const interviewRow=interviewResult.rows[0]||null;
+    lobby=Object.freeze({
+      interviewRow:normalizeInterviewRow(interviewRow,pair),
+      staleInterviewRow:!!interviewRow&&!normalizeInterviewRow(interviewRow,pair),
+      scheduledStartAt:canonicalScheduledStart(scheduleResult.rows[0]?.agreed_time),
+    });
+  }
   const databaseNow=await readSessionControlsDatabaseNow(db);
+  const state=projectSessionControls(pair,row,{databaseNow,completion,versionKey,interview,lobby});
   return {
-    pair,row,completion,accessSql,accessArgs,databaseNow,
-    state:projectSessionControls(pair,row,{databaseNow,completion,versionKey,interview}),
+    pair,row,completion,accessSql,accessArgs,databaseNow,lobby,
+    mode:interview?interviewModeFrom({interview:true,lobby:lobbyMode}):interviewModeFrom(),
+    phase:lobby?lobbyPhase(durableState(pair,normalizeControlRow(row,pair)),lobby,databaseNow):null,
+    state,
   };
 }
 
 // Call only after exact auth-pair authorization, in the caller's transaction.
 // No HMAC or receipt mutation is needed to recognize a timer boundary.
-export async function interviewTimerEnded(db,pair){
+export async function interviewTimerEnded(db,pair,mode=null){
   if(!interviewSessionEnabled()) return false;
+  if(mode?.lobby){
+    const gate=await readInterviewGate(db,mode,{weekId:pair.weekId,pairGroupId:pair.pairGroupId});
+    return !gate||gate.ended;
+  }
   const result=await db.execute({
     sql:'SELECT * FROM pair_session_controls WHERE week_id=? AND pair_group_id=? LIMIT 1',
     args:[pair.weekId,pair.pairGroupId],
@@ -341,18 +457,41 @@ class SessionControlsAttemptError extends Error{
   }
 }
 
+function lobbyConflict(state){
+  return new SessionControlsConflictError(
+    'interview_lobby','Admit the candidate before using the shared timer.',state,
+  );
+}
+
+// Returns null for an already-achieved command, else the next durable controls
+// row (`controls`) and/or interview row (`interview`).
 function desiredTransition(current,mutation){
-  const durable=durableState(current.pair,normalizeControlRow(current.row,current.pair));
+  const stored=durableState(current.pair,normalizeControlRow(current.row,current.pair));
+  const phase=current.phase;
+  const durable=phase?phase.effective:stored;
+  const interviewRow=current.lobby?.interviewRow||null;
+  const interviewNext=change=>({interview:{
+    admission:interviewRow?.admission??null,admittedAt:interviewRow?.admittedAt??null,
+    editingLocked:interviewRow?.editingLocked===true,admitNow:false,...change,
+  }});
+  if(LOBBY_ACTIONS.has(mutation.action)){
+    if(!phase) throw new SessionControlsInputError('unsupported session-controls action');
+    if(mutation.action==='admit') return phase.live?null:interviewNext({admission:'interviewer',admitNow:true});
+    const locked=mutation.action==='lock_editing';
+    return phase.locked===locked?null:interviewNext({editingLocked:locked});
+  }
   if(mutation.action==='set_candidate'){
     if(![current.pair.userAId,current.pair.userBId].includes(mutation.candidateUserId)){
       throw new SessionControlsInputError('candidate must be a participant in this pair');
     }
     if(durable.candidateUserId===mutation.candidateUserId) return null;
-    return {...durable,candidateUserId:mutation.candidateUserId};
+    return {controls:{...durable,candidateUserId:mutation.candidateUserId}};
   }
   if(mutation.action==='end'){
-    return {...durable,timerState:'paused',remainingMs:0,anchorAt:null};
+    return {controls:{...durable,timerState:'paused',remainingMs:0,anchorAt:null}};
   }
+  // The lobby keeps the candidate's timer inert until admission or schedule.
+  if(phase&&!phase.live) throw lobbyConflict(current.state);
   if(mutation.action==='start'){
     if(current.state.timer_state==='running') return null;
     if(current.state.remaining_ms===0){
@@ -360,23 +499,22 @@ function desiredTransition(current,mutation){
         'session_controls_reset_required','Reset the expired timer before starting it again.',current.state,
       );
     }
-    return {...durable,timerState:'running',remainingMs:current.state.remaining_ms,anchorAt:current.databaseNow};
+    return {controls:{...durable,timerState:'running',remainingMs:current.state.remaining_ms,anchorAt:current.databaseNow}};
   }
   if(mutation.action==='pause'){
     if(current.state.timer_state!=='running') return null;
-    return {...durable,timerState:'paused',remainingMs:current.state.remaining_ms,anchorAt:null};
+    return {controls:{...durable,timerState:'paused',remainingMs:current.state.remaining_ms,anchorAt:null}};
   }
   if(mutation.action==='reset'){
     if(durable.timerState==='paused'&&durable.remainingMs===SESSION_TIMER_DURATION_MS&&durable.anchorAt===null) return null;
-    return {...durable,timerState:'paused',remainingMs:SESSION_TIMER_DURATION_MS,anchorAt:null};
+    return {controls:{...durable,timerState:'paused',remainingMs:SESSION_TIMER_DURATION_MS,anchorAt:null}};
   }
   throw new SessionControlsInputError('unsupported session-controls action');
 }
 
 async function writeTransition(transaction,current,{viewerId,mutation,next}){
   const pair=current.pair;
-  const timerGuard=interviewTimerOpenSql();
-  const timerArgs=interviewSessionEnabled()?[pair.weekId,pair.pairGroupId]:[];
+  const fence=interviewOpenFence(current.mode,{weekId:pair.weekId,pairGroupId:pair.pairGroupId});
   if(!current.row){
     return transaction.execute({
       sql:`WITH access AS (${current.accessSql})
@@ -387,11 +525,11 @@ async function writeTransition(transaction,current,{viewerId,mutation,next}){
         SELECT ?,?,user_a_id,'auth',user_b_id,'auth',NULL,?,'auth',?,?,?,1,?,'auth',?,?
         FROM access
         WHERE is_ai_pair=0 AND user_c_id IS NULL
-          AND user_a_source='auth' AND user_b_source='auth' AND ${timerGuard}
+          AND user_a_source='auth' AND user_b_source='auth' AND ${fence.sql}
         ON CONFLICT(week_id,pair_group_id) DO NOTHING
         RETURNING revision`,
       args:[...current.accessArgs,mutation.weekId,mutation.pairGroupId,next.candidateUserId,
-        next.timerState,next.remainingMs,next.anchorAt,viewerId,current.databaseNow,current.databaseNow,...timerArgs],
+        next.timerState,next.remainingMs,next.anchorAt,viewerId,current.databaseNow,current.databaseNow,...fence.args],
     });
   }
   return transaction.execute({
@@ -405,23 +543,86 @@ async function writeTransition(transaction,current,{viewerId,mutation,next}){
           AND user_a_id=pair_session_controls.pair_user_a_id
           AND user_b_id=pair_session_controls.pair_user_b_id
           AND user_a_source='auth' AND user_b_source='auth')
-        AND ${timerGuard}
+        AND ${fence.sql}
       RETURNING revision`,
     args:[...current.accessArgs,next.candidateUserId,next.timerState,next.remainingMs,next.anchorAt,
       viewerId,current.databaseNow,mutation.weekId,mutation.pairGroupId,current.row.revision,
-      pair.userAId,pair.userBId,...timerArgs],
+      pair.userAId,pair.userBId,...fence.args],
   });
 }
 
-async function mutateAttempt(db,{viewerId,mutation,versionKey}){
+// Admission and the lock live in the migration-26 row. Admission must still
+// be in the lobby when the statement runs: at the agreed start the schedule
+// wins, so a racing admit cannot cancel the scheduled timer.
+async function writeInterviewTransition(transaction,current,{viewerId,mutation,next}){
+  const pair=current.pair;
+  const fence=interviewOpenFence(current.mode,{weekId:pair.weekId,pairGroupId:pair.pairGroupId});
+  const lobbyGuard=next.admitNow?` AND COALESCE((SELECT live FROM (${interviewStateSql()})),1)=0`:'';
+  const lobbyArgs=next.admitNow?[pair.weekId,pair.pairGroupId]:[];
+  const now="strftime('%Y-%m-%dT%H:%M:%fZ','now')";
+  const admittedAt=next.admitNow?now:'?';
+  const admittedArgs=next.admitNow?[]:[next.admittedAt];
+  if(current.lobby.staleInterviewRow){
+    await transaction.execute({
+      sql:`DELETE FROM pair_interview_sessions WHERE week_id=? AND pair_group_id=?
+        AND NOT (pair_user_a_id=? AND pair_user_b_id=?)`,
+      args:[pair.weekId,pair.pairGroupId,pair.userAId,pair.userBId],
+    });
+  }
+  if(!current.lobby.interviewRow){
+    return transaction.execute({
+      sql:`WITH access AS (${current.accessSql})
+        INSERT INTO pair_interview_sessions
+          (week_id,pair_group_id,pair_user_a_id,pair_user_b_id,admission,admitted_at,editing_locked,
+            revision,updated_by,created_at,updated_at)
+        SELECT ?,?,user_a_id,user_b_id,?,${admittedAt},?,1,?,${now},${now}
+        FROM access
+        WHERE is_ai_pair=0 AND user_c_id IS NULL AND user_a_source='auth' AND user_b_source='auth'
+          AND ${fence.sql}${lobbyGuard}
+        ON CONFLICT(week_id,pair_group_id) DO NOTHING
+        RETURNING revision`,
+      args:[...current.accessArgs,mutation.weekId,mutation.pairGroupId,next.admission,...admittedArgs,
+        next.editingLocked?1:0,viewerId,...fence.args,...lobbyArgs],
+    });
+  }
+  return transaction.execute({
+    sql:`WITH access AS (${current.accessSql})
+      UPDATE pair_interview_sessions SET admission=?,admitted_at=${admittedAt},editing_locked=?,
+        revision=revision+1,updated_by=?,updated_at=${now}
+      WHERE week_id=? AND pair_group_id=? AND revision=? AND pair_user_a_id=? AND pair_user_b_id=?
+        AND EXISTS (SELECT 1 FROM access WHERE is_ai_pair=0 AND user_c_id IS NULL
+          AND user_a_id=pair_interview_sessions.pair_user_a_id AND user_b_id=pair_interview_sessions.pair_user_b_id
+          AND user_a_source='auth' AND user_b_source='auth')
+        AND ${fence.sql}${lobbyGuard}
+      RETURNING revision`,
+    args:[...current.accessArgs,next.admission,...admittedArgs,next.editingLocked?1:0,viewerId,
+      mutation.weekId,mutation.pairGroupId,current.lobby.interviewRow.revision,pair.userAId,pair.userBId,
+      ...fence.args,...lobbyArgs],
+  });
+}
+
+function terminalConflict(state){
+  const ended=state.interview_mode&&state.end_reason!=='completed';
+  return new SessionControlsConflictError(
+    ended?'interview_session_ended':'session_controls_completed',
+    ended?'The interview has ended. Session controls are read-only.':
+      'Session controls are read-only after every participant confirms completion.',state,
+  );
+}
+
+async function mutateAttempt(db,{viewerId,mutation,versionKey,mode}){
   const transaction=await db.transaction('write');
   let finished=false,commitStarted=false;
+  const read=()=>readAuthorizedSessionControls(transaction,{
+    viewerId,weekId:mutation.weekId,pairGroupId:mutation.pairGroupId,versionKey,mode,
+  });
   try{
-    const current=await readAuthorizedSessionControls(transaction,{
-      viewerId,weekId:mutation.weekId,pairGroupId:mutation.pairGroupId,versionKey,
-    });
+    let current=await read();
     if(!current){ await transaction.rollback(); finished=true; return {notFound:true}; }
-    if(mutation.action==='end'&&!interviewSessionEnabled()){
+    if(INTERVIEW_ACTIONS.has(mutation.action)&&!interviewSessionEnabled()){
+      throw new SessionControlsInputError('unsupported session-controls action');
+    }
+    if(LOBBY_ACTIONS.has(mutation.action)&&!current.lobby){
       throw new SessionControlsInputError('unsupported session-controls action');
     }
     // Authorize before terminal, idempotency, or CAS: even a no-op must not
@@ -429,15 +630,8 @@ async function mutateAttempt(db,{viewerId,mutation,versionKey}){
     if(current.state.interview_mode&&current.state.viewer_role!=='interviewer'){
       await transaction.rollback(); finished=true; return {notFound:true};
     }
-    if(current.state.terminal){
-      const ended=current.state.interview_mode&&current.state.end_reason!=='completed';
-      throw new SessionControlsConflictError(
-        ended?'interview_session_ended':'session_controls_completed',
-        ended?'The interview has ended. Session controls are read-only.':
-          'Session controls are read-only after every participant confirms completion.',current.state,
-      );
-    }
-    const next=desiredTransition(current,mutation);
+    if(current.state.terminal) throw terminalConflict(current.state);
+    let next=desiredTransition(current,mutation);
     if(!next){
       await transaction.commit(); finished=true;
       return {state:current.state,idempotent:true};
@@ -447,24 +641,26 @@ async function mutateAttempt(db,{viewerId,mutation,versionKey}){
         'session_controls_changed','Session controls changed. Review the latest state.',current.state,
       );
     }
-    const written=await writeTransition(transaction,current,{viewerId,mutation,next});
-    if(!written?.rows?.length){
-      const latest=await readAuthorizedSessionControls(transaction,{
-        viewerId,weekId:mutation.weekId,pairGroupId:mutation.pairGroupId,versionKey,
+    if(current.phase?.scheduleRun){
+      // Freeze the schedule-derived start before any other write so the
+      // command applies to durable rows and no later schedule edit rewinds it.
+      await materializeScheduledStart(transaction,current.mode,{
+        weekId:mutation.weekId,pairGroupId:mutation.pairGroupId,actorId:viewerId,
       });
-      if(!latest){ await transaction.rollback(); finished=true; return {notFound:true}; }
-      if(latest.state.interview_mode&&latest.state.terminal){
-        throw new SessionControlsConflictError(
-          'interview_session_ended','The interview has ended. Session controls are read-only.',latest.state,
-        );
-      }
-      throw new SessionControlsConflictError(
-        'session_controls_changed','Session controls changed. Review the latest state.',latest.state,
-      );
+      current=await read();
+      if(!current) throw new SessionControlsDataError('session-controls authorization changed');
+      if(current.state.terminal) throw terminalConflict(current.state);
+      next=desiredTransition(current,mutation);
     }
-    const updated=await readAuthorizedSessionControls(transaction,{
-      viewerId,weekId:mutation.weekId,pairGroupId:mutation.pairGroupId,versionKey,
-    });
+    if(next?.controls){
+      const written=await writeTransition(transaction,current,{viewerId,mutation,next:next.controls});
+      if(!written?.rows?.length) return await conflictAfterRejectedWrite();
+    }
+    if(next?.interview){
+      const written=await writeInterviewTransition(transaction,current,{viewerId,mutation,next:next.interview});
+      if(!written?.rows?.length) return await conflictAfterRejectedWrite();
+    }
+    const updated=await read();
     if(!updated) throw new SessionControlsDataError('session-controls authorization changed');
     commitStarted=true; await transaction.commit(); finished=true;
     return {state:updated.state,idempotent:false};
@@ -472,13 +668,27 @@ async function mutateAttempt(db,{viewerId,mutation,versionKey}){
     if(!finished){ try{ await transaction.rollback(); }catch{} }
     throw new SessionControlsAttemptError(error,commitStarted);
   }finally{ try{ await transaction.close?.(); }catch{} }
+
+  async function conflictAfterRejectedWrite(){
+    const latest=await read();
+    if(!latest){ await transaction.rollback(); finished=true; return {notFound:true}; }
+    if(latest.state.interview_mode&&latest.state.terminal){
+      throw new SessionControlsConflictError(
+        'interview_session_ended','The interview has ended. Session controls are read-only.',latest.state,
+      );
+    }
+    throw new SessionControlsConflictError(
+      'session_controls_changed','Session controls changed. Review the latest state.',latest.state,
+    );
+  }
 }
 
-export async function mutateAuthorizedSessionControls(db,{viewerId,mutation,versionKey}){
+export async function mutateAuthorizedSessionControls(db,{viewerId,mutation,versionKey,mode=null}){
   if(!db||typeof db.transaction!=='function') throw new TypeError('transactional database client is required');
+  const resolved=mode||await resolveInterviewMode(db);
   let lastError;
   for(let attempt=1;attempt<=TRANSACTION_ATTEMPTS;attempt+=1){
-    try{ return await mutateAttempt(db,{viewerId,mutation,versionKey}); }
+    try{ return await mutateAttempt(db,{viewerId,mutation,versionKey,mode:resolved}); }
     catch(attemptError){
       const error=attemptError instanceof SessionControlsAttemptError?attemptError.cause:attemptError;
       lastError=error;

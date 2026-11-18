@@ -81,12 +81,14 @@ import {
   parseSessionControlsMutation,
   parseSessionControlsQuery,
   readAuthorizedSessionControls,
+  resolveInterviewMode,
   SessionControlsConflictError,
   SessionControlsDataError,
   SessionControlsInputError,
   validateSessionControlsPostQuery,
 } from './_session-controls.js';
 import { CodeDocumentInputError, codeDocumentAccessSql, readCanonicalCodeForExecution } from './_code-document.js';
+import { materializeScheduledStart } from './_interview-session.js';
 import { ensureDataAdminReadiness, ensureDataCircleReadiness, ensureDataHistoryReadiness, ensureDataLogReadiness, ensureDataMeetingLinkReadiness, ensureDataProfileReadiness, ensureDataRunsReadiness, ensureDataSessionCompletionReadiness, ensureDataSessionControlsReadiness, ensureDataStatsReadiness, ensureDataWeeksReadiness, ensureMyPairDataReadiness } from './_data-readiness.js';
 import { circleMembershipEnabled, ensureCircleMembershipReadiness } from './_circle-membership.js';
 import { initializePrimaryCircleData } from './_admin-init.js';
@@ -1315,9 +1317,10 @@ async function handleSessionControls(req,res){
     if(error instanceof SessionControlsInputError) return res.status(400).json({error:error.message});
     throw error;
   }
-  let db,versionKey;
+  let db,versionKey,mode;
   try{
     db=req.workspace?.db||getClient(); await ensureDataSessionControlsReadiness(db); versionKey=getJwtSecret();
+    mode=await resolveInterviewMode(db);
   }catch{ return res.status(503).json({error:'session controls unavailable'}); }
   if(multiCircleControlPlaneEnabled()&&!strictLocalPairingRuntime(req)){
     const selectionResponse={statusCode:200,body:null,status(code){ this.statusCode=code; return this; },json(body){ this.body=body; return this; }};
@@ -1334,7 +1337,7 @@ async function handleSessionControls(req,res){
       let finished=false;
       try{
         const read=await readAuthorizedSessionControls(transaction,{
-          viewerId:userId,weekId:input.weekId,pairGroupId:input.pairGroupId,versionKey,
+          viewerId:userId,weekId:input.weekId,pairGroupId:input.pairGroupId,versionKey,mode,
         });
         if(!read){ await transaction.rollback(); finished=true; return res.status(404).json({error:'pair not found'}); }
         await transaction.commit(); finished=true;
@@ -1344,7 +1347,7 @@ async function handleSessionControls(req,res){
         throw error;
       }finally{ try{ await transaction.close?.(); }catch{} }
     }
-    const result=await mutateAuthorizedSessionControls(db,{viewerId:userId,mutation:input,versionKey});
+    const result=await mutateAuthorizedSessionControls(db,{viewerId:userId,mutation:input,versionKey,mode});
     if(result.notFound) return res.status(404).json({error:'pair not found'});
     return res.json({ok:true,room_id:input.roomId,session_controls:result.state});
   }catch(error){
@@ -1722,6 +1725,7 @@ async function handleSchedule(req,res){
 
   try{ await ensureScheduleReadiness(db); }
   catch{ return res.status(503).json({error:'schedule unavailable'}); }
+  const interviewMode=req.method==='POST'?await resolveInterviewMode(db):null;
 
   if(req.method==='GET'){
     try{
@@ -1755,6 +1759,13 @@ async function handleSchedule(req,res){
         });
       }
       const nextValues=applyScheduleMutation(current,mutation,userId);
+      // Interview lobby (#464): an agreed start that has already arrived owns
+      // the room's live/ended state while nothing else is durable. Freeze it
+      // before the agreement changes, so clearing or replacing a past
+      // agreement can never return a started or ended interview to the lobby.
+      if(interviewMode?.lobby&&nextValues.agreedTime!==(current.rawAgreedTime??null)){
+        await materializeScheduledStart(transaction,interviewMode,{weekId:room.weekId,pairGroupId:room.pairGroupId,actorId:userId});
+      }
       const nowUtc=['propose','accept'].includes(mutation.action)
         ?await readScheduleDatabaseNow(transaction):null;
       if(nowUtc) assertFutureScheduleInstant(
