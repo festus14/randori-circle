@@ -126,7 +126,6 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-98](#id-98-embed-consent-gated-daily-video-in-primary-pair-rooms-behind-a-flag) | Embed consent-gated Daily video in primary pair rooms, behind a flag | Pairing & Scheduling | Active |
 | [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) | Add an interview lobby, schedule start, interviewer-owned selection and candidate edit lock | Pairing & Scheduling | Amended by [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) |
 | [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) | Show pair presence and remote cursors over the private relay, with a TTL heartbeat fallback | Pairing & Scheduling | Active |
-| [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) | Add an interview lobby, schedule start, interviewer-owned selection and candidate edit lock | Pairing & Scheduling | Active |
 | [ID-101](#id-101-load-optional-page-tools-at-their-first-use-without-weakening-byte-gates) | Load optional page tools at their first use without weakening byte gates | Quality, CI & Testing | Active |
 ## How to add a decision
 
@@ -6018,8 +6017,8 @@ redeploy; clients stop on the next document GET, rows expire in 20 s. Details:
 [presence and remote cursors](CONFLICT_FREE_CODE_DOCUMENTS.md#presence-and-remote-cursors-462).
 ## ID-101: Load optional page tools at their first use without weakening byte gates
 
-**Status: Active.** Implements #479 (epic #460). ID-99 landed in #477; ID-100 is reserved
-by #462 and its entry is not invented on this branch. No migration,
+**Status: Active.** Implements #479 (epic #460). ID-99 landed in #477 and ID-100 in #481;
+neither entry is changed by this branch. No migration,
 provider call, new dependency or CSP change.
 
 **Context.** At `929cad6` (after #477), the adopted file-byte check measured
