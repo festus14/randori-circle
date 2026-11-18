@@ -5837,7 +5837,12 @@ timer contract ambiguous.
   from the agreed instant (late joins see the remaining time; joins after the
   window see an expired room). The first control command or any schedule edit
   of the agreement freezes the start into durable rows in the same
-  transaction, so later schedule edits cannot rewind or reopen a room.
+  transaction, attributed to the current interviewer, so later schedule edits
+  cannot rewind or reopen a room; a start that changed under the transaction
+  answers 409.
+- The lobby gates candidate reads of prepared work too: workspace reads show
+  the selected exercise with empty code and board at revision 0, and candidate
+  code-document reads answer `409 interview_lobby`.
 - Question ownership is enforced where the selection is written, the workspace
   checkpoint: the candidate cannot create the first checkpoint, change language
   or question, or checkpoint from the lobby. Candidate CRDT writes must target

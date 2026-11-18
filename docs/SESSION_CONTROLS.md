@@ -176,6 +176,11 @@ lobby | live  --end (interviewer) | timer expiry | both receipts-->  ended
 - **ended** is the ID-95 terminal state, plus "the agreed start + 25 minutes has
   passed" while the schedule still owns an untouched timer.
 - Otherwise **lobby**. A room with no agreement waits for the interviewer.
+- The lobby gates candidate **reads** of prepared work as well as writes: the
+  candidate's workspace read shows the selected exercise but returns empty
+  code and board at revision 0, and the candidate's code-document reads answer
+  `409 interview_lobby`. Admission (or the schedule) makes the real checkpoint
+  newer, so it arrives on the next poll. The interviewer reads normally.
 
 The same predicate exists twice and is tested to agree: a SQL projection
 (`interviewStateSql()` in `api/_interview-session.js`) embedded in every storage
@@ -211,7 +216,10 @@ ended room with `end_reason:"timer_expired"`. The first control command after
 the start, and any schedule edit that changes the agreement (accept or clear),
 first **freeze** it in the same serialized transaction: the controls row
 becomes `running` anchored at the agreed instant and the interview row records
-`admission:"schedule"`. Clearing or replacing an elapsed agreement therefore
+`admission:"schedule"`, both attributed to the current interviewer even when
+the candidate edited the schedule. If the start changed under the transaction
+the command or schedule edit answers its usual 409 (`session_controls_changed`
+or `schedule changed`). Clearing or replacing an elapsed agreement therefore
 never rewinds a live or ended room to the lobby, and changing a future
 agreement simply moves the start.
 
