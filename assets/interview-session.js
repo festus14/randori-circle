@@ -1,12 +1,8 @@
-// Interview termination reuses the existing workspace/CRDT fences. Receipt
-// confirmation stays separate: ending a timer never claims attendance.
 export function installInterviewSession({window:root=globalThis.window,document:doc=globalThis.document}={}){
   if(!root||!doc) return null;
   let stoppedRoom=null,editorLock=null,accessEditor=null;
   const locked=new Map(),held=new Map();
   const ended=()=>root._randori_session_controls?.ended===true;
-  // Catalogue and sync code re-enable these controls freely; while held, a
-  // re-enable becomes the value to restore and the control stays disabled.
   const watcher=root.MutationObserver?new root.MutationObserver(records=>{
     for(const {target} of records) if(held.has(target)&&!target.disabled){ held.set(target,false); target.disabled=true; }
   }):null;
@@ -80,4 +76,7 @@ export function installInterviewSession({window:root=globalThis.window,document:
   return Object.freeze({stop,unlock,access,get room(){return stoppedRoom;}});
 }
 
-if(typeof window!=='undefined'&&typeof document!=='undefined') installInterviewSession();
+if(typeof window!=='undefined'&&typeof document!=='undefined'){
+  installInterviewSession();
+  document.addEventListener('click',event=>{const button=event.target.closest('[data-toolkit]');if(button)import('./interviewer-toolkit.js').then(module=>module.openToolkit(button.dataset.toolkit));});
+}

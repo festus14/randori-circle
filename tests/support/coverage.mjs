@@ -48,7 +48,7 @@ const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   // Secondary workspace transport and response epoch fencing (#438).
   'assets/workspace-scope.js',
   // Interview terminal-work coordinator (#464).
-  'assets/interview-session.js',
+  'assets/interview-session.js', 'assets/interviewer-toolkit.js',
   // Private broadcast-only relay and untrusted Yjs validation (#461).
   'assets/realtime-relay.mjs', 'assets/realtime-yjs.mjs',
   // Consent-gated embedded Daily video (#463, ID-98).
