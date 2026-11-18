@@ -1,33 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+
 import test from 'node:test';
-import { createClient } from '@libsql/client';
+
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { MIGRATION_CONTRACTS } from '../../db/migration-contract.js';
 import { inspectMigrationCompatibility } from '../../db/migration-compatibility-check.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { applyMigrations, inspectMigrationState } from '../../db/migration-runner.js';
 import { inspectDatabaseReadiness } from '../../api/_health.js';
 import { inspectLedgerReadiness } from '../../db/migration-compatibility.js';
 import { interviewerToolkitAvailable } from '../../api/_interviewer-toolkit.js';
 
-export async function database(through=27){
-  const dir=mkdtempSync(join(tmpdir(),'randori-toolkit-465-'));
-  const db=createClient({url:`file:${join(dir,'test.db')}`});
-  await prepareMigrationConnection(db);
-  const migrations=EXECUTABLE_MIGRATIONS.slice(0,through);
-  const before=await inspectMigrationState(db,{migrations});
-  await applyMigrations(db,{migrations,expectedStateFingerprint:before.stateFingerprint,retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
-  return {db,close(){db.close();rmSync(dir,{recursive:true,force:true});}};
-}
-export async function seedPair(db){
-  await db.execute(`INSERT INTO auth_accounts (id,email,password_hash,display_name,color) VALUES
-    (1,'one@example.test','hash','One','#111'),(2,'two@example.test','hash','Two','#222'),(9,'outside@example.test','hash','Outside','#999')`);
-  await db.execute(`INSERT INTO pairing_weeks (id,week_label,week_start) VALUES(10,'2026-W47','2026-11-15T08:00:00.000Z')`);
-  await db.execute(`INSERT INTO pairing_groups(id,week_id,user_a_id,user_b_id,is_ai_pair) VALUES(20,10,1,2,0)`);
-  await db.execute(`INSERT INTO pairing_participants(week_id,user_id,position,source) VALUES(10,1,0,'auth'),(10,2,1,'auth')`);
-}
+import { database, seedPair } from '../support/interviewer-toolkit.mjs';
 
 test('v27 is additive, ledger-pinned, and owns only a new table, indexes and guards',()=>{
   const migration=EXECUTABLE_MIGRATIONS[26],contract=MIGRATION_CONTRACTS[26];
@@ -53,6 +36,13 @@ test('real managed v26 remains READY/pending_additive before protected v27 apply
     assert.equal(await inspectDatabaseReadiness(item.db),true);
   }finally{delete process.env.INTERVIEWER_TOOLKIT_ENABLED;delete process.env.INTERVIEW_SESSION_ENABLED;item.close();}
 });
+test('v25 is not a ready deployment base for code whose additive latest migration is v27',async()=>{
+  const item=await database(25);try{
+    assert.equal(await inspectDatabaseReadiness(item.db),false);
+    assert.equal((await inspectLedgerReadiness(item.db)).state,'behind');
+  }finally{item.close();}
+});
+
 test('v27 database enforces scores, bounds, ownership, immutable lifetime and CAS revision',async()=>{
   const item=await database();
   try{

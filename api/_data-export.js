@@ -47,7 +47,7 @@
 // otherwise the export is refused with EXPORT_TOO_LARGE.
 // Partner privacy: proposed schedule times are projected to
 // {instant, proposed_by_me} — see projectProposedTimes.
-import { evaluationSchemaInstalled } from './_interviewer-toolkit.js';
+import { evaluationSchemaInstalled, projectEvaluation } from './_interviewer-toolkit.js';
 import { ACCOUNT_DATA_INVENTORY } from './_account-deletion.js';
 import { hashInvitationEmail } from './_circle-membership.js';
 
@@ -1051,7 +1051,7 @@ export async function buildDataExport(db,{userId}={}){
     const result=await cappedQuery(db,`SELECT e.week_id,e.pair_group_id,e.problem_solving,e.communication,e.code_quality,e.testing,e.notes,e.decision,e.revision,e.created_at,e.updated_at,e.expires_at,
       candidate.display_name AS candidate FROM interview_evaluations e LEFT JOIN auth_accounts candidate ON candidate.id=e.candidate_user_id
       WHERE e.evaluator_user_id=? AND e.expires_at>=CAST(strftime('%s','now') AS INTEGER) ORDER BY e.created_at DESC,e.pair_group_id DESC LIMIT ?`,[id],500);
-    interviewEvaluations=result.rows.map(row=>({...row}));
+    interviewEvaluations=result.rows.map(row=>{const {created_at,updated_at,expires_at}=projectEvaluation(row);return {...row,created_at,updated_at,expires_at};});
     markTruncated('interview_evaluations',result.truncated);
   }
 

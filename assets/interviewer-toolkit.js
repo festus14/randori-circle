@@ -1,11 +1,12 @@
 // Optional first-use module (#465, ID-102): no notes in storage, logs or AI.
-let view=null,epoch=0,abort=null,downloadUrl=null;
+let view=null,epoch=0,abort=null,downloadUrl=null,trigger=null;
 const DIMENSIONS=[['problem_solving','Problem solving'],['communication','Communication'],['code_quality','Code quality'],['testing','Testing']];
 const DECISIONS=[['undecided','Undecided'],['strong_hire','Strong hire'],['hire','Hire'],['no_hire','No hire'],['strong_no_hire','Strong no hire']];
 export function disposeToolkit(){
   epoch+=1;abort?.abort();abort=null;
   if(downloadUrl){URL.revokeObjectURL(downloadUrl);downloadUrl=null;}
-  view?.remove();view=null;
+  view?.close?.();view?.remove();view=null;
+  const restore=trigger;trigger=null;restore?.focus?.();
 }
 function node(tag,text,attributes={}){
   const element=document.createElement(tag);if(text!==null)element.textContent=text;
@@ -15,14 +16,14 @@ function node(tag,text,attributes={}){
 export function describeEvent(event){
   if(event.kind==='phase')return `${event.phase} · ${event.source}`;
   if(event.kind==='checkpoint')return `Checkpoint r${event.revision} · ${event.question_slug} · ${event.language}`;
-  if(event.kind==='run')return `Run · ${event.question_slug} · ${event.language} · ${event.passed_count}/${event.total_count} passed · ${event.duration_ms} ms`;
+  if(event.kind==='run')return `Run · ${event.runner||'Member'} · ${event.question_slug} · ${event.language} · ${event.passed_count}/${event.total_count} passed · ${event.duration_ms} ms`;
   return 'Evaluation saved';
 }
 export function reportDownload(report){
   return JSON.stringify(report,null,2)+'\n';
 }
-export async function openToolkit(room){
-  disposeToolkit();const generation=epoch;abort=new AbortController();
+export async function openToolkit(room,opener=document.activeElement){
+  disposeToolkit();trigger=opener;const generation=epoch;abort=new AbortController();
   const dialog=node('dialog',null,{class:'ai-consent-dialog auth-dialog','aria-labelledby':'toolkit-title','data-testid':'interviewer-toolkit'});view=dialog;
   const title=node('h2','Private interviewer toolkit',{id:'toolkit-title'});
   const notice=node('p','Only your account can read this writing. It is never shared with the candidate or sent to AI. Scores: 1 = needs support, 2 = developing, 3 = solid, 4 = strong. Notes expire 90 days after first save.');

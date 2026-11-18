@@ -156,7 +156,7 @@ export async function readEvaluationReport(db,{viewerId,room,versionKey,verifyAt
       // v2 code is private solo/legacy input, even when the run has a pair id.
       // Only signed v3 acknowledged SHARED code may enter this private report.
       const shared=JSON.parse(run.test_cases_snapshot).attestation_version===3;
-      events.push({kind:'run',at:summary.created_at,question_slug:summary.question_slug,question_version:summary.question_version,language:summary.language,
+      events.push({kind:'run',runner:summary.actor.display_name,at:summary.created_at,question_slug:summary.question_slug,question_version:summary.question_version,language:summary.language,
         passed_count:summary.passed_count,total_count:summary.total_count,duration_ms:summary.duration_ms,...(shared?{code:run.code}:{})});
     }
     const evaluation=projectEvaluation(row);

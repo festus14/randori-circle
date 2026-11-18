@@ -78,5 +78,5 @@ export function installInterviewSession({window:root=globalThis.window,document:
 
 if(typeof window!=='undefined'&&typeof document!=='undefined'){
   installInterviewSession();
-  document.addEventListener('click',event=>{const button=event.target.closest('[data-toolkit]');if(button)import('./interviewer-toolkit.js').then(module=>module.openToolkit(button.dataset.toolkit));});
+  document.addEventListener('click',event=>{const button=event.target?.closest?.('[data-toolkit]');if(button)import('./interviewer-toolkit.js').then(module=>module.openToolkit(button.dataset.toolkit,button));});
 }

@@ -10,6 +10,8 @@
 // one write transaction with the recent-authentication proof and the
 // last-owner rule checked inside it, so concurrent requests serialize and a
 // retry is a no-op. No schema change: every column reused here already exists.
+// Intentional import cycle with _interviewer-toolkit.js: that module reads
+// LIVE_ACCOUNT_SQL only inside functions, after module initialization.
 import { evaluationSchemaInstalled } from './_interviewer-toolkit.js';
 import { requireRecentAuth } from './_recent-auth.js';
 import { feedbackSchemaNotInstalled } from './_feedback-config.js';

@@ -14,6 +14,8 @@ class Element{
   remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(child=>child!==this);}
   all(){return this.children.flatMap(child=>[child,...child.all()]);}
   showModal(){this.open=true;}
+  close(){this.open=false;this.closed=true;}
+  focus(){this.doc.activeElement=this;}
   async fire(type){for(const handler of this.listeners[type]||[])await handler({preventDefault(){}});}
   click(){return this.fire('click');}
 }
@@ -96,6 +98,14 @@ test('failed loads are generic, stale reads cannot mount private content, and id
   assert.ok(before>0);
   for(const name of ['randori:auth-refreshed','randori:room-change','randori:workspace-scope-reset','randori:workspace-deactivated']){assert.equal(typeof root.listeners[name],'function');root.listeners[name]();}
 });
+test('Close and room changes close the native dialog and return focus to its trigger',async()=>{
+  const doc=fixture(),trigger=doc.createElement('button');doc.body.append(trigger);trigger.focus();
+  await openToolkit(report.room_id);await tick();const first=doc.byTestId('interviewer-toolkit');
+  await doc.button('Close').click();assert.equal(first.closed,true);assert.equal(doc.activeElement,trigger);
+  await openToolkit(report.room_id,trigger);await tick();const second=doc.byTestId('interviewer-toolkit');
+  root.listeners['randori:room-change']();assert.equal(second.closed,true);assert.equal(doc.activeElement,trigger);
+});
+
 test('default hidden entry and first-use import do not load the toolkit with the initial shell',()=>{
   const html=readFileSync(new URL('../../index.html',import.meta.url),'utf8');
   assert.match(html,/<button id="toolkitEntry"[^>]+hidden>/);

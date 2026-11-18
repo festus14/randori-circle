@@ -44,7 +44,9 @@ The group FK cascades on group deletion. Evaluator deletion also cascades on
 hard deletion; ordinary account deletion explicitly removes evaluator writing
 in the same tombstone transaction, including scheduled deletion and restore
 reapplication. The candidate FK is restrictive because accounts are tombstoned:
-candidate deletion retains the evaluator's writing until its original deadline,
+Demo reset separately removes evaluations targeting demo candidates before
+hard-deleting those accounts, including demo candidates in non-demo weeks.
+Ordinary candidate deletion retains the evaluator's writing until its original deadline,
 and the report resolves the name to **Deleted member**. Notes may themselves
 mention the candidate; they are not automatically rewritten or anonymised.
 
@@ -91,7 +93,8 @@ lifecycle export works even after the toolkit feature is switched off.
 
 The private report includes question slug/version/language, phase facts derived
 from group creation, admission/schedule/timer and end/completion, the latest
-retained workspace checkpoint and its code, verified run summaries, and the
+retained workspace checkpoint and its code, verified run summaries with runner
+display names, and the
 saved evaluation timestamp/scores/notes/decision. Runs are scanned newest-first
 up to 500 with an explicit overflow marker, then displayed chronologically.
 Only signed **v3 acknowledged shared-code** runs contribute historical code;
@@ -147,7 +150,11 @@ expiry; never move deadlines forward. No down-migration or ledger editing.
 
 ## Rollout / rollback
 
-1. Merge with both toolkit and purge flags OFF. **Merging does not apply v27;
+1. **Deployment precondition: production must already be at migration v26,
+   applied and verified, before this code deploys.** This branch is NOT ready
+   on v25 (`state:"behind"`): the additive tolerance is one version only,
+   unlike the older v26 code on main.
+   Merge with both toolkit and purge flags OFF. **Merging does not apply v27;
    production migration needs the owner's approval.** No production/provider
    operation is part of this branch.
 2. On a real migration-runner v26 database, new code remains READY and ledger

@@ -123,7 +123,7 @@ test('private report projects only shared checkpoint code and verified v3 run co
   assert.equal(checkpoint.question_slug,'focus-block-rollup');assert.ok(!JSON.stringify(summary).includes('PRIVATE stdin'));
   await currentDb.execute({sql:`INSERT INTO session_runs(user_id,week_id,pair_group_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms) VALUES(1,10,20,'focus-block-rollup','javascript','LEGACY PRIVATE CODE',?,'[]',1,1,10)`,args:[JSON.stringify({source:'original-catalog',version:1,total_count:1,attestation_version:2,attestation:'test',attestation_key_id:'test',stdin:'DO NOT PROJECT'})]});
   const raw=await readEvaluationReport(currentDb,{viewerId:2,room:parseEvaluationMutation(body()),versionKey:key,verifyAttestation:()=>true});
-  assert.equal(raw.timeline.filter(event=>event.kind==='run').length,1);assert.equal(raw.timeline.find(event=>event.kind==='run').code,undefined);
+  assert.equal(raw.timeline.filter(event=>event.kind==='run').length,1);assert.equal(raw.timeline.find(event=>event.kind==='run').runner,'One');assert.equal(raw.timeline.find(event=>event.kind==='run').code,undefined);
   assert.ok(!JSON.stringify(raw).includes('LEGACY PRIVATE CODE'));assert.ok(!JSON.stringify(raw).includes('DO NOT PROJECT'));
 });
 test('evaluations never enter candidate recap, feeds, chat, history, progress, data export or AI storage',async()=>{
@@ -141,6 +141,7 @@ test('evaluations never enter candidate recap, feeds, chat, history, progress, d
   assert.equal(ownProgress.interviews.decisions.hire,1);assert.ok(!JSON.stringify(ownProgress.interviews).includes('notes'));
   const exported=await buildDataExport(currentDb,{userId:2,hashInvitationEmail:()=>null});
   assert.equal(exported.interview_evaluations[0].notes,body().notes);assert.equal(exported.interview_evaluations[0].candidate,'One');
+  for(const field of ['created_at','updated_at','expires_at'])assert.equal(exported.interview_evaluations[0][field],(await report()).body.report.evaluation[field]);
   const candidate=await buildDataExport(currentDb,{userId:1,hashInvitationEmail:()=>null});
   assert.deepEqual(candidate.interview_evaluations,[]);
   assert.equal((await currentDb.execute('SELECT COUNT(*) AS n FROM ai_sessions')).rows[0].n,0);

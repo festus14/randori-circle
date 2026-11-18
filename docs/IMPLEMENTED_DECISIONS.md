@@ -6110,6 +6110,10 @@ Migration 27 owns only the new table, two indexes and two guards on it; all
 historical contracts/checksums remain untouched and no request DDL is added.
 Code at v27 stays READY on a real v26 database (`pending_additive`); routes and
 capability discovery behave as before until the owner-approved apply.
+**Deployment precondition:** production must already have migration v26
+applied and verified before this code deploys. A v25 database is NOT ready for
+this branch (`state:"behind"`); the older main code's v25 tolerance does not
+carry forward across a second pending additive migration.
 
 Creation uses the server's current interviewer role and repeats it in SQL.
 A role swap never transfers existing writing: the original evaluator retains

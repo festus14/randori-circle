@@ -15753,7 +15753,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     window.dispatchEvent(new CustomEvent('randori:interview-access',{detail}));
   }
   function hide(){
-    document.getElementById('toolkitEntry').hidden=true;
+    document.getElementById('toolkitEntry')?.setAttribute('hidden','');
     clearTick(); clearPoll();
     for(const button of [endButton,admitButton,lockButton]) if(button){ button.hidden=true; button.disabled=true; }
     announceAccess();
@@ -15804,7 +15804,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!card||!state.room){ hide(); return; }
     card.hidden=false; card.setAttribute('aria-busy',state.busy?'true':'false');
     if(!state.controls){
-      document.getElementById('toolkitEntry').hidden=true;
+      document.getElementById('toolkitEntry')?.setAttribute('hidden','');
       if(roles) roles.textContent='Participant roles unavailable.';
       if(countdown) countdown.textContent='25:00';
       if(candidate){ candidate.replaceChildren(); candidate.disabled=true; }
@@ -15818,7 +15818,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       return;
     }
     const controls=state.controls;
-    const entry=document.getElementById('toolkitEntry');entry.hidden=!controls.toolkit;entry.dataset.toolkit=state.room;
+    const entry=document.getElementById('toolkitEntry');if(entry){entry.hidden=!controls.toolkit;entry.dataset.toolkit=state.room;}
     role=controls.viewerRole;
     if(roles) roles.textContent=`You are ${controls.viewerRole}. ${partnerName()} is ${controls.partnerRole}.`;
     if(candidate){

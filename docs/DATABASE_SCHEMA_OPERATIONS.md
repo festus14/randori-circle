@@ -56,8 +56,11 @@ Randori has read-only schema inspection for configured databases, a transactiona
   blocks serving. See `SESSION_CONTROLS.md`.
 
 - Migration v27 (additive) adds `interview_evaluations`, two indexes and two
-  guards on the new table only (#465, ID-102). Code at v27 remains READY on
-  v26 with `pending_additive`; the private toolkit has no capability until
+  guards on the new table only (#465, ID-102). **Production must already be
+  at migration v26 (applied and verified) before this code deploys.** Code at
+  v27 remains READY on v26 with `pending_additive`, but NOT on v25
+  (`state:"behind"`); readiness tolerates only one pending additive version.
+  The private toolkit has no capability until
   the approved migration is applied. See [interviewer toolkit](INTERVIEWER_TOOLKIT.md).
 
 ## Commands
