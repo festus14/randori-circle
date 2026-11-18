@@ -192,6 +192,7 @@ const EXPECTED_TABLE_COVERAGE=[
   {table:'pair_schedules',section:'schedules',included:true},
   {table:'session_completion_receipts',section:'session_completions',included:true},
   {table:'pair_session_controls',section:'session_controls',included:true},
+  {table:'pair_interview_sessions',section:null,included:false},
   {table:'pair_messages',section:'messages',included:true},
   {table:'session_runs',section:'code_runs',included:true},
   {table:'pair_code_documents',section:null,included:false},
@@ -221,8 +222,8 @@ const EXPECTED_TABLE_COVERAGE=[
 ];
 
 test('every inventory table has explicit export coverage',()=>{
-  assert.equal(EXPECTED_TABLE_COVERAGE.length,59);
-  assert.equal(ACCOUNT_DATA_INVENTORY.length,59);
+  assert.equal(EXPECTED_TABLE_COVERAGE.length,60);
+  assert.equal(ACCOUNT_DATA_INVENTORY.length,60);
   assert.deepEqual(
     DATA_EXPORT_TABLE_COVERAGE.map(entry=>({table:entry.table,section:entry.section,included:entry.included})),
     EXPECTED_TABLE_COVERAGE);

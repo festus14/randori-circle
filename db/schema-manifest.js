@@ -297,6 +297,18 @@ const PLAN_24_OPERATIONS=Object.freeze([
   index('idx_account_deletion_tokens_expiry','account_deletion_tokens',['expires_at']),
 ]);
 
+// Interview lobby and candidate edit lock (#464, ID-99). Additive (ID-87): a
+// new table plus triggers on that table only. Pair-membership invalidation is
+// by snapshot: readers ignore a row whose pair snapshot no longer matches the
+// live pairing group and writers delete it before writing, so no trigger is
+// added to an existing table. Group deletion cascades through the foreign key.
+const PLAN_26_OPERATIONS=Object.freeze([
+  table('pair_interview_sessions',`CREATE TABLE IF NOT EXISTS pair_interview_sessions (week_id INTEGER NOT NULL CHECK(typeof(week_id)='integer' AND week_id>0), pair_group_id INTEGER NOT NULL CHECK(typeof(pair_group_id)='integer' AND pair_group_id>0), pair_user_a_id INTEGER NOT NULL CHECK(typeof(pair_user_a_id)='integer' AND pair_user_a_id>0), pair_user_b_id INTEGER NOT NULL CHECK(typeof(pair_user_b_id)='integer' AND pair_user_b_id>0 AND pair_user_b_id<>pair_user_a_id), admission TEXT CHECK(admission IS NULL OR admission IN ('interviewer','schedule')), admitted_at TEXT, editing_locked INTEGER NOT NULL DEFAULT 0 CHECK(typeof(editing_locked)='integer' AND editing_locked IN (0,1)), revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision>=1), updated_by INTEGER NOT NULL CHECK(typeof(updated_by)='integer' AND updated_by IN (pair_user_a_id,pair_user_b_id)), created_at TEXT NOT NULL CHECK(length(created_at)=24 AND created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(created_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',created_at)=created_at), updated_at TEXT NOT NULL CHECK(length(updated_at)=24 AND updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(updated_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',updated_at)=updated_at), PRIMARY KEY(week_id,pair_group_id), CHECK((admission IS NULL)=(admitted_at IS NULL)), CHECK(admitted_at IS NULL OR (length(admitted_at)=24 AND admitted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(admitted_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',admitted_at)=admitted_at)), CHECK(julianday(updated_at)>=julianday(created_at)), FOREIGN KEY(pair_group_id) REFERENCES pairing_groups(id) ON DELETE CASCADE)`),
+  index('idx_pair_interview_sessions_updated_by','pair_interview_sessions',['updated_by','week_id','pair_group_id']),
+  trigger('trg_pair_interview_sessions_insert_guard','pair_interview_sessions',`CREATE TRIGGER IF NOT EXISTS trg_pair_interview_sessions_insert_guard BEFORE INSERT ON pair_interview_sessions FOR EACH ROW WHEN NEW.revision<>1 OR NOT EXISTS (SELECT 1 FROM pairing_groups AS pg JOIN pairing_participants AS pa ON pa.week_id=pg.week_id AND pa.user_id=pg.user_a_id AND pa.source='auth' JOIN pairing_participants AS pb ON pb.week_id=pg.week_id AND pb.user_id=pg.user_b_id AND pb.source='auth' WHERE pg.id=NEW.pair_group_id AND pg.week_id=NEW.week_id AND pg.is_ai_pair=0 AND pg.user_c_id IS NULL AND pg.user_a_id=NEW.pair_user_a_id AND pg.user_b_id=NEW.pair_user_b_id AND NEW.updated_by IN (pg.user_a_id,pg.user_b_id)) BEGIN SELECT RAISE(ABORT,'invalid interview-session pair snapshot'); END`),
+  trigger('trg_pair_interview_sessions_update_guard','pair_interview_sessions',`CREATE TRIGGER IF NOT EXISTS trg_pair_interview_sessions_update_guard BEFORE UPDATE ON pair_interview_sessions FOR EACH ROW WHEN NEW.week_id<>OLD.week_id OR NEW.pair_group_id<>OLD.pair_group_id OR NEW.pair_user_a_id<>OLD.pair_user_a_id OR NEW.pair_user_b_id<>OLD.pair_user_b_id OR NEW.created_at<>OLD.created_at OR NEW.revision<>OLD.revision+1 OR (OLD.admitted_at IS NOT NULL AND (NEW.admitted_at IS NOT OLD.admitted_at OR NEW.admission IS NOT OLD.admission)) OR NOT EXISTS (SELECT 1 FROM pairing_groups AS pg JOIN pairing_participants AS pa ON pa.week_id=pg.week_id AND pa.user_id=pg.user_a_id AND pa.source='auth' JOIN pairing_participants AS pb ON pb.week_id=pg.week_id AND pb.user_id=pg.user_b_id AND pb.source='auth' WHERE pg.id=NEW.pair_group_id AND pg.week_id=NEW.week_id AND pg.is_ai_pair=0 AND pg.user_c_id IS NULL AND pg.user_a_id=NEW.pair_user_a_id AND pg.user_b_id=NEW.pair_user_b_id AND NEW.updated_by IN (pg.user_a_id,pg.user_b_id)) BEGIN SELECT RAISE(ABORT,'invalid interview-session update'); END`),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -395,6 +407,7 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
   }),
   Object.freeze({version:24,operations:PLAN_24_OPERATIONS}),
   Object.freeze({version:25,operations:SECONDARY_WORKSPACE_OPERATIONS}),
+  Object.freeze({version:26,operations:PLAN_26_OPERATIONS}),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -424,7 +437,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM="5fffd47acce0f4fb7e0aecde045a735d76e91bdcb2c1acf21d151f3254c7827d";
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM="39b02e625eba0acefb403f1f577b7b7b7ab26906ebf8251dffff579a25dce4e0";
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

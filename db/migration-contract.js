@@ -188,6 +188,17 @@ export const MIGRATION_CONTRACTS=Object.freeze([
   "checksum": "cd6d0de84ca6886367654f32d29951490334c1f08f8c6cda82aa0244df96e618",
   "compatibility": "breaking"
 }),
+  Object.freeze({
+    version:26,
+    name:'interview-lobby-and-edit-lock',
+    checksum:'0279feb23e05d943cb5bb7e8fe615589bb563236cacfe16ce9a4ab9feb77594e',
+    compatibility:'additive',
+    introduces:Object.freeze({
+      tables:Object.freeze(['pair_interview_sessions']),
+      indexes:Object.freeze(['idx_pair_interview_sessions_updated_by']),
+      triggers:Object.freeze(['trg_pair_interview_sessions_insert_guard','trg_pair_interview_sessions_update_guard']),
+    }),
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;
