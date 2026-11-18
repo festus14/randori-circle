@@ -92,6 +92,7 @@ import {
   dataExportEnabled,
   ensureDataExportReadiness,
 } from './_data-export.js';
+import { interviewerToolkitAvailable, interviewerToolkitEnabled } from './_interviewer-toolkit.js';
 import { inviteRequestIntakeAvailable, inviteRequestsEnabled } from './_invite-request-config.js';
 import { circleHealthEnabled } from './_circle-health.js';
 import { deliverCommittedOutboxEvents } from './_outbox-immediate.js';
@@ -359,6 +360,10 @@ async function handleCapabilities(req,res){
         enabled:true,version:DELETION_GRACE_MIGRATION_VERSION});
     }catch{ accountDeletionGrace=false; }
   }
+  let interviewerToolkit=false;
+  if(interviewerToolkitEnabled()){
+    try{interviewerToolkit=await interviewerToolkitAvailable(getClient());}catch{}
+  }
   const passwordSignup=localPasswordSignupEnabled(req)||verifiedEmailActivation;
   const googleOAuth=Boolean(googleOAuthRequestConfiguration(req))
     &&(!identityManagementRequested(req)||identityManagement);
@@ -401,6 +406,7 @@ async function handleCapabilities(req,res){
       ...(circleHealthEnabled()?{circleHealth:true}:{}),
       // Issue #463 (ID-98): advertised only while DAILY_VIDEO_ENABLED is
       // literally true and the server-only Daily key and domain are valid.
+      ...(interviewerToolkit?{interviewerToolkit:true}:{}),
       ...(dailyVideoEnabled()?{embeddedVideo:true}:{}),
     },
     registrationMode:localIdentity?'local_invite':(verifiedEmailActivation?'verified_invite':(passwordSignup?'local_open':'private_beta')),

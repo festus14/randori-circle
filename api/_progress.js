@@ -10,6 +10,7 @@
 // once (as History and /api/stats do). docs/PROGRESS_DASHBOARD.md lists the
 // query plans. The caller never chooses whose records are read: the handler
 // passes the session user id only.
+import { evaluationInsights, interviewerToolkitAvailable, readOwnedEvaluations } from './_interviewer-toolkit.js';
 import { listPublicExercises } from './_catalog.js';
 import { PairRecapDataError, projectRecapRun } from './_pair-recap.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
@@ -455,9 +456,14 @@ export async function readMemberProgress(db,{userId,timeZone,versionKey,verifyAt
     throw new ProgressDataError('progress read is invalid');
   }
   const [pairings,skips,runs]=results.map(result=>result.rows);
-  return buildMemberProgress({
+  const progress=buildMemberProgress({
     userId,now:new Date(now),timeZone,...splitPairingRows(pairings),
     skipRows:skips,runRows:runs,versionKey,verifyAttestation,
     ...(exercises?{exercises}:{}),
   });
+  if(await interviewerToolkitAvailable(db)){
+    const owned=await readOwnedEvaluations(db,userId);
+    if(owned.evaluations.length) progress.interviews=evaluationInsights(owned.evaluations,owned.truncated);
+  }
+  return progress;
 }

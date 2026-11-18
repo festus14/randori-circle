@@ -102,8 +102,8 @@ test('migrations 1-21 stay breaking, v22/v23/v24 stay additive, v25 is breaking,
   assert.equal(MIGRATION_CONTRACTS[23].compatibility,'additive');
   assert.equal(MIGRATION_CONTRACTS[24].compatibility,'breaking');
   assert.equal(MIGRATION_CONTRACTS.at(-1).compatibility,'additive');
-  assert.equal(MIGRATION_CONTRACTS.at(-1).version,26);
-  assert.deepEqual(MIGRATION_CONTRACTS.at(-1).introduces.tables,['pair_interview_sessions']);
+  assert.equal(MIGRATION_CONTRACTS.at(-1).version,27);
+  assert.deepEqual(MIGRATION_CONTRACTS.at(-1).introduces.tables,['interview_evaluations']);
   assert.equal(compatibility.pendingAdditiveContract(),MIGRATION_CONTRACTS.at(-1));
   assert.equal(compatibility.ADDITIVE_READINESS_LAG,1);
 });

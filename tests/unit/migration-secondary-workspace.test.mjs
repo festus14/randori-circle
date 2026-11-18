@@ -34,10 +34,12 @@ test('main v24 applies unchanged, then breaking workspace v25 preserves it and p
     assert.deepEqual((await migrate(25)).applied.map(item=>item.version),[25]);
     assert.deepEqual((await db.execute('SELECT * FROM schema_migrations WHERE version=24')).rows,ledger);
     assert.deepEqual((await db.execute("SELECT type,name,sql FROM sqlite_schema WHERE tbl_name='account_deletion_tokens' ORDER BY type,name")).rows,schema);
+    assert.equal(await inspectDatabaseReadiness(db),false,'v25 is two migrations behind current code');
+    assert.deepEqual((await migrate(26)).applied.map(item=>item.version),[26]);
     assert.equal(await inspectDatabaseReadiness(db),true);
     assert.equal(await pairingSchemaV6Ready(db),true);
     assert.equal(await ensureSecondaryWorkspaceReadiness(db),true);
     assert.deepEqual((await db.execute('PRAGMA foreign_key_check')).rows,[]);
-    assert.deepEqual((await migrate(25)).applied,[]);
+    assert.deepEqual((await migrate(26)).applied,[]);
   }finally{db.close();rmSync(directory,{recursive:true,force:true});}
 });

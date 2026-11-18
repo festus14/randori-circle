@@ -47,6 +47,7 @@
 // otherwise the export is refused with EXPORT_TOO_LARGE.
 // Partner privacy: proposed schedule times are projected to
 // {instant, proposed_by_me} — see projectProposedTimes.
+import { evaluationSchemaInstalled } from './_interviewer-toolkit.js';
 import { ACCOUNT_DATA_INVENTORY } from './_account-deletion.js';
 import { hashInvitationEmail } from './_circle-membership.js';
 
@@ -134,6 +135,7 @@ const EXPLICIT_TABLE_COVERAGE=Object.freeze({
   pair_schedules:{section:'schedules',included:true,reason:'Agreed and proposed times for the member\'s own pair groups.'},
   session_completion_receipts:{section:'session_completions',included:true,reason:'Own completion receipts, partners by display name only.'},
   pair_session_controls:{section:'session_controls',included:true,reason:'Timer and interview-role controls for the member\'s own pair groups, actors by display name.'},
+  interview_evaluations:{section:'interview_evaluations',included:true,reason:'Only writing owned by the evaluator account, within its fixed 90-day window. Candidate evaluations and joint code are never included.'},
   pair_interview_sessions:{section:null,included:false,reason:'Operational interview room state (lobby admission time and edit-lock flag); no content, and roles and timer are already exported under session_controls.'},
   pair_messages:{section:'messages',included:true,reason:'Only messages the member sent; a partner\'s messages are the partner\'s data and are never exported.'},
   session_runs:{section:'code_runs',included:true,reason:'Own code runs, solo and pair.'},
@@ -1043,6 +1045,15 @@ export async function buildDataExport(db,{userId}={}){
   markTruncated('feedback_votes',feedback.truncated_votes);
 
   const secondaryWorkspace=await readSecondaryWorkspace(db,id,markTruncated);
+  let interviewEvaluations=[];
+  const evaluationsInstalled=await evaluationSchemaInstalled(db);
+  if(evaluationsInstalled){
+    const result=await cappedQuery(db,`SELECT e.week_id,e.pair_group_id,e.problem_solving,e.communication,e.code_quality,e.testing,e.notes,e.decision,e.revision,e.created_at,e.updated_at,e.expires_at,
+      candidate.display_name AS candidate FROM interview_evaluations e LEFT JOIN auth_accounts candidate ON candidate.id=e.candidate_user_id
+      WHERE e.evaluator_user_id=? AND e.expires_at>=CAST(strftime('%s','now') AS INTEGER) ORDER BY e.created_at DESC,e.pair_group_id DESC LIMIT ?`,[id],500);
+    interviewEvaluations=result.rows.map(row=>({...row}));
+    markTruncated('interview_evaluations',result.truncated);
+  }
 
   const archive=Object.freeze({
     version:DATA_EXPORT_VERSION,
@@ -1057,6 +1068,7 @@ export async function buildDataExport(db,{userId}={}){
     schedules:Object.freeze({primary:primarySchedules,secondary:secondarySchedules,
       proposals:scheduleProposals,meeting_links:meetingLinks}),
     session_completions:sessionCompletions,
+    ...(evaluationsInstalled?{interview_evaluations:interviewEvaluations}:{}),
     session_controls:sessionControls,
     messages,
     code_runs:codeRuns,
@@ -1088,6 +1100,7 @@ export async function buildDataExport(db,{userId}={}){
       schedule_proposals:scheduleProposals.length,
       meeting_links:meetingLinks.length,
       session_completions:sessionCompletions.length,
+      ...(evaluationsInstalled?{interview_evaluations:interviewEvaluations.length}:{}),
       session_controls:sessionControls.length,
       messages:messages.length,
       code_runs:codeRuns.length,
