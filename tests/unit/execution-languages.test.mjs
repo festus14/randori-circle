@@ -13,7 +13,7 @@ import { GO_CATALOG_REFERENCES } from '../../scripts/catalog-go-references.mjs';
 import { smokeEnvironment, smokeLanguages } from '../../scripts/execution-smoke-checks.mjs';
 import { EXECUTION_SMOKE_EXPECTED_OUTPUT, runExecutionSmoke, throttledExecutionSmokeBody } from '../../api/_execution-smoke.js';
 import { assessExecutionSmoke } from '../../scripts/github-execution-smoke.mjs';
-import { syncLanguageOptions } from '../../assets/execution-languages.js';
+import { COMPILE_FAILURE_NOTE, compileNote, syncLanguageOptions } from '../../assets/execution-languages.js';
 
 const TS = { EXECUTION_PROVIDER: 'vercel-sandbox', EXECUTION_LANGUAGE_TYPESCRIPT_ENABLED: 'true' };
 const PISTON = { EXECUTION_PROVIDER: 'piston', EXECUTION_API_URL: 'https://runner.example.test/execute',
@@ -84,6 +84,7 @@ test('strict Go result framing rejects duplicates, reordering, extra output and 
   const rows = tests.map((test, idx) => prefix + JSON.stringify({ idx, ok: true, got: test.expected }));
   const strict = output => normalizeRunnerResults(output, prefix, tests, { strictSequence: true });
   assert.ok(strict(rows.join('\n')).every(result => result.pass));
+  assert.deepEqual(strict(' \n'), tests.map((_, idx) => ({ idx, pass: false, error: 'no result' })));
   for (const output of [rows[0]+'\n'+rows.join('\n'), rows.join('\n')+'\n'+rows[1], [...rows].reverse().join('\n'), rows[0],
     'debug output\n'+rows.join('\n'), prefix+'{bad json}\n'+rows.join('\n'),
     prefix+JSON.stringify({ idx: 9, ok: true, got: 3 })+'\n'+rows.join('\n'),
@@ -224,6 +225,14 @@ test('Go references run locally only when a toolchain already exists', t => {
   const raw = JSON.parse(readFileSync(new URL('../../data/randori-catalog-v1.json', import.meta.url)));
   const result = validateAdditionalLanguageReferences(raw, { goAvailable: true, requireGo: true });
   assert.ok(result.goCases >= 110);
+});
+
+test('own Go compile-failure note is fixed text and never renders provider diagnostics', () => {
+  const notes = [], out = { ownerDocument: { createElement: () => ({}) }, appendChild: note => notes.push(note) };
+  compileNote(out, { language: 'go', execution: { compile_failed: true, stderr: 'PRIVATE_SOURCE_BYTES' } });
+  assert.equal(notes[0].textContent, COMPILE_FAILURE_NOTE);
+  compileNote(out, { language: 'go', execution: { compile_failed: false } }); compileNote(null, {});
+  assert.equal(notes.length, 1); assert.doesNotMatch(JSON.stringify(notes), /PRIVATE_SOURCE_BYTES/);
 });
 
 test('lazy language selector uses only server-advertised additions', () => {

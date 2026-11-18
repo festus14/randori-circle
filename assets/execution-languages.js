@@ -20,8 +20,16 @@ export function syncLanguageOptions(select, questions, doc = document) {
     delete select.dataset.pendingLanguage;
   }
 }
+export const COMPILE_FAILURE_NOTE = 'Go compilation failed. Check package main, the function signature and standard-library imports.';
+export function compileNote(out, result) {
+  if (!out || result?.language !== 'go' || result?.execution?.compile_failed !== true) return;
+  const note = out.ownerDocument.createElement('p'); note.className = 'small run-case-error';
+  note.textContent = COMPILE_FAILURE_NOTE;
+  out.appendChild(note);
+}
 if (typeof window !== 'undefined' && !window.RandoriExecutionLanguages) {
   window.RandoriExecutionLanguages = Object.freeze({
+    compileNote,
     sync: questions => syncLanguageOptions(document.getElementById('langSelect'), questions),
   });
 }

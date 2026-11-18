@@ -97,6 +97,24 @@ test('a TypeScript workspace selection hydrated before a delayed catalogue is re
   } finally { release(); }
 });
 
+test('Go compile failure is visible only as a fixed requester note, not provider output', async ({ page }) => {
+  const go = { entrypoint: 'rollUpFocusBlocks', signature: 'func rollUpFocusBlocks(blocks interface{}) interface{}',
+    starter: 'package main\nfunc rollUpFocusBlocks(blocks interface{}) interface{} { return nil }' };
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user },
+    '/api/questions': { ok: true, questions: [{ ...question, languages: { ...question.languages, go } }], count: 1 },
+    '/api/execute': { ok: true, language: 'go', passed_count: 0, total_count: 8,
+      results: Array.from({ length: 8 }, (_, idx) => ({ idx, pass: false, error: 'no result' })),
+      execution: { compile_failed: true, has_stderr: true, stderr: 'PRIVATE_COMPILER_BYTES' } },
+  });
+  await resetClientState(page, true); await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#langSelect option[value="go"]')).toHaveCount(1);
+  await selectQuestion(page, question.slug); await selectLanguage(page, 'go'); await setCode(page, go.starter);
+  await page.locator('#runBtn').click();
+  await expect(page.locator('#runOut')).toContainText('Go compilation failed.');
+  await expect(page.locator('#runOut')).not.toContainText('PRIVATE_COMPILER_BYTES');
+});
+
 test('default-off catalogue never loads the language adapter or offers new languages', async ({ page }) => {
   const { typescript: omitted, ...baseLanguages } = question.languages;
   const requested: string[] = [];

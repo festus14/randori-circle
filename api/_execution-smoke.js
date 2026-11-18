@@ -3,7 +3,8 @@
 // enabled provider-supported language (JS/Python always) through the same
 // boundary production uses and reports only bounded status categories.
 // Existing atomic claim/windows are unchanged: 2 default runs, 3 on Vercel
-// with TypeScript, up to 4 on Piston with both additions.
+// with TypeScript, up to 4 on Piston with both additions. Paired measurement
+// doubles only JS/Python (4), plus one ordinary TypeScript run (5 total).
 //
 // Budget: Vercel Sandbox creations count against the Hobby allowance shared
 // with real member runs, so a real execution is claimed atomically in

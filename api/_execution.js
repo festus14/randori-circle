@@ -198,7 +198,9 @@ async function runInVercelSandbox({ language, source, stdin }, { loadSandboxSdk 
   }
 
   let sandbox;
-  const snapshotId = cold ? null : executionWarmSnapshot(language, env);
+  // TypeScript is pre-stripped and uses the identical pristine Node 24 image;
+  // restoring that empty JS snapshot never reuses a submitted-code VM.
+  const snapshotId = cold ? null : executionWarmSnapshot(language === 'typescript' ? 'javascript' : language, env);
   if (permit) await beforeProvider(permit);
   const createStarted = Date.now();
   const createController = new AbortController();
@@ -307,8 +309,7 @@ async function runInPiston({ language, source, stdin }, { url, token, fetchImpl 
   const compileTimeout = language === 'go' ? GO_COMPILE_TIMEOUT_MS : PISTON_COMPILE_TIMEOUT_MS;
   const files = language === 'go' && typeof source === 'object'
     ? [{ name: 'main.go', content: source.harness }, { name: 'submission.go', content: source.submission }]
-    : [{ name: language === 'typescript' ? 'main.js' : LANGUAGE_FILES[language],
-      content: language === 'typescript' ? stripSubmissionTypes(source) : source }];
+    : [{ name: language === 'typescript' ? 'main.js' : LANGUAGE_FILES[language], content: source }];
   if (permit) await beforeProvider(permit);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), language === 'go' ? GO_REQUEST_TIMEOUT_MS : PISTON_REQUEST_TIMEOUT_MS);
@@ -403,9 +404,13 @@ export async function executePracticePrograms({ language, harness, code, stdin }
   const env = options.env || process.env;
   const customRequest = { language, source: code, ...(stdin === undefined ? {} : { stdin }) };
   validateExecutionStdin(customRequest, env);
+  if (!EXECUTION_LANGUAGES.includes(language)) throw new TypeError('unsupported execution language');
+  if (!executionLanguageEnabled(language, env)) throw new ExecutionInputError('execution language is not enabled', 404);
   if (language === 'typescript') stripSubmissionTypes(code);
   if (executionQueueEnabled(env) && !options[ADMISSION]) {
-    if (!resolveExecutionProvider(env).configured) throw new ExecutionUnavailableError('code execution is unavailable');
+    const provider = resolveExecutionProvider(env);
+    if (!provider.configured) throw new ExecutionUnavailableError('code execution is unavailable');
+    if (!providerSupportsLanguage(provider.provider, language)) throw new ExecutionInputError('execution language is not supported by this provider', 404);
     return withAdmission(options, stdin === undefined ? 1 : 2, JSON.stringify(customRequest),
       admitted => executePracticePrograms({ language, harness, code, stdin }, admitted));
   }
@@ -568,6 +573,7 @@ export function normalizeRunnerResults(stdout, resultPrefix, tests, { strictSequ
       byIndex.set(parsed.idx, { idx: parsed.idx, pass, error: parsed.error ? 'runtime error' : null });
     } catch { if (strictSequence) return invalid(); }
   }
-  if (strictSequence && byIndex.size !== tests.length) return invalid();
+  if (strictSequence && byIndex.size !== tests.length) return byIndex.size === 0 && !String(stdout || '').trim()
+    ? tests.map((_, idx) => ({ idx, pass: false, error: 'no result' })) : invalid();
   return tests.map((_, idx) => byIndex.get(idx) || { idx, pass: false, error: 'no result' });
 }
