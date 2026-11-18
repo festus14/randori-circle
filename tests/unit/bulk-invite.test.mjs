@@ -443,6 +443,7 @@ test('a missing card is a no-op and the module installs its browser global', asy
   assert.equal(bulkUi.mountBulkInvite, mountBulkInvite);
   const events = [];
   globalThis.window = globalThis;
+  globalThis.RandoriEmailValidation = await import('../../assets/email-validation.js');
   globalThis.dispatchEvent = event => { events.push(event.type); return true; };
   try {
     const fresh = await import(`../../assets/bulk-invite.js?browser=${Date.now()}`);

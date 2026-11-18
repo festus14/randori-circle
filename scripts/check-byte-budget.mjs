@@ -15,9 +15,11 @@
 //   <link rel="stylesheet">s (circle-history.css; legal.css is used by
 //   privacy.html/terms.html only, so it counts toward the total, not the
 //   initial slice). CSS total: inline + all of assets/*.css.
-// - JS initial: inline <script> content (no src=) + the assets/*.js files
-//   index.html loads via <script src>. JS total: inline + all of
-//   assets/*.js (including lazy/on-demand assets such as crdt-editor.js).
+// - JS initial: inline <script> content (no src=) + local files index.html
+//   loads via <script src> (including module scripts). JS total: inline + all of
+//   assets/*.{js,mjs} (including lazy/on-demand assets such as crdt-editor.js).
+//   Build inputs remain included conservatively: removing them would loosen
+//   the adopted total gate; .mjs inclusion tightens it (ID-101).
 // External <script src> / <link href> URLs are never counted — the
 // budget covers first-party file bytes only — and a referenced local
 // asset that does not exist fails closed.
@@ -111,7 +113,7 @@ export function measureByteBudget(rootDirectory = process.cwd()) {
       return [];
     }
   };
-  const jsAssets = assets('.js');
+  const jsAssets = [...assets('.js'), ...assets('.mjs')];
   const cssAssets = assets('.css');
   const assetBytes = (relative) => readBytes(root, relative, errors);
   const jsTotalAssets = jsAssets.reduce((sum, file) => sum + assetBytes(file), 0);

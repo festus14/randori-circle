@@ -13,7 +13,7 @@
 <title>Randori Circle</title>
 <script>/* Apply the stored theme before first paint so light mode does not flash dark. */try{if(localStorage.getItem('randori-theme')==='light')document.documentElement.classList.add('light')}catch{}</script>
 <script src="/assets/invite-gate.js"></script>
-<script src="/assets/landing.js"></script>
+<script src="/assets/optional-pages.js"></script>
 <script src="/assets/pairing-view.js"></script>
 <script src="/assets/catalogue-view.js"></script>
 <script src="/assets/execution-stdin.js"></script>
@@ -2415,6 +2415,7 @@ a.btn{text-decoration:none}
                   <div><button id="circleBulkInviteSubmit" data-testid="circle-bulk-invite-submit" class="btn" type="submit" disabled>Invite people</button></div>
                 </form>
                 <div id="circleBulkInviteStatus" class="small muted" data-testid="circle-bulk-invite-status" role="status" aria-live="polite"></div>
+                <button id="circleBulkInviteLoadRetry" class="btn secondary sm" type="button" hidden>Retry invitation tools</button>
                 <ul id="circleBulkInviteResults" class="people circle-bulk-list" data-testid="circle-bulk-invite-results" aria-label="Invitation results" hidden></ul>
               </details>
               <div id="circleInvites" data-testid="circle-invites" class="circle-invites"></div>
@@ -2898,8 +2899,6 @@ a.btn{text-decoration:none}
       </div>
     </section>
     <script src="/assets/circle-ui.js"></script>
-    <script type="module" src="/assets/email-validation.js"></script>
-    <script type="module" src="/assets/bulk-invite.js"></script>
   </main>
 </div>
 <!-- ---------- WP-A dialogs: confirm, prompt, sign-in and account security ---------- -->
@@ -6119,11 +6118,12 @@ async function refreshMe(){
     circleContextLoadPromise=null;
     circleContextLoadKey='';
     circleInviteCreatePending=false;
+    document.getElementById('circleInviteForm')?.setAttribute('aria-busy','false');
     circleLifecyclePending=false;
     resetOwnerInvites({allowRosterPreservation:false});
     clearLatestInvite();
     circleInviteEmails.clear();
-    bulkInviteController?.reset();
+    resetBulkInvite();
     if(circleTitle) circleTitle.textContent='Your circle';
     const circleNote=document.getElementById('circleAutoNote');
     if(circleNote) circleNote.textContent='Loading your private circle…';
@@ -6449,7 +6449,7 @@ async function refreshMe(){
     circleRosterLoading=false;
     circleRosterLoadEpoch=0;
     circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
-    if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId){ clearLatestInvite(); circleInviteEmails.clear(); bulkInviteController?.reset(); }
+    if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId){ clearLatestInvite(); circleInviteEmails.clear(); resetBulkInvite(); }
     if(circleOwnerPanel){ circleOwnerPanel.hidden=true; circleOwnerPanel.style.display='none'; }
     if(circleInvites) circleInvites.replaceChildren();
     if(circleInvitesMeta) circleInvitesMeta.textContent='';
@@ -7515,22 +7515,26 @@ async function refreshMe(){
 
   document.getElementById('circleInviteForm')?.addEventListener('submit',async event=>{
     event.preventDefault();
-    if(activeCircleRole!=='owner'||!me) return;
+    if(activeCircleRole!=='owner'||!me||circleInviteCreatePending) return;
     const input=document.getElementById('circleInviteEmail');
     const button=document.getElementById('circleInviteCreate');
     const email=String(input?.value||'').trim();
     const userId=Number(me.id||me.uid);
-    // Same rules as the server (assets/email-validation.js); the server re-checks.
-    const emailRules=window.RandoriEmailValidation;
-    const verdict=emailRules?emailRules.validateEmail(email):{ok:!!email,reason:'empty'};
-    setCircleInviteEmailError(verdict.ok?'':(emailRules?emailRules.emailProblemMessage(verdict.reason):'Enter an email address.'));
-    if(!verdict.ok){ input?.focus(); return; }
     const operation=captureCircleControlOperation();
     if(!circleControlOperationMatches(operation)) return;
     circleInviteCreatePending=true;
     if(button) button.disabled=true;
-    if(circleInviteStatus) circleInviteStatus.textContent='Sending invitation…';
+    event.currentTarget.setAttribute('aria-busy','true');
+    if(circleInviteStatus) circleInviteStatus.textContent='Checking email…';
+    let sending=false;
     try{
+      const emailRules=await window._randori_optional_pages.load('email');
+      if(activeCircleRole!=='owner'||!me||!circleControlOperationMatches(operation)) return;
+      const verdict=emailRules.validateEmail(email);
+      setCircleInviteEmailError(verdict.ok?'':emailRules.emailProblemMessage(verdict.reason));
+      if(!verdict.ok){ if(circleInviteStatus) circleInviteStatus.textContent=''; input?.focus(); return; }
+      sending=true;
+      if(circleInviteStatus) circleInviteStatus.textContent='Sending invitation…';
       const result=await api('/api/invitations',{method:'POST',body:{email}});
       // A same-account roster refresh may advance the render epoch while this
       // one-time secret is in flight. Retain it for the initiating owner; only
@@ -7555,12 +7559,15 @@ async function refreshMe(){
       if(activeCircleRole==='owner') await loadOwnerInvitations(circleRenderEpoch);
     }catch(error){
       if(!circleControlOperationMatches(operation)) return;
-      if(circleInviteStatus) circleInviteStatus.textContent=Number(error?.http_status)===429
+      if(circleInviteStatus) circleInviteStatus.textContent=!sending
+        ?'Invitation tools could not load. Check your connection and try again. Nothing was sent.'
+        :Number(error?.http_status)===429
         ?(window.RandoriBulkInvite?.bulkErrorMessage(error)||'You have reached today’s invitation limit. Try again later.')
         :'Could not send the invitation. Check the email address and try again.';
     }finally{
       if(circleControlOperationMatches(operation)){
         circleInviteCreatePending=false;
+        document.getElementById('circleInviteForm')?.setAttribute('aria-busy','false');
         if(button) button.disabled=activeCircleRole!=='owner';
       }
     }
@@ -7574,9 +7581,21 @@ async function refreshMe(){
   document.getElementById('circleInviteEmail')?.addEventListener('input',()=>{
     if(document.getElementById('circleInviteEmail')?.getAttribute('aria-invalid')==='true') setCircleInviteEmailError('');
   });
-  // Bulk invitations (assets/bulk-invite.js, ID-68). The module loads after
-  // this script, so it mounts on its ready event; every request still goes
-  // through api() and the circle-context guards above.
+  // Bulk invitations mount on the first disclosure, never on module-ready or
+  // background roster refresh. Re-check actor/circle after the lazy load.
+  let bulkInviteLoad=null;
+  let bulkInviteEpoch=0;
+  function resetBulkInvite(){
+    bulkInviteEpoch+=1;
+    bulkInviteLoad=null;
+    bulkInviteController?.reset();
+    const details=document.getElementById('circleBulkInvite');
+    if(details) details.open=false;
+    const input=document.getElementById('circleBulkInviteInput'); if(input) input.value='';
+    document.getElementById('circleBulkInviteForm')?.setAttribute('aria-busy','false');
+    const status=document.getElementById('circleBulkInviteStatus'); if(status) status.textContent='';
+    const retry=document.getElementById('circleBulkInviteLoadRetry'); if(retry) retry.hidden=true;
+  }
   function mountBulkInvite(){
     if(bulkInviteController||!window.RandoriBulkInvite) return;
     bulkInviteController=window.RandoriBulkInvite.mountBulkInvite({doc:document,host:{
@@ -7591,8 +7610,35 @@ async function refreshMe(){
       copy:text=>navigator.clipboard.writeText(text),
     }});
   }
-  mountBulkInvite();
-  window.addEventListener('randori:bulk-invite-ready',mountBulkInvite);
+  function loadBulkInvite(){
+    if(bulkInviteController||bulkInviteLoad||activeCircleRole!=='owner'||!me) return;
+    const operation=captureCircleControlOperation();
+    const epoch=bulkInviteEpoch;
+    const form=document.getElementById('circleBulkInviteForm');
+    const status=document.getElementById('circleBulkInviteStatus');
+    const retry=document.getElementById('circleBulkInviteLoadRetry');
+    form?.setAttribute('aria-busy','true');
+    if(status) status.textContent='Loading invitation tools…';
+    if(retry) retry.hidden=true;
+    bulkInviteLoad=window._randori_optional_pages.load('email').then(()=>window._randori_optional_pages.load('bulk')).then(()=>{
+      if(epoch!==bulkInviteEpoch||activeCircleRole!=='owner'||!me||!circleControlOperationMatches(operation)) return;
+      if(status) status.textContent='';
+      mountBulkInvite();
+    },()=>{
+      if(epoch!==bulkInviteEpoch||activeCircleRole!=='owner'||!me||!circleControlOperationMatches(operation)) return;
+      if(status) status.textContent='Invitation tools could not load. Check your connection and retry. Nothing was sent.';
+      if(retry) retry.hidden=false;
+    }).finally(()=>{
+      if(epoch===bulkInviteEpoch){ bulkInviteLoad=null; form?.setAttribute('aria-busy','false'); }
+    });
+  }
+  document.getElementById('circleBulkInvite')?.addEventListener('toggle',event=>{
+    if(event.currentTarget.open) loadBulkInvite();
+  });
+  document.getElementById('circleBulkInviteLoadRetry')?.addEventListener('click',loadBulkInvite);
+  document.getElementById('circleBulkInviteForm')?.addEventListener('submit',event=>{
+    if(!bulkInviteController){ event.preventDefault(); loadBulkInvite(); }
+  });
   // Circle health (assets/circle-health.js, issue #292). The module is
   // imported only when /api/auth/capabilities advertises circleHealth and the
   // viewer owns the circle; the server enforces ownership and hides what must
@@ -10139,6 +10185,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const scheduleState={room:null,kind:null,actorId:null,circlePublicId:null,contextVersion:null,cycleToken:null,
     epoch:0,version:'',schedule:null,draft:'',draftRoom:null,people:new Map(),abort:null,inFlight:false,
     boundaryTimer:null,status:'waiting for pair',expiryError:'',expiryAction:null};
+  let calendarExportPending=false;
   const MAX_SCHEDULE_BOUNDARY_DELAY_MS=2_147_000_000;
 
   function clearRequestedView(){
@@ -11444,7 +11491,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function toggleScheduleActions(disabled){
     const unavailable=!/^[a-f0-9]{64}$/.test(scheduleState.version);
-    document.querySelectorAll('#dashScheduleArea [data-schedule-action]').forEach(button=>{ button.disabled=!!disabled||unavailable; });
+    document.querySelectorAll('#dashScheduleArea [data-schedule-action]').forEach(button=>{
+      button.disabled=!!disabled||unavailable||(button.dataset.scheduleAction==='calendar-export'&&calendarExportPending);
+    });
   }
 
   function scheduleRelative(instant,now){
@@ -11501,18 +11550,44 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         const calendar=scheduleIconButton('Add to calendar','i-calendar',{testId:'schedule-calendar-export'});
         calendar.dataset.scheduleAction='calendar-export';
         calendar.setAttribute('aria-label',`Add the agreed ${localScheduleTime(exportedInstant)} session to your calendar`);
-        calendar.addEventListener('click',()=>{
-          const activeSchedule=pairedDashboardSchedule();
-          const stillCurrent=scheduleState.room===exportedRoom&&scheduleState.kind===exportedKind
-            &&scheduleState.schedule?.agreed_time===exportedInstant;
-          const downloaded=stillCurrent&&activeSchedule?.identity===exportedRoom
-            &&activeSchedule.kind===exportedKind&&window._randori_calendar_export?.download?.({
-            ...(exportedKind==='secondary'
-              ?{scheduleId:exportedRoom,dashboardPath:'/?view=dashboard'}:{roomId:exportedRoom}),
-            agreedTime:exportedInstant,
-            appOrigin:location.origin,
-          });
-          if(typeof toast==='function') toast(downloaded?'Calendar file downloaded':'Calendar export is unavailable. Refresh and try again.');
+        calendar.disabled=calendarExportPending;
+        if(calendarExportPending){ calendar.setAttribute('aria-busy','true'); calendar.textContent='Preparing calendar…'; }
+        calendar.addEventListener('click',async()=>{
+          if(calendarExportPending||calendar.disabled) return;
+          const scope=pairedDashboardSchedule();
+          if(!scope||scope.identity!==exportedRoom||scope.kind!==exportedKind) return;
+          const operation=captureScheduleOperation(scope);
+          const stillCurrent=()=>scheduleOperationMatches(operation)
+            &&scheduleState.schedule?.agreed_time===exportedInstant&&Date.parse(exportedInstant)>Date.now();
+          if(!stillCurrent()) return;
+          calendarExportPending=true;
+          calendar.disabled=true;
+          calendar.setAttribute('aria-busy','true');
+          const labelNodes=[...calendar.childNodes];
+          calendar.textContent='Preparing calendar…';
+          try{
+            const exporter=await window._randori_optional_pages.load('calendar');
+            // Identity, circle, agreement and expiry can change while loading.
+            if(!stillCurrent()) return;
+            const downloaded=exporter.download({
+              ...(exportedKind==='secondary'
+                ?{scheduleId:exportedRoom,dashboardPath:'/?view=dashboard'}:{roomId:exportedRoom}),
+              agreedTime:exportedInstant,
+              appOrigin:location.origin,
+            });
+            if(typeof toast==='function') toast(downloaded?'Calendar file downloaded':'Calendar export is unavailable. Try again.');
+          }catch{
+            if(stillCurrent()&&typeof toast==='function') toast('Calendar tools could not load. Check your connection and try again.');
+          }finally{
+            calendarExportPending=false;
+            const focus=captureScheduleFocus();
+            calendar.removeAttribute('aria-busy');
+            calendar.replaceChildren(...labelNodes);
+            if(stillCurrent()) toggleScheduleActions(scheduleState.inFlight==='write');
+            // A reconciliation render during the load also showed a disabled
+            // button. Refresh it without stealing focus from another control.
+            if(!calendar.isConnected&&pairedDashboardSchedule()) renderScheduleView({restoreFocus:focus});
+          }
         });
         tools.append(calendar,scheduleNode('span',{className:'home-fine',text:'60 minutes · your calendar app controls the downloaded copy'}));
       }
@@ -14780,7 +14855,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 </script>
 
 
-<script type="module" src="/assets/calendar-export.js"></script>
 <script type="module" src="/assets/app-shell.js"></script>
 <script type="module" src="/assets/room-layout.js"></script>
 <script type="module" src="/assets/interview-session.js"></script>

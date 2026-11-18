@@ -462,10 +462,27 @@ test('the hero CTA and /#request-invite deep links scroll to the form, honouring
   assert.equal(landing.scrollToRequest(), false);
 });
 
-test('index.html loads the module early and keeps the landing contract hooks', () => {
+test('request-invite deep-link reveal waits until lazy page controls stop being inert', () => {
+  const doc = mounted();
+  const content = { inert: true };
+  doc.$('view-landing').querySelector = () => content;
+  withGlobals({ location: { hash: '#request-invite' } }, () => {
+    landing.setCapabilities({ loaded: true, inviteRequests: true });
+    assert.equal(landing.revealRequestedSection(), false);
+    assert.equal(doc.$('request-invite').scrolled.length, 0);
+    content.inert = false;
+    assert.equal(landing.revealRequestedSection(), true);
+    assert.equal(doc.$('request-invite').scrolled.length, 1);
+    assert.equal(doc.activeElement, doc.$('request-invite'));
+    assert.equal(landing.revealRequestedSection(), false, 'reveal only once');
+  });
+});
+
+test('index.html loads only the lightweight bridge early and keeps the landing contract hooks', () => {
   const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
   const gate = html.indexOf('<script src="/assets/invite-gate.js"></script>');
-  const module = html.indexOf('<script src="/assets/landing.js"></script>');
+  const module = html.indexOf('<script src="/assets/optional-pages.js"></script>');
+  assert.doesNotMatch(html, /<script[^>]+src="\/assets\/landing\.js"/);
   const authLayer = html.indexOf('// ---------- auth layer ----------');
   assert.ok(gate >= 0 && module > gate && module < authLayer);
   assert.match(html, /<h1 id="landingTitle">Mock interviews with people you trust\.<\/h1>/);
