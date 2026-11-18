@@ -51,6 +51,8 @@ const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   'assets/realtime-relay.mjs', 'assets/realtime-yjs.mjs',
   // Consent-gated embedded Daily video (#463, ID-98).
   'assets/embedded-video.js',
+  // Yjs-awareness presence/cursors and their DOM view (#462).
+  'assets/realtime-presence.mjs', 'assets/presence-ui.mjs',
   // Removed members use the independent public email-proof page (issue #350).
   'assets/deletion-link.js'];
 // Operator tools that cannot run under unit tests; see

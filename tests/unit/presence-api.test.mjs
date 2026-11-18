@@ -92,6 +92,14 @@ test('participants see each other within one heartbeat and keyed rows carry no i
   const second=await invoke({user:2,body:{...BODY,state:'online'},url:'/api/code-document?endpoint=presence',query:{endpoint:'presence'}});
   assert.deepEqual(second.body,{ok:true,seat:'b',partner_online:true,ttl_seconds:20,interval_seconds:5});
   assert.equal((await invoke()).body.partner_online,true);
+  // A join also returns the partner's already-visible name/colour, never email.
+  const join=await invoke({body:{...BODY,state:'join'}});
+  assert.deepEqual(join.body.partner,{display_name:'Two',color:'#222222'});
+  assert.doesNotMatch(JSON.stringify(join.body),/example\.test|password|hash/);
+  await db.execute("UPDATE auth_accounts SET color='red' WHERE id=2");
+  assert.deepEqual((await invoke({user:1,body:{...BODY,state:'join'}})).body.partner,{display_name:'Two',color:null});
+  await db.execute("UPDATE auth_accounts SET display_name='   ' WHERE id=2");
+  assert.equal(Object.hasOwn((await invoke({body:{...BODY,state:'join'}})).body,'partner'),false);
   const stored=await rows();
   assert.equal(stored.length,2,'one row per room participant');
   for(const row of stored){

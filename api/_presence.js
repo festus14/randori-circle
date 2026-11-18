@@ -29,7 +29,7 @@ export function presenceConfiguration(env=process.env){
 export function parsePresenceRequest(body){
   const keys=['room_id','question_slug','question_version','language','state'];
   if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==keys.length
-    ||keys.some(key=>!Object.hasOwn(body,key))||!['online','leave'].includes(body.state)) return null;
+    ||keys.some(key=>!Object.hasOwn(body,key))||!['join','online','leave'].includes(body.state)) return null;
   try{
     const {state,...query}=body;
     return {state,identity:parseCodeDocumentQuery({query})};
@@ -60,6 +60,16 @@ export async function recordPresence(db,config,{roomId,viewerId,partnerId,random
     try{ await db.execute(`DELETE FROM auth_rate_limits WHERE expires_at<=${DB_NOW}`); }catch{}
   }
   return {partnerOnline:partner.rows?.length===1};
+}
+
+// Join only: the same partner display name/colour /api/my-pair already shows
+// this viewer, so a direct /join link can label the partner. Never email.
+export async function readPartnerProfile(db,partnerId){
+  const result=await db.execute({sql:'SELECT display_name,color FROM auth_accounts WHERE id=? LIMIT 1',args:[partnerId]});
+  const row=result.rows?.[0];
+  const name=typeof row?.display_name==='string'?row.display_name.replace(/\s+/g,' ').trim().slice(0,60):'';
+  if(!name) return null;
+  return {display_name:name,color:/^#[0-9a-fA-F]{6}$/.test(String(row.color||''))?row.color:null};
 }
 
 export async function clearPresence(db,config,{roomId,viewerId}){

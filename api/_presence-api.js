@@ -1,6 +1,6 @@
 import { getClient, verifyRequestAuth } from './_db.js';
 import { clearPresence, parsePresenceRequest, presenceConfiguration, PRESENCE_INTERVAL_SECONDS,
-  PRESENCE_TTL_SECONDS, recordPresence } from './_presence.js';
+  PRESENCE_TTL_SECONDS, readPartnerProfile, recordPresence } from './_presence.js';
 import { authorizeRelayPair, relayOriginAllowed } from './_realtime-relay-api.js';
 
 const notFound=res=>res.status(404).json({error:'pair not found'});
@@ -33,9 +33,11 @@ export async function handlePresence(req,res){
     if(!access) return notFound(res);
     const {userAId,userBId}=access.pair;
     const seat=viewerId===userAId?'a':'b';
-    const {partnerOnline}=await recordPresence(db,config,{roomId,viewerId,partnerId:seat==='a'?userBId:userAId});
+    const partnerId=seat==='a'?userBId:userAId;
+    const {partnerOnline}=await recordPresence(db,config,{roomId,viewerId,partnerId});
+    const partner=request.state==='join'?await readPartnerProfile(db,partnerId):null;
     return res.json({ok:true,seat,partner_online:partnerOnline,
-      ttl_seconds:PRESENCE_TTL_SECONDS,interval_seconds:PRESENCE_INTERVAL_SECONDS});
+      ttl_seconds:PRESENCE_TTL_SECONDS,interval_seconds:PRESENCE_INTERVAL_SECONDS,...(partner?{partner}:{})});
   }catch{
     return res.status(503).json({error:'presence unavailable'});
   }

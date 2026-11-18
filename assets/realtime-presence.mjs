@@ -215,6 +215,7 @@ export function createPresenceSession({doc,text,seat,send,onChange=()=>{},now=Da
 export function createFallbackPresence({request,onChange=()=>{},relayConnected=()=>false,now=Date.now,
   setTimer=setTimeout,clearTimer=clearTimeout}={}){
   let stopped=false,timer=null,controller=null,seat=null,partnerOnline=null,healthy=null,expiresAt=0,lastSuccessAt=0;
+  let partner=null;
   const schedule=delay=>{ if(!stopped){ if(timer!==null) clearTimer(timer); timer=setTimer(beat,delay); } };
   const beat=async()=>{
     timer=null;
@@ -223,7 +224,9 @@ export function createFallbackPresence({request,onChange=()=>{},relayConnected=(
     const timeout=setTimer(()=>active.abort(),5000);
     let delay=relayConnected()?PRESENCE_FALLBACK_RELAY_MS:PRESENCE_FALLBACK_MS;
     try{
-      const response=await request('online',active.signal);
+      // The first successful beat is a join: it also returns the partner's
+      // already-visible display name/colour for direct /join links.
+      const response=await request(seat===null?'join':'online',active.signal);
       if(stopped) return;
       const data=await response.json().catch(()=>null);
       if(stopped) return;
@@ -236,6 +239,9 @@ export function createFallbackPresence({request,onChange=()=>{},relayConnected=(
       if(!response.ok||data?.ok!==true||!SEATS.has(data.seat)||typeof data.partner_online!=='boolean'
         ||!Number.isSafeInteger(data.ttl_seconds)||data.ttl_seconds<1||data.ttl_seconds>120) throw new Error('presence unavailable');
       if(seat!==null&&seat!==data.seat) throw new Error('presence seat changed');
+      if(seat===null&&data.partner&&typeof data.partner==='object'&&typeof data.partner.display_name==='string'){
+        partner={display_name:data.partner.display_name.slice(0,60),color:typeof data.partner.color==='string'?data.partner.color:null};
+      }
       seat=data.seat; partnerOnline=data.partner_online; healthy=true; lastSuccessAt=now(); expiresAt=lastSuccessAt+data.ttl_seconds*1000;
     }catch{
       if(stopped) return;
@@ -259,6 +265,7 @@ export function createFallbackPresence({request,onChange=()=>{},relayConnected=(
     stop,
     nudge(){ if(!stopped&&!controller) schedule(0); },
     get seat(){ return seat; },
+    get partner(){ return partner?{...partner}:null; },
     get partnerOnline(){ return stopped?null:partnerOnline; },
     get healthy(){ return healthy; },
     get lastSuccessAt(){ return lastSuccessAt; },

@@ -244,12 +244,16 @@ function fallbackHarness(replies){
 }
 
 test('HTTPS fallback presence learns the seat, polls cheaply and leaves without cleanup',async()=>{
-  const item=fallbackHarness([{status:200,body:{ok:true,seat:'a',partner_online:false,ttl_seconds:20}}]);
+  const item=fallbackHarness([{status:200,body:{ok:true,seat:'a',partner_online:false,ttl_seconds:20,
+    partner:{display_name:'Two',color:'#9cc0b5'}}}]);
+  assert.equal(item.presence.partner,null);
   item.presence.start(); item.clock.advance(0); await settleRelayPromises();
-  assert.equal(item.presence.seat,'a'); assert.equal(item.presence.partnerOnline,false); assert.equal(item.presence.healthy,true);
+  assert.equal(item.presence.seat,'a'); assert.equal(item.calls[0].state,'join');
+  assert.deepEqual(item.presence.partner,{display_name:'Two',color:'#9cc0b5'}); assert.equal(item.presence.partnerOnline,false); assert.equal(item.presence.healthy,true);
   item.clock.advance(PRESENCE_FALLBACK_MS-1); await settleRelayPromises(); assert.equal(item.calls.length,1);
   item.clock.advance(1); await settleRelayPromises();
   assert.equal(item.calls.length,2); assert.equal(item.presence.partnerOnline,true,'partner joined within one interval');
+  assert.equal(item.calls[1].state,'online');
   item.setRelay(true); item.clock.advance(PRESENCE_FALLBACK_MS); await settleRelayPromises();
   item.clock.advance(PRESENCE_FALLBACK_RELAY_MS-PRESENCE_FALLBACK_MS-1); await settleRelayPromises();
   assert.equal(item.calls.length,3,'slower cadence while the relay is live');
