@@ -56,6 +56,7 @@ Rules that apply to every runbook:
 | [schema-migration-cutover.md](schema-migration-cutover.md) | Applying the next schema migration to production |
 | [backup-restore.md](backup-restore.md) | Restore rehearsal alerts, or a real restore is needed |
 | [rollback-bad-deploy.md](rollback-bad-deploy.md) | A deploy made production worse |
+| [execution-capacity.md](execution-capacity.md) | Execution busy/quota states, pristine runtime snapshots, cold-start measurement, safe tuning and spend-stop rollback |
 | [feature-flags.md](feature-flags.md) | Turning a feature flag on or off |
 | [rotating-secrets.md](rotating-secrets.md) | Rotating any secret or credential key |
 

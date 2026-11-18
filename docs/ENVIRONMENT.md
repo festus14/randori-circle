@@ -96,6 +96,38 @@ without it: the route returns 503 or the capability is not offered.
 | `EXECUTION_API_TOKEN` | Bearer token sent to the Piston endpoint | No | unset | Yes | Vercel |
 | `EXECUTION_STDIN_ENABLED` | Optional private stdin/script execution alongside verified catalogue cases; 20,000 UTF-8 bytes, request-only response, 60-second private UI window ([usage](../README.md#private-custom-stdin-dark-launch)) | No | false | No | Vercel; literal `true` only |
 
+### Execution admission and snapshots (optional, default off)
+
+[ID-103 design](EXECUTION_CAPACITY.md) and [tuning/rollback](runbooks/execution-capacity.md).
+No migration: the existing v26 schema suffices. Quotas count provider units;
+private stdin costs two. All numeric values are strict decimal integer strings;
+invalid enabled configuration fails closed. Existing `JWT_SECRET` must be ≥32 bytes.
+With stdin enabled, global ≥4, circle ≥2, interview share ≤global−2.
+
+| Variable | Purpose | Required | Default | Secret | Where set |
+| --- | --- | --- | --- | --- | --- |
+| `EXECUTION_QUEUE_ENABLED` | Durable bounded retry admission, account/circle quotas, global spend ceilings and `executionQueue` capability; literal `true` only | No | false | No | Vercel |
+| `EXECUTION_GLOBAL_CONCURRENCY` | Global active provider-unit ceiling (2–16) | No | 4 | No | Vercel |
+| `EXECUTION_CIRCLE_CONCURRENCY` | Per-circle active units (1–8, ≤global) | No | 2 | No | Vercel |
+| `EXECUTION_INTERVIEW_SHARE` | Reserved interview units (1–15, <global); practice retains enough units to progress | No | 2 | No | Vercel |
+| `EXECUTION_ACCOUNT_PER_MINUTE` | Admitted units per account / UTC minute (1–30) | No | 10 | No | Vercel |
+| `EXECUTION_CIRCLE_PER_MINUTE` | Admitted units per circle / UTC minute (1–120) | No | 40 | No | Vercel |
+| `EXECUTION_GLOBAL_PER_MINUTE` | Global admitted units / UTC minute (1–240) | No | 60 | No | Vercel |
+| `EXECUTION_GLOBAL_PER_DAY` | Global admitted units / UTC day (1–10000); includes guarded smoke/preparation, not a currency estimate | No | 150 | No | Vercel |
+| `EXECUTION_QUEUE_LIMIT` | Global pending-account bound (1–128) | No | 32 | No | Vercel |
+| `EXECUTION_MAX_WAIT_SECONDS` | Non-renewable ticket TTL (2–20) | No | 15 | No | Vercel |
+| `EXECUTION_WARM_JAVASCRIPT_SNAPSHOT_ID` | Operator-prepared pristine Node 24 `snap_…` source, ignored with queue off | No | unset | No; server-only | Vercel |
+| `EXECUTION_WARM_PYTHON_SNAPSHOT_ID` | Operator-prepared pristine Python 3.14 `snap_…` source, ignored with queue off | No | unset | No; server-only | Vercel |
+| `EXECUTION_WARM_MEASURE_ENABLED` | Literal `true` plus queue and both snapshots enables paired cold/warm create-latency measurements in the existing throttled smoke workflow; four creations/claim | No | false | No | Vercel |
+
+Global-admin Diagnostics gains aggregate queue depth, admissions/shed/quota counts,
+wait/provider p50/p95 and spend ceilings, without member/code/provider identifiers.
+The existing liveness/readiness response is unchanged. Do not activate or change
+limits while old executors are still running: unset the provider, redeploy, drain
+90 seconds, then redeploy one coherent admission config. Turning the queue off
+restores legacy behaviour **without** the new spend ceilings; unsetting the
+provider is the emergency spend-stop switch.
+
 ### Realtime code relay (optional, default off)
 
 Supabase is a relay only, never a second document store. Configuration validity
@@ -487,6 +519,8 @@ them off cannot undo.
 | `DATA_EXPORT_ENABLED` | Download my data in Edit profile (`GET /api/auth/account/export`): a JSON archive of the member's own data, partners by display name only | off | Off (observed: no `dataExport`) | none | ID-90 ([data export](DATA_EXPORT.md)) | Safe; nothing is stored. Turning it off hides the endpoint, the capability and the UI |
 | `OUTBOX_PII_RETENTION_ENABLED` | Hourly removal of recipient addresses and sealed links from delivered or suppressed outbox rows after 7 days and from dead letters after 30 | off | On (owner) | The matching privacy policy text (live since 2026-10-22) | ID-83 | Stops further redaction. **Irreversible:** redacted rows cannot be restored and redacted dead letters stay non-replayable |
 | `EXECUTION_STDIN_ENABLED` | Private stdin script run alongside the server-owned cases; `executionStdin` capability and Results controls | off | New dark-launch flag; not deployed or observed | A configured isolated execution provider; self-hosted Piston must enforce deadlines and ephemeral cleanup | ID-94 ([usage](../README.md#private-custom-stdin-dark-launch)) | Safe; rejects new stdin requests with 404. In-flight runs finish within existing provider caps; no private data is stored |
+| `EXECUTION_QUEUE_ENABLED` | Durable retry queue, per-circle/account quotas, interview share, global spend guards and aggregate Diagnostics fields | off | New dark-launch flag; not deployed or observed | v26 database and `JWT_SECRET` ≥32 bytes; one coherent config after draining old executors | ID-103 ([execution capacity](EXECUTION_CAPACITY.md)) | Unset provider and drain 90 seconds first; then false/redeploy restores legacy execution without these spend guards. No schema rollback |
+| `EXECUTION_WARM_MEASURE_ENABLED` | Cold/snapshot startup samples in the existing throttled execution-smoke API; aggregate p50/p95 and sampled regression gate | off | New dark-launch flag; no live measurement performed | Queue enabled, Vercel provider, both operator-built pristine snapshot ids | ID-103 | false/redeploy restores the two-program smoke budget; existing snapshots and member execution are unchanged |
 | `REALTIME_RELAY_ENABLED` | Sub-second Yjs update broadcasts in private Supabase channels for canonical primary two-human rooms; HTTPS authority and polling stay active | off | Not enabled by this branch; provider values owner-reported only (2026-11-18) | All four `SUPABASE_*` values above, imported/rotated ES256 key, public channels disabled, reviewed Realtime RLS applied; existing code-document schema | ID-96 ([code relay](CONFLICT_FREE_CODE_DOCUMENTS.md#supabase-relay-only-transport-461)) | Unset/set `false` and redeploy: no capability or new tokens; existing clients close on the next primary GET/at renewal. For immediate revocation revoke the imported key/provider connections first; retain HTTPS documents and SQL deny fences |
 | `PRESENCE_ENABLED` | Pair-room presence (who is here, idle, connection health) for primary two-human rooms; partner cursor/selection when the relay is also on | off | New dark-launch flag; not deployed or observed | `JWT_SECRET` ≥ 32 bytes; cursors also need `REALTIME_RELAY_ENABLED`; no schema change | ID-100 ([presence](CONFLICT_FREE_CODE_DOCUMENTS.md#presence-and-remote-cursors-462)) | Safe: unset/`false` and redeploy; the capability disappears, heartbeats get 404 and clients stop on their next document GET. Keyed rows expire within 20 seconds; nothing else is stored |
 | `AI_ENABLED` | Consent-gated AI feedback in `api/ai.js` | off | Off (privacy policy says AI is off) | `GROQ_API_KEY` or `OPENAI_API_KEY`; privacy and consent review ([#7](https://github.com/festus14/randori-circle/issues/7)) | ID-41 | AI routes return 503 |

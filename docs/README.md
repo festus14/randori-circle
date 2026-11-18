@@ -97,6 +97,7 @@ ID-64 in the decision log.
 
 | Doc | What it covers |
 | --- | --- |
+| [EXECUTION_CAPACITY.md](EXECUTION_CAPACITY.md) | Default-off execution retry admission, circle/account quotas, interview fairness, pristine snapshots and aggregate spend/latency evidence (ID-103); no migration |
 | [CONFLICT_FREE_CODE_DOCUMENTS.md](CONFLICT_FREE_CODE_DOCUMENTS.md) | The shared Yjs code document per pair room; Run executes only the acknowledged version (migration v20, ID-65) |
 | [SESSION_CONTROLS.md](SESSION_CONTROLS.md) | The shared 25-minute focus timer and candidate assignment for a pair room (ID-58) |
 | [SESSION_COMPLETION.md](SESSION_COMPLETION.md) | A session counts as completed only when every participant confirms (ID-55) |
@@ -167,6 +168,7 @@ migrations have run).
 | [runbooks/schema-migration-cutover.md](runbooks/schema-migration-cutover.md) | Schema migration cutover: short version of the protected migration runbook |
 | [runbooks/backup-restore.md](runbooks/backup-restore.md) | Backup restore: short version of the PITR rehearsal runbook, plus a real restore |
 | [runbooks/rollback-bad-deploy.md](runbooks/rollback-bad-deploy.md) | Rollback a bad deploy: Vercel Instant Rollback, reverting a merge, Hobby limitations |
+| [runbooks/execution-capacity.md](runbooks/execution-capacity.md) | Execution queue/quota tuning, paid pristine snapshot preparation, p95 measurement and drained spend-stop rollback (ID-103) |
 | [runbooks/feature-flags.md](runbooks/feature-flags.md) | Turning feature flags on and off, including the irreversible ones |
 | [runbooks/rotating-secrets.md](runbooks/rotating-secrets.md) | Rotating secrets and keys, and when to use the key-rotation runbook instead |
 | [postmortems/TEMPLATE.md](postmortems/TEMPLATE.md) | Incident postmortem template |

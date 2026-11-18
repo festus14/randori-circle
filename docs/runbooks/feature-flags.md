@@ -26,6 +26,10 @@ truth; this runbook does not duplicate it. The descriptive layer is
 - `EXECUTION_PROVIDER` is not a boolean but is the switch for Run:
   unsetting it makes every run fail closed with
   `execution_unavailable` and changes no data.
+- **Execution admission (#468):** before toggling `EXECUTION_QUEUE_ENABLED` or
+  changing its limits/secret, unset the provider, redeploy and drain 90 seconds.
+  Turning admission off alone removes its spend guards. Follow the
+  [execution capacity runbook](execution-capacity.md).
 
 ## Turning a flag on
 
