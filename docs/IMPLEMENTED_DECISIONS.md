@@ -6018,8 +6018,8 @@ redeploy; clients stop on the next document GET, rows expire in 20 s. Details:
 [presence and remote cursors](CONFLICT_FREE_CODE_DOCUMENTS.md#presence-and-remote-cursors-462).
 ## ID-101: Load optional page tools at their first use without weakening byte gates
 
-**Status: Active.** Implements #479 (epic #460). ID-99 and ID-100 are reserved
-by #477 and #462; their entries are not invented on this branch. No migration,
+**Status: Active.** Implements #479 (epic #460). ID-99 landed in #477; ID-100 is reserved
+by #462 and its entry is not invented on this branch. No migration,
 provider call, new dependency or CSP change.
 
 **Context.** At `580e90b`, the adopted file-byte check measured initial JS at
