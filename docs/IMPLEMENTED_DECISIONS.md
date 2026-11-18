@@ -5349,8 +5349,15 @@ exports, logs or Sentry. Existing feed projections remain allowlisted. Provider
 error bodies/reasons are not returned or logged. Code itself remains shared and
 retained as before; private input must not be pasted into the shared editor.
 The separate stdin control never uses editor sync, broadcast or browser storage.
-Its draft expires after 60 seconds of inactivity; the input clears at run
-completion and output expires within 60 seconds of Run. Explicit clear,
+Its unsent draft expires after 60 seconds of inactivity. Shared-code flushing
+and asynchronous circle authority checks finish before capture. A lazy body
+factory then captures stdin only at native fetch dispatch, synchronously
+serializes it, and drops the textarea, capture-token, payload and API/fetch-init
+copies immediately. Factory closures retain no stdin after dispatch, and the
+browser owns only its necessary transport copy. A pending flush, context
+preflight or HTTP response therefore cannot prolong application-owned input
+retention. Private output expires within 60 seconds of dispatch, never from
+response settlement. Explicit clear,
 account/room/circle/exercise/language changes, page hiding and page exit clear
 private state and invalidate pending private display; its epoch/context/deadline
 checks discard late custom output, including after suspended browser timers.
@@ -5405,8 +5412,11 @@ caps, EOF, real local runaway-process kill, output overflow, fail-closed flag,
 shared quota and concurrent cleanup. Primary and secondary execution tests
 check canonical code, attestation and database/feed privacy. Browser-controller
 tests exercise text-only rendering, expiration and context races, including the
-actual inline runner's verified success/error settlement after private clear,
-edit, uncheck and expiry. Provider tests pin the pre-flag catalogue call shapes;
+actual inline runner's 24-case API/direct-fetch verified settlement matrix after
+private clear, edit, uncheck and expiry. Those tests inspect API/native option
+objects and capture tokens immediately after dispatch and at 60,001 ms while the
+response remains pending, plus stalled shared-code and circle-context preflights.
+Provider tests pin the pre-flag catalogue call shapes;
 README examples execute locally both as stdin scripts and restricted verification
 submissions. Playwright checks the same cancellation regressions and the two-user
 private output versus verified-only feed boundary.

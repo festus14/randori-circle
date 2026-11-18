@@ -17,6 +17,8 @@
 <script src="/assets/pairing-view.js"></script>
 <script src="/assets/catalogue-view.js"></script>
 <script src="/assets/execution-stdin.js"></script>
+<!-- Capture native fetch before telemetry can wrap it; private bodies are built only inside this transport. -->
+<script src="/assets/workspace-scope.js"></script>
 <script src="/assets/home-dashboard.js"></script>
 <script src="/assets/onboarding-flow.js"></script>
 <script>
@@ -2886,7 +2888,6 @@ a.btn{text-decoration:none}
       </div>
     </section>
     <script src="/assets/circle-ui.js"></script>
-    <script src="/assets/workspace-scope.js"></script>
     <script type="module" src="/assets/email-validation.js"></script>
     <script type="module" src="/assets/bulk-invite.js"></script>
   </main>
@@ -3598,7 +3599,11 @@ a.btn{text-decoration:none}
         &&Number.isSafeInteger(activeCircleContext.context_version)){
         headers['x-randori-circle-context-version']=String(activeCircleContext.context_version);
       }
-      const r=await fetch(path,{...opts,credentials:'same-origin',headers,body: opts.body? JSON.stringify(opts.body):undefined});
+      const pending=fetch(path,{...opts,credentials:'same-origin',headers,body: opts.body? JSON.stringify(opts.body):undefined});
+      // Workspace transport snapshots this lazy callback before any await.
+      // It owns no stdin until native dispatch; don't retain it in API opts.
+      delete opts.bodyFactory;
+      const r=await pending;
       const text = await r.text();
       let j; try{ j=JSON.parse(text)}catch{ j={raw:text,status:r.status} }
       if(!r.ok){
@@ -13545,7 +13550,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     doc:document,
     enabled:()=>window._randori_auth?.capabilities?.executionStdin===true,
     context:executionContextKey,
-  })||Object.freeze({capture:()=>null,render:()=>{},refresh:()=>false,clear:()=>{},matches:()=>false});
+  })||Object.freeze({selected:()=>false,capture:()=>null,render:()=>{},refresh:()=>false,clear:()=>{},matches:()=>false});
   window._randori_sync_execution_stdin=()=>privateStdin.refresh();
   window.addEventListener('randori:auth-refreshed',()=>privateStdin.refresh());
   window.addEventListener('randori:room-change',()=>privateStdin.clear());
@@ -13743,13 +13748,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       try{ if(window._randori_ui && window._randori_ui.showLoader) window._randori_ui.showLoader('Running '+lang+'…'); }catch{}
       (async()=>{
         const verifiedOperation={epoch:++verifiedRunEpoch,context:executionContextKey()};
-        let privateOperation=null,executionPayload=null;
+        let privateOperation=null;
         try{
-          privateOperation=privateStdin.capture();
           let apiFn = window.api || null;
           const payload = { language: lang, code, question_slug: customQ.slug||customQ.id, question_version:customQ.version };
-          executionPayload=payload;
-          if(privateOperation){ payload.stdin=privateOperation.stdin; delete privateOperation.stdin; }
           const executionRoom=authorizedPairExecutionRoom();
           if(executionRoom){
             payload.room_id=executionRoom;
@@ -13759,11 +13761,30 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
               payload.document_version=documentVersion;
             }
           }
+          // Flush and transport context checks finish before stdin is captured.
+          // The lazy factory runs synchronously at native fetch dispatch, never
+          // across an await, and drops all plain-object copies before returning.
+          const options={method:'POST',body:payload};
+          if(privateStdin.selected()) options.bodyFactory=()=>{
+            if(verifiedOperation.epoch!==verifiedRunEpoch||verifiedOperation.context!==executionContextKey()){
+              throw new DOMException('execution context changed','AbortError');
+            }
+            privateOperation=privateStdin.capture();
+            try{
+              if(privateOperation){ payload.stdin=privateOperation.stdin; delete privateOperation.stdin; }
+              return JSON.stringify(payload);
+            }finally{ delete payload.stdin; }
+          };
           let j;
           if(apiFn){
-            j = await apiFn('/api/execute', {method:'POST', body: payload});
+            const pending=apiFn('/api/execute',options);
+            delete options.bodyFactory;
+            j=await pending;
           }else{
-            const resp = await fetch('/api/execute', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+            const init={...options,credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)};
+            const pending=fetch('/api/execute',init);
+            delete init.bodyFactory; delete options.bodyFactory;
+            const resp=await pending;
             j = await resp.json().catch(()=>({ok:false, error:'bad json'}));
             if(!resp.ok) throw j;
           }
@@ -13811,8 +13832,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           }
           if(runOutEl){ runOutEl.innerHTML='<div class="test run-summary" data-status="fail"><div class="small">Execution failed: '+escapeHtml(String(msg).slice(0,400))+'<div class="small muted">Check your code and try again.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
           if(window.toast) window.toast('Execution error: '+String(msg).slice(0,120));
-        }finally{
-          if(executionPayload) delete executionPayload.stdin;
         }
       })();
       return;

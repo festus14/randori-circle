@@ -105,9 +105,15 @@ response. The room feed, history, attestation and logs keep only the existing
 verified catalogue results, never custom input or raw output. The editor code
 itself is still shared in pair rooms: do not paste private input into it.
 Custom input is not synced, broadcast, or written to browser storage or the
-database. The UI clears it at completion, after 60 seconds of inactivity, and
-on account/room/circle/exercise/language changes; private output expires 60
-seconds after Run (or immediately via **Clear private input and output**).
+database. Shared-code flushing and asynchronous circle-context checks finish
+before stdin is captured. At native fetch dispatch, the input is consumed and
+cleared from the textarea, capture token, payload and API/fetch option objects;
+serialized request strings are dropped immediately after the browser takes its
+transport-owned copy. No application-owned stdin copy waits for the response,
+so a stalled flush, preflight or HTTP response cannot extend input retention.
+Unsent drafts expire after 60 seconds of inactivity; private output expires 60
+seconds after dispatch, never 60 seconds after a delayed response (or immediately
+via **Clear private input and output**). Context changes also clear private data.
 Leaving or hiding the page also clears private data and invalidates its pending
 display. Clearing, editing, unchecking or expiry affects **only** the private
 output: the verified request continues and its summary or error still settles.

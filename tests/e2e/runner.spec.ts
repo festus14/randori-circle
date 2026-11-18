@@ -222,6 +222,17 @@ for (const action of ['clear', 'edit', 'uncheck', 'expiry']) {
       let started!: () => void;
       const gate = new Promise<void>(resolve => { release = resolve; });
       const executeStarted = new Promise<void>(resolve => { started = resolve; });
+      // Observe references (not extra body copies) at the native/API boundary.
+      await page.addInitScript(() => {
+        const root=window as typeof window & {__executionInits?: RequestInit[];__executionApiOptions?: Array<{body?:Record<string,unknown>;bodyFactory?:unknown}>};
+        const nativeFetch=window.fetch;
+        root.__executionInits=[];
+        window.fetch=function(input,init){
+          const url=typeof input==='string'?input:input instanceof URL?input.href:input.url;
+          if(new URL(url,location.origin).pathname==='/api/execute'&&init) root.__executionInits?.push(init);
+          return nativeFetch.call(this,input,init);
+        };
+      });
       if (action === 'expiry') await page.clock.install();
       await mockApi(page, {
         '/api/auth/capabilities': { ok: true, registrationMode: 'private_beta', capabilities: {
@@ -245,15 +256,32 @@ for (const action of ['clear', 'edit', 'uncheck', 'expiry']) {
         await selectQuestion(page, originalQuestion.slug);
         await setCode(page, correctSolution);
         await openRoomPanel(page, 'results');
+        await page.evaluate(()=>{
+          const root=window as typeof window & {api?:(path:string,options:{body?:Record<string,unknown>;bodyFactory?:unknown})=>Promise<unknown>;__executionApiOptions?:Array<{body?:Record<string,unknown>;bodyFactory?:unknown}>};
+          const api=root.api;root.__executionApiOptions=[];
+          if(api)root.api=(path,options)=>{if(path==='/api/execute')root.__executionApiOptions?.push(options);return api(path,options);};
+        });
+        const assertPrivateCopiesGone=async()=>{
+          const state=await page.evaluate(()=>{
+            const root=window as typeof window & {__executionInits?:RequestInit[];__executionApiOptions?:Array<{body?:Record<string,unknown>;bodyFactory?:unknown}>};
+            const inits=root.__executionInits||[],options=root.__executionApiOptions||[];
+            return {nativeCount:inits.length,nativeClean:inits.every(init=>!Object.hasOwn(init,'body')&&!Object.hasOwn(init,'bodyFactory')),
+              apiClean:options.every(option=>!Object.hasOwn(option,'bodyFactory')&&(!option.body||!Object.hasOwn(option.body,'stdin')))};
+          });
+          expect(state.nativeCount).toBe(1);expect(state.nativeClean).toBe(true);expect(state.apiClean).toBe(true);
+        };
         await page.locator('#customStdinEnabled').check();
         await page.locator('#customStdin').fill('PRIVATE_INPUT_467');
         await page.locator('#runBtn').click();
         await executeStarted;
+        await assertPrivateCopiesGone(); // The response is still blocked.
+        await expect(page.locator('#customStdin')).toHaveValue('');
         await expect(page.locator('#runOut')).toContainText('Checking your');
         if (action === 'clear') await page.locator('#customStdinClear').click();
         else if (action === 'edit') await page.locator('#customStdin').fill('EDITED_PRIVATE_INPUT');
         else if (action === 'uncheck') await page.locator('#customStdinEnabled').uncheck();
         else await page.clock.fastForward(60_001);
+        await assertPrivateCopiesGone(); // Including expiry, before response release.
         release();
         await expect(page.locator('#runOut')).toContainText(outcome === 'success' ? 'Result: 1/1 passed' : 'Execution failed: mock verified failure');
         await expect(page.locator('#runOut')).not.toContainText('Checking your');

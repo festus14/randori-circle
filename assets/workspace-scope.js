@@ -57,13 +57,37 @@
     if(notice) notice.textContent='Workspace is not available in this circle yet.';
   }
   const WORKSPACE=/^\/api\/(?:history|messages|runs|execute|my-pair|pair-recap|session-completion|session-controls|meeting-link|code-document|video(?:\/.*)?|ai(?:\/.*)?)$/;
+  // Private execution bodies are constructed only after async context checks.
+  // Native fetch takes its transport-owned copy synchronously; erase our init
+  // immediately, not when the response settles. Never forward the factory.
+  function dispatch(input,options,bodyFactory){
+    if(!bodyFactory) return originalFetch(input,options);
+    const init={...options};
+    delete init.bodyFactory;
+    try{
+      init.body=bodyFactory();
+      return originalFetch(input,init);
+    }finally{ delete init.body; }
+  }
   root.fetch=async function workspaceFetch(input,options){
-    if(!enabled()) return originalFetch(input,options);
+    let bodyFactory=typeof options?.bodyFactory==='function'?options.bodyFactory:null;
+    if(bodyFactory){
+      delete options.bodyFactory;
+      const target=new URL(typeof input==='string'||input instanceof URL?String(input):input.url,root.location.origin);
+      if(target.origin!==root.location.origin||target.pathname!=='/api/execute'||String(options.method||input?.method||'GET').toUpperCase()!=='POST'){
+        throw new TypeError('private execution requires a same-origin execute POST');
+      }
+    }
+    const send=(init=options)=>{
+      try{ return dispatch(input,init,bodyFactory); }
+      finally{ bodyFactory=null; }
+    };
+    if(!enabled()) return send();
     const url=new URL(typeof input==='string'||input instanceof URL?String(input):input.url,root.location.origin);
     const control=root._randori_circle_control;
-    if(url.origin!==root.location.origin||!WORKSPACE.test(url.pathname)||!control) return originalFetch(input,options);
+    if(url.origin!==root.location.origin||!WORKSPACE.test(url.pathname)||!control) return send();
     const id=Number(root._randori_auth?.me?.id||root._randori_auth?.me?.uid||0);
-    if(!id) return originalFetch(input,options);
+    if(!id) return send();
     const started=generation,operation=await control.capturePairing(id);
     const matches=()=>started===generation&&control.matchesPairing(operation);
     if(!matches()) throw new DOMException('circle context changed','AbortError');
@@ -107,7 +131,7 @@
         contextVersion=current.context_version;
         headers.set(contextHeader,String(contextVersion));
       }
-      const response=await originalFetch(input,{...options,headers,signal:controller.signal});
+      const response=await send({...options,headers,signal:controller.signal});
       if(!matches()) throw new DOMException('circle context changed','AbortError');
       const json=response.json.bind(response),text=response.text.bind(response),clone=response.clone.bind(response);
       response.json=async()=>{ try{ return check(await json()); }finally{ release(); } };

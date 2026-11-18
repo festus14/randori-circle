@@ -113,54 +113,95 @@ test('a second run or an input edit cannot be overwritten by the prior response'
 
 // Exercise the shipped inline runner, not a reimplementation of its promise
 // handlers. The provider/API and DOM are local fakes; no network or code runs.
-function runnerFixture() {
+function runnerFixture({ useApi=true, flush=null, pairing=null }={}) {
   const f = fixture();
   const source = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
   const start = source.indexOf('  let verifiedRunEpoch=0;');
   const end = source.indexOf('  const privateStdin=', start);
   const runner = source.match(/(async function upgradedRun\(\)\{[\s\S]*?)\n\n  if\(runBtn\)\{/);
-  assert.ok(start >= 0 && end > start && runner, 'inline execution boundaries must remain present');
-  const requests = [];
+  const api = source.match(/(async function api\(path, opts=\{\}\)\{[\s\S]*?)\n  function invalidateAuthRefreshes/);
+  assert.ok(start >= 0 && end > start && runner && api, 'inline execution boundaries must remain present');
+  const requests = [], apiOptions = [], captureOperations = [];
   let loader = false;
+  const workspaceEnabled=pairing!==null;
   const window = {
-    _randori_auth: { me: { id: 7 } },
+    location: { origin: 'http://127.0.0.1' },
+    _randori_auth: { me: { id: 7 }, capabilities: { secondaryCircleWorkspace: workspaceEnabled } },
     _randori_ui: { showLoader() { loader = true; }, hideLoader() { loader = false; } },
-    api(_url, options) {
+    _randori_circle_control: {
+      capturePairing: () => pairing || Promise.resolve({circlePublicId:'circle_test',contextVersion:7}),
+      matchesPairing: () => true,
+      scheduleContext: () => null,
+    },
+    _randori_crdt: flush?{ ownsCodeFor: () => true, flush: () => flush }:undefined,
+    fetch(_url, options) {
       let resolve, reject;
       const pending = new Promise((yes, no) => { resolve = yes; reject = no; });
-      requests.push({ options, resolve, reject });
+      // Buffer models the browser/native transport's copy, not app-owned init.
+      const transport=Buffer.from(String(options.body||''));
+      requests.push({ options, transport,
+        resolve: data => resolve(new Response(JSON.stringify({...data,...(workspaceEnabled?{circle_public_id:'circle_test',circle_context_version:7}:{})}))),
+        reject: problem => resolve(new Response(JSON.stringify(problem), {status:problem.code==='execution_unavailable'?503:500})),
+      });
       return pending;
     },
   };
   const context = createContext({
-    window, document: f.doc, runOut: f.nodes.runOut, privateStdin: f.controller,
+    window, document: f.doc, runOut: f.nodes.runOut,
+    privateStdin: {...f.controller,capture(){ const operation=f.controller.capture(); captureOperations.push(operation); return operation; }},
+    fetch: (...args) => window.fetch(...args), URL, Headers, DOMException, AbortController,
+    authCapabilities: {multiCircleControlPlane:workspaceEnabled},
+    activeCircleContext: workspaceEnabled?{active_circle:{public_id:'circle_test'},context_version:7}:null,
     selectedIdentity: () => ({ slug: 'focus-block-rollup', version: 1 }),
     selectedCatalogueQuestion: () => ({ slug: 'focus-block-rollup', version: 1 }),
     getEditorCode: () => 'function rollUpFocusBlocks(){return [];}',
-    activeRoom: f.getIdentity, authorizedPairExecutionRoom: () => null,
+    activeRoom: f.getIdentity, authorizedPairExecutionRoom: () => flush?'week_42_pair_7':null,
     escapeHtml: value => String(value), refreshExerciseSuggestions: () => {},
     catalogueView: {
       languageLabel: () => 'javascript',
       runSummaryView: ({ passed, total }) => ({ status: 'pass', headline: `Result: ${passed}/${total} passed`, mark: 'verified', detail: 'Checked on the server' }),
     },
   });
-  runInContext(source.slice(start, end) + '\n' + runner[1], context);
-  return { ...f, requests, get loader() { return loader; }, start: () => runInContext('upgradedRun()', context) };
+  runInContext(readFileSync(new URL('../../assets/workspace-scope.js', import.meta.url),'utf8'),context);
+  runInContext(api[1]+'\n'+source.slice(start,end)+'\n'+runner[1],context);
+  if(useApi){
+    const actualApi=runInContext('api',context);
+    window.api=(path,options)=>{ apiOptions.push(options); return actualApi(path,options); };
+  }
+  return { ...f, requests, apiOptions, captureOperations, get loader() { return loader; }, start: () => runInContext('upgradedRun()', context) };
 }
 
+function assertNoStdinCopies(f) {
+  for(const options of [...f.apiOptions,...f.requests.map(request=>request.options)]){
+    assert.doesNotMatch(JSON.stringify(options),/PRIVATE_INPUT/,'API/fetch init must not retain serialized or object stdin');
+    assert.equal(Object.hasOwn(options,'bodyFactory'),false);
+    if(options.body&&typeof options.body==='object') assert.equal(Object.hasOwn(options.body,'stdin'),false);
+  }
+  for(const operation of f.captureOperations){
+    if(operation) assert.equal(Object.hasOwn(operation,'stdin'),false,'capture token must not retain stdin');
+  }
+  if(f.captureOperations.some(operation=>operation)){
+    assert.doesNotMatch(f.nodes.customStdin.value,/PRIVATE_INPUT/,'the consumed DOM copy must also be gone');
+  }
+}
+
+for (const useApi of [true,false]) {
 for (const [action, invalidate] of [
   ['clear', f => f.nodes.customStdinClear.fire('click')],
   ['edit', f => { f.nodes.customStdin.value = 'new input'; f.nodes.customStdin.fire('input'); }],
   ['uncheck', f => { f.nodes.customStdinEnabled.checked = false; f.nodes.customStdinEnabled.fire('change'); }],
-  ['expiry', f => f.tick(RETENTION_MS)],
+  ['expiry', f => f.tick(RETENTION_MS + 1)],
 ]) {
   for (const outcome of ['success', 'failure', 'unavailable']) {
-    test(`Run then private ${action}: verified ${outcome} settles without showing stale custom output`, async () => {
-      const f = runnerFixture(); f.input('PRIVATE_INPUT'); await f.start();
+    test(`${useApi?'API':'fetch'} Run then private ${action}: verified ${outcome} settles without showing stale custom output`, async () => {
+      const f = runnerFixture({useApi}); f.input('PRIVATE_INPUT'); await f.start();
       assert.match(f.nodes.runOut.innerHTML, /Checking your javascript/);
       assert.equal(f.loader, true); assert.equal(f.requests.length, 1);
       assert.equal(Object.hasOwn(f.requests[0].options, 'signal'), false, 'private controls cannot abort the combined verified request');
+      assert.equal(JSON.parse(f.requests[0].transport.toString()).stdin,'PRIVATE_INPUT','native transport receives the intended input');
+      assertNoStdinCopies(f); // Before any response, immediately after dispatch.
       invalidate(f);
+      assertNoStdinCopies(f); // Also before response at the expiry boundary.
       if (outcome === 'success') f.requests[0].resolve({
         results: [{ idx: 0, pass: true }], passed_count: 1, total_count: 1,
         custom_run: { ok: true, stdout: 'STALE_PRIVATE_OUTPUT', stderr: '', exit_code: 0 },
@@ -171,10 +212,72 @@ for (const [action, invalidate] of [
       assert.doesNotMatch(f.nodes.runOut.innerHTML, /Checking your|PRIVATE_/);
       assert.match(f.nodes.runOut.innerHTML, outcome === 'success' ? /Result: 1\/1 passed/ : outcome === 'unavailable' ? /temporarily unavailable/ : /Execution failed: provider failed/);
       assert.equal(f.nodes.customRunOut.children.length, 0);
-      assert.equal(Object.hasOwn(f.requests[0].options.body, 'stdin'), false, 'request bytes are dropped after settlement');
+      assertNoStdinCopies(f);
     });
   }
 }
+}
+
+for(const useApi of [true,false]){
+  test(`${useApi?'API':'fetch'} pending shared-code flush never captures stdin, including after expiry`,async()=>{
+    let release;
+    const flush=new Promise(resolve=>{release=resolve;});
+    const f=runnerFixture({useApi,flush});
+    f.input('PRIVATE_INPUT'); await f.start();
+    assert.equal(f.captureOperations.length,0); assert.equal(f.requests.length,0);
+    f.tick(RETENTION_MS+1);
+    assert.equal(f.nodes.customStdin.value,'');
+    assert.equal(f.captureOperations.length,0); assertNoStdinCopies(f);
+    release('a'.repeat(64)); await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(f.requests.length,1);
+    assert.equal(JSON.parse(f.requests[0].transport.toString()).stdin,undefined);
+    assert.equal(f.captureOperations.length,0); assertNoStdinCopies(f);
+    f.requests[0].resolve({passed_count:1,total_count:1,results:[]});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.match(f.nodes.runOut.innerHTML,/Result: 1\/1 passed/);
+  });
+
+  test(`${useApi?'API':'fetch'} captures stdin only after a successful shared-code flush and drops it at dispatch`,async()=>{
+    let release;
+    const flush=new Promise(resolve=>{release=resolve;});
+    const f=runnerFixture({useApi,flush});
+    f.input('PRIVATE_INPUT_BEFORE_FLUSH'); await f.start();
+    assert.equal(f.captureOperations.length,0); assert.equal(f.requests.length,0);
+    f.input('PRIVATE_INPUT_AFTER_FLUSH');
+    release('a'.repeat(64)); await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(f.requests.length,1);
+    assert.equal(JSON.parse(f.requests[0].transport.toString()).stdin,'PRIVATE_INPUT_AFTER_FLUSH');
+    assert.equal(JSON.parse(f.requests[0].transport.toString()).document_version,'a'.repeat(64));
+    assertNoStdinCopies(f);
+    f.tick(RETENTION_MS+1); assert.equal(f.nodes.customStdin.value,''); assertNoStdinCopies(f);
+    f.requests[0].resolve({passed_count:1,total_count:1,results:[]});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.match(f.nodes.runOut.innerHTML,/Result: 1\/1 passed/);
+  });
+}
+
+test('stalled workspace authority preflight never captures stdin or retains it after expiry',async()=>{
+  let release;
+  const pairing=new Promise(resolve=>{release=resolve;});
+  const f=runnerFixture({pairing}); f.input('PRIVATE_INPUT'); await f.start();
+  assert.equal(f.captureOperations.length,0); assert.equal(f.requests.length,0);
+  assertNoStdinCopies(f);
+  f.tick(RETENTION_MS+1); assert.equal(f.nodes.customStdin.value,''); assertNoStdinCopies(f);
+  release({circlePublicId:'circle_test',contextVersion:7}); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.requests.length,1);
+  assert.equal(JSON.parse(f.requests[0].transport.toString()).stdin,undefined);
+  assertNoStdinCopies(f);
+  f.requests[0].resolve({ok:true,passed_count:1,total_count:1,results:[]});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(f.nodes.runOut.innerHTML,/Result: 1\/1 passed/);
+});
+
+test('private transport captures native fetch before telemetry installs',()=>{
+  const source=readFileSync(new URL('../../index.html',import.meta.url),'utf8');
+  const transport=source.indexOf('<script src="/assets/workspace-scope.js"></script>');
+  assert.ok(transport>=0&&transport<source.indexOf('window.Sentry.init('));
+  assert.equal(source.match(/<script src="\/assets\/workspace-scope.js"><\/script>/g).length,1);
+});
 
 test('an actual execution-context change clears obsolete loading state instead of rendering either response', async () => {
   const f = runnerFixture(); f.input('PRIVATE_INPUT'); await f.start();

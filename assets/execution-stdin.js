@@ -36,14 +36,16 @@
       return operation && refresh() && operation.epoch === epoch
         && operation.context === identity && now() < expiresAt;
     }
+    function selected() { return refresh() && checkbox.checked; }
     function capture() {
-      if (!refresh() || !checkbox.checked) return null;
+      if (!selected()) return null;
       const stdin = input.value;
       if (!stdin.isWellFormed() || new TextEncoder().encode(stdin).byteLength > MAX_STDIN_BYTES) {
         status.textContent = 'Use well-formed text of at most 20,000 UTF-8 bytes.';
         throw new Error('Custom input exceeds its text or size limit.');
       }
       epoch += 1;
+      input.value = ''; // Consume the DOM copy at dispatch, not on response.
       output.replaceChildren();
       expireAfterWindow();
       status.textContent = 'Running privately…';
@@ -51,8 +53,8 @@
     }
     function render(operation, result) {
       if (!matches(operation)) return;
-      // Drop the editable input at completion; output has only the remainder
-      // of the original 60-second run window, never a fresh retention window.
+      // Input was consumed at dispatch; output has only the remainder of the
+      // original 60-second window, never a fresh response-retention window.
       input.value = '';
       output.replaceChildren();
       const heading = doc.createElement('p');
@@ -85,7 +87,7 @@
     });
     clearButton.addEventListener('click', clear);
     refresh();
-    return Object.freeze({ capture, render, clear, refresh, matches });
+    return Object.freeze({ selected, capture, render, clear, refresh, matches });
   }
 
   root.RandoriExecutionStdin = Object.freeze({ MAX_STDIN_BYTES, RETENTION_MS, createController });

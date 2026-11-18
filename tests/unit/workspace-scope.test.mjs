@@ -8,18 +8,21 @@ class Node{
   setAttribute(name,value){this[name]=value;}
   remove(){this.removed=true;}
 }
-async function fixture({enabled=true,body=null,version=7,cachedVersion=version}={}){
+async function fixture({enabled=true,body=null,version=7,cachedVersion=version,nativeThrows=false}={}){
   const previous=new Map(['window','document','localStorage'].map(key=>[key,globalThis[key]])),nodes=new Map();
   const host=new Node('section');nodes.set('view-code',host);nodes.set('editor',new Node('textarea'));nodes.set('roomSelect',new Node('select'));
   const store=new Map([['randori-code','private'],['randori-theme','dark'],['randori-board:week_1_pair_2','private']]);
   const storage={get length(){return store.size;},key:index=>[...store.keys()][index],removeItem:key=>store.delete(key)};
   let epoch=1,publicId='dojo-20',actor=1;
   const sent=[],events=[],stopped=[];
-  const root={location:{origin:'https://app.example.test'},fetch:async(input,options)=>{sent.push({input,options});
-      if(input==='/api/circles')return new Response(JSON.stringify({ok:true,context_version:version,active_circle:{public_id:publicId}}));
-      const context=new Headers(options?.headers||input?.headers).get('X-Randori-Circle-Context-Version');
-      if(context!==null&&context!==String(version))return new Response(JSON.stringify({code:'circle_context_changed'}),{status:409});
-      return new Response(JSON.stringify(body||{ok:true,circle_public_id:publicId,circle_context_version:version,circle:{public_id:publicId,name:'Dojo',is_primary:false},room_id:'circle_20_publication_3_group_4'}));},
+  const root={location:{origin:'https://app.example.test'},fetch(input,options){sent.push({input,options});
+      if(nativeThrows)throw new Error('native dispatch failed');
+      return (async()=>{
+        if(input==='/api/circles')return new Response(JSON.stringify({ok:true,context_version:version,active_circle:{public_id:publicId}}));
+        const context=new Headers(options?.headers||input?.headers).get('X-Randori-Circle-Context-Version');
+        if(context!==null&&context!==String(version))return new Response(JSON.stringify({code:'circle_context_changed'}),{status:409});
+        return new Response(JSON.stringify(body||{ok:true,circle_public_id:publicId,circle_context_version:version,circle:{public_id:publicId,name:'Dojo',is_primary:false},room_id:'circle_20_publication_3_group_4'}));
+      })();},
     _randori_auth:{me:{id:1},capabilities:{secondaryCircleWorkspace:enabled}},
     _randori_circle_control:{capturePairing:async()=>({epoch,userId:actor,contextVersion:cachedVersion,circlePublicId:publicId}),
       matchesPairing:(operation,body)=>operation.epoch===epoch&&operation.userId===actor&&operation.contextVersion===cachedVersion&&operation.circlePublicId===publicId
@@ -33,6 +36,35 @@ async function fixture({enabled=true,body=null,version=7,cachedVersion=version}=
   return {root,sent,nodes,store,events,stopped,advanceCurrent(){version++;},switch(){epoch++;version++;cachedVersion++;publicId='dojo-30';root.RandoriWorkspaceScope.reset();},
     close(){for(const [key,value]of previous){if(value===undefined)delete globalThis[key];else globalThis[key]=value;}}};
 }
+test('private body factories erase native init bytes even when dispatch throws synchronously',async()=>{
+  for(const enabled of [false,true]){
+    const f=await fixture({enabled,nativeThrows:true});try{
+      let called=0;
+      const options={method:'POST',headers:{'X-Randori-Circle-Context-Version':'7'},body:'BASE_ONLY',
+        bodyFactory:()=>{called++;return '{"stdin":"PRIVATE_INPUT"}';}};
+      await assert.rejects(f.root.fetch('/api/execute',options),/native dispatch failed/);
+      assert.equal(called,1);assert.equal(f.sent.length,1);
+      assert.equal(Object.hasOwn(f.sent[0].options,'body'),false);
+      assert.equal(Object.hasOwn(f.sent[0].options,'bodyFactory'),false);
+      assert.equal(options.body,'BASE_ONLY');assert.equal(Object.hasOwn(options,'bodyFactory'),false);
+    }finally{f.close();}
+  }
+});
+
+test('private factories fail closed for foreign origins, other endpoints and non-POST methods',async()=>{
+  for(const enabled of [false,true]){
+    const f=await fixture({enabled});try{
+      let called=0;
+      for(const [input,method] of [['https://other.example.test/api/execute','POST'],['/api/messages','POST'],['/api/execute','GET']]){
+        const options={method,bodyFactory:()=>{called++;return 'PRIVATE_INPUT';}};
+        await assert.rejects(f.root.fetch(input,options),/same-origin execute POST/);
+        assert.equal(Object.hasOwn(options,'bodyFactory'),false);
+      }
+      assert.equal(called,0);assert.equal(f.sent.length,0);
+    }finally{f.close();}
+  }
+});
+
 test('workspace fetch fences all pollers and preserves unrelated requests',async()=>{
   const f=await fixture();try{
     for(const endpoint of ['history','messages','runs','execute','my-pair','pair-recap','session-completion','session-controls','meeting-link','code-document','video/poll','ai/history']){
