@@ -6,6 +6,8 @@ import test from 'node:test';
 // window._randori_auth_ui. Importing it here runs the same file in Node.
 await import('../../assets/auth-dialog.js');
 const ui = globalThis._randori_auth_ui;
+const { default: emailRules } = await import('../../assets/email-validation.js');
+globalThis.RandoriEmailValidation = emailRules;
 
 const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
 
@@ -412,11 +414,15 @@ test('identity status messages and tones', () => {
   assert.equal(ui.messageTone("That password isn't right. Try again."), 'error');
 });
 
-test('sign-up applies the shared strict email rules once that module has loaded (ID-68)', async () => {
+test('sign-up requires strict rules even if their lazy load failed (ID-101)', async () => {
   const fields = { email: 'a@b.c', emailValid: true, name: 'Ada', password: 'long-enough-password' };
-  assert.equal(ui.validateAuthFields({ mode: 'signup', ...fields }).ok, true, 'without the module the browser check decides');
-  const { default: rules } = await import('../../assets/email-validation.js');
-  globalThis.RandoriEmailValidation = rules;
+  delete globalThis.RandoriEmailValidation;
+  const missing = ui.validateAuthFields({ mode: 'signup', ...fields });
+  assert.equal(missing.ok, false);
+  assert.match(missing.errors.email, /Email checks are not ready/);
+  assert.equal(ui.validateAuthFields({ mode: 'signin', ...fields }).ok, true);
+  assert.equal(ui.validateAuthFields({ mode: 'reset', ...fields }).ok, true);
+  globalThis.RandoriEmailValidation = emailRules;
   try {
     const signup = ui.validateAuthFields({ mode: 'signup', ...fields });
     assert.deepEqual([signup.ok, signup.first, signup.errors.email],

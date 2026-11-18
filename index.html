@@ -4553,7 +4553,8 @@ async function refreshMe(){
       signup.hidden=pending||!authCapabilitiesLoaded||authMode!=='signup'
         ||!authCapabilities.passwordSignup||!signupAllowed;
       signup.disabled=authBusy||!authCapabilitiesLoaded||!signupAllowed;
-      signup.textContent=authMode==='signup'?copy.submit:authUi.authCopy('signup',{registrationMode:authCapabilities.registrationMode}).submit;
+      signup.textContent=authRequest?.checkingEmail?'Checking email…'
+        :(authMode==='signup'?copy.submit:authUi.authCopy('signup',{registrationMode:authCapabilities.registrationMode}).submit);
       signup.setAttribute('aria-busy',submitting&&authMode==='signup'?'true':'false');
     }
     if(signin){
@@ -5421,6 +5422,30 @@ async function refreshMe(){
     const enabled=mode==='signup'?authCapabilities.passwordSignup&&canStartSignup()
       :(mode==='reset'?authCapabilities.passwordReset:authCapabilities.passwordLogin);
     if(!enabled) return;
+    if(mode==='signup'){
+      // Header signup is outside the public page's optional controls. Fence
+      // its validator load just like a POST, including Close/invite expiry.
+      const checking={controller:new AbortController(),operation,inviteBound:inviteRequired,checkingEmail:true};
+      authRequest=checking;
+      setAuthBusy(true);
+      let failed=false;
+      try{
+        await window._randori_optional_pages.load('email');
+      }catch{
+        if(authRequest===checking&&!checking.controller.signal.aborted&&authInteractionMatches(operation)){
+          failed=true;
+          setAuthError('Email checks could not load. Check your connection and try creating your account again. Nothing was sent.');
+        }
+        return;
+      }finally{
+        if(authRequest===checking){
+          authRequest=null;
+          setAuthBusy(false);
+          if(failed) restoreAuthFocusAfterFailure(mode);
+        }
+      }
+      if(checking.controller.signal.aborted||!authInteractionMatches(operation)) return;
+    }
     const body=validateAuthForm(mode);
     if(!body) return;
     if(operation?.invite) body.invite_binding=operation.invite.binding;
@@ -10216,7 +10241,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   // Landing CTA wiring
   // #landingSignup ("I have an invitation") is wired in assets/landing.js.
-  document.getElementById('landingSignin')?.addEventListener('click', ()=>window._randori_auth?.openModal?.('signin'));
+  for(const id of ['landingSignin','requestInviteSignin','inviteSignin','activationSignin']){
+    document.getElementById(id)?.addEventListener('click', ()=>window._randori_auth?.openModal?.('signin'));
+  }
   document.getElementById('soloSignIn')?.addEventListener('click', ()=>window._randori_auth?.openModal?.('signin'));
 
   // Profile setup helpers
@@ -11583,7 +11610,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
             const focus=captureScheduleFocus();
             calendar.removeAttribute('aria-busy');
             calendar.replaceChildren(...labelNodes);
-            if(stillCurrent()) toggleScheduleActions(scheduleState.inFlight==='write');
+            if(calendar.isConnected) toggleScheduleActions(scheduleState.inFlight==='write');
             // A reconciliation render during the load also showed a disabled
             // button. Refresh it without stealing focus from another control.
             if(!calendar.isConnected&&pairedDashboardSchedule()) renderScheduleView({restoreFocus:focus});

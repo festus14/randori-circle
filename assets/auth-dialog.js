@@ -48,15 +48,15 @@
     return '';
   }
 
-  // Sign-up applies the shared strict rules (assets/email-validation.js, the
-  // same module the server uses) once that module has loaded. Sign-in and
-  // password reset keep the browser's own check so an existing account whose
-  // address predates those rules is never locked out client-side.
+  // Sign-up requires the shared strict rules. The submitter awaits their
+  // first-use load; this pure helper also fails closed if a caller forgets.
+  // Sign-in and reset retain the browser check for legacy account addresses.
   function emailProblem(email, emailValid, mode) {
     if (!email) return 'Enter your email address.';
     if (!emailValid) return 'Enter a valid email address.';
     const rules = root.RandoriEmailValidation;
-    if (mode === 'signup' && rules) {
+    if (mode === 'signup') {
+      if (!rules) return 'Email checks are not ready. Check your connection and try again.';
       const verdict = rules.validateEmail(email);
       if (!verdict.ok) return rules.emailProblemMessage(verdict.reason);
     }

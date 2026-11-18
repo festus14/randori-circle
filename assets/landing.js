@@ -163,11 +163,7 @@
     },
   });
 
-  const RECOVERY_DEAD_ENDS = Object.freeze({
-    invite: ['expired', 'failed'],
-    activation: ['expired', 'revoked', 'invalid'],
-    passwordReset: ['expired', 'revoked', 'invalid'],
-  });
+  const RECOVERY_DEAD_ENDS = root._randori_optional_pages.recoveryDeadEnds;
 
   const RECOVERY_IDS = Object.freeze({
     invite: { title: 'inviteTitle', steps: 'inviteNextSteps' },
@@ -249,7 +245,7 @@
   function landingVisible() {
     const landing = el('view-landing');
     return Boolean(landing && landing.style?.display !== 'none'
-      && !landing.querySelector?.('.landing')?.inert);
+      && !el('requestInviteForm')?.inert);
   }
 
   function revealRequestedSection() {
@@ -405,8 +401,8 @@
       try { root.history?.replaceState?.(root.history.state, '', '#request-invite'); } catch {}
       scrollToRequest();
     });
-    const signIn = () => root._randori_auth?.openModal?.('signin');
-    for (const id of ['requestInviteSignin', 'inviteSignin', 'activationSignin']) on(id, 'click', signIn);
+    // Essential sign-in entry points are wired by the synchronous shell,
+    // independently of these optional public widgets.
     on('landingThemeToggle', 'click', () => el('themeToggle')?.click?.());
     // "Privacy" links land on the note open, not on a closed disclosure.
     for (const link of doc.querySelectorAll?.('a[href="#landingPrivacy"]') || []) {

@@ -66,7 +66,8 @@ test('public controls show pending and a keyboard retry, then hydrate capabiliti
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   const status = page.locator('#view-landing [data-testid="optional-page-status"]');
   await expect(status).toContainText('Page controls could not load');
-  expect(await page.locator('#view-landing .landing').evaluate((node: HTMLElement) => node.inert)).toBe(true);
+  expect(await page.locator('#view-landing .landing').evaluate((node: HTMLElement) => node.inert)).toBe(false);
+  expect(await page.locator('#requestInviteForm').evaluate((node: HTMLElement) => node.inert)).toBe(true);
   const retry = status.getByRole('button', { name: 'Retry page' });
   await retry.focus(); await retry.press('Enter');
   await expect(status).toBeHidden();
@@ -112,6 +113,126 @@ for (const failure of ['network', 'evaluation']) for (const failedAsset of ['bul
   });
   await expect(status).toHaveText('Invited 1 person.');
   expect(posts).toEqual([{ emails: ['ada@example.test'] }]);
+});
+
+test('retry focus survives real hidden-element blur, a second failure and eventual success', async ({ page }) => {
+  await mockApi(page);
+  let loads = 0;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/assets/landing.js*', async route => {
+    if (++loads < 3) return route.abort();
+    await gate; await route.continue();
+  });
+  await resetClientState(page);
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  const notice = page.locator('#view-landing [data-testid="optional-page-status"]');
+  const retry = notice.getByRole('button', { name: 'Retry page' });
+  await expect(retry).toBeVisible();
+  await retry.focus(); await retry.press('Enter');
+  await expect(retry).toBeVisible();
+  await expect(retry).toBeFocused();
+  await retry.press('Enter');
+  await expect(notice.locator('[role="status"]')).toHaveText('Loading page controls…');
+  await expect(notice.locator('[role="status"]')).toBeFocused();
+  release();
+  await expect(notice).toBeHidden();
+  await expect(page.locator('#landingTitle')).toBeFocused();
+});
+
+test('header signup awaits failed email validation, retries strict rules, and never posts an invalid address', async ({ page }) => {
+  const posts: unknown[] = [];
+  await mockApi(page, {
+    '/api/auth/capabilities': { ok: true, registrationMode: 'local_open', capabilities: {
+      passwordLogin: true, passwordSignup: true, googleOAuth: false, localIdentity: true,
+    } },
+    '/api/auth/signup': request => { posts.push(request.postDataJSON()); return { ok: true, pending: true }; },
+  });
+  let blocked = true;
+  await page.route('**/assets/email-validation.js*', route => blocked ? route.abort() : route.continue());
+  await resetClientState(page);
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.locator('#authBtn').click();
+  await page.locator('#authModeSwitch').click();
+  await expect(page.locator('#authName')).toBeVisible();
+  await page.locator('#authEmail').fill('a..b@example.test');
+  await page.locator('#authName').fill('Ada');
+  await page.locator('#authPass').fill('long-enough-password');
+  await page.locator('#authSignup').click();
+  await expect(page.locator('#authErr')).toContainText('Email checks could not load');
+  await expect(page.locator('#authSignup')).toBeEnabled();
+  await expect(page.locator('#authSignup')).toBeFocused();
+  expect(posts).toEqual([]);
+  blocked = false;
+  await page.locator('#authSignup').click();
+  await expect(page.locator('#authEmailError')).toHaveText('Dots can’t start, end, or repeat before the @.');
+  await expect(page.locator('#authEmail')).toBeFocused();
+  expect(posts).toEqual([]);
+  await page.locator('#authEmail').fill('ada@example.test');
+  await page.locator('#authSignup').click();
+  await expect.poll(() => posts.length).toBe(1);
+});
+
+test('closing signup during the validator load fences its completion and blocks double submit', async ({ page }) => {
+  const posts: unknown[] = [];
+  await mockApi(page, {
+    '/api/auth/capabilities': { ok: true, registrationMode: 'local_open', capabilities: {
+      passwordLogin: true, passwordSignup: true, googleOAuth: false, localIdentity: true,
+    } },
+    '/api/auth/signup': request => { posts.push(request.postDataJSON()); return { ok: true, pending: true }; },
+  });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/assets/email-validation.js*', async route => { await gate; await route.continue(); });
+  await resetClientState(page);
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.locator('#authBtn').click(); await page.locator('#authModeSwitch').click();
+  await page.locator('#authEmail').fill('ada@example.test');
+  await page.locator('#authName').fill('Ada'); await page.locator('#authPass').fill('long-enough-password');
+  await page.evaluate(() => {
+    const form = document.getElementById('authForm') as HTMLFormElement;
+    form.requestSubmit(); form.requestSubmit();
+  });
+  await expect(page.locator('#authSignup')).toHaveText('Checking email…');
+  await expect(page.locator('#authSignup')).toBeDisabled();
+  await page.keyboard.press('Escape');
+  release();
+  await expect(page.locator('#view-landing [data-testid="optional-page-status"]')).toBeHidden();
+  expect(posts).toEqual([]);
+  await expect(page.locator('#authOverlay')).not.toHaveClass(/show/);
+});
+
+test('blocked optional landing code never disables invitation acceptance, reset forms or in-page sign-in', async ({ page }) => {
+  await mockApi(page, {
+    '/api/auth/capabilities': { ok: true, registrationMode: 'verified_invite', capabilities: {
+      passwordLogin: true, passwordSignup: true, googleOAuth: false, verifiedEmailActivation: true, passwordReset: true,
+    } },
+    '/api/invitations/prepare': { ok: true, binding: 'I'.repeat(43), expires_in_seconds: 600 },
+  });
+  await page.route('**/assets/landing.js*', route => route.abort());
+  await resetClientState(page);
+  await page.goto(`/invite#invite=${'A'.repeat(43)}`);
+  await expect(page.locator('#view-invite [data-testid="optional-page-status"]')).toContainText('could not load');
+  await expect(page.getByTestId('invite-continue')).toBeEnabled();
+  await page.getByTestId('invite-continue').click();
+  await expect(page.getByRole('dialog', { name: 'Join Randori Circle' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.goto('/invite');
+  await expect(page.getByTestId('invite-next-steps')).toBeVisible();
+  await page.locator('#inviteSignin').click();
+  await expect(page.getByRole('dialog', { name: 'Sign in to Randori' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.goto('/verify');
+  await expect(page.getByTestId('activation-next-steps')).toBeVisible();
+  await page.locator('#activationSignin').click();
+  await expect(page.getByRole('dialog', { name: 'Sign in to Randori' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.goto('/reset-password');
+  await page.getByTestId('password-reset-request-new').click();
+  await expect(page.getByRole('dialog', { name: 'Reset your password' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.goto('/', { waitUntil: 'domcontentloaded' }); await page.locator('#requestInviteSignin').click();
+  await expect(page.getByRole('dialog', { name: 'Sign in to Randori' })).toBeVisible();
 });
 
 test('single invitation awaits strict email rules and keeps a failed-load draft retryable', async ({ page }) => {

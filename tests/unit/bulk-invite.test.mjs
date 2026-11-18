@@ -451,6 +451,8 @@ test('a missing card is a no-op and the module installs its browser global', asy
     assert.deepEqual(events, ['randori:bulk-invite-ready']);
     globalThis.dispatchEvent = () => { throw new Error('no events'); };
     await import(`../../assets/bulk-invite.js?browser-again=${Date.now()}`);
+    assert.equal(globalThis.RandoriBulkInvite, fresh.default, 'late evaluation must not reinstall the global');
+    assert.deepEqual(events, ['randori:bulk-invite-ready'], 'late/retry copies emit readiness only once');
   } finally {
     delete globalThis.RandoriBulkInvite;
     delete globalThis.RandoriEmailValidation;

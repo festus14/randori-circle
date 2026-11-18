@@ -449,7 +449,7 @@ const api = Object.freeze({
   withoutLines,
 });
 
-if (typeof window !== 'undefined' && window) {
+if (typeof window !== 'undefined' && window && !window.RandoriBulkInvite) {
   window.RandoriBulkInvite = api;
   try { window.dispatchEvent(new Event('randori:bulk-invite-ready')); } catch { /* old browsers */ }
 }

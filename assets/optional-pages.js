@@ -1,7 +1,9 @@
 // Optional page assets (ID-101). No fetch until a named feature is used.
-// Classic bridge: invitation consumption and the inline shell stay synchronous.
+// Every optional module must tolerate late evaluation alongside a retry copy:
+// removing a timed-out script does not guarantee that it will never execute.
 (function installOptionalPages(root) {
   'use strict';
+  if (root._randori_optional_pages) return;
   const doc = root.document;
   const jobs = new Map();
   const attempts = new Map();
@@ -11,9 +13,13 @@
     calendar: ['/assets/calendar-export.js', 'module', () => root._randori_calendar_export],
     landing: ['/assets/landing.js', '', () => root._randori_landing === bridge ? null : root._randori_landing],
   };
-
+  const recoveryDeadEnds = Object.freeze({
+    invite: Object.freeze(['expired', 'failed']),
+    activation: Object.freeze(['expired', 'revoked', 'invalid']),
+    passwordReset: Object.freeze(['expired', 'revoked', 'invalid']),
+  });
   function load(name) {
-    const asset = assets[name];
+    const asset = Object.hasOwn(assets, name) ? assets[name] : null;
     if (!asset) return Promise.reject(new Error('Unknown optional asset'));
     if (jobs.has(name)) return jobs.get(name);
     const ready = asset[2]();
@@ -22,8 +28,7 @@
     const job = new Promise((resolve, reject) => {
       const script = doc.createElement('script');
       script.type = asset[1];
-      // A failed module evaluation is cached by the browser. A user retry gets
-      // a fresh same-origin URL, never a remote fallback or an automatic loop.
+      // Explicit retries get a fresh same-origin URL, never a remote fallback.
       script.src = asset[0] + (attempt ? `?retry=${attempt}` : '');
       let settled = false;
       const finish = (error) => {
@@ -48,12 +53,7 @@
     jobs.set(name, job);
     return job;
   }
-  root._randori_optional_pages = Object.freeze({ load });
-
-  // The auth shell writes capabilities and recovery state before routing.
-  // Buffer only the latest values, not DOM operations or invitation secrets.
-  // The tiny synchronous predicate preserves the invite CTA/stepper guard;
-  // all recovery titles, DOM and interactions still belong to landing.js.
+  root._randori_optional_pages = Object.freeze({ load, recoveryDeadEnds });
   let capabilities = { loaded: false, failed: false, inviteRequests: false };
   const recovery = new Map();
   const bridge = {
@@ -66,7 +66,11 @@
     },
     applyRecovery(page, status) {
       recovery.set(page, status);
-      return { showNextSteps: (page === 'invite' ? ['expired', 'failed'] : ['expired', 'revoked', 'invalid']).includes(status) };
+      const showNextSteps = Object.hasOwn(recoveryDeadEnds, page) && recoveryDeadEnds[page].includes(status);
+      const ids = { invite: 'inviteNextSteps', activation: 'activationNextSteps', passwordReset: 'passwordResetNextSteps' };
+      const steps = doc?.getElementById(ids[page]);
+      if (steps) steps.hidden = !showNextSteps;
+      return { showNextSteps };
     },
   };
   Object.defineProperty(root, '_randori_landing', { configurable: true, value: bridge });
@@ -76,19 +80,23 @@
       .catch(error => { landingJob = null; throw error; });
     return landingJob;
   }
-
   function watchPublicViews() {
+    const observers = new Set();
     for (const id of ['landing', 'invite', 'activation', 'password-reset']) {
       const view = doc.getElementById(`view-${id}`);
       const content = view?.querySelector('.landing');
       if (!content) continue;
+      // Core invitation, activation, password reset and sign-in controls are
+      // synchronous shell features. Only landing.js-owned widgets wait here.
+      const controls = [...view.querySelectorAll('#requestInviteForm, #landingSignup, #landingRequestInvite, #landingThemeToggle, a[href="#landingPrivacy"]')];
       const notice = doc.createElement('div');
-      notice.className = 'rc-banner rc-banner--info';
+      notice.className = 'rc-banner';
       notice.dataset.testid = 'optional-page-status';
       notice.hidden = true;
       const status = doc.createElement('span');
       status.setAttribute('role', 'status');
       status.setAttribute('aria-live', 'polite');
+      status.tabIndex = -1;
       const retry = doc.createElement('button');
       retry.type = 'button';
       retry.className = 'btn secondary sm';
@@ -98,35 +106,46 @@
       view.prepend(notice);
       let pending = false;
       let done = false;
+      function focusOwned(hadFocus, target) {
+        if (hadFocus && view.style.display !== 'none'
+          && [status, retry, doc.body].includes(doc.activeElement)) target?.focus();
+      }
       function show() {
         if (view.style.display === 'none' || pending || done) return;
+        const hadFocus = doc.activeElement === retry;
         pending = true;
         notice.hidden = false;
-        retry.hidden = true;
-        content.inert = true;
-        content.setAttribute('aria-busy', 'true');
         status.textContent = 'Loading page controls…';
+        // Park retry-owned focus on the live pending message before hiding.
+        if (hadFocus) status.focus();
+        retry.hidden = true;
+        for (const control of controls) { control.inert = true; control.setAttribute('aria-busy', 'true'); }
         void loadLanding().then(api => {
           done = true;
-          content.inert = false;
-          content.setAttribute('aria-busy', 'false');
-          notice.hidden = true;
-          // Capabilities can settle before mount, while this content is inert.
-          // Reveal/focus a request-invite deep link only once controls are live.
+          for (const observer of observers) observer.disconnect();
+          observers.clear();
+          for (const control of controls) { control.inert = false; control.setAttribute('aria-busy', 'false'); }
           api.revealRequestedSection?.();
-          // Retry owned focus; restore it only if this page is still shown.
-          if (doc.activeElement === retry && view.style.display !== 'none') content.querySelector('button, input, a')?.focus();
+          const heading = content.querySelector('h1, h2');
+          if (heading) heading.tabIndex = -1;
+          // Move focus out before hiding its parent notice, not afterwards.
+          focusOwned(hadFocus, heading);
+          notice.hidden = true;
         }, () => {
           status.textContent = 'Page controls could not load. Check your connection and retry.';
-          content.setAttribute('aria-busy', 'false');
+          for (const control of controls) control.setAttribute('aria-busy', 'false');
           retry.hidden = false;
+          focusOwned(hadFocus, retry);
         }).finally(() => { pending = false; });
       }
       retry.addEventListener('click', show);
-      new root.MutationObserver(show).observe(view, { attributes: true, attributeFilter: ['style'] });
+      const observer = new root.MutationObserver(show);
+      observers.add(observer);
+      observer.observe(view, { attributes: true, attributeFilter: ['style'] });
       show();
     }
   }
+  if (!doc) return; // Pure recovery metadata is also used by Node unit tests.
   if (doc.readyState === 'loading') doc.addEventListener('DOMContentLoaded', watchPublicViews, { once: true });
   else watchPublicViews();
 })(typeof window !== 'undefined' ? window : globalThis);

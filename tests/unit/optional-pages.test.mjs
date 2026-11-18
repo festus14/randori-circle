@@ -7,45 +7,62 @@ const source = readFileSync(new URL('../../assets/optional-pages.js', import.met
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 class Element {
-  constructor(tag = 'div') {
+  constructor(tag = 'div', doc = null) {
     this.tagName = tag.toUpperCase(); this.children = []; this.listeners = {};
     this.attributes = {}; this.dataset = {}; this.style = { display: 'none' };
-    this.hidden = false; this.inert = false; this.textContent = '';
+    this.doc = doc; this.hidden = false; this.inert = false; this.textContent = '';
   }
-  append(...nodes) { this.children.push(...nodes); }
-  prepend(node) { this.children.unshift(node); }
+  get hidden() { return this._hidden; }
+  set hidden(value) {
+    this._hidden = value;
+    if (value && this.doc && this.contains(this.doc.activeElement)) this.doc.activeElement = this.doc.body;
+  }
+  contains(node) { return node === this || this.children.some(child => child.contains(node)); }
+  append(...nodes) { for (const node of nodes) node.parent = this; this.children.push(...nodes); }
+  prepend(node) { node.parent = this; this.children.unshift(node); }
   setAttribute(key, value) { this.attributes[key] = value; }
   querySelector(selector) { return selector === '.landing' ? this.content : this.focusTarget; }
+  querySelectorAll() { return this.controls || []; }
   addEventListener(type, listener) { this.listeners[type] = listener; }
   remove() { this.removed = true; }
-  focus() { this.focused = true; }
+  focus() {
+    for (let node = this; node; node = node.parent) if (node.hidden || node.inert) return;
+    this.focused = true; if (this.doc) this.doc.activeElement = this;
+  }
 }
 
-function browser() {
-  const scripts = [];
-  const views = new Map(['landing', 'invite', 'activation', 'password-reset'].map(id => {
-    const view = new Element(); view.content = new Element(); view.content.focusTarget = new Element('button');
-    return [`view-${id}`, view];
-  }));
+function browser({ readyState = 'loading', emptyViews = false } = {}) {
+  const scripts = []; const observers = [];
   const timers = new Map(); let timerId = 0;
   const doc = {
-    readyState: 'loading', activeElement: null,
-    createElement: tag => new Element(tag),
+    readyState, activeElement: null,
+    createElement: tag => new Element(tag, doc),
     getElementById: id => views.get(id),
     head: { appendChild: script => scripts.push(script) },
     addEventListener(type, callback) { this[type] = callback; },
   };
+  doc.body = new Element('body', doc); doc.activeElement = doc.body;
+  const views = new Map((emptyViews ? [] : ['landing', 'invite', 'activation', 'password-reset']).map(id => {
+    const view = new Element('section', doc); view.content = new Element('div', doc);
+    view.content.focusTarget = new Element('h1', doc); view.content.append(view.content.focusTarget);
+    view.controls = id === 'landing' ? [new Element('form', doc)] : [];
+    view.content.append(...view.controls); view.append(view.content);
+    return [`view-${id}`, view];
+  }));
   const window = {
     document: doc,
     setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout(id) { timers.delete(id); },
     MutationObserver: class {
-      constructor(callback) { this.callback = callback; }
-      observe(view) { view.observer = this.callback; }
+      constructor(callback) { this.callback = callback; observers.push(this); }
+      observe(view) { view.observer = () => { if (!this.disconnected) this.callback(); }; }
+      disconnect() { this.disconnected = true; }
     },
   };
-  vm.runInNewContext(source, { window, Promise, Map, Object, Error });
-  return { window, doc, views, scripts, timers, load: window._randori_optional_pages.load };
+  const context = { window, Promise, Map, Set, Object, Error };
+  const evaluate = () => vm.runInNewContext(source, context, { filename: new URL('../../assets/optional-pages.js', import.meta.url).href });
+  evaluate();
+  return { window, doc, views, scripts, observers, timers, evaluate, load: window._randori_optional_pages.load };
 }
 
 function finish(script, browser, name, value = {}) {
@@ -110,8 +127,9 @@ test('public first use awaits email then landing and replays latest state withou
   const view = b.views.get('view-landing');
   view.style.display = 'block'; view.observer(); view.observer();
   const notice = view.children[0];
-  assert.equal(view.content.inert, true);
-  assert.equal(view.content.attributes['aria-busy'], 'true');
+  assert.equal(view.content.inert, false);
+  assert.equal(view.controls[0].inert, true);
+  assert.equal(view.controls[0].attributes['aria-busy'], 'true');
   assert.match(notice.children[0].textContent, /Loading page/);
   assert.equal(b.scripts.length, 1);
   assert.equal(b.scripts[0].src, '/assets/email-validation.js');
@@ -138,15 +156,65 @@ test('a public load failure leaves a visible retry, preserving the page and rest
   const notice = view.children[0]; const retry = notice.children[1];
   assert.match(notice.children[0].textContent, /could not load/);
   assert.equal(retry.hidden, false);
-  assert.equal(view.content.inert, true);
-  b.doc.activeElement = retry;
+  assert.equal(view.content.inert, false);
+  retry.focus();
   retry.listeners.click();
+  assert.equal(b.doc.activeElement, notice.children[0], 'pending status owns focus while retry is hidden');
   assert.equal(b.scripts[1].src, '/assets/email-validation.js?retry=1');
   finish(b.scripts[1], b, 'email'); await settle();
   finish(b.scripts[2], b, 'landing', { setCapabilities() {}, applyRecovery() {} }); await settle();
   assert.equal(view.content.inert, false);
   assert.equal(notice.hidden, true);
-  assert.equal(view.content.focusTarget.focused, true);
+  assert.equal(b.doc.activeElement, view.content.focusTarget);
+  assert.ok(b.observers.every(observer => observer.disconnected));
+});
+
+test('hidden elements blur, retry failure restores focus, and unrelated focus is never stolen', async () => {
+  const b = browser(); b.doc.DOMContentLoaded();
+  const view = b.views.get('view-landing'); view.style.display = 'block'; view.observer();
+  b.scripts[0].onerror(); await settle();
+  const notice = view.children[0]; const retry = notice.children[1];
+  retry.focus(); retry.hidden = true;
+  assert.equal(b.doc.activeElement, b.doc.body, 'the fake must reproduce browser blur on hidden');
+  retry.hidden = false; retry.focus(); retry.listeners.click();
+  b.scripts[1].onerror(); await settle();
+  assert.equal(b.doc.activeElement, retry);
+  retry.listeners.click();
+  const elsewhere = new Element('button', b.doc); elsewhere.focus();
+  finish(b.scripts[2], b, 'email'); await settle();
+  finish(b.scripts[3], b, 'landing', { setCapabilities() {}, applyRecovery() {} }); await settle();
+  assert.equal(b.doc.activeElement, elsewhere, 'a user moving focus during loading keeps it');
+});
+
+test('the bootstrap and lazy module copies are idempotent, and recovery uses one frozen predicate table', async () => {
+  const b = browser(); const api = b.window._randori_optional_pages; const boot = b.doc.DOMContentLoaded;
+  b.evaluate();
+  assert.equal(b.window._randori_optional_pages, api);
+  assert.equal(b.doc.DOMContentLoaded, boot, 'late copy cannot register another bootstrap');
+  const bridge = b.window._randori_landing;
+  bridge.syncInviteHelp();
+  for (const [page, states] of Object.entries(api.recoveryDeadEnds)) {
+    assert.ok(Object.isFrozen(states));
+    const ids = { invite: 'inviteNextSteps', activation: 'activationNextSteps', passwordReset: 'passwordResetNextSteps' };
+    const steps = new Element('div', b.doc); b.views.set(ids[page], steps);
+    for (const state of states) {
+      assert.equal(bridge.applyRecovery(page, state).showNextSteps, true);
+      assert.equal(steps.hidden, false, 'core recovery stays usable before optional code loads');
+    }
+    assert.equal(bridge.applyRecovery(page, 'live').showNextSteps, false);
+    assert.equal(steps.hidden, true);
+  }
+  assert.equal(bridge.applyRecovery('unknown', 'invalid').showNextSteps, false);
+  assert.equal(bridge.applyRecovery('constructor', 'invalid').showNextSteps, false);
+});
+
+test('an already-ready document boots once and absent public views need no observers', () => {
+  const b = browser({ readyState: 'complete' });
+  assert.equal(b.observers.length, 4);
+  assert.equal(b.doc.DOMContentLoaded, undefined);
+  const empty = browser({ readyState: 'complete', emptyViews: true });
+  assert.equal(empty.observers.length, 0);
+  assert.equal(empty.scripts.length, 0);
 });
 
 test('named optional assets exist, remain same-origin, and invitation security precedes the bridge', () => {

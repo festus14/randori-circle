@@ -142,6 +142,21 @@ test('uses absolute UTC arithmetic through daylight-saving transitions', () => {
   assert.equal(calendarTimestamp(new Date('2026-09-19T10:11:12.999Z')), '20260919T101112Z');
 });
 
+test('late calendar module evaluation preserves the browser adapter without side effects', async () => {
+  const previous = globalThis.window;
+  globalThis.window = {};
+  try {
+    await import('../../assets/calendar-export.js?first-load=1');
+    const adapter = globalThis.window._randori_calendar_export;
+    await import('../../assets/calendar-export.js?late-retry=1');
+    assert.equal(globalThis.window._randori_calendar_export, adapter);
+    assert.ok(Object.isFrozen(adapter));
+  } finally {
+    if (previous === undefined) delete globalThis.window;
+    else globalThis.window = previous;
+  }
+});
+
 test('browser adapter downloads one calendar blob and always revokes its object URL', async () => {
   const actions = [];
   const anchor = {
