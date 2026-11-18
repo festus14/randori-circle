@@ -184,9 +184,13 @@ test('heartbeat detects a silent link; token renewal closes and reauthorizes ins
   item.sockets[0].send=function(raw){ this.sent.push(JSON.parse(raw)); };
   item.advance(25000); item.advance(25000); assert.equal(item.fallback,1); item.relay.stop();
   const renewal=fixture(); await join(renewal); renewal.advance(270000-30);
-  assert.equal(renewal.relay.connected,false); assert.equal(renewal.fallback,1);
-  renewal.advance(1000); await settleRelayPromises(); renewal.advance(30);
+  assert.equal(renewal.relay.connected,false); assert.equal(renewal.fallback,0,'planned renewal is not a failure');
+  await settleRelayPromises(); renewal.advance(30);
   assert.equal(renewal.calls,2); assert.equal(renewal.sockets.length,2); assert.equal(renewal.relay.connected,true);
+  assert.equal(renewal.fallback,0,'renewal did not trigger an extra HTTPS reconcile');
+  renewal.sockets[1].close(); assert.equal(renewal.fallback,1);
+  renewal.advance(999); await settleRelayPromises(); assert.equal(renewal.calls,2);
+  renewal.advance(1); await settleRelayPromises(); assert.equal(renewal.calls,3,'real failure still starts with a one-second retry');
   renewal.relay.stop();
 });
 

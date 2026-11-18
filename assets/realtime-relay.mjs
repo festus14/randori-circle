@@ -41,7 +41,7 @@ export function relayConfigurationValid(config,room,nowSeconds=Math.floor(Date.n
   }catch{ return false; }
 }
 
-export function openPrivateRelay(config,{WebSocketCtor=globalThis.WebSocket,onMessage,onJoined,onUnavailable,
+export function openPrivateRelay(config,{WebSocketCtor=globalThis.WebSocket,onMessage,onJoined,onUnavailable,onRenew,
   setTimer=setTimeout,clearTimer=clearTimeout,now=Date.now}={}){
   const url=new URL('/realtime/v1/websocket',config.url); url.protocol='wss:';
   url.searchParams.set('apikey',config.publishable_key); url.searchParams.set('vsn','1.0.0');
@@ -69,7 +69,10 @@ export function openPrivateRelay(config,{WebSocketCtor=globalThis.WebSocket,onMe
     heartbeatTimer=setTimer(heartbeat,25000);
   };
   joinTimer=setTimer(fail,5000);
-  expiryTimer=setTimer(fail,Math.max(0,config.expires_at*1000-now()-30000));
+  expiryTimer=setTimer(()=>{
+    if(closed) return;
+    close(); onRenew?.(); // planned fresh authorization, not a failure/backoff
+  },Math.max(0,config.expires_at*1000-now()-30000));
   socket.onopen=()=>{
     if(!push('phx_join',{config:{broadcast:{ack:false,self:false},presence:{enabled:false,key:''},
       postgres_changes:[],private:true},access_token:config.token},{reference:'1'})) fail();
@@ -151,7 +154,11 @@ export function createCodeRelay({identity,fetchToken,mergeUpdates,onUpdate,onFal
         unavailable(delay); return;
       }
       channel=openPrivateRelay(config,{WebSocketCtor,setTimer,clearTimer,now,onMessage:received,
-        onJoined:()=>{ retryMs=1000; },onUnavailable:()=>unavailable()});
+        onJoined:()=>{ retryMs=1000; },onUnavailable:()=>unavailable(),onRenew:()=>{
+          channel=null; pending=[];
+          if(batchTimer!==null) clearTimer(batchTimer); batchTimer=null;
+          if(current()) connect(); // no extra reconcile, delay or backoff increase
+        }});
     }catch{ if(current()) unavailable(); }
     finally{ clearTimer(timeout); if(controller===active) controller=null; }
   };
