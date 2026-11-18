@@ -102,6 +102,7 @@ ID-64 in the decision log.
 | [CONTENT_POLICY.md](CONTENT_POLICY.md) | What exercise content the project may ship; third-party questions are never crawled or imported |
 | [CATALOG_PROVENANCE.md](CATALOG_PROVENANCE.md) | The rights manifest, content hashes and the emergency takedown procedure (ID-22) |
 | [CATALOGUE_PACK_V3.md](CATALOGUE_PACK_V3.md) | The nine-exercise original pack v3 and its review (ID-60) |
+| [INTERVIEW_KITS.md](INTERVIEW_KITS.md) | Backend and frontend kits, selection, authoring, review expiry and retirement (ID-97, #469) |
 
 Code execution has no separate doc: see ID-62 (provider choice) and ID-74 (live
 execution smoke check) in the decision log, and `EXECUTION_PROVIDER` in

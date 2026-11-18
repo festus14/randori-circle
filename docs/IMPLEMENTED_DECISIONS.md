@@ -122,6 +122,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-94](#id-94-keep-custom-stdin-private-and-separate-from-verified-catalogue-results) | Keep custom stdin private and separate from verified catalogue results | Security, Secrets & Privacy | Active |
 | [ID-95](#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry) | Scope primary interview controls to the interviewer and close on timer expiry | Pairing & Scheduling | Active |
 | [ID-96](#id-96-relay-pair-code-updates-through-private-supabase-channels-without-changing-durable-authority) | Relay pair code updates through private Supabase channels without changing durable authority | Pairing & Scheduling | Active |
+| [ID-97](#id-97-curate-original-interview-kits-as-versioned-catalogue-metadata) | Curate original interview kits as versioned catalogue metadata | Content & Catalogue | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -135,7 +136,7 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-97). Never reuse a number, even if an entry is
+   plus one (currently ID-98). Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
 2. **Check for collisions before you claim it.** Parallel PRs are the
@@ -5624,3 +5625,69 @@ ALTER fail safely inside the apply transaction if it does not. Reapply the
 reviewed policies and matched key,
 canary, then enable deliberately. This branch neither contacts Supabase nor
 changes Vercel/production/provider state.
+
+## ID-97: Curate original interview kits as versioned catalogue metadata
+
+**Status: Active.** Implementation candidate for #469, epic #460. ID-94 and
+ID-96 are reserved by parallel work; this increment does not claim them.
+
+**Context.** The original catalogue has 19 active exercises and one retired
+historical record. Repeated mock interviews need role-oriented curation and
+more executable original content, not imported problem-bank statements.
+
+**Decision.**
+- Add two distinct tracks: Backend data processing and Frontend state logic.
+  Each adds four original exercises (one Easy, two Medium, one Hard) and curates
+  three existing reviewed exercises. Every new question has two public examples,
+  both language starters, eight fresh server-owned cases, an oracle, exact
+  original provenance, a canonical hash and a bounded review expiry.
+- Advance the catalogue's payload schema to 2 with a closed `kits` envelope and
+  exact `slug@version` membership. Keep the stable catalogue filename, catalogue
+  identity and schema-1 provenance format. Continue accepting catalogue schema 1
+  without kits. Editorial kit grouping is outside exercise content hashes, so
+  assigning an existing question to a kit cannot rewrite its original evidence.
+- Public list/detail projections carry only kit id, title and track per active
+  exact version. Browser filters and chips derive from those public records;
+  cases, oracles, expected values and private evidence remain server-only.
+  A kit with no active members has no browser option. Retired keys remain valid
+  editorial history so the existing two-file takedown stays sufficient.
+- Use the existing card/dropdown selection and pinned workspace question path.
+  Track narrows kit options and clears an incompatible kit; all filters still
+  compose. Browsing cannot overwrite a hydrated room's off-filter question, and
+  explicit selection saves the same question id/version as before. This adds no
+  interviewer authorization or ownership; ID-95's role/timer boundary is unchanged.
+- Ship unflagged, following the additive original pack in ID-60. Defaults remain
+  All and the original picker and APIs remain available. No permissions, durable
+  schema, migration, request-path DDL, new secret or network adapter changes.
+- Extend `validate:catalog` with offline JavaScript/Python reference execution
+  through the production harnesses for new kit content. Python references cannot
+  use imports or builtins outside the execution gateway's allowed namespace.
+  Runtime catalogue validation itself remains in-process and never executes
+  these authoring checks or starts a provider.
+
+**Alternatives.** A large import was rejected: originality and case review must
+stay bounded. Third-party statements or renamed textbook exercises were rejected
+by the content policy. Putting membership inside every exercise's hashed content
+would force needless re-review/hash churn for existing statements; use versioned
+editorial metadata instead. A new kit-assignment route or server-enforced question
+owner would widen this increment into a separate session-control contract; keep
+that work out of #469.
+
+**Verification.** Focused catalogue/provenance/view/kit tests cover strict metadata,
+exact membership, public projection boundaries, original-record preservation,
+known boundary/scale outcomes, independent brute-force checks, and both real local
+language harnesses. Expiry is checked on the new content in a warm process. Every
+new question is revoked in test copies without changing hashes or kit history,
+and then cannot be listed, resolved or evaluated. Catalogue/kit Playwright tests
+cover discovery, combined filters, phone layout, the existing Run path and a kit
+card selection that saves a hydrated room's exact question version. The existing
+deployability, runtime-DDL, syntax, CRDT, byte-budget and docs gates are unchanged.
+
+**Rollout and recovery.** Ship content, manifest, runtime definitions, filters and
+projections together through normal review. Revert UI filtering independently
+for a presentation regression; retire exact affected questions for a content
+concern. Full rollback must remove matching new content/manifest/runtime records
+and metadata coherently, with stored question identities never reused. Retired
+kit membership is not activation; restoration still needs a reviewed content
+change. Authoring, renewal and takedown procedures:
+[original interview kits](INTERVIEW_KITS.md).
