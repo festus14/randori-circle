@@ -42,3 +42,15 @@ test('deployment allows Supabase WSS only, not provider scripts/CDNs/REST or a n
   assert.equal(csp.split(';').find(directive=>directive.trim().startsWith('script-src')).includes('supabase'),false);
   assert.equal(connect.includes('https://*.supabase.co'),false,'transport never uses provider REST fallback');
 });
+
+test('#462 awareness needs no SQL change: policies are topic-scoped, event-agnostic and still deny Supabase Presence',()=>{
+  // The y-awareness broadcast event is authorized by the same topic/expiry
+  // predicates as y-update; realtime.messages.event is never consulted.
+  for(const name of ['rc_code_relay_read','rc_code_relay_write','rc_code_relay_read_scope','rc_code_relay_write_scope']){
+    const value=policy(name);
+    assert.doesNotMatch(value,/\bevent\b|y-update|y-awareness/,name);
+    // Supabase Presence uses extension 'presence': every policy requires broadcast.
+    assert.match(value,/extension = 'broadcast'/,name);
+  }
+  assert.doesNotMatch(rollback,/\bevent\b|presence/);
+});

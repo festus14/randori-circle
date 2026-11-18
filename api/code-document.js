@@ -1,5 +1,7 @@
 import { realtimeRelayConfiguration } from './_realtime-relay.js';
 import { handleRelayToken } from './_realtime-relay-api.js';
+import { presenceConfiguration } from './_presence.js';
+import { handlePresence } from './_presence-api.js';
 import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import {
   canUseLegacySinglePrimaryCircleFeatures,
@@ -55,6 +57,8 @@ export default async function handler(req,res){
   const path=new URL(req.url||'/api/code-document','http://localhost');
   if(req.query?.endpoint==='relay-token'||path.searchParams.get('endpoint')==='relay-token'
     ||path.pathname==='/api/code-document/relay-token') return handleRelayToken(req,res);
+  if(req.query?.endpoint==='presence'||path.searchParams.get('endpoint')==='presence'
+    ||path.pathname==='/api/code-document/presence') return handlePresence(req,res);
   res.setHeader?.('Cache-Control','private, no-store');
   res.setHeader?.('X-Content-Type-Options','nosniff');
   if(!['GET','POST'].includes(req.method)){
@@ -100,11 +104,13 @@ export default async function handler(req,res){
       // Foreign/nonexistent workspace requests use the uniform pair 404.
       if(!result) return res.status(404).json({ok:false,error:'code document not found'});
       if(result.terminal) return res.status(409).json({ok:false,code:'session_completed',error:'session is ended; editing is closed'});
-      if(result.lobby) return res.status(409).json(IN_LOBBY);
+      // #462: a lobby candidate may still report room presence (no document).
+      if(result.lobby) return res.status(409).json({...IN_LOBBY,...(presenceConfiguration()?{presence:true}:{})});
       if(result.editingClosed) return res.status(409).json(EDITING_CLOSED);
       return res.json({...codeDocumentResponse(result,{afterRevision:input.afterRevision}),
         ...(realtimeRelayConfiguration()?{realtime_relay:true,
-          ...(result.relayDirection?{realtime_relay_direction:result.relayDirection}:{})}:{})});
+          ...(result.relayDirection?{realtime_relay_direction:result.relayDirection}:{})}:{}),
+        ...(presenceConfiguration()?{presence:true}:{})});
     }
     const input=parseCodeDocumentMutation(req.body);
     const result=await mergeAuthorizedCodeDocument(db,{viewerId,...input});

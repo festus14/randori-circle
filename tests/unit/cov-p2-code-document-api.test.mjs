@@ -35,6 +35,8 @@ mock.module('../../api/_data-readiness.js',{exports:{
 }});
 mock.module('../../api/_realtime-relay.js',{exports:{realtimeRelayConfiguration:()=>null}});
 mock.module('../../api/_realtime-relay-api.js',{exports:{handleRelayToken:()=>{ throw new Error('unexpected relay route'); }}});
+mock.module('../../api/_presence.js',{exports:{presenceConfiguration:()=>null}});
+mock.module('../../api/_presence-api.js',{exports:{handlePresence:()=>{ throw new Error('unexpected presence route'); }}});
 mock.module('../../api/_code-document.js',{exports:{
   CodeDocumentInputError,CodeDocumentDataError,
   parseCodeDocumentQuery:()=>{ if(state.throwFrom==='parse') throw state.error; return {afterRevision:2,roomId:'r'}; },

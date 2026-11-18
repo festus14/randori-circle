@@ -2,6 +2,8 @@ import * as Y from 'yjs';
 import { MonacoBinding } from 'y-monaco';
 import { createCodeRelay } from './realtime-relay.mjs';
 import { applyValidatedRelayUpdate } from './realtime-yjs.mjs';
+import { createFallbackPresence, createPresenceSession } from './realtime-presence.mjs';
+import { createPresenceView } from './presence-ui.mjs';
 
 const PENDING_KEY='randori-crdt-pending-v1';
 const CLIENT_KEY='randori-crdt-client-v1';
@@ -16,11 +18,12 @@ const ROOM={test:room=>window.RandoriWorkspaceScope?.canonicalRoom?.(room)===tru
 const ORIGIN_REMOTE=Symbol('remote');
 const ORIGIN_PENDING=Symbol('pending');
 const ORIGIN_RELAY=Symbol('relay');
+const PRIMARY_ROOM=/^week_[1-9]\d*_pair_[1-9]\d*$/;
 const memoryQueues=new Map();
 const state={epoch:0,room:null,identity:null,actorId:null,doc:null,text:null,binding:null,
   textObserver:null,textareaHandler:null,textareaKeyHandler:null,updateHandler:null,undoManager:null,revision:0,version:null,
   hydrated:false,inFlight:false,controller:null,pollTimer:null,retryMs:500,status:'local',completed:false,
-  awaitingRoom:false,hydrationLockEpoch:null,relay:null,relayEnabled:false,relayDirection:null};
+  awaitingRoom:false,hydrationLockEpoch:null,relay:null,relayEnabled:false,relayDirection:null,presence:null};
 
 // Interview lobby/lock (#464): while the server holds candidate editing, the
 // editor is read-only and queued edits stay on this device; they are replayed
@@ -303,6 +306,7 @@ function attachEditor(epoch){
     textarea.addEventListener('input',state.textareaHandler);
     textarea.addEventListener('keydown',state.textareaKeyHandler);
   }
+  bindPresenceEditor();
 }
 
 function endpoint(identity,{afterRevision=0}={}){
@@ -331,29 +335,39 @@ function acceptResponse(data,epoch,identity,{apply=true}={}){
   return true;
 }
 
+function relayHeaders(){
+  // Primary relay/presence requests need the session-circle fence even when
+  // the secondary-workspace fetch wrapper is disabled. The server compares
+  // this cached version with live authority; it is never authorization.
+  const version=window._randori_circle_control?.scheduleContext?.()?.contextVersion;
+  return {'content-type':'application/json',
+    ...(Number.isSafeInteger(version)&&version>=0?{'X-Randori-Circle-Context-Version':String(version)}:{})};
+}
+
+function documentBody(identity){
+  return {room_id:identity.room,question_slug:identity.questionSlug,
+    question_version:identity.questionVersion,language:identity.language};
+}
+
+function stopRelay(){
+  state.relay?.stop(); state.relay=null;
+  presenceRelayState(false);
+}
+
 function configureRelay(data,epoch,identity){
-  state.relayEnabled=data?.realtime_relay===true&&/^week_[1-9]\d*_pair_[1-9]\d*$/.test(identity.room);
+  state.relayEnabled=data?.realtime_relay===true&&PRIMARY_ROOM.test(identity.room);
   state.relayDirection=['send','receive'].includes(data?.realtime_relay_direction)?data.realtime_relay_direction:null;
-  if(!state.relayEnabled||!matches(epoch,identity)||!navigator.onLine){
-    state.relay?.stop(); state.relay=null; return;
-  }
+  if(!state.relayEnabled||!matches(epoch,identity)||!navigator.onLine){ stopRelay(); return; }
   if(state.relay) return;
   try{
     state.relay=createCodeRelay({identity,mergeUpdates:Y.mergeUpdates,
       isCurrent:()=>matches(epoch,identity)&&state.hydrated&&navigator.onLine,
-      fetchToken:signal=>{
-        // Primary relay joins need the session-circle fence even when the
-        // secondary-workspace fetch wrapper is disabled. The server compares
-        // this cached version with live authority; it is never authorization.
-        const version=window._randori_circle_control?.scheduleContext?.()?.contextVersion;
-        return fetch('/api/code-document/relay-token',{
-          method:'POST',credentials:'same-origin',cache:'no-store',signal,
-          headers:{'content-type':'application/json',
-            ...(Number.isSafeInteger(version)&&version>=0?{'X-Randori-Circle-Context-Version':String(version)}:{})},
-          body:JSON.stringify({room_id:identity.room,question_slug:identity.questionSlug,
-            question_version:identity.questionVersion,language:identity.language}),
-        });
-      },
+      fetchToken:signal=>fetch('/api/code-document/relay-token',{
+        method:'POST',credentials:'same-origin',cache:'no-store',signal,
+        headers:relayHeaders(),body:JSON.stringify(documentBody(identity)),
+      }),
+      onAwareness:bytes=>{ if(matches(epoch,identity)) state.presence?.session?.receive(bytes); },
+      onConnection:connected=>{ if(matches(epoch,identity)) presenceRelayState(connected); },
       onUpdate:update=>{
         if(matches(epoch,identity)&&state.doc&&relayInbound()) applyValidatedRelayUpdate(state.doc,update,ORIGIN_RELAY);
         // The doc update handler queues this for HTTPS and disables Run. Relay
@@ -363,6 +377,213 @@ function configureRelay(data,epoch,identity){
     });
     state.relay.start();
   }catch{ state.relay=null; } // crypto/WebSocket unavailable: polling unchanged
+}
+
+// #462 / ID-100. Presence is advisory UI only: it never changes the Yjs
+// document, the HTTPS queue, acknowledgement or Run. Every fence that
+// disposes the document also stops presence, before the relay closes.
+function presenceRelayState(connected){
+  const presence=state.presence;
+  if(!presence) return;
+  presence.relayLive=connected===true;
+  if(presence.relayLive) ensurePresenceSession(presence);
+  presence.session?.connection(presence.relayLive);
+  renderPresence();
+}
+
+// Interview mode (#464, ID-99): awareness is display-only and never touches
+// the document, so it is exempt from the one-way y-update rule. The
+// interviewer accepts inbound y-awareness (onAwareness is not gated by
+// relayInbound) and the admitted candidate broadcasts it (sendAwareness is
+// not gated by relayOutbound). A lobby or locked candidate holds no relay
+// token at all, and a locked candidate publishes `locked` with no selection.
+const presenceLocked=()=>blocked();
+
+function ensurePresenceSession(presence){
+  if(presence.session||state.presence!==presence||!presence.fallback?.seat||!state.doc||!state.text||!state.relay) return;
+  try{
+    presence.session=createPresenceSession({doc:state.doc,text:state.text,seat:presence.fallback.seat,
+      send:(bytes,options)=>state.relay?.sendAwareness(bytes,options)===true,
+      onChange:()=>{ if(state.presence!==presence) return; presenceDeparture(presence); renderPresence(); }});
+    presence.session.setLocked(presenceLocked());
+    if(presence.localSelection) presence.session.setSelection(...presence.localSelection);
+    if(state.relay.connected) presence.session.connection(true);
+  }catch{ presence.session=null; } // presence stays at the HTTPS "online" level
+}
+
+// An explicit awareness departure means "left this document's channel" (tab
+// hidden, sign-out, or just another exercise). Room presence belongs to the
+// HTTPS row, so re-check it a second later (after the partner's keepalive
+// leave): a partner who left the room shows as gone within about two seconds,
+// one who only switched exercise stays online.
+function presenceDeparture(presence){
+  const left=presence.session?.partnerLeftAt||0;
+  if(!left||left===presence.seenLeftAt) return;
+  presence.seenLeftAt=left;
+  if(presence.nudgeTimer!==null) clearTimeout(presence.nudgeTimer);
+  presence.nudgeTimer=setTimeout(()=>{
+    presence.nudgeTimer=null;
+    if(state.presence===presence) presence.fallback?.nudge();
+  },1000);
+}
+
+function mergedPresence(presence){
+  const peer=presence.session?.partner?.()||null;
+  if(peer) return {presence:'here',peer};
+  const online=presence.fallback?.partnerOnline;
+  return {presence:online===true?'online':online===false?'away':'unknown',peer:null};
+}
+
+// What the interviewer already knows from its own live controls: the
+// candidate is still in the lobby, or editing is paused.
+function interviewView(){
+  const controls=window._randori_session_controls?.controls;
+  if(!controls?.lobbyMode||controls.terminal||controls.viewerRole!=='interviewer') return {waiting:false,partnerLocked:false};
+  return {waiting:controls.phase==='lobby',partnerLocked:controls.editingLocked===true};
+}
+
+// The summary is cheap and synchronous; the DOM work (mirror rebuild and
+// reflow) is coalesced to one animation frame however many events arrive.
+function renderPresence(){
+  const presence=state.presence;
+  if(!presence?.view) return;
+  const {presence:value,peer}=mergedPresence(presence),{waiting,partnerLocked}=interviewView();
+  const health=!navigator.onLine?'offline':presence.relayLive?'live':presence.fallback?.healthy===false?'offline':'polling';
+  const status=partnerLocked&&value!=='away'?'locked':peer?.status||null;
+  presence.summary={presence:value,health,status,waiting:waiting&&value!=='away'&&value!=='unknown',
+    selection:status==='locked'?null:peer?.selection||null};
+  if(presence.frame!=null) return;
+  const draw=()=>{
+    presence.frame=null;
+    if(state.presence!==presence) return;
+    try{ presence.view.render({...presence.summary,text:state.text?.toString()||''}); }catch{}
+  };
+  presence.frame=typeof window.requestAnimationFrame==='function'
+    ?{raf:window.requestAnimationFrame(draw)}:{timer:setTimeout(draw,16)};
+}
+
+function cancelPresenceFrame(presence){
+  const frame=presence.frame;
+  presence.frame=null;
+  if(frame?.raf!=null) window.cancelAnimationFrame?.(frame.raf);
+  if(frame?.timer!=null) clearTimeout(frame.timer);
+}
+
+function unbindPresenceEditor(presence){
+  for(const dispose of presence.editorCleanup.splice(0)) try{ dispose(); }catch{}
+}
+
+function bindPresenceEditor(){
+  const presence=state.presence;
+  if(!presence) return;
+  unbindPresenceEditor(presence);
+  const select=(anchor,head)=>{
+    presence.localSelection=[anchor,head];
+    presence.session?.setSelection(anchor,head);
+  };
+  const editor=window._randori_code?.getEditor?.();
+  if(editor?.getModel?.()&&window.monaco&&typeof editor.onDidChangeCursorSelection==='function'){
+    const listener=editor.onDidChangeCursorSelection(event=>{
+      const model=editor.getModel(),selection=event?.selection;
+      if(!model||!selection) return;
+      select(model.getOffsetAt({lineNumber:selection.selectionStartLineNumber,column:selection.selectionStartColumn}),
+        model.getOffsetAt({lineNumber:selection.positionLineNumber,column:selection.positionColumn}));
+    });
+    presence.editorCleanup.push(()=>listener?.dispose?.());
+    return;
+  }
+  const textarea=document.getElementById('editor');
+  if(!textarea?.addEventListener) return;
+  const read=()=>{
+    const start=Number(textarea.selectionStart||0),end=Number(textarea.selectionEnd??start);
+    if(textarea.selectionDirection==='backward') select(end,start); else select(start,end);
+  };
+  const rerender=()=>renderPresence();
+  const selectionchange=()=>{ if(document.activeElement===textarea) read(); };
+  for(const type of ['select','keyup','mouseup','input','focus']) textarea.addEventListener(type,read);
+  textarea.addEventListener('scroll',rerender);
+  document.addEventListener?.('selectionchange',selectionchange);
+  window.addEventListener?.('resize',rerender);
+  presence.editorCleanup.push(()=>{
+    for(const type of ['select','keyup','mouseup','input','focus']) textarea.removeEventListener(type,read);
+    textarea.removeEventListener('scroll',rerender);
+    document.removeEventListener?.('selectionchange',selectionchange);
+    window.removeEventListener?.('resize',rerender);
+  });
+}
+
+// Room presence outlives a document: a same-room re-activation (another
+// exercise or language, admission from the lobby, a held write) swaps only
+// the document-bound parts, so the partner sees no leave/join flicker.
+function detachPresenceDocument(presence){
+  try{ presence.session?.destroy(); }catch{} // null awareness rides the still-open relay
+  presence.session=null; presence.relayLive=false;
+  unbindPresenceEditor(presence);
+  try{ presence.text?.unobserve(presence.textObserver); }catch{}
+  presence.text=null;
+}
+
+function attachPresenceDocument(presence){
+  if(state.text&&presence.text!==state.text){ presence.text=state.text; state.text.observe(presence.textObserver); }
+  bindPresenceEditor();
+  if(state.relay?.connected) presenceRelayState(true);
+}
+
+function configurePresence(data,epoch,identity){
+  if(data?.presence!==true||!PRIMARY_ROOM.test(identity.room)||!matches(epoch,identity)){ stopPresence(); return; }
+  if(state.presence?.room===identity.room){ attachPresenceDocument(state.presence); renderPresence(); return; }
+  stopPresence();
+  const presence={room:identity.room,relayLive:false,session:null,fallback:null,view:null,text:null,localSelection:null,
+    editorCleanup:[],summary:null,frame:null,seenLeftAt:0,nudgeTimer:null};
+  state.presence=presence;
+  try{ presence.view=createPresenceView({room:identity.room,partner:()=>presence.fallback?.partner||null}); }catch{ presence.view=null; }
+  presence.textObserver=()=>{ if(state.presence===presence) renderPresence(); };
+  presence.fallback=createFallbackPresence({
+    // Room-scoped: no exercise, language, cursor or code is ever sent here.
+    request:(value,signal,options={})=>fetch('/api/code-document/presence',{
+      method:'POST',credentials:'same-origin',cache:'no-store',...(signal?{signal}:{}),
+      ...(options.keepalive?{keepalive:true}:{}),headers:relayHeaders(),
+      body:JSON.stringify({room_id:identity.room,state:value}),
+    }),
+    relayConnected:()=>presence.relayLive,
+    onChange:info=>{
+      if(state.presence!==presence) return;
+      if(info?.unavailable){ stopPresence({leave:false}); return; }
+      if(presence.relayLive) ensurePresenceSession(presence);
+      renderPresence();
+    },
+  });
+  window._randori_presence_active=true;
+  attachPresenceDocument(presence);
+  presence.fallback.start();
+  renderPresence();
+}
+
+function stopPresence({leave=true}={}){
+  const presence=state.presence;
+  if(!presence) return;
+  state.presence=null;
+  window._randori_presence_active=false;
+  detachPresenceDocument(presence);
+  if(presence.nudgeTimer!==null) clearTimeout(presence.nudgeTimer);
+  try{ presence.fallback?.stop({leave}); }catch{}
+  cancelPresenceFrame(presence);
+  try{ presence.view?.destroy(); }catch{}
+}
+
+// Seat/role or lock changes (#464): drop every remote awareness state at once
+// and re-announce, so nothing stale lingers for the 15 s TTL.
+function resetPresenceForAccess(){
+  const presence=state.presence;
+  if(!presence) return;
+  const session=presence.session;
+  if(session){
+    session.setLocked(presenceLocked());
+    session.connection(false);
+    if(presence.relayLive) session.connection(true);
+  }
+  presence.fallback?.nudge();
+  renderPresence();
 }
 
 function schedule(delay=POLL_MS){
@@ -406,7 +627,13 @@ async function hydrate(identity,epoch){
     if(result.response.status===409&&result.data.code==='session_completed'){ completeIdentity(); return false; }
     // The interviewer has not opened or released this question yet; access
     // changes re-run activation.
-    if(result.response.status===409&&/^interview_(editing_locked|lobby)$/.test(String(result.data.code||''))){ setStatus('held','waiting for the interviewer'); return false; }
+    if(result.response.status===409&&/^interview_(editing_locked|lobby)$/.test(String(result.data.code||''))){
+      setStatus('held','waiting for the interviewer');
+      // A lobby candidate cannot read the document, but may still say "I'm
+      // here" (room-scoped HTTPS presence only: no relay token, no cursor).
+      configurePresence({presence:result.data.presence===true},epoch,identity);
+      return false;
+    }
     if(!result.response.ok) throw new Error(result.data.error||'code document unavailable');
     const doc=new Y.Doc({gc:true}); const text=doc.getText('code');
     Y.applyUpdate(doc,base64ToBytes(result.data.state),ORIGIN_REMOTE);
@@ -437,6 +664,7 @@ async function hydrate(identity,epoch){
     else setStatus('synced');
     clearLegacyDraft(identity);
     configureRelay(result.data,epoch,identity);
+    configurePresence(result.data,epoch,identity);
     schedule();
     window.dispatchEvent(new CustomEvent('randori:code-document-hydrated',{detail:{room:identity.room,revision:state.revision}}));
     return true;
@@ -496,13 +724,15 @@ async function poll(){
     if(!result.response.ok) throw new Error(result.data.error||'poll failed');
     if(!acceptResponse(result.data,epoch,identity,{apply:result.data.changed!==false})) throw new Error('invalid poll response');
     configureRelay(result.data,epoch,identity);
+    configurePresence(result.data,epoch,identity);
     state.retryMs=500; setStatus(readQueue(identity).length?'held':'synced');
   }catch{ if(matches(epoch,identity)) setStatus(navigator.onLine?'retry':'offline'); }
   schedule(state.status==='retry'?state.retryMs:POLL_MS);
 }
 
-function disposeDocument(){
-  state.relay?.stop(); state.relay=null; state.relayEnabled=false; state.relayDirection=null;
+function disposeDocument({keepPresence=false}={}){
+  if(keepPresence&&state.presence) detachPresenceDocument(state.presence); else stopPresence();
+  stopRelay(); state.relayEnabled=false; state.relayDirection=null;
   state.controller?.abort(); state.controller=null;
   if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
   state.binding?.destroy?.(); state.binding=null;
@@ -516,8 +746,8 @@ function disposeDocument(){
   state.hydrated=false; state.inFlight=false; state.revision=0; state.version=null;
 }
 
-function deactivate({keepIdentity=false,awaitingRoom=false}={}){
-  state.epoch+=1; disposeDocument();
+function deactivate({keepIdentity=false,awaitingRoom=false,quietRoom=null}={}){
+  state.epoch+=1; disposeDocument({keepPresence:awaitingRoom&&!!quietRoom&&state.presence?.room===quietRoom});
   state.awaitingRoom=awaitingRoom;
   if(!keepIdentity){ state.room=null; state.identity=null; state.actorId=null; state.completed=false; setEditorReadOnly(false); setStatus(awaitingRoom?'connecting':'local'); }
   else setStatus(navigator.onLine?'connecting':'offline');
@@ -526,7 +756,8 @@ function deactivate({keepIdentity=false,awaitingRoom=false}={}){
 
 function fenceIdentityChange(room=window._randori_authorized_room){
   room=String(room||'');
-  deactivate({awaitingRoom:ROOM.test(room)&&!window.RandoriWorkspaceScope?.isSolo?.(room)&&window._randori_authorized_room===room&&!!actorId()});
+  const awaitingRoom=ROOM.test(room)&&!window.RandoriWorkspaceScope?.isSolo?.(room)&&window._randori_authorized_room===room&&!!actorId();
+  deactivate({awaitingRoom,quietRoom:awaitingRoom?room:null});
 }
 
 async function activate(){
@@ -539,7 +770,7 @@ async function activate(){
   if(!owner||!identity||window._randori_workspace?.hydrated!==true
     ||window._randori_workspace?.room!==identity.room||window._randori_authorized_room!==identity.room){
     const awaiting=!!owner&&ROOM.test(room);
-    deactivate({awaitingRoom:awaiting});
+    deactivate({awaitingRoom:awaiting,quietRoom:awaiting?room:null});
     // A first-ever room hydrates with no workspace snapshot, so no selection
     // event follows once the catalogue selection or workspace checkpoint
     // becomes available. Re-check on a bounded cadence while this exact
@@ -557,7 +788,7 @@ async function activate(){
   // The v3 workspace owns code until its exact selection checkpoint is
   // acknowledged. Do not claim CRDT ownership early: doing so would suppress
   // the workspace text write and let an empty bootstrap replace local edits.
-  deactivate({awaitingRoom:true});
+  deactivate({awaitingRoom:true,quietRoom:identity.room});
   const activationEpoch=state.epoch;
   const canApply=()=>activationEpoch===state.epoch&&owner===actorId()
     &&sameIdentity(identity,selectionIdentity())
@@ -612,6 +843,7 @@ window.addEventListener('randori:interview-ended',event=>{
 });
 window.addEventListener('randori:interview-access',event=>{
   if(event.detail?.room!==state.room&&event.detail?.room!==window._randori_authorized_room) return;
+  resetPresenceForAccess();
   setEditorReadOnly(state.hydrationLockEpoch!==null);
   if(blocked()){ if(state.identity&&readQueue().length) setStatus('held'); return; }
   if(state.hydrated) schedule(0); else scheduleActivation();
@@ -630,9 +862,11 @@ document.addEventListener('visibilitychange',()=>{
   else if(state.identity){ state.epoch+=1; disposeDocument(); setStatus('offline','paused while this tab is hidden'); }
 });
 window.addEventListener('offline',()=>{
-  state.relay?.stop(); state.relay=null;
+  stopRelay();
   setStatus('offline');
 });
+// Closing/navigating away: announce departure now rather than waiting for TTL.
+window.addEventListener('pagehide',()=>stopPresence());
 window.addEventListener('online',()=>{
   if(state.identity&&state.hydrated){ setStatus('connecting'); schedule(0); }
   else if(state.identity) activate();
@@ -653,5 +887,6 @@ window._randori_crdt={activate,deactivate,poll,flush,fence:fenceIdentityChange,
   reconcile(){ return poll(); },get acknowledged(){ return isAcknowledged(); },
   get documentVersion(){ return isAcknowledged()?state.version:null; },get room(){ return state.room; },
   get relayConnected(){ return state.relay?.connected===true; },
+  get presence(){ return state.presence?.summary?{...state.presence.summary}:null; },
   get identity(){ return state.identity?{...state.identity}:null; },get status(){ return state.status; },
 };

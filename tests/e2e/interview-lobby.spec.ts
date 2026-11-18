@@ -30,7 +30,9 @@ class InterviewServer{
   codePosts:Array<{actorId:number;status:number}>=[];
   doc=new Y.Doc(); docRevision=1; persisted='';
   relayEnabled=false; relayTokens:Array<{actorId:number;status:number}>=[];
-  peers=new Map<WebSocketRoute,{topic:string;actorId:number}>(); broadcasts:Array<{actorId:number}>=[];
+  peers=new Map<WebSocketRoute,{topic:string;actorId:number}>(); broadcasts:Array<{actorId:number;event?:string}>=[];
+  // #462 presence: one TTL row per participant, room-scoped like the server.
+  presenceEnabled=false; presenceRows=new Map<number,number>();
   workspaceRevision=1;
   constructor(){ this.doc.getText('code').insert(0,`// PREPARED\n${starter}`); this.persisted=base64(Y.encodeStateAsUpdate(this.doc)); }
   candidateInLobby(actorId:number){ return actorId===CANDIDATE&&!this.live()&&!this.terminal(); }
@@ -85,6 +87,7 @@ class InterviewServer{
   documentResponse(after=0,actorId=0){
     const code=this.doc.getText('code').toString();
     return {ok:true,...(this.relayEnabled?{realtime_relay:true,realtime_relay_direction:actorId===CANDIDATE?'receive':'send'}:{}),
+      ...(this.presenceEnabled?{presence:true}:{}),
       changed:this.docRevision!==after,created:false,revision:this.docRevision,
       document_version:digest(JSON.stringify([this.docRevision,this.persisted])),state:this.docRevision!==after?this.persisted:null,
       code_hash:digest(code),updated_at:'2026-09-20T10:00:00.000Z'};
@@ -93,7 +96,8 @@ class InterviewServer{
     return (request:Request)=>{
       const url=new URL(request.url());
       if(request.method()==='GET'){
-        if(this.candidateInLobby(actorId)) return {_status:409,ok:false,code:'interview_lobby',error:'Waiting for the interviewer to admit you.'};
+        if(this.candidateInLobby(actorId)) return {_status:409,ok:false,code:'interview_lobby',error:'Waiting for the interviewer to admit you.',
+          ...(this.presenceEnabled?{presence:true}:{})};
         return this.documentResponse(Number(url.searchParams.get('after_revision')||0),actorId);
       }
       if(this.terminal()){ this.codePosts.push({actorId,status:409}); return {_status:409,ok:false,code:'session_completed',error:'ended'}; }
@@ -130,10 +134,21 @@ class InterviewServer{
           socket.send(JSON.stringify({topic:frame.topic,event:'phx_reply',ref:frame.ref,join_ref:frame.join_ref,payload:{status:'ok',response:{}}}));
         }else if(frame.event==='heartbeat') socket.send(JSON.stringify({topic:'phoenix',event:'phx_reply',ref:frame.ref,payload:{status:'ok'}}));
         else if(frame.event==='broadcast'){
-          this.broadcasts.push({actorId});
+          this.broadcasts.push({actorId,event:frame.payload?.event});
           for(const [peer,info] of this.peers) if(peer!==socket&&info.topic===frame.topic) peer.send(JSON.stringify({topic:info.topic,event:'broadcast',payload:frame.payload,ref:null,join_ref:'1'}));
         }
       });
+    };
+  }
+  presence(actorId:number){
+    return (request:Request)=>{
+      const body=request.postDataJSON() as {room_id:string;state:string};
+      if(!this.presenceEnabled||this.terminal()) return {_status:404,error:'pair not found'};
+      if(body.state==='leave'){ this.presenceRows.delete(actorId); return {ok:true}; }
+      this.presenceRows.set(actorId,Date.now()+20_000);
+      const partner=actorId===1?2:1;
+      return {ok:true,seat:actorId===1?'a':'b',partner_online:(this.presenceRows.get(partner)||0)>Date.now(),ttl_seconds:20,interval_seconds:5,
+        ...(body.state==='join'?{partner:{display_name:users[partner as 1|2].display_name,color:users[partner as 1|2].color}}:{})};
     };
   }
   // What a modified candidate client holding an earlier token could inject.
@@ -184,6 +199,7 @@ async function open(browser:Browser,server:InterviewServer,actorId:1|2):Promise<
       required_count:2,version:'c'.repeat(64),completed_at:null}},
     '/api/video/signal':server.workspace(actorId),'/api/code-document':server.codeDocument(actorId),
     '/api/code-document/relay-token':server.relayToken(actorId),
+    '/api/code-document/presence':server.presence(actorId),
   });
   // routeWebSocket never connects to a server: no Supabase/network access.
   await page.routeWebSocket('wss://relay-test.supabase.co/realtime/v1/websocket**',server.relaySocket(actorId));
@@ -331,5 +347,48 @@ test('the realtime relay is one-way in interview mode: a locked candidate never 
     await c.evaluate(()=>window._randori_crdt?.deactivate?.());
     await c.evaluate(()=>window._randori_crdt?.activate?.());
     await expect.poll(()=>server.relayTokens.some(item=>item.actorId===CANDIDATE&&item.status===404),{timeout:12_000}).toBe(true);
+  }finally{ await candidate.context.close(); await interviewer.context.close(); }
+});
+
+test('presence in interview mode: candidate waiting, then the interviewer sees the candidate cursor while candidate y-update stays dropped',async({browser})=>{
+  test.setTimeout(90_000);
+  const server=new InterviewServer(); server.relayEnabled=true; server.presenceEnabled=true;
+  const candidate=await open(browser,server,CANDIDATE),interviewer=await open(browser,server,INTERVIEWER);
+  try{
+    const c=candidate.page,i=interviewer.page;
+    // Lobby: no document, no relay token, no cursor -- but the interviewer
+    // sees the candidate waiting through room-scoped HTTPS presence.
+    await expect(c.getByTestId('session-controls-status')).toContainText('You are in the lobby');
+    await expect(i.locator('#presenceText')).toHaveText(/^One is waiting in the lobby · /,{timeout:12_000});
+    expect(server.relayTokens.some(item=>item.actorId===CANDIDATE&&item.status===200)).toBe(false);
+    await i.getByTestId('session-controls-admit').click();
+    await expect.poll(()=>c.evaluate(()=>window._randori_crdt?.relayConnected),{timeout:12_000}).toBe(true);
+    await expect(i.locator('#presenceText')).toHaveText(/^One is here · (line \d+ · )?live$/,{timeout:12_000});
+    expect(server.presenceRows.has(CANDIDATE)).toBe(true);
+    // The candidate's selection reaches the interviewer as awareness only.
+    const offset=(await c.locator('#editor').inputValue()).indexOf('PREPARED');
+    await c.locator('#editor').focus();
+    await c.locator('#editor').evaluate((node,start)=>{
+      const editor=node as HTMLTextAreaElement; editor.setSelectionRange(start,start+8); editor.dispatchEvent(new Event('select'));
+    },offset);
+    await expect(i.getByTestId('remote-selection')).toHaveText('PREPARED',{timeout:3_000});
+    await expect(i.getByTestId('remote-cursor')).toHaveAttribute('data-offset',String(offset+8));
+    expect(server.broadcasts.some(item=>item.actorId===CANDIDATE&&item.event==='y-awareness')).toBe(true);
+    // Candidate code still never rides the relay; a forged update is dropped.
+    await type(c,'cand-https-');
+    await expect.poll(()=>server.doc.getText('code').toString(),{timeout:12_000}).toContain('cand-https-');
+    expect(server.broadcasts.filter(item=>item.actorId===CANDIDATE&&item.event==='y-update')).toHaveLength(0);
+    const before=server.doc.getText('code').toString();
+    server.forge('FORGED-');
+    await i.waitForTimeout(2_000);
+    await expect(i.locator('#editor')).not.toHaveValue(/FORGED-/);
+    expect(server.doc.getText('code').toString()).not.toContain('FORGED-');
+    expect(before).not.toContain('FORGED-');
+    // Lock: the interviewer sees "editing paused" and no candidate cursor.
+    await i.getByTestId('session-controls-lock').click();
+    await expect(c.locator('#editor')).toHaveJSProperty('readOnly',true,{timeout:8_000});
+    await expect(i.locator('#presenceText')).toContainText('editing paused',{timeout:8_000});
+    await expect(i.getByTestId('remote-cursor')).toHaveCount(0);
+    expect(server.broadcasts.filter(item=>item.actorId===CANDIDATE&&item.event==='y-update')).toHaveLength(0);
   }finally{ await candidate.context.close(); await interviewer.context.close(); }
 });

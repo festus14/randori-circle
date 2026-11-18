@@ -25,6 +25,11 @@ class CodeStore{
   runCount=0;
   completed=false;
   relayEnabled=false;
+  presenceEnabled=false;
+  // #462: one TTL row per participant, like the server's keyed heartbeat.
+  presenceRows=new Map<number,number>();
+  presenceDown=new Set<number>();
+  presenceCalls:{user:number;body:Record<string,unknown>}[]=[];
   holdWrites:Promise<void>|null=null;
   private documents=new Map<string,StoredDocument>();
   constructor(){
@@ -46,7 +51,7 @@ class CodeStore{
   code(language='javascript'){ return this.get(language).doc.getText('code').toString(); }
   response(after=0,language='javascript'){
     const current=this.get(language);
-    return {ok:true,...(this.relayEnabled?{realtime_relay:true}:{}),changed:current.revision!==after,created:false,revision:current.revision,
+    return {ok:true,...(this.relayEnabled?{realtime_relay:true}:{}),...(this.presenceEnabled?{presence:true}:{}),changed:current.revision!==after,created:false,revision:current.revision,
       document_version:this.version(language),state:current.revision!==after?current.persisted:null,
       code_hash:digest(this.code(language)),updated_at:'2026-09-20T10:00:00.000Z'};
   }
@@ -70,6 +75,17 @@ class CodeStore{
     if(!idempotent) current.revision+=1;
     return {...this.response(0,language),idempotent};
   };
+  presence(request:Request,user:number):Record<string,unknown>{
+    const body=request.postDataJSON() as Record<string,unknown>;
+    this.presenceCalls.push({user,body});
+    if(!this.presenceEnabled) return {_status:404,error:'pair not found'};
+    if(this.presenceDown.has(user)) return {_status:503,error:'presence unavailable'};
+    if(body.state==='leave'){ this.presenceRows.delete(user); return {ok:true}; }
+    this.presenceRows.set(user,Date.now()+20_000);
+    const partner=user===1?2:1;
+    return {ok:true,seat:user===1?'a':'b',partner_online:(this.presenceRows.get(partner)||0)>Date.now(),ttl_seconds:20,interval_seconds:5,
+      ...(body.state==='join'?{partner:{display_name:users[partner-1].display_name,color:users[partner-1].color}}:{})};
+  }
   private get(language:string){
     const current=this.documents.get(language); if(!current) throw new Error(`missing ${language} document`);
     return current;
@@ -102,6 +118,7 @@ async function open(page:Page,user:User,store:CodeStore,workspaceHandler=workspa
   await mockApi(page,{
     '/api/auth/me':{ok:true,user},'/api/profile':{ok:true,user},'/api/my-pair':()=>pair(user),
     '/api/video/signal':workspaceHandler,'/api/code-document':store.handle,
+    '/api/code-document/presence':request=>store.presence(request,user.id),
     // This suite exercises legacy peer completion, not interview-mode expiry.
     // Supply the authoritative peer projection so terminal copy is not inferred
     // from a missing controls response that could also be an interview end.
@@ -393,4 +410,113 @@ test('private realtime shows partner edits before HTTPS acknowledgement, then fa
     releaseWrites(); store.holdWrites=null;
     await Promise.all(contexts.map(context=>context.close()));
   }
+});
+
+test('pair presence: join, live remote cursor, leave on hidden tab and TTL expiry after a silent crash',async({browser})=>{
+  test.setTimeout(120_000);
+  const store=new CodeStore(); store.relayEnabled=true; store.presenceEnabled=true;
+  const contexts=await Promise.all([browser.newContext(),browser.newContext()]);
+  const pages=await Promise.all(contexts.map(context=>context.newPage()));
+  const peers=new Map<WebSocketRoute,string>(),muted=new Set<WebSocketRoute>(),owners=new Map<WebSocketRoute,number>();
+  try{
+    for(const [index,page] of pages.entries()){
+      await page.routeWebSocket('wss://relay-test.supabase.co/realtime/v1/websocket**',socket=>{
+        owners.set(socket,index);
+        socket.onClose(()=>peers.delete(socket));
+        socket.onMessage(raw=>{
+          const frame=JSON.parse(typeof raw==='string'?raw:raw.toString());
+          if(frame.event==='phx_join'){
+            expect(frame.payload.config.presence.enabled).toBe(false,'Supabase Presence stays off');
+            peers.set(socket,frame.topic);
+            socket.send(JSON.stringify({topic:frame.topic,event:'phx_reply',ref:frame.ref,join_ref:frame.join_ref,payload:{status:'ok',response:{}}}));
+          }else if(frame.event==='heartbeat') socket.send(JSON.stringify({topic:'phoenix',event:'phx_reply',ref:frame.ref,payload:{status:'ok'}}));
+          else if(frame.event==='broadcast'){
+            if(frame.payload.event==='y-awareness'){
+              expect(Object.keys(frame.payload.payload).sort()).toEqual(['awareness','sender']);
+              expect(Buffer.from(frame.payload.payload.awareness,'base64').toString()).not.toMatch(/One|Two|example\.test/);
+            }
+            if(muted.has(socket)) return;
+            for(const [peer,topic] of peers) if(peer!==socket&&topic===frame.topic) peer.send(JSON.stringify({
+              topic,event:'broadcast',payload:frame.payload,ref:null,join_ref:'1'}));
+          }
+        });
+      });
+    }
+    await Promise.all([open(pages[0],users[0],store),open(pages[1],users[1],store)]);
+    // Join: both see each other live within a few seconds; one polite announcement.
+    await expect(pages[0].locator('#presenceText')).toHaveText(/^Two is here · (line \d+ · )?live$/,{timeout:8000});
+    await expect(pages[1].locator('#presenceText')).toHaveText(/^One is here · (line \d+ · )?live$/,{timeout:8000});
+    await expect(pages[0].locator('#presenceAnnouncer')).toHaveText('Two joined the room');
+    await expect(pages[0].locator('#presenceAnnouncer')).toHaveAttribute('aria-live','polite');
+    await expect(pages[0].locator('.room-presence')).toHaveAttribute('data-health','live');
+
+    // Remote cursor + selection render on the partner without moving its caret.
+    await pages[1].locator('#editor').evaluate(node=>(node as HTMLTextAreaElement).setSelectionRange(2,2));
+    const focusedBefore=await pages[1].evaluate(()=>document.activeElement?.id||'');
+    const scrollBefore=await pages[1].locator('#editor').evaluate(node=>node.scrollTop);
+    const selectionStart=starter.indexOf('return');
+    await pages[0].locator('#editor').focus();
+    await pages[0].locator('#editor').evaluate((node,start)=>{
+      const editor=node as HTMLTextAreaElement; editor.setSelectionRange(start,start+6);
+      editor.dispatchEvent(new Event('select'));
+    },selectionStart);
+    const cursor=pages[1].getByTestId('remote-cursor');
+    await expect(cursor).toBeAttached({timeout:3000});
+    await expect(cursor).toHaveAttribute('data-offset',String(selectionStart+6));
+    await expect(pages[1].getByTestId('remote-selection')).toHaveText('return');
+    await expect(pages[1].locator('#presenceText')).toContainText(/One is here · line \d+ · live/);
+    expect(await pages[1].locator('#editor').evaluate(node=>[(node as HTMLTextAreaElement).selectionStart,(node as HTMLTextAreaElement).selectionEnd])).toEqual([2,2]);
+    expect(await pages[1].evaluate(()=>document.activeElement?.id||'')).toBe(focusedBefore);
+    expect(await pages[1].locator('#editor').evaluate(node=>node.scrollTop)).toBe(scrollBefore);
+    // Local editing on the partner is undisturbed and still converges.
+    await insertAt(pages[1],0,'// partner\n');
+    await expect.poll(()=>store.code(),{timeout:12_000}).toContain('// partner');
+    await expect(cursor).toHaveAttribute('data-offset',String(selectionStart+6+'// partner\n'.length));
+    expect(store.presenceCalls.every(call=>Object.keys(call.body).sort().join()==='room_id,state')).toBe(true);
+
+    // Leave: a hidden tab stops presence, says goodbye and deletes its row.
+    await pages[0].evaluate(()=>{
+      Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>'hidden'});
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await expect(pages[1].locator('#presenceText')).toHaveText('One not in the room · live',{timeout:3000});
+    await expect(pages[1].locator('#presenceAnnouncer')).toHaveText('One left the room');
+    await expect(pages[1].getByTestId('remote-cursor')).toHaveCount(0);
+    expect(store.presenceRows.has(1)).toBe(false);
+    // Return: visible again rejoins.
+    await pages[0].evaluate(()=>{
+      Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>'visible'});
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await expect(pages[1].locator('#presenceText')).toHaveText(/^One is here/,{timeout:8000});
+    await expect(pages[1].locator('#presenceAnnouncer')).toHaveText('One joined the room');
+
+    // Silent crash: One's frames and heartbeats stop with no goodbye. Both
+    // the awareness TTL and the server row expire with no cleanup step.
+    for(const [socket,index] of owners) if(index===0) muted.add(socket);
+    store.presenceDown.add(1); store.presenceRows.set(1,Date.now()-1);
+    await expect(pages[1].locator('#presenceText')).toHaveText('One not in the room · live',{timeout:25_000});
+    await expect(pages[1].getByTestId('remote-cursor')).toHaveCount(0);
+  }finally{ await Promise.all(contexts.map(context=>context.close())); }
+});
+
+test('pair presence falls back to HTTPS "online" without the relay and shows no cursors',async({browser})=>{
+  const store=new CodeStore(); store.presenceEnabled=true;
+  const contexts=await Promise.all([browser.newContext(),browser.newContext()]);
+  const pages=await Promise.all(contexts.map(context=>context.newPage()));
+  try{
+    await Promise.all([open(pages[0],users[0],store),open(pages[1],users[1],store)]);
+    await expect(pages[0].locator('#presenceText')).toHaveText('Two online · polling',{timeout:12_000});
+    await expect(pages[1].locator('#presenceText')).toHaveText('One online · polling',{timeout:12_000});
+    await pages[0].locator('#editor').evaluate(node=>{
+      const editor=node as HTMLTextAreaElement; editor.setSelectionRange(3,8); editor.dispatchEvent(new Event('select'));
+    });
+    await pages[1].waitForTimeout(1500);
+    await expect(pages[1].getByTestId('remote-cursor')).toHaveCount(0);
+    // Sign-out is one of the presence fences; its leave deletes the row.
+    await pages[1].evaluate(()=>window._randori_crdt?.deactivate());
+    await expect.poll(()=>store.presenceCalls.some(call=>call.user===2&&call.body.state==='leave')).toBe(true);
+    await expect(pages[0].locator('#presenceText')).toHaveText('Two not in the room · polling',{timeout:12_000});
+    await expect(pages[0].locator('#presenceAnnouncer')).toHaveText('Two left the room');
+  }finally{ await Promise.all(contexts.map(context=>context.close())); }
 });

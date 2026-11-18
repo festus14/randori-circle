@@ -122,6 +122,23 @@ The CRDT bundle contains a minimal Phoenix v1 private-broadcast transport, not a
 Supabase SDK/CDN. CSP permits only `wss://*.supabase.co` for this provider, while
 runtime configuration restricts each connection to the configured project.
 
+### Pair-room presence and remote cursors (optional, default off)
+
+`PRESENCE_ENABLED=true` (literal) with the existing `JWT_SECRET` (at least 32
+bytes) advertises `presence` in `/api/auth/capabilities` and `presence: true`
+on primary document GETs (and on a lobby candidate's `409 interview_lobby`
+reply, so the interviewer can see a waiting candidate). Browsers then send one authenticated, same-origin
+`POST /api/code-document/presence` heartbeat about every five seconds (fifteen
+while the relay is live). The server keeps one HMAC-keyed row per room and
+participant in the existing `auth_rate_limits` table that expires 20 seconds
+after the last beat on the database clock, plus a keyed per-account budget of
+30 requests per minute (429 with `Retry-After`); there is no migration, request
+DDL, cleanup job or cursor data. Live partner cursors/selections additionally need
+`REALTIME_RELAY_ENABLED` and ride the same private channel as Yjs awareness.
+With the relay off the room bar shows only "partner online". The local runtime
+leaves the flag unset (off) unless a developer sets it.
+[Design, limits and rollback](CONFLICT_FREE_CODE_DOCUMENTS.md#presence-and-remote-cursors-462).
+
 ### AI providers (AI is off)
 
 | Variable | Purpose | Required | Default | Secret | Where set |
@@ -193,7 +210,7 @@ production state in the [feature flag table](#feature-flags):
 `CIRCLE_HEALTH_ENABLED`, `ADMIN_DIAGNOSTICS_ENABLED`,
 `ACCOUNT_DELETION_ENABLED`, `ACCOUNT_DELETION_GRACE_ENABLED`,
 `DATA_EXPORT_ENABLED`, `DAILY_VIDEO_ENABLED`,
-`OUTBOX_PII_RETENTION_ENABLED`, `REALTIME_RELAY_ENABLED` and `AI_ENABLED`.
+`OUTBOX_PII_RETENTION_ENABLED`, `REALTIME_RELAY_ENABLED`, `PRESENCE_ENABLED` and `AI_ENABLED`.
 `ALLOW_OPEN_SIGNUP` is the exception: it is development-only, works only in
 the local runtime and is ignored when `NODE_ENV=production`.
 
@@ -471,6 +488,7 @@ them off cannot undo.
 | `OUTBOX_PII_RETENTION_ENABLED` | Hourly removal of recipient addresses and sealed links from delivered or suppressed outbox rows after 7 days and from dead letters after 30 | off | On (owner) | The matching privacy policy text (live since 2026-10-22) | ID-83 | Stops further redaction. **Irreversible:** redacted rows cannot be restored and redacted dead letters stay non-replayable |
 | `EXECUTION_STDIN_ENABLED` | Private stdin script run alongside the server-owned cases; `executionStdin` capability and Results controls | off | New dark-launch flag; not deployed or observed | A configured isolated execution provider; self-hosted Piston must enforce deadlines and ephemeral cleanup | ID-94 ([usage](../README.md#private-custom-stdin-dark-launch)) | Safe; rejects new stdin requests with 404. In-flight runs finish within existing provider caps; no private data is stored |
 | `REALTIME_RELAY_ENABLED` | Sub-second Yjs update broadcasts in private Supabase channels for canonical primary two-human rooms; HTTPS authority and polling stay active | off | Not enabled by this branch; provider values owner-reported only (2026-11-18) | All four `SUPABASE_*` values above, imported/rotated ES256 key, public channels disabled, reviewed Realtime RLS applied; existing code-document schema | ID-96 ([code relay](CONFLICT_FREE_CODE_DOCUMENTS.md#supabase-relay-only-transport-461)) | Unset/set `false` and redeploy: no capability or new tokens; existing clients close on the next primary GET/at renewal. For immediate revocation revoke the imported key/provider connections first; retain HTTPS documents and SQL deny fences |
+| `PRESENCE_ENABLED` | Pair-room presence (who is here, idle, connection health) for primary two-human rooms; partner cursor/selection when the relay is also on | off | New dark-launch flag; not deployed or observed | `JWT_SECRET` ≥ 32 bytes; cursors also need `REALTIME_RELAY_ENABLED`; no schema change | ID-100 ([presence](CONFLICT_FREE_CODE_DOCUMENTS.md#presence-and-remote-cursors-462)) | Safe: unset/`false` and redeploy; the capability disappears, heartbeats get 404 and clients stop on their next document GET. Keyed rows expire within 20 seconds; nothing else is stored |
 | `AI_ENABLED` | Consent-gated AI feedback in `api/ai.js` | off | Off (privacy policy says AI is off) | `GROQ_API_KEY` or `OPENAI_API_KEY`; privacy and consent review ([#7](https://github.com/festus14/randori-circle/issues/7)) | ID-41 | AI routes return 503 |
 | `ALLOW_OPEN_SIGNUP` | Open password signup for development | off | Ignored in production (`NODE_ENV=production`) | Not production; circle membership off | none | Safe |
 | `OUTBOX_IMMEDIATE_DELIVERY` | Sending mail right after commit, instead of waiting for the cron (three-state, see above) | on when `VERCEL=1` | Not observable (expected unset, so on) | none | ID-64 | Set `false` and redeploy: mail waits for the scheduled `/api/cron/outbox` |

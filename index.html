@@ -5873,8 +5873,10 @@ async function refreshMe(){
       }
       el.replaceChildren(...rows);
     }
-    document.getElementById('presenceText').textContent = count<=1? 'you alone' : `${count} tabs live`;
+    // #462: the CRDT bundle owns this label while partner presence is active.
+    if(!window._randori_presence_active) document.getElementById('presenceText').textContent = count<=1? 'you alone' : `${count} tabs live`;
   }
+  window._randori_refresh_presence=refreshPresence;
   setInterval(refreshPresence, 2000);
 
   // ---------- modal helpers (no alert/confirm/prompt — iframe blocked) ----------

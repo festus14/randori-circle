@@ -172,6 +172,13 @@ test('the privacy policy discloses the default-off relay without claiming it sto
   assert.match(text,/We do not send chat, whiteboards, audio or video through this relay/u);
 });
 
+test('the privacy policy discloses default-off room presence: cursor over the relay, a short-lived keyed marker',()=>{
+  const text=visibleText(pages['/privacy']);
+  assert.match(text,/room presence feature is also on, the relay additionally carries where your cursor or selection is/u);
+  assert.match(text,/Room presence \(optional, off by default\)/u);
+  assert.match(text,/expires about 20 seconds after your last check-in.*contains no cursor position, code, name or email/u);
+});
+
 test('the privacy policy states the retention gaps and providers the code really has', () => {
   const text = visibleText(pages['/privacy']);
   for (const phrase of [

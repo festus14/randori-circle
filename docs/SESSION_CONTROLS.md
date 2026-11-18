@@ -254,6 +254,14 @@ device", remote updates still apply, and on unlock the queue is replayed and
 merged by Yjs with whatever the interviewer wrote. If the interview ends while
 edits are held, the status says they were not saved.
 
+### Presence (#462)
+
+With `PRESENCE_ENABLED=true` the interviewer sees the candidate waiting in the
+lobby (room-scoped HTTPS presence only: no document, relay token or cursor),
+then the admitted candidate's live cursor over the relay as display-only Yjs
+awareness while `y-update` stays one-way, and "editing paused" while locked.
+See [presence and remote cursors](CONFLICT_FREE_CODE_DOCUMENTS.md#presence-and-remote-cursors-462).
+
 ### Rollout and rollback
 
 1. Merge with the flag off. Readiness stays green on the v25 database.

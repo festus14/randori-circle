@@ -662,6 +662,7 @@ function apiRoute(pathname,query){
     '/api/video':['video',null],
     '/api/code-document':['codeDocument',null],
     '/api/code-document/relay-token':['codeDocument','relay-token'],
+    '/api/code-document/presence':['codeDocument','presence'],
   };
   if(direct[pathname]){
     const [handler,endpoint]=direct[pathname];

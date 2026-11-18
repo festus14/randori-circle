@@ -12,6 +12,7 @@ import {
   verifySignedRequestAuth,
 } from './_db.js';
 import { realtimeRelayConfiguration } from './_realtime-relay.js';
+import { presenceConfiguration } from './_presence.js';
 import { ensureAuthReadiness } from './_auth-readiness.js';
 import bcrypt from 'bcryptjs';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -373,6 +374,8 @@ async function handleCapabilities(req,res){
       recentAuthMaxAgeSeconds:10*60,
       identityManagement,
       ...(realtimeRelayConfiguration()?{realtimeRelay:true}:{}),
+      // Issue #462: room presence; live cursors additionally need realtimeRelay.
+      ...(presenceConfiguration()?{presence:true}:{}),
       ...(inviteRequests?{inviteRequests:true}:{}),
       // Issue #310: advertised only while the flag is on. The diagnostics API
       // still authorizes every request as a global administrator.

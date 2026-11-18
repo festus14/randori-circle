@@ -1,11 +1,17 @@
 // Minimal Supabase Realtime Phoenix v1 broadcast-only transport. Wire shape
-// checked against @supabase/realtime-js 2.15.4; no SDK/CDN, presence, REST
-// broadcasts, database subscriptions, logger or token storage. This module is
-// bundled with the pinned Yjs provider by build:crdt/check:crdt.
+// checked against @supabase/realtime-js 2.15.4; no SDK/CDN, Supabase Presence,
+// REST broadcasts, database subscriptions, logger or token storage. This module
+// is bundled with the pinned Yjs provider by build:crdt/check:crdt.
 export const RELAY_UPDATE_LIMIT=64*1024;
 export const RELAY_FRAME_LIMIT=Math.ceil(RELAY_UPDATE_LIMIT/3)*4+1024;
 export const RELAY_MESSAGES_PER_SECOND=20;
 export const RELAY_BATCH_MS=50;
+// #462: Yjs awareness (presence/cursor) frames share the same private channel
+// as a second broadcast event. They are tiny, separately rate-capped in each
+// direction so neither event can starve the other, and never persisted.
+export const RELAY_AWARENESS_EVENT='y-awareness';
+export const RELAY_AWARENESS_LIMIT=1024;
+export const RELAY_AWARENESS_PER_SECOND=10;
 const BASE64=/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const NONCE=/^[a-f0-9]{32}$/;
 const TOPIC=/^rc-code:v1:week_[1-9]\d*_pair_[1-9]\d*:[a-f0-9]{64}$/;
@@ -16,16 +22,27 @@ export function encodeRelayBytes(bytes){
   return btoa(binary);
 }
 
-export function decodeRelayMessage(message){
-  if(!message||typeof message!=='object'||Array.isArray(message)||Object.keys(message).length!==3
-    ||!NONCE.test(message.sender)||!Number.isSafeInteger(message.seq)||message.seq<1
-    ||typeof message.update!=='string'||message.update.length<4
-    ||message.update.length>Math.ceil(RELAY_UPDATE_LIMIT/3)*4||!BASE64.test(message.update)) return null;
+function decodeCanonicalBase64(value,limit){
+  if(typeof value!=='string'||value.length<4||value.length>Math.ceil(limit/3)*4||!BASE64.test(value)) return null;
   try{
-    const binary=atob(message.update);
-    if(!binary.length||binary.length>RELAY_UPDATE_LIMIT||btoa(binary)!==message.update) return null;
+    const binary=atob(value);
+    if(!binary.length||binary.length>limit||btoa(binary)!==value) return null;
     return Uint8Array.from(binary,character=>character.charCodeAt(0));
   }catch{ return null; }
+}
+
+export function decodeRelayMessage(message){
+  if(!message||typeof message!=='object'||Array.isArray(message)||Object.keys(message).length!==3
+    ||!NONCE.test(message.sender)||!Number.isSafeInteger(message.seq)||message.seq<1) return null;
+  return decodeCanonicalBase64(message.update,RELAY_UPDATE_LIMIT);
+}
+
+// Awareness envelope: exactly a per-document-session nonce and canonical
+// base64 awareness bytes. Ordering/replay is the awareness clock's job.
+export function decodeAwarenessMessage(message){
+  if(!message||typeof message!=='object'||Array.isArray(message)||Object.keys(message).length!==2
+    ||!NONCE.test(message.sender)) return null;
+  return decodeCanonicalBase64(message.awareness,RELAY_AWARENESS_LIMIT);
 }
 
 export function relayConfigurationValid(config,room,nowSeconds=Math.floor(Date.now()/1000)){
@@ -41,7 +58,7 @@ export function relayConfigurationValid(config,room,nowSeconds=Math.floor(Date.n
   }catch{ return false; }
 }
 
-export function openPrivateRelay(config,{WebSocketCtor=globalThis.WebSocket,onMessage,onJoined,onUnavailable,onRenew,
+export function openPrivateRelay(config,{WebSocketCtor=globalThis.WebSocket,onMessage,onAwareness,onJoined,onUnavailable,onRenew,
   setTimer=setTimeout,clearTimer=clearTimeout,now=Date.now}={}){
   const url=new URL('/realtime/v1/websocket',config.url); url.protocol='wss:';
   url.searchParams.set('apikey',config.publishable_key); url.searchParams.set('vsn','1.0.0');
@@ -92,26 +109,52 @@ export function openPrivateRelay(config,{WebSocketCtor=globalThis.WebSocket,onMe
       heartbeatTimer=setTimer(heartbeat,25000); onJoined?.();
     }else if(message.event==='phx_error'||message.event==='phx_close'
       ||(message.event==='system'&&message.payload?.status==='error')) fail();
-    else if(joined&&message.event==='broadcast'&&message.payload?.type==='broadcast'
-      &&message.payload.event==='y-update') onMessage?.(message.payload.payload);
+    else if(joined&&message.event==='broadcast'&&message.payload?.type==='broadcast'){
+      if(message.payload.event==='y-update') onMessage?.(message.payload.payload);
+      else if(message.payload.event===RELAY_AWARENESS_EVENT) onAwareness?.(message.payload.payload);
+    }
   };
   socket.onerror=fail; socket.onclose=fail;
-  return {close,get joined(){ return joined&&!closed; },send(payload){
-    if(!joined||!decodeRelayMessage(payload)) return false;
-    const sent=push('broadcast',{type:'broadcast',event:'y-update',payload});
+  const broadcast=(event,payload)=>{
+    const sent=push('broadcast',{type:'broadcast',event,payload});
     if(!sent) fail();
     return sent;
+  };
+  return {close,get joined(){ return joined&&!closed; },send(payload){
+    if(!joined||!decodeRelayMessage(payload)) return false;
+    return broadcast('y-update',payload);
+  },sendAwareness(payload){
+    if(!joined||!decodeAwarenessMessage(payload)) return false;
+    return broadcast(RELAY_AWARENESS_EVENT,payload);
   }};
 }
 
-export function createCodeRelay({identity,fetchToken,mergeUpdates,onUpdate,onFallback,isCurrent,
+export function createCodeRelay({identity,fetchToken,mergeUpdates,onUpdate,onFallback,isCurrent,onAwareness,onConnection,
   WebSocketCtor=globalThis.WebSocket,setTimer=setTimeout,clearTimer=clearTimeout,now=Date.now,
   randomBytes=()=>crypto.getRandomValues(new Uint8Array(16))}={}){
   const sender=Array.from(randomBytes(),byte=>byte.toString(16).padStart(2,'0')).join('');
   let stopped=false,channel=null,controller=null,retryTimer=null,batchTimer=null,pending=[],seq=0;
   let retryMs=1000,receiveWindow=0,receiveCount=0,sendWindow=0,sendCount=0;
+  let awarenessInWindow=0,awarenessInCount=0,awarenessOutWindow=0,awarenessOutCount=0;
   const seen=new Map();
   const current=()=>!stopped&&isCurrent();
+  // Connection health for presence (#462). Never authority: a false value
+  // only means "no live cursors"; HTTPS polling continues unchanged.
+  let live=false;
+  const connection=value=>{
+    if(live===value) return;
+    live=value;
+    try{ onConnection?.(value); }catch{}
+  };
+  const awarenessReceived=message=>{
+    if(!current()) return;
+    const second=Math.floor(now()/1000);
+    if(second!==awarenessInWindow){ awarenessInWindow=second; awarenessInCount=0; }
+    if(++awarenessInCount>RELAY_AWARENESS_PER_SECOND) return;
+    const bytes=decodeAwarenessMessage(message);
+    if(!bytes||message.sender===sender) return;
+    try{ onAwareness?.(bytes); }catch{} // the presence session validates the states
+  };
   const received=message=>{
     if(!current()) return;
     const second=Math.floor(now()/1000);
@@ -130,6 +173,7 @@ export function createCodeRelay({identity,fetchToken,mergeUpdates,onUpdate,onFal
   };
   const unavailable=(delay=retryMs)=>{
     channel?.close(); channel=null; pending=[];
+    connection(false);
     if(batchTimer!==null) clearTimer(batchTimer); batchTimer=null;
     if(!current()||retryTimer!==null) return;
     onFallback();
@@ -153,9 +197,10 @@ export function createCodeRelay({identity,fetchToken,mergeUpdates,onUpdate,onFal
           ?Math.max(1000,Math.min(300000,(Number.isFinite(retryAfter)&&retryAfter>0?retryAfter:30)*1000)):retryMs;
         unavailable(delay); return;
       }
-      channel=openPrivateRelay(config,{WebSocketCtor,setTimer,clearTimer,now,onMessage:received,
-        onJoined:()=>{ retryMs=1000; },onUnavailable:()=>unavailable(),onRenew:()=>{
+      channel=openPrivateRelay(config,{WebSocketCtor,setTimer,clearTimer,now,onMessage:received,onAwareness:awarenessReceived,
+        onJoined:()=>{ retryMs=1000; if(current()) connection(true); },onUnavailable:()=>unavailable(),onRenew:()=>{
           channel=null; pending=[];
+          connection(false); // presence re-announces after the fresh join
           if(batchTimer!==null) clearTimer(batchTimer); batchTimer=null;
           if(current()) connect(); // no extra reconcile, delay or backoff increase
         }});
@@ -189,8 +234,20 @@ export function createCodeRelay({identity,fetchToken,mergeUpdates,onUpdate,onFal
       if(batchTimer===null) batchTimer=setTimer(flush,RELAY_BATCH_MS);
       return true;
     },
+    // `final` is the single departure frame a presence session sends while a
+    // fence (hidden tab, sign-out, terminal state) is already tearing the
+    // document down: it may outrun isCurrent() and the cap, never stop().
+    sendAwareness(bytes,{final=false}={}){
+      if(stopped||(!final&&!current())||!channel?.joined||!(bytes instanceof Uint8Array)||!bytes.length||bytes.length>RELAY_AWARENESS_LIMIT) return false;
+      const second=Math.floor(now()/1000);
+      if(second!==awarenessOutWindow){ awarenessOutWindow=second; awarenessOutCount=0; }
+      if(++awarenessOutCount>RELAY_AWARENESS_PER_SECOND&&!final) return false;
+      const sent=channel.sendAwareness({sender,awareness:encodeRelayBytes(bytes)});
+      if(!sent) unavailable();
+      return sent;
+    },
     stop(){
-      stopped=true; controller?.abort(); controller=null;
+      stopped=true; live=false; controller?.abort(); controller=null;
       channel?.close(); channel=null; pending=[]; seen.clear();
       clearTimer(retryTimer); clearTimer(batchTimer); retryTimer=null; batchTimer=null;
     },
