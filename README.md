@@ -164,9 +164,13 @@ leaves normal catalogue runs unchanged. No migration or request-path DDL.
 
 ## How it is built
 
-- **Client:** one `index.html` page plus `assets/*.js|css`, with no build step
+- **Client:** one `index.html` page plus `assets/*.{js,mjs,css}`, with no build step
   apart from the checked-in CRDT editor bundle (`npm run build:crdt`). The
   privacy policy and terms are static pages (`privacy.html`, `terms.html`).
+  Public page controls, bulk invitations, email validation and calendar export
+  load at first use rather than in a pair room's initial scripts
+  ([ID-101](docs/IMPLEMENTED_DECISIONS.md#id-101-load-optional-page-tools-at-their-first-use-without-weakening-byte-gates));
+  the [file-byte gates](docs/design/TOKENS.md#byte-budget) remain unchanged.
 - **API:** Node.js 24 serverless functions in `api/` on Vercel Hobby, grouped
   behind the rewrites in `vercel.json`. Modules starting with `_` are shared
   helpers, not routes.

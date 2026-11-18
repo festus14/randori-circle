@@ -44,6 +44,32 @@ Legend:
 | 25 | Data export (issue #365, ID-90, behind `DATA_EXPORT_ENABLED`): a paired member sends a chat message and makes a code run → opens Edit profile, where Download my data explains what is included and what is not → the sign-in proof is aged past 10 minutes, so the first download is refused with the re-auth hint → the member confirms their password through Account security and downloads again → the downloaded JSON holds their own profile, membership, pairing (partner by display name only), schedule, completion, own message and own run, no partner id/email/message and no password hash, token or session hash anywhere → a second member's export holds only their own message, never the first member's → flag off: 404, no capability, hidden section and no request for `assets/data-export.js` | `golden-data-export-real-runtime.spec.ts` › *data export: a member downloads only their own data after re-authenticating, partners by display name only* (axe WCAG 2.2 AA on the section in both themes at 1280 px and 390 px) | Real (recent-auth proof aged in the database) | `tests/unit/data-export.test.mjs` (builder on a migrated database: inventory coverage, partner privacy, feedback absent/present, size bound, section caps) — DB; `tests/unit/data-export-api.test.mjs` (route: flag off, 401, 403 without recent auth, rate limit, 413, rewrite, capability) — DB; `tests/unit/data-export-ui.test.mjs` (copy, download, re-auth hint, rate-limit / too-large / signed-out copy, fencing) |
 | 26 | Account deletion grace period (issue #372, ID-93, behind `ACCOUNT_DELETION_ENABLED` + `ACCOUNT_DELETION_GRACE_ENABLED`): a paired member requests deletion from Edit profile by keyboard (re-auth, type DELETE, final confirm) → signed out on the landing page with a scheduled-deletion notice, confirmation email captured → signing in again shows only the “scheduled for deletion” screen with the date → Cancel deletion restores the account, still paired, still a member, audit row written → requesting again starts a new 14 days → the member's deletion is aged past its scheduled date in the database, the outbox cron executes it, the partner's history shows “Deleted member”, and the same email can join again as a new account → a last-owner execution stays locked and notifies admins | `golden-account-deletion-grace-real-runtime.spec.ts` › *account deletion grace: a member schedules deletion, cancels from the pending screen, re-requests, and is deleted on schedule by the cron* | Real (scheduled date aged in the database; cron invoked through the production `/api/cron/outbox` route) | `tests/unit/account-deletion-grace.test.mjs` (request → locked → cancel → restored; request → locked → day 14 → deleted via the cron job with a controlled clock; locked accounts get no emails/reminders, are not paired, and cannot use any API except the cancel flow; confirmation + reminder sent once each; last-owner / last-admin at execution; readiness stays green) — DB; `tests/unit/account-deletion.test.mjs` (immediate deletion with the grace flag off) — DB |
 
+## Page weight and first-use boundaries
+
+`npm run check:byte-budget` is the deterministic, uncompressed file-byte gate.
+Its initial-JS slice includes inline scripts and local `<script src>` assets;
+it is not the landing route's actual network bytes. The thresholds remain fixed
+at the #412 values. JS total includes `.js` and `.mjs`, including lazy assets
+and conservative build-input bytes; see [byte budget](../design/TOKENS.md#byte-budget).
+
+[ID-101](../IMPLEMENTED_DECISIONS.md#id-101-load-optional-page-tools-at-their-first-use-without-weakening-byte-gates)
+moves landing/recovery controls, bulk invitations, shared email validation and
+calendar generation to first-use requests. Public content is still static and
+controls show pending/retry state. Invitation capability scrubbing and the
+widely used onboarding presentation helpers stay synchronous.
+
+- `page-weight.spec.ts` retains the anonymous network inventory and editor/CRDT/
+  telemetry boundary assertions; it deliberately asserts no transfer-byte gate.
+- `optional-pages.spec.ts` proves a signed-in pair room never requests these
+  optional tools (including after the cold-start retry), and tests public/bulk/
+  single-invite first-use failure and retry, early paste and duplicate submit.
+- `schedule-sync.spec.ts` covers on-demand calendar retry, pending state across
+  reconciliation, duplicate clicks and an agreement changing during the load.
+- Existing landing, onboarding, invitation, real bulk-invite and real pair-room
+  journeys still verify the user flows and keyboard behaviour. The loader's
+  timeout, late readiness and cached-error recovery have focused unit coverage
+  in `tests/unit/optional-pages.test.mjs`.
+
 ## Replaced boundaries
 
 Only provider edges a member never sees directly are replaced, always inside the

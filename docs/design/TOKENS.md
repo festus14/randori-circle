@@ -304,3 +304,34 @@ landing): the alias migration itself added bytes, because
 canonical names are longer than aliases. A change that pushes any
 slice over its threshold must shrink bytes or raise the threshold
 with justification in the PR — never silently weaken the check.
+
+### Optional page boundary (#479 / ID-101)
+
+Measured against `580e90b` on 2026-11-18, in uncompressed bytes:
+
+| Slice | Before | After | Unchanged threshold |
+| --- | ---: | ---: | ---: |
+| `index.html` | 967,113 | 971,332 | 1,000,000 |
+| CSS initial | 128,486 | 128,486 | 130,000 |
+| CSS total | 134,993 | 134,993 | 135,000 |
+| JS initial | 990,889 | 946,767 | 1,000,000 |
+| JS total | 1,281,413 | 1,303,981 | 1,450,000 |
+
+Initial JS drops **44,122 bytes** (over 40 KB); headroom becomes **53,233
+bytes**. The total now counts `.mjs` as well as `.js`: the two previously
+omitted realtime modules add 11,592 bytes to the old total basis, so the total
+comparison above includes a **tightening**, not a threshold increase. The
+historical #400 table above retains its then-current `.js`-only total basis.
+
+The initial slice is inline scripts plus local script-tag files, not network
+transfer size or route-specific first-use code. Signed-out visitors still load
+landing/recovery controls when that page appears. Pair-room members do not
+request those controls, bulk invitations, email validation or calendar export
+until first use. `invite-gate.js` stays synchronous before capability scrubbing;
+`onboarding-flow.js` stays synchronous for its broad first-render callers.
+
+`crdt-editor-source.js` and `monaco-api-shim.js` remain conservatively counted
+in total even though browsers do not request those build inputs. Removing them
+would loosen the adopted total gate; the more exact served-only exclusion is
+not made here. Same-origin lazy scripts need no CSP amendment. Boundary and
+retry tests: [page-weight testing](../testing/E2E_GOLDEN_PATHS.md#page-weight-and-first-use-boundaries).
