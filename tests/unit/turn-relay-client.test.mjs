@@ -10,6 +10,7 @@ import {
   TURN_ENDPOINT,
   TURN_FAILURE_RETRY_MS,
   TURN_OFF_RETRY_MS,
+  TURN_PAUSED_RETRY_MS,
   TURN_REFRESH_MARGIN_MS,
   TURN_TIMEOUT_MS,
   createIceServerSource,
@@ -21,9 +22,12 @@ const STUN=[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com
 const RELAY={urls:['turn:turn.cloudflare.com:3478?transport=udp','turns:turn.cloudflare.com:443?transport=tcp'],
   username:'user-0123',credential:'cred-abcdef'};
 
-function relayPayload(nowMs,{ttlMs=60*60*1000,servers=[{urls:['stun:stun.cloudflare.com:3478']},RELAY]}={}){
-  return {iceServers:servers,expiresAt:new Date(nowMs+ttlMs).toISOString()};
+function relayPayload(nowMs,{ttlMs=60*60*1000,servers=[{urls:['stun:stun.cloudflare.com:3478']},RELAY],relay='cloudflare'}={}){
+  return {iceServers:servers,expiresAt:new Date(nowMs+ttlMs).toISOString(),relay};
 }
+const METERED=[{urls:'stun:stun.relay.metered.ca:80'},
+  {urls:'turn:global.relay.metered.ca:80',username:'m-user',credential:'m-cred'},
+  {urls:'turns:global.relay.metered.ca:443?transport=tcp',username:'m-user',credential:'m-cred'}];
 
 function harness(respond){
   let nowMs=Date.parse('2026-11-19T12:00:00Z');
@@ -113,6 +117,34 @@ test('503, 429 and other failures are STUN-only with a short back-off',async()=>
   assert.equal(invalid.calls.length,1,'an invalid response backs off too');
 });
 
+test('the Metered backup is used on its own hosts only',async()=>{
+  const h=harness(({nowMs})=>json(200,relayPayload(nowMs,{servers:METERED,relay:'metered'})));
+  const source=createIceServerSource(STUN,{fetchImpl:h.fetchImpl,now:h.now});
+  assert.deepEqual(await source.servers(ROOM),[...STUN,{urls:['stun:stun.relay.metered.ca:80']},
+    {urls:['turn:global.relay.metered.ca:80'],username:'m-user',credential:'m-cred'},
+    {urls:['turns:global.relay.metered.ca:443?transport=tcp'],username:'m-user',credential:'m-cred'}]);
+  const nowMs=Date.now();
+  assert.equal(relayServersFrom(relayPayload(nowMs,{servers:METERED,relay:'cloudflare'}),nowMs),null,'a relay label must match its hosts');
+  assert.equal(relayServersFrom(relayPayload(nowMs,{relay:'metered'}),nowMs),null);
+  const {relay:_omitted,...unlabelled}=relayPayload(nowMs);
+  assert.equal(relayServersFrom(unlabelled,nowMs),null,'an unlabelled relay is ignored');
+  for(const relay of [null,'none','other','__proto__','constructor']){
+    assert.equal(relayServersFrom(relayPayload(nowMs,{relay}),nowMs),null,String(relay));
+  }
+});
+
+test('relay none (every free allowance used up) is STUN-only, checked again in five minutes',async()=>{
+  const h=harness(()=>json(200,{iceServers:[],expiresAt:null,relay:'none',reason:'budget_reached'}));
+  const source=createIceServerSource(STUN,{fetchImpl:h.fetchImpl,now:h.now});
+  assert.deepEqual(await source.servers(ROOM),STUN);
+  h.advance(TURN_PAUSED_RETRY_MS-1);
+  await source.servers(ROOM);
+  assert.equal(h.calls.length,1);
+  h.advance(1);
+  await source.servers(ROOM);
+  assert.equal(h.calls.length,2);
+});
+
 test('a slow route times out within the deadline and the call proceeds STUN-only',async()=>{
   assert.equal(TURN_TIMEOUT_MS,3000);
   let aborted=false;
@@ -175,19 +207,20 @@ test('the default fetch and clock are the browser globals',async()=>{
 test('the browser re-checks the route response',()=>{
   const nowMs=Date.parse('2026-11-19T12:00:00Z');
   assert.deepEqual(relayServersFrom(relayPayload(nowMs),nowMs),{
-    servers:[{urls:['stun:stun.cloudflare.com:3478']},RELAY],expiresAtMs:nowMs+60*60*1000,
+    servers:[{urls:['stun:stun.cloudflare.com:3478']},RELAY],expiresAtMs:nowMs+60*60*1000,relay:'cloudflare',
   });
   assert.deepEqual(relayServersFrom({iceServers:[{urls:'turn:cloudflare.com',username:'u',credential:'c'}],
-    expiresAt:new Date(nowMs+1000).toISOString()},nowMs)?.servers,[{urls:['turn:cloudflare.com'],username:'u',credential:'c'}]);
+    expiresAt:new Date(nowMs+1000).toISOString(),relay:'cloudflare'},nowMs)?.servers,[{urls:['turn:cloudflare.com'],username:'u',credential:'c'}]);
   const future=new Date(nowMs+1000).toISOString();
-  const turn=(urls,extra={})=>({iceServers:[{urls,username:'u',credential:'c',...extra}],expiresAt:future});
+  const relay='cloudflare';
+  const turn=(urls,extra={})=>({iceServers:[{urls,username:'u',credential:'c',...extra}],expiresAt:future,relay});
   for(const payload of [
-    null,'x',{},{iceServers:{}},{iceServers:[],expiresAt:future},
-    {iceServers:[RELAY]},{iceServers:[RELAY],expiresAt:'soon'},{iceServers:[RELAY],expiresAt:new Date(nowMs).toISOString()},
-    {iceServers:Array.from({length:5},()=>RELAY),expiresAt:future},
-    {iceServers:[{urls:'stun:stun.cloudflare.com'}],expiresAt:future},
-    {iceServers:[{urls:'turn:turn.cloudflare.com'}],expiresAt:future},
-    {iceServers:[null],expiresAt:future},{iceServers:[{urls:[]}],expiresAt:future},
+    null,'x',{},{iceServers:{}},{iceServers:[],expiresAt:future,relay},
+    {iceServers:[RELAY],relay},{iceServers:[RELAY],expiresAt:'soon',relay},{iceServers:[RELAY],expiresAt:new Date(nowMs).toISOString(),relay},
+    {iceServers:Array.from({length:9},()=>RELAY),expiresAt:future,relay},
+    {iceServers:[{urls:'stun:stun.cloudflare.com'}],expiresAt:future,relay},
+    {iceServers:[{urls:'turn:turn.cloudflare.com'}],expiresAt:future,relay},
+    {iceServers:[null],expiresAt:future,relay},{iceServers:[{urls:[]}],expiresAt:future,relay},
     turn('turn:turn.example.com'),turn('turn:cloudflare.com.evil.test'),turn('http://turn.cloudflare.com'),
     turn('turn:turn.cloudflare.com?transport=sctp'),turn([`turn:${'a'.repeat(260)}.cloudflare.com`]),
     turn(Array.from({length:17},()=>'turn:turn.cloudflare.com')),turn([42]),

@@ -1,9 +1,10 @@
 // Direct-call TURN relay client (issue #305, ID-107). index.html imports this
 // module just before the direct call creates its RTCPeerConnection. It asks
-// the same-origin /api/video/turn route for short-lived Cloudflare TURN
-// credentials and returns STUN plus those servers. Whenever the route is off
-// (404), fails (503 or anything else), or takes longer than three seconds,
-// the call proceeds STUN-only exactly as before. Credentials live only in
+// the same-origin /api/video/turn route for short-lived relay credentials
+// (Cloudflare, or the Metered backup) and returns STUN plus those servers.
+// Whenever the route is off (404), fails (503 or anything else), answers
+// `relay: "none"` (every free allowance is used up), or takes longer than
+// three seconds, the call proceeds STUN-only exactly as before. Credentials live only in
 // this module's memory: never in localStorage, sessionStorage or a cookie.
 export const TURN_ENDPOINT='/api/video/turn';
 export const TURN_TIMEOUT_MS=3000;
@@ -13,20 +14,26 @@ export const TURN_REFRESH_MARGIN_MS=60*1000;
 export const TURN_OFF_RETRY_MS=10*60*1000;
 // After a failure keep reconnects STUN-only briefly instead of hammering.
 export const TURN_FAILURE_RETRY_MS=30*1000;
+// Every relay is over budget: check again in five minutes.
+export const TURN_PAUSED_RETRY_MS=5*60*1000;
+// Each relay's servers live on its own hosts only.
+export const RELAY_HOSTS=Object.freeze({cloudflare:'cloudflare.com',metered:'metered.ca'});
 
-const MAX_ENTRIES=4, MAX_URLS=16, MAX_URL=256, MAX_SECRET=512;
+const MAX_ENTRIES=8, MAX_URLS=16, MAX_URL=256, MAX_SECRET=512;
 const ICE_URL=/^(?:stun|turns?):[a-z0-9.-]+(?::\d{1,5})?(?:\?transport=(?:udp|tcp))?$/;
 const HOST=/^(?:stun|turns?):([a-z0-9.-]+)/;
 const SECRET=/^[\x21-\x7e]+$/;
 
-function cloudflareHost(url){
+function relayHost(url,domain){
   const host=HOST.exec(url)?.[1]||'';
-  return host==='cloudflare.com'||host.endsWith('.cloudflare.com');
+  return host===domain||host.endsWith(`.${domain}`);
 }
 
 /** The route's servers, re-checked in the browser; null when anything is off. */
 export function relayServersFrom(payload,nowMs=Date.now()){
   if(!payload||typeof payload!=='object'||!Array.isArray(payload.iceServers)) return null;
+  const domain=Object.hasOwn(RELAY_HOSTS,payload.relay)?RELAY_HOSTS[payload.relay]:null;
+  if(!domain) return null;
   const expiresAtMs=Date.parse(payload.expiresAt);
   if(!Number.isFinite(expiresAtMs)||expiresAtMs<=nowMs) return null;
   const list=payload.iceServers;
@@ -35,7 +42,7 @@ export function relayServersFrom(payload,nowMs=Date.now()){
   let total=0,relay=false;
   for(const entry of list){
     const urls=Array.isArray(entry?.urls)?entry.urls:[entry?.urls];
-    if(!urls.length||!urls.every(url=>typeof url==='string'&&url.length<=MAX_URL&&ICE_URL.test(url)&&cloudflareHost(url))) return null;
+    if(!urls.length||!urls.every(url=>typeof url==='string'&&url.length<=MAX_URL&&ICE_URL.test(url)&&relayHost(url,domain))) return null;
     total+=urls.length;
     const secret=entry.username!==undefined||entry.credential!==undefined;
     if(secret&&![entry.username,entry.credential].every(value=>typeof value==='string'&&value.length<=MAX_SECRET&&SECRET.test(value))) return null;
@@ -45,7 +52,7 @@ export function relayServersFrom(payload,nowMs=Date.now()){
     servers.push(secret?{urls:[...urls],username:entry.username,credential:entry.credential}:{urls:[...urls]});
   }
   if(!relay||total>MAX_URLS) return null;
-  return {servers,expiresAtMs};
+  return {servers,expiresAtMs,relay:payload.relay};
 }
 
 /**
@@ -69,8 +76,9 @@ export function createIceServerSource(base,{fetchImpl=(...args)=>globalThis.fetc
         retryAt=now()+(response.status===404?TURN_OFF_RETRY_MS:TURN_FAILURE_RETRY_MS);
         return null;
       }
-      const relay=relayServersFrom(await response.json(),now());
-      if(!relay) retryAt=now()+TURN_FAILURE_RETRY_MS;
+      const payload=await response.json();
+      const relay=relayServersFrom(payload,now());
+      if(!relay) retryAt=now()+(payload?.relay==='none'?TURN_PAUSED_RETRY_MS:TURN_FAILURE_RETRY_MS);
       return relay;
     }catch{
       retryAt=now()+TURN_FAILURE_RETRY_MS;
@@ -88,7 +96,7 @@ export function createIceServerSource(base,{fetchImpl=(...args)=>globalThis.fetc
         // A clear() while this was in flight wins: nothing is kept.
         if(pending!==entry) return null;
         pending=null;
-        if(relay) cached={room,...relay};
+        if(relay) cached={room,servers:relay.servers,expiresAtMs:relay.expiresAtMs};
         return relay;
       });
       pending=entry;

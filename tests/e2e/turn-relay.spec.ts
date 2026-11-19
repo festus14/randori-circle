@@ -2,9 +2,9 @@ import { Page, Request, expect, test } from '@playwright/test';
 import { mockApi, originalQuestionFixture, resetClientState } from './helpers';
 
 // Issue #305 (ID-107): the direct browser call asks /api/video/turn for
-// short-lived Cloudflare TURN credentials just before it creates its
-// RTCPeerConnection, and falls back to STUN-only when the route is off,
-// failing or slow. The route is mocked and RTCPeerConnection is a fake that
+// short-lived relay credentials (Cloudflare, or the Metered backup) just
+// before it creates its RTCPeerConnection, and falls back to STUN-only when
+// the route is off, failing, slow or out of free allowance. The route is mocked and RTCPeerConnection is a fake that
 // records its configuration; no relay or provider is ever contacted.
 const roomId='week_42_pair_7';
 const users={
@@ -87,12 +87,29 @@ async function expectNothingStored(page:Page){
 
 test('the direct call uses STUN plus the returned Cloudflare TURN servers',async({page})=>{
   const posts=await openRoom(page,()=>({iceServers:[{urls:['stun:stun.cloudflare.com:3478']},RELAY],
-    expiresAt:new Date(Date.now()+60*60*1000).toISOString()}));
+    expiresAt:new Date(Date.now()+60*60*1000).toISOString(),relay:'cloudflare'}));
   const servers=await joinAndReadConfig(page);
   expect(servers.slice(0,4).map(server=>server.urls)).toEqual(GOOGLE_STUN);
   expect(servers.slice(4)).toEqual([{urls:['stun:stun.cloudflare.com:3478']},RELAY]);
   expect(posts).toEqual([{method:'POST',body:{room_id:roomId}}]);
   await expectNothingStored(page);
+});
+
+test('the direct call uses the Metered backup relay when that is what the route returns',async({page})=>{
+  const metered=[{urls:'stun:stun.relay.metered.ca:80'},
+    {urls:'turn:global.relay.metered.ca:443',username:'e2e-turn-m-user',credential:'e2e-turn-m-cred'}];
+  await openRoom(page,()=>({iceServers:metered,expiresAt:new Date(Date.now()+60*60*1000).toISOString(),relay:'metered'}));
+  const servers=await joinAndReadConfig(page);
+  expect(servers.slice(0,4).map(server=>server.urls)).toEqual(GOOGLE_STUN);
+  expect(servers.slice(4)).toEqual([{urls:['stun:stun.relay.metered.ca:80']},
+    {urls:['turn:global.relay.metered.ca:443'],username:'e2e-turn-m-user',credential:'e2e-turn-m-cred'}]);
+  await expectNothingStored(page);
+});
+
+test('relay none (every free allowance used up) keeps the call STUN-only',async({page})=>{
+  await openRoom(page,()=>({iceServers:[],expiresAt:null,relay:'none',reason:'budget_reached'}));
+  const servers=await joinAndReadConfig(page);
+  expect(servers.map(server=>server.urls)).toEqual(GOOGLE_STUN);
 });
 
 for(const [label,status] of [['off (404)',404],['failing (503)',503]] as const){
@@ -117,7 +134,7 @@ test('a slow relay route times out and the call proceeds STUN-only within three 
 
 test('a non-Cloudflare relay from the route is ignored',async({page})=>{
   await openRoom(page,()=>({iceServers:[{urls:'turn:relay.example.com:3478',username:'e2e-turn-u',credential:'e2e-turn-c'}],
-    expiresAt:new Date(Date.now()+60*60*1000).toISOString()}));
+    expiresAt:new Date(Date.now()+60*60*1000).toISOString(),relay:'cloudflare'}));
   const servers=await joinAndReadConfig(page);
   expect(servers.map(server=>server.urls)).toEqual(GOOGLE_STUN);
 });
