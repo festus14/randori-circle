@@ -80,6 +80,10 @@ test('malformed envelope, encoding, JSON, payload and exp fail without parser de
     assert.equal(result.lines.length, 2, 'no injected annotation or exception output');
   }
   assert.deepEqual(inspectTokenExpiry(expToken(365), NaN), { status: 'malformed' });
+  // Millisecond-valued exp (future or already past) must not read as healthy.
+  assert.deepEqual(inspectTokenExpiry(jwt({ exp: (NOW + 10 * DAY) * 1000 }), NOW), { status: 'malformed' });
+  assert.deepEqual(inspectTokenExpiry(jwt({ exp: (NOW - DAY) * 1000 }), NOW), { status: 'malformed' });
+  assert.equal(inspectTokenExpiry(expToken(36_000), NOW).status, 'ok', 'a long-lived seconds token stays valid');
   assert.deepEqual(inspectTokenExpiry(expToken(365), Infinity), { status: 'malformed' });
 });
 

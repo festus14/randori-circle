@@ -5,6 +5,7 @@
 // we never print even an add-mask command containing credential material.
 
 const SECONDS_PER_DAY = 86_400;
+const MAX_PLAUSIBLE_DAYS = 36_500;
 const FAILURE_DAYS = 30;
 const WARNING_DAYS = 45;
 
@@ -30,6 +31,10 @@ export function inspectTokenExpiry(token, nowSeconds = Date.now() / 1000) {
       return { status: 'malformed' };
     }
     const days = (exp - nowSeconds) / SECONDS_PER_DAY;
+    // RFC 7519 NumericDate is seconds. An exp more than ~100 years out is
+    // almost certainly milliseconds (or garbage); treat it as malformed so a
+    // non-conforming token can never read as healthy.
+    if (days > MAX_PLAUSIBLE_DAYS) return { status: 'malformed' };
     // Compare exact seconds, not a rounded display value. Both bounds inclusive.
     const status = days <= FAILURE_DAYS ? 'error' : days <= WARNING_DAYS ? 'warning' : 'ok';
     return { status, daysRemaining: Math.floor(days) };
