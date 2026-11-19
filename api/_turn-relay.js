@@ -70,7 +70,7 @@ export class TurnProviderError extends Error{
   }
 }
 
-function text(env,name){ return String(env[name]??'').trim(); }
+function text(value){ return String(value??'').trim(); }
 
 // A positive decimal (up to three places); unset means the default; anything
 // else is invalid (null), which fails the provider closed.
@@ -83,17 +83,16 @@ export function parseBudgetGb(value,fallback){
 }
 
 export function turnReserveMbPerCall(env=process.env){
-  const raw=text(env,'TURN_RESERVE_MB_PER_CALL');
+  const raw=text(env.TURN_RESERVE_MB_PER_CALL);
   if(!raw) return TURN_DEFAULT_RESERVE_MB_PER_CALL;
   if(!/^[1-9]\d{0,6}$/.test(raw)) return null;
   return Number(raw);
 }
 
 function cloudflareConfiguration(env,reserveMb){
-  const names=['CLOUDFLARE_TURN_KEY_ID','CLOUDFLARE_TURN_API_TOKEN','CLOUDFLARE_ACCOUNT_ID','CLOUDFLARE_ANALYTICS_API_TOKEN'];
-  if(names.every(name=>!text(env,name))) return {config:null,issue:null};
-  const keyId=text(env,'CLOUDFLARE_TURN_KEY_ID'),apiToken=text(env,'CLOUDFLARE_TURN_API_TOKEN');
-  const accountId=text(env,'CLOUDFLARE_ACCOUNT_ID').toLowerCase(),analyticsToken=text(env,'CLOUDFLARE_ANALYTICS_API_TOKEN');
+  const keyId=text(env.CLOUDFLARE_TURN_KEY_ID),apiToken=text(env.CLOUDFLARE_TURN_API_TOKEN);
+  const accountId=text(env.CLOUDFLARE_ACCOUNT_ID).toLowerCase(),analyticsToken=text(env.CLOUDFLARE_ANALYTICS_API_TOKEN);
+  if(!keyId&&!apiToken&&!accountId&&!analyticsToken) return {config:null,issue:null};
   const budgetGb=parseBudgetGb(env.TURN_MONTHLY_GB_BUDGET,TURN_DEFAULT_BUDGET_GB.cloudflare);
   if(!KEY_ID.test(keyId)||!API_TOKEN.test(apiToken)||!ACCOUNT_ID.test(accountId)||!API_TOKEN.test(analyticsToken)
     ||budgetGb===null||reserveMb===null) return {config:null,issue:'configuration'};
@@ -102,10 +101,9 @@ function cloudflareConfiguration(env,reserveMb){
 }
 
 function meteredConfiguration(env,reserveMb){
-  const names=['METERED_TURN_APP_DOMAIN','METERED_TURN_API_KEY','METERED_TURN_SECRET_KEY'];
-  if(names.every(name=>!text(env,name))) return {config:null,issue:null};
-  const domain=text(env,'METERED_TURN_APP_DOMAIN').toLowerCase();
-  const apiKey=text(env,'METERED_TURN_API_KEY'),secretKey=text(env,'METERED_TURN_SECRET_KEY');
+  const domain=text(env.METERED_TURN_APP_DOMAIN).toLowerCase();
+  const apiKey=text(env.METERED_TURN_API_KEY),secretKey=text(env.METERED_TURN_SECRET_KEY);
+  if(!domain&&!apiKey&&!secretKey) return {config:null,issue:null};
   const budgetGb=parseBudgetGb(env.METERED_TURN_MONTHLY_GB_BUDGET,TURN_DEFAULT_BUDGET_GB.metered);
   if(!METERED_DOMAIN.test(domain)||!METERED_KEY.test(apiKey)||!METERED_KEY.test(secretKey)
     ||budgetGb===null||reserveMb===null) return {config:null,issue:'configuration'};
