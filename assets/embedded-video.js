@@ -37,7 +37,7 @@ export const COPY=Object.freeze({
   signedOut:'Sign in again to join the video call.',
   noRoom:'Open your pair room first.',
   solo:'Solo practice has no partner to call. Use Code and Board instead.',
-  unavailable:'Built-in video is unavailable right now.',
+  unavailable:'Built-in video is paused — use the direct call',
   fallbackLink:'Open your private meeting link',
   fallbackLinkHint:'Opens outside Randori.',
   fallbackNoLink:'You can add a private meeting link in the Session tab, or use the direct browser call.',
