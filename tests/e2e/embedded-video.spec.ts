@@ -91,6 +91,10 @@ test('interviewer and candidate consent, join the same private room in-page, and
       await expect(panel).toBeVisible();
       await expect(page.getByTestId('embedded-video-notice')).toContainText('only after you click Join');
       await expect(panel).toContainText('not recorded');
+      const status=page.getByTestId('embedded-video-status');
+      await expect(status).toHaveAttribute('role','status');
+      await expect(status).toHaveAttribute('aria-live','polite');
+      await expect(status).toHaveText('');
       await expect(page.getByTestId('embedded-video-frame')).toHaveCount(0);
     }
     expect(store.roomPosts).toHaveLength(0);
@@ -147,6 +151,8 @@ test('an unavailable provider falls back to the private meeting link without loa
   await expect(link).toHaveAttribute('href',meetingUrl);
   await expect(link).toHaveAttribute('rel','noopener noreferrer');
   await expect(page.getByTestId('embedded-video-legacy')).toBeVisible();
+  await expect(page.getByTestId('embedded-video-legacy')).toBeFocused();
+  await expect(page.getByTestId('embedded-video-fallback-partner')).toContainText('Ask your partner to use the direct call too');
   await expect(page.getByTestId('embedded-video-frame')).toHaveCount(0);
   expect(store.frames).toHaveLength(0);
   const originalUrl=page.url();

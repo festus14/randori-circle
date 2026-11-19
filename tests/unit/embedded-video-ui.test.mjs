@@ -18,7 +18,10 @@ class FakeNode{
     this.parent=null; this.removed=false; this.srcHistory=[];
   }
   get textContent(){ return this._text+this.children.map(child=>child.textContent).join(''); }
-  set textContent(value){ this._text=String(value); this.children=[]; }
+  set textContent(value){
+    if(this.attributes.role==='status')this.doc.statusUpdates?.push({text:String(value),attached:this.doc.panel?.contains(this)===true});
+    this._text=String(value); this.children=[];
+  }
   get src(){ return this.srcHistory.at(-1)??''; }
   set src(value){ this.srcHistory.push(String(value)); }
   append(...nodes){ for(const child of nodes){ child.parent=this; this.children.push(child); } }
@@ -27,6 +30,7 @@ class FakeNode{
   setAttribute(name,value){ this.attributes[name]=String(value); }
   getAttribute(name){ return this.attributes[name]??null; }
   addEventListener(type,listener){ (this.listeners[type]||=[]).push(listener); }
+  contains(value){ return value===this||this.all().includes(value); }
   focus(){ this.doc.activeElement=this; }
   click(){ if(!this.disabled) for(const listener of this.listeners.click||[]) listener({type:'click',target:this}); }
   all(found=[]){ for(const child of this.children){ found.push(child); child.all(found); } return found; }
@@ -45,10 +49,11 @@ function fixture({room=ROOM,actorId=2,ended=false,meetingLink='https://meet.exam
     setTimeout(fn,ms){ timerId+=1; timers.set(timerId,{fn,ms}); return timerId; },
     clearTimeout(id){ timers.delete(id); },
   };
-  const doc={activeElement:null,visibilityState:'visible',docListeners:{}};
+  const doc={activeElement:null,visibilityState:'visible',docListeners:{},statusUpdates:[]};
   doc.createElement=tag=>new FakeNode(doc,tag);
   doc.addEventListener=(type,listener)=>{ (doc.docListeners[type]||=[]).push(listener); };
   const section=new FakeNode(doc,'section'); section.id='embeddedVideoPanel'; section.hidden=true;
+  doc.panel=section;
   doc.getElementById=id=>id==='embeddedVideoPanel'?section:null;
   const calls=[];
   const responses=[];
@@ -82,6 +87,23 @@ function granted(overrides={}){
 }
 
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
+
+test('fallback uses a persistent initially-empty live region and transfers keyboard focus',async()=>{
+  for(const legacy of [true,false]){
+    const f=fixture({legacy});const status=f.byTestId('embedded-video-status');
+    assert.equal(status.textContent,'');assert.equal(status.parent,f.section);assert.equal(status.getAttribute('aria-live'),'polite');
+    f.controller.open();assert.equal(f.byTestId('embedded-video-status'),status);
+    f.responses.push({status:503,body:{error:'video_unavailable',fallback:'direct_call'}});
+    const joining=f.controller.join({camera:true,microphone:true});
+    assert.equal(f.doc.activeElement,status,'removed Join transfers focus to the notice');
+    await joining;
+    assert.equal(f.byTestId('embedded-video-status'),status);assert.equal(status.parent,f.section);
+    assert.equal(status.textContent,COPY.unavailable);assert.equal(f.frames().length,0);
+    assert.equal(f.byTestId('embedded-video-fallback-partner').textContent,COPY.fallbackPartner);
+    assert.equal(f.doc.activeElement,legacy?f.byTestId('embedded-video-legacy'):status);
+    assert.ok(f.doc.statusUpdates.every(update=>update.attached),'all live text changes occur after the region is mounted');
+  }
+});
 
 test('the frame URL accepts only a private Daily room on the CSP-allowed origin',()=>{
   assert.equal(embeddedFrameUrl(granted().body,{expectedRoom:ROOM}),`${ROOM_URL}?t=${TOKEN}`);
