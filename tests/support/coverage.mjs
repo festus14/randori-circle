@@ -51,8 +51,8 @@ const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
   'assets/interview-session.js', 'assets/interviewer-toolkit.js',
   // Private broadcast-only relay and untrusted Yjs validation (#461).
   'assets/realtime-relay.mjs', 'assets/realtime-yjs.mjs',
-  // Consent-gated embedded Daily video (#463, ID-98).
-  'assets/embedded-video.js',
+  // Consent-gated embedded Daily video (#463, ID-98) and the direct call's TURN relay (#305, ID-107).
+  'assets/embedded-video.js', 'assets/turn-relay.js',
   // Yjs-awareness presence/cursors and their DOM view (#462).
   'assets/realtime-presence.mjs', 'assets/presence-ui.mjs',
   // Removed members use the independent public email-proof page (issue #350).

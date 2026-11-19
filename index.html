@@ -9581,8 +9581,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' }
-    // TURN fallback can be added via env: { urls:'turn:global.relay.metered.ca:80', username:'...', credential:'...' }
   ];
+  // + short-lived TURN (ID-107), memory only; STUN-only on failure
+  let videoIce=null;
+  function videoIceServers(room){
+    videoIce??=import('/assets/turn-relay.js').then(m=>m.createIceServerSource(iceServers)).catch(()=>videoIce=null);
+    return Promise.race([videoIce.then(s=>s?s.servers(room):iceServers),new Promise(r=>setTimeout(r,3e3,iceServers))]).catch(()=>iceServers);
+  }
 
   function videoUpdateStatus(txt){ const el=document.getElementById('videoStatus'); if(el) el.textContent=txt; const rl=document.getElementById('videoRoomLabel'); if(rl){ const r=getVideoRoomId(); rl.textContent=window._randori_pairing_view?.roomLabel?.(r)||'room —'; }
     // The call strip stays collapsed until this member joins (WP-R).
@@ -9759,8 +9764,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   async function createPeer(isInitiator,expectedEpoch=videoSessionEpoch){
     if(!videoSessionMatches(expectedEpoch)) return null;
+    const servers=await videoIceServers(getVideoRoomId());
+    if(!videoSessionMatches(expectedEpoch)) return null;
     if(pc) closeVideoPeer(pc);
-    const peer = new RTCPeerConnection({ iceServers });
+    const peer = new RTCPeerConnection({ iceServers:servers });
     pc=peer;
     videoUpdateStatus('connecting');
 
@@ -9837,6 +9844,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     document.getElementById('vidJoinBtn').style.display='none';
     document.getElementById('vidLeaveBtn').style.display='inline-flex';
     videoUpdateStatus('joining '+room.slice(0,6));
+    videoIceServers(room);
     await sendSignal('join', { peer: webrtcPeerId, name: (typeof me!=='undefined'&&me?.name)||localStorage.getItem('randori-me')?.slice?.(0,20)||'you' }, '');
     if(!videoJoined||joinEpoch!==videoSessionEpoch) return;
     // start polling
@@ -9891,6 +9899,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // No signaling: an authoritative sign-out may already have invalidated the
     // session, and a best-effort leave request would race identity teardown.
     try{ window._randori_embedded_video?.teardown?.(); }catch{}
+    videoIce?.then(s=>s?.clear());
     clearVideoSession({releaseMedia:true});
   }
 
