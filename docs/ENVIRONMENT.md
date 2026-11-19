@@ -185,14 +185,17 @@ leaves the flag unset (off) unless a developer sets it.
 
 ### Embedded video (Daily)
 
-Read only while `DAILY_VIDEO_ENABLED=true` ([embedded video](EMBEDDED_VIDEO.md), ID-98).
-Both must be valid or the capability is not offered and `/api/video/room`
-keeps its old behaviour.
+Read only while `DAILY_VIDEO_ENABLED=true` ([embedded video](EMBEDDED_VIDEO.md), ID-98, ID-106).
+Key and domain must be valid or the capability is not offered and `/api/video/room`
+keeps its old behaviour. An invalid budget hides the capability and returns the
+typed 503 direct-call fallback. Daily requires a card on file even within the
+free allowance; Randori caps new grants at the configured budget.
 
 | Variable | Purpose | Required | Default | Secret | Where set |
 | --- | --- | --- | --- | --- | --- |
 | `DAILY_API_KEY` | Daily REST API key. Used only by the server to create private rooms and mint short-lived meeting tokens; never sent to the browser or logged. 20 to 256 characters of `A-Z a-z 0-9 . _ -` | With `DAILY_VIDEO_ENABLED=true` | unset | Yes | Vercel Production and Development (provisioned); Preview only to canary |
 | `DAILY_DOMAIN` | The Daily subdomain the room frames load from. Must be exactly `randori-circle.daily.co`, the only origin the CSP `frame-src` and Permissions-Policy allow | With `DAILY_VIDEO_ENABLED=true` | unset | No | Vercel Production and Development (provisioned) |
+| `DAILY_MONTHLY_MINUTE_BUDGET` | Positive safe decimal integer participant-minutes per UTC calendar month. Reported usage plus unexpired token-TTL reservations plus this grant must be at most the budget; equality passes. Blank/invalid refuses video | Optional with `DAILY_VIDEO_ENABLED=true` | 9000 when unset | No | Vercel deployments enabling Daily; owner-controlled |
 
 ### Error reporting (Sentry)
 
@@ -518,7 +521,7 @@ them off cannot undo.
 | `INTERVIEW_SESSION_ENABLED` | Interviewer-only roles, timer and end-for-both in eligible primary rooms; timer expiry is terminal. With migration v26 also the lobby (interviewer admit or schedule start), interviewer-owned question selection and candidate edit lock | off | On (owner, 2026-11-19; see [PRODUCTION_STATE.md](PRODUCTION_STATE.md#feature-flag-state-after-this-rollout)) | Existing session-control/completion/code-document schema; migration v26 (additive) for the lobby and lock, which stay off until it is applied | ID-95, ID-99 ([session controls](SESSION_CONTROLS.md#interview-lobby-schedule-start-question-ownership-and-edit-lock-464)) | Returns to symmetric peer controls; an expired timer can be reset; interview rows are kept and ignored. Reload terminal pages; do not toggle during an interview |
 | `INTERVIEWER_TOOLKIT_ENABLED` | Evaluator-only rubric, private notes, decisions and report/playback; capability and room/History entries only after v27 | off | On (observed: `interviewerToolkit`, 2026-11-19; migration v27 applied) | `INTERVIEW_SESSION_ENABLED=true`, additive migration v27 | ID-102 ([interviewer toolkit](INTERVIEWER_TOOLKIT.md)) | Hides feature; own data export and evaluator deletion remain independent. Keep schema and ledger |
 | `INTERVIEW_EVALUATION_PURGE_ENABLED` | Explicit bounded physical purge (max 100 expired evaluations), no scheduler | off | Not deployed by this change | Explicit operator opt-in; v27 data; documented rehearsal/owner approval | ID-102 ([retention runbook](INTERVIEWER_TOOLKIT.md#retention-runbook)) | Stops future purges; already-open atomic batch may finish. Logical 90-day expiry remains enforced |
-| `DAILY_VIDEO_ENABLED` | Consent-gated, never-recorded embedded Daily video in primary two-person rooms: `POST /api/video/room` and the `embeddedVideo` capability | off | Off (2026-11-19: Daily billing setup and the #490 budget guard come first; see [PRODUCTION_STATE.md](PRODUCTION_STATE.md#daily-video)) | `DAILY_API_KEY`, `DAILY_DOMAIN=randori-circle.daily.co`; never in the local runtime | ID-98 ([embedded video](EMBEDDED_VIDEO.md)) | Safe: the capability and route disappear, live frames stop at their token expiry, the meeting link and direct call keep working. Only rate-limit counters are stored |
+| `DAILY_VIDEO_ENABLED` | Consent-gated, never-recorded embedded Daily video in primary two-person rooms: `POST /api/video/room` and the `embeddedVideo` capability | off | Off (2026-11-19: Daily billing setup and the #490 budget guard come first; see [PRODUCTION_STATE.md](PRODUCTION_STATE.md#daily-video)) | `DAILY_API_KEY`, `DAILY_DOMAIN=randori-circle.daily.co`, valid `DAILY_MONTHLY_MINUTE_BUDGET` (default 9000); never in the local runtime | ID-98, ID-106 ([embedded video](EMBEDDED_VIDEO.md)) | Safe: the capability and route disappear, live frames stop at their token expiry, the meeting link and direct call keep working. Aggregate budget snapshots and reservations persist through TTL; do not reset them |
 | `EXERCISE_SUGGESTIONS_ENABLED` | "Attempted" markers and suggested exercises; `GET /api/exercise-suggestions` | off | On (owner) | none | ID-77 | Safe; nothing is stored |
 | `CIRCLE_HEALTH_ENABLED` | Owner-only Circle health card and `GET /api/circle/health` | off | On (observed: `circleHealth`) | `CIRCLE_MEMBERSHIP_ENABLED` | ID-78 ([circle health](CIRCLE_HEALTH.md)) | Safe; nothing is stored |
 | `ADMIN_DIAGNOSTICS_ENABLED` | Read-only admin Diagnostics in the Circle view | off | On (observed: `adminDiagnostics`) | none (still admin-only) | ID-73 | Safe; nothing is stored |

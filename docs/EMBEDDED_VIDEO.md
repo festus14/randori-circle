@@ -66,15 +66,69 @@ required`. The URL is new even though no handler behaviour changed.
   expires_in, recording:false}`, `Cache-Control: private, no-store`.
   `expires_in` is the pass lifetime in seconds, computed from the database
   clock; the browser schedules the close from it, not from its own clock.
-- Provider failures and timeouts (5 s per call, redirects refused) return
-  `503 {error:"embedded video unavailable", code:"embedded_video_unavailable"}`.
+- Budget refusals, provider failures and timeouts (5 s per call, redirects
+  refused) return exactly `503 {"error":"video_unavailable","fallback":"direct_call"}`,
+  with `Cache-Control: private, no-store` and no diagnostic detail.
   The log line is `{stage, status, error}`: the failing stage, the provider's
-  HTTP status and Daily's fixed `error` code (for example
-  `invalid-request-error`) when it is a plain lowercase code. Daily's `info`
-  text, the key, a token, a role label and the room name are never logged.
+  HTTP status and an allowlisted Daily `error` category (for example
+  `invalid-request-error`). Arbitrary provider strings are not log categories.
+  Daily's `info` text, the key, a token, a role label and the room name are
+  never logged.
 
-Nothing is written to Turso apart from the rate-limit counters. There is no
-migration.
+Rate limits, aggregate usage snapshots and random grant reservations reuse
+`auth_rate_limits`. No migration or runtime DDL is needed.
+
+## Monthly budget and fallback
+
+Issue [#490](https://github.com/festus14/randori-circle/issues/490),
+[ID-106](IMPLEMENTED_DECISIONS.md#id-106-cap-daily-video-grants-with-a-shared-monthly-budget-and-direct-call-fallback).
+`DAILY_MONTHLY_MINUTE_BUDGET` is a positive safe decimal integer, default **9000**
+participant-minutes when unset. Blank, zero, negative, fractional, nonnumeric,
+unsafe integers or other invalid values fail closed (no embedded capability;
+the room endpoint gives the typed 503). The flag remains **off** by default.
+
+- Period: calendar month **UTC**, not a rolling window. `GET /v1/meetings`
+  uses `timeframe_start` at month start and `timeframe_end` at month end,
+  `limit=100` and `starting_after` cursors. No `ongoing` filter excludes live
+  sessions. Sum `ceil(participant.duration / 60)` separately for every
+  participant of meetings that started this month; never substitute meeting
+  duration or max participants. At most **20 pages**; incomplete, malformed,
+  duplicate or over-bound data refuses rather than caching a partial sum.
+- Shared cache: a snapshot is fresh for **less than five minutes**, measured
+  from refresh start using the database clock. A database write transaction
+  claims the refresh; at most one refresh starts per five minutes across
+  instances, even after failures/crashes. Provider calls happen outside the
+  write lock. Cold/stale contenders refuse while that single flight runs.
+  A read failure with no fresh snapshot refuses; a fresh snapshot needs no
+  provider usage read. Stale evidence is never sufficient for admission.
+- Each grant reserves **ceil(token TTL seconds / 60)** participant-minutes,
+  at most 60, until its token expiry. Reservations have random namespaced
+  keys with no room, participant or token data. Reported usage plus **all**
+  active reservations (including ones crossing a month boundary) is the
+  projection. A single write transaction checks and inserts the reservation
+  before any room/token operation: racing grants cannot both overspend.
+  **Exactly at budget passes**; `reported + reserved + this TTL > budget`
+  refuses. Failed/unknown provider outcomes retain the reservation until
+  expiry, since a token might have been created despite a lost response.
+- Refusal or provider failure: the panel says **“Built-in video is paused —
+  use the direct call”**, offers the existing free direct browser call and
+  private meeting link, and never creates an iframe. No reload is needed;
+  ordinary successful consent/join/leave behaviour is unchanged.
+- The global-admin diagnostics card is read-only and never contacts Daily.
+  It shows reported month-to-date minutes (last snapshot, or unknown), active
+  reserved minutes, budget and `ok` / `near` (90% projection) / `paused`
+  (configuration off/invalid or exhausted) / `unknown` (no fresh evidence).
+  It contains no room names, tokens or participants.
+
+**Owner note:** Daily requires a card on file even within the **10,000 free
+participant-minutes per month** (pricing verified 2026-11-19). Daily has no
+documented spending cap; Randori caps new grants at the budget. Reporting
+can lag (~15-second duration granularity; joins under ~10 seconds may be
+absent), so this is a conservative admission guard, **not** a guarantee of
+zero provider charges: delayed usage, other apps sharing the Daily account,
+repeated joins with one token and month-start attribution can differ from
+billing. Keep the 1,000-minute default headroom, use a dedicated account,
+and review Daily usage before enabling or increasing the budget.
 
 ## Provider settings
 
@@ -170,5 +224,6 @@ Development.
 
 Rollback: unset the flag (or set `false`) and redeploy. The capability and
 the route disappear; the meeting link and the direct call work as before.
-Daily rooms expire on their own within two hours. There is nothing to clean
-up in Turso.
+Daily rooms expire on their own within two hours. Budget reservations expire
+with their tokens and namespaced counters are reclaimed by existing TTL
+cleanup; keep the table and do not reset live reservations when toggling.

@@ -54,8 +54,10 @@ Merging does not apply v27; production migration needs the owner's approval.
 `DAILY_VIDEO_ENABLED=true` (with the server-only `DAILY_API_KEY` and
 `DAILY_DOMAIN`) adds consent-gated in-room audio and video through Daily for
 primary two-person rooms. Calls are never recorded, and the private meeting
-link stays as the fallback. It is off by default and needs no migration
-([embedded video](docs/EMBEDDED_VIDEO.md), ID-98).
+link and free direct call stay as fallbacks. New grants fit within
+`DAILY_MONTHLY_MINUTE_BUDGET` (default 9,000 participant-minutes per UTC month),
+including reported usage and active token reservations. It is off by default
+and needs no migration ([embedded video](docs/EMBEDDED_VIDEO.md), ID-98, ID-106).
 Not built yet: presence and remote cursors.
 Which feature is on in production, and what each flag needs, is in the
 [feature flag table](docs/ENVIRONMENT.md#feature-flags).
@@ -357,9 +359,20 @@ Setting up production from scratch is covered step by step in the
 the code reads: purpose, whether it is required, default, whether it is secret,
 and where it is set. It also has the feature flag table with production state
 and how to switch each flag off safely. [`.env.example`](.env.example) is the
-matching template. Embedded Daily video reads `DAILY_VIDEO_ENABLED`, the
-server-only secret `DAILY_API_KEY` and `DAILY_DOMAIN`; the local runtime
-blanks all three ([embedded video setup](docs/EMBEDDED_VIDEO.md#operator-setup)).
+matching template. Embedded Daily video uses:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DAILY_VIDEO_ENABLED` | `false` | Opt into embedded video; the local runtime forces it off |
+| `DAILY_API_KEY` | unset | Server-only Daily REST secret; never exposed or logged |
+| `DAILY_DOMAIN` | unset | Must be `randori-circle.daily.co` |
+| `DAILY_MONTHLY_MINUTE_BUDGET` | `9000` when unset | Positive integer participant-minutes per UTC month; invalid (including blank) pauses video. Equality passes; reported + reserved + grant TTL above the budget refuses |
+
+Daily requires a card on file even within its 10,000 free participant-minutes;
+Randori caps grants at its own budget, not a provider spending cap. Refusals
+and provider failures offer the free direct call and private meeting link
+without reload ([budget and setup](docs/EMBEDDED_VIDEO.md#monthly-budget-and-fallback)).
+The local runtime blanks the key/domain and never calls Daily.
 
 For optional sub-second pair-code relay, configure `SUPABASE_URL` and the
 browser-safe `SUPABASE_PUBLISHABLE_KEY`, plus server-only sensitive

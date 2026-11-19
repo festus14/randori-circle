@@ -123,7 +123,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-95](#id-95-scope-primary-interview-controls-to-the-interviewer-and-close-on-timer-expiry) | Scope primary interview controls to the interviewer and close on timer expiry | Pairing & Scheduling | Active |
 | [ID-96](#id-96-relay-pair-code-updates-through-private-supabase-channels-without-changing-durable-authority) | Relay pair code updates through private Supabase channels without changing durable authority | Pairing & Scheduling | Amended by [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) and [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) |
 | [ID-97](#id-97-curate-original-interview-kits-as-versioned-catalogue-metadata) | Curate original interview kits as versioned catalogue metadata | Content & Catalogue | Active |
-| [ID-98](#id-98-embed-consent-gated-daily-video-in-primary-pair-rooms-behind-a-flag) | Embed consent-gated Daily video in primary pair rooms, behind a flag | Pairing & Scheduling | Active |
+| [ID-98](#id-98-embed-consent-gated-daily-video-in-primary-pair-rooms-behind-a-flag) | Embed consent-gated Daily video in primary pair rooms, behind a flag | Pairing & Scheduling | Amended by [ID-106](#id-106-cap-daily-video-grants-with-a-shared-monthly-budget-and-direct-call-fallback) |
 | [ID-99](#id-99-add-an-interview-lobby-schedule-start-interviewer-owned-selection-and-candidate-edit-lock) | Add an interview lobby, schedule start, interviewer-owned selection and candidate edit lock | Pairing & Scheduling | Amended by [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) |
 | [ID-100](#id-100-show-pair-presence-and-remote-cursors-over-the-private-relay-with-a-ttl-heartbeat-fallback) | Show pair presence and remote cursors over the private relay, with a TTL heartbeat fallback | Pairing & Scheduling | Active |
 | [ID-101](#id-101-load-optional-page-tools-at-their-first-use-without-weakening-byte-gates) | Load optional page tools at their first use without weakening byte gates | Quality, CI & Testing | Active |
@@ -131,6 +131,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-103](#id-103-bound-execution-admission-and-spend-with-a-durable-retry-queue-and-pristine-runtime-snapshots) | Bound execution admission and spend with a durable retry queue and pristine runtime snapshots | Observability & Ops | Active |
 | [ID-104](#id-104-gate-typescript-and-piston-only-go-by-provider-without-runtime-installs) | Gate TypeScript and Piston-only Go by provider without runtime installs | Content & Catalogue | Active |
 | [ID-105](#id-105-warn-before-production-database-credentials-expire-without-exposing-tokens) | Warn before production database credentials expire without exposing tokens | Observability & Ops | Active |
+| [ID-106](#id-106-cap-daily-video-grants-with-a-shared-monthly-budget-and-direct-call-fallback) | Cap Daily video grants with a shared monthly budget and direct-call fallback | Observability & Ops | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -144,8 +145,8 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-106).
-   ID-105 (#486) adds offline database credential expiry monitoring.
+   plus one (currently ID-107).
+   ID-106 (#490) adds the shared Daily participant-minute budget and fallback.
    Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
@@ -5722,6 +5723,9 @@ change. Authoring, renewal and takedown procedures:
 [original interview kits](INTERVIEW_KITS.md).
 ## ID-98: Embed consent-gated Daily video in primary pair rooms, behind a flag
 
+**Amended by ID-106:** New grants use the shared monthly budget; failures return
+the typed direct-call fallback. Existing consent, room and token rules remain.
+
 **Status: Active.** Closes the scope of #463 (epic #460) behind
 `DAILY_VIDEO_ENABLED`, off by default. No migration. Leaves ID-57's private
 meeting link and the existing WebRTC call in place as fallbacks. ID-94 and
@@ -6442,4 +6446,63 @@ policy and redaction of every output. A write-denied CLI rehearsal checks
 stdout/stderr and untouched Actions output/summary files. Workflow tests pin
 triggers, actions, runner, permissions, concurrency, deadlines and step-only
 secrets. See [credential expiry and rotation](CREDENTIAL_EXPIRY.md).
+
+## ID-106: Cap Daily video grants with a shared monthly budget and direct-call fallback
+
+**Status: Active.** Implements #490; `DAILY_VIDEO_ENABLED` remains off.
+**Amends ID-98:** Adds budget admission and replaces generic provider-error
+bodies with a typed direct-call fallback. Consent, private two-seat rooms,
+no recording and token/room lifetimes remain unchanged.
+
+**Context.** Daily's 10,000 free participant-minutes reset monthly, but a
+card on file is required even within that allowance and there is no documented
+provider spending cap (pricing verified 2026-11-19).
+
+**Decision.** Default `DAILY_MONTHLY_MINUTE_BUDGET` to 9000 only when unset;
+require a positive safe decimal integer or fail closed. Use calendar months
+UTC and sum each participant's duration in current-month-started meetings,
+rounded up separately to minutes, including ongoing meetings. Read at most
+20 pages of 100 meetings with five-second request deadlines and no redirects;
+unreadable, malformed, duplicate or truncated results cannot authorize grants.
+
+Reuse `auth_rate_limits` under `dvb1:`: two aggregate snapshot counters,
+a five-minute fenced refresh claim and random token-TTL reservations.
+Refresh starts at most once per five minutes across instances, even after
+failure or a crashed refresher. Provider I/O is outside the DB write lock;
+concurrent cold/stale requests refuse until evidence exists. Snapshot age
+starts at refresh claim time and must be less than five minutes. An atomic
+write transaction checks `reported + active reservations + ceil(TTL/60)`
+and inserts the reservation. **Equality passes; greater than budget refuses.**
+Keep all reservations until token expiry (at most 60 minutes), including
+ones crossing month boundaries and failed/unknown provider outcomes.
+No migration and zero runtime DDL.
+
+**Fallback and diagnostics.** Budget/store/usage refusals and provider failures
+return exactly `503 {"error":"video_unavailable","fallback":"direct_call"}`,
+private/no-store with no detail. Budget refusal creates no room/token. The
+panel says “Built-in video is paused — use the direct call”, offers the
+existing direct call and private meeting link without reload and creates no
+frame. The global-admin card reads aggregates only: reported minutes,
+reserved minutes, budget and ok/near (90%)/paused/unknown; no provider reads,
+room names, participants or tokens. Existing fixed-category server logs
+remain secret-free.
+
+**Alternatives and limitations.** An instance-local cache/counter can race;
+a provider spend cap is unavailable; new schema is unnecessary. Usage lags,
+very short joins may be absent, repeated token joins and other account usage
+can differ from reservations. This caps admission conservatively, not billing;
+keep default headroom and review usage on a dedicated Daily account.
+
+**Rollout and recovery.** Merge with the flag off. Before enabling, the owner
+reviews card/billing setup and the aggregate card and runs the existing
+consent/join/leave canary. Unset the flag to retain the direct call and meeting
+link. Never clear live reservations on redeploy or flag changes. Existing TTL
+cleanup reclaims expired rows. See [embedded video budget](EMBEDDED_VIDEO.md#monthly-budget-and-fallback).
+
+**Verification.** Provider-free unit tests exercise pagination, per-participant
+rounding, ongoing usage, expiry, UTC rollover, exact boundaries, racing grants,
+shared refresh/fencing, invalid budgets, fresh/stale failure handling, typed
+503s and redaction. Playwright stubs all provider origins and checks fallback
+plus unchanged consent/join/leave. All existing gates and coverage thresholds
+remain unchanged.
 
