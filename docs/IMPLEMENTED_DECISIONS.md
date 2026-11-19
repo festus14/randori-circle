@@ -6460,32 +6460,48 @@ provider spending cap (pricing verified 2026-11-19).
 
 **Decision.** Default `DAILY_MONTHLY_MINUTE_BUDGET` to 9000 only when unset;
 require a positive safe decimal integer or fail closed. Use calendar months
-UTC and sum each participant's duration in current-month-started meetings,
-rounded up separately to minutes, including ongoing meetings. Read at most
-20 pages of 100 meetings with five-second request deadlines and no redirects;
-unreadable, malformed, duplicate or truncated results cannot authorize grants.
+UTC and sum each participant's duration rounded up separately, including
+ongoing meetings and conservatively counting returned pre-month starts.
+Read at most 20 pages of 100 meetings, with five-second request deadlines,
+an eight-second total deadline including response bodies and no redirects.
+Malformed, duplicate or truncated results cannot authorize new spend.
 
-Reuse `auth_rate_limits` under `dvb1:`: two aggregate snapshot counters,
-a five-minute fenced refresh claim and random token-TTL reservations.
-Refresh starts at most once per five minutes across instances, even after
-failure or a crashed refresher. Provider I/O is outside the DB write lock;
-concurrent cold/stale requests refuse until evidence exists. Snapshot age
-starts at refresh claim time and must be less than five minutes. An atomic
-write transaction checks `reported + active reservations + ceil(TTL/60)`
-and inserts the reservation. **Equality passes; greater than budget refuses.**
-Keep all reservations until token expiry (at most 60 minutes), including
-ones crossing month boundaries and failed/unknown provider outcomes.
-No migration and zero runtime DDL.
+Reuse `auth_rate_limits` under `dvb1:` for month-scoped aggregate snapshots,
+fenced refresh claims and opaque pair reservations. Within a month, reported
+usage is `max(new report, previous report)`; missing timestamp evidence cannot
+erase the usage floor. Only the next UTC month's key resets it. Successful
+refreshes coalesce for five minutes; failed/crashed refreshers hold a 30-second
+lease. Snapshot age starts at claim time and must be less than five minutes.
+Provider I/O remains outside the write lock.
+
+Admit both seats together: the first pass checks `reported + active reserved
+minutes + 2 × ceil(TTL/60)` and reserves the pair in one write transaction.
+**Equality passes; above budget refuses.** The partner/rejoin reuses the
+prepaid pair envelope; their token is capped at the first pass's expiry and
+makes no new spend, even when usage is temporarily unreadable. A concurrent
+cold-refresh fallback pauses that pair before the refresher can mint, keeping
+both participants on the same fallback. Keys use the existing HMAC room name,
+never raw Randori room/account ids or tokens. Keep reservations through
+**token expiry plus five minutes** (including failures and month-straddling
+calls), so final minutes do not slip between expiry and a stale snapshot.
+The grace period cannot issue new passes. Count legacy per-grant rows on
+upgrade. Known lock refusals have bounded jittered retries; unknown commits
+never replay. No migration and zero runtime DDL.
 
 **Fallback and diagnostics.** Budget/store/usage refusals and provider failures
 return exactly `503 {"error":"video_unavailable","fallback":"direct_call"}`,
 private/no-store with no detail. Budget refusal creates no room/token. The
 panel says “Built-in video is paused — use the direct call”, offers the
 existing direct call and private meeting link without reload and creates no
-frame. The global-admin card reads aggregates only: reported minutes,
-reserved minutes, budget and ok/near (90%)/paused/unknown; no provider reads,
-room names, participants or tokens. Existing fixed-category server logs
-remain secret-free.
+frame, and tells the partner to use the same fallback. An initially empty,
+persistent live region announces changes; removed Join focus moves to status
+and then the direct-call action. The global-admin card is settled independently
+and reads aggregates only: reported minutes, reserved minutes, budget and
+ok/near/paused/unknown. Disabled is neutral “Not enabled”; intentional budget
+exhaustion is warning “Paused — budget reached”. Failed/untrusted reads remain
+red failures, with a distinct “Usage too large to read” page-ceiling reason.
+No provider reads, room names, participants or tokens reach diagnostics.
+Existing fixed-category logs remain secret-free.
 
 **Alternatives and limitations.** An instance-local cache/counter can race;
 a provider spend cap is unavailable; new schema is unnecessary. Usage lags,

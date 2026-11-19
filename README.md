@@ -56,7 +56,9 @@ Merging does not apply v27; production migration needs the owner's approval.
 primary two-person rooms. Calls are never recorded, and the private meeting
 link and free direct call stay as fallbacks. New grants fit within
 `DAILY_MONTHLY_MINUTE_BUDGET` (default 9,000 participant-minutes per UTC month),
-including reported usage and active token reservations. It is off by default
+including ratcheted reported usage and both seats' reservations (with five-minute
+accounting grace). Partner passes reuse the same envelope, capped at the first
+pass's expiry. It is off by default
 and needs no migration ([embedded video](docs/EMBEDDED_VIDEO.md), ID-98, ID-106).
 Not built yet: presence and remote cursors.
 Which feature is on in production, and what each flag needs, is in the
@@ -366,7 +368,7 @@ matching template. Embedded Daily video uses:
 | `DAILY_VIDEO_ENABLED` | `false` | Opt into embedded video; the local runtime forces it off |
 | `DAILY_API_KEY` | unset | Server-only Daily REST secret; never exposed or logged |
 | `DAILY_DOMAIN` | unset | Must be `randori-circle.daily.co` |
-| `DAILY_MONTHLY_MINUTE_BUDGET` | `9000` when unset | Positive integer participant-minutes per UTC month; invalid (including blank) pauses video. Equality passes; reported + reserved + grant TTL above the budget refuses |
+| `DAILY_MONTHLY_MINUTE_BUDGET` | `9000` when unset | Positive integer participant-minutes per UTC month; invalid (including blank) pauses video. Ratcheted reported + reserved + both seats' TTL must fit; equality passes. Pair reuse is prepaid, with five-minute accounting grace after first token expiry |
 
 Daily requires a card on file even within its 10,000 free participant-minutes;
 Randori caps grants at its own budget, not a provider spending cap. Refusals

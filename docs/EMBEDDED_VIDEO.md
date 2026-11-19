@@ -90,35 +90,48 @@ the room endpoint gives the typed 503). The flag remains **off** by default.
 - Period: calendar month **UTC**, not a rolling window. `GET /v1/meetings`
   uses `timeframe_start` at month start and `timeframe_end` at month end,
   `limit=100` and `starting_after` cursors. No `ongoing` filter excludes live
-  sessions. Sum `ceil(participant.duration / 60)` separately for every
-  participant of meetings that started this month; never substitute meeting
-  duration or max participants. At most **20 pages**; incomplete, malformed,
-  duplicate or over-bound data refuses rather than caching a partial sum.
-- Shared cache: a snapshot is fresh for **less than five minutes**, measured
-  from refresh start using the database clock. A database write transaction
-  claims the refresh; at most one refresh starts per five minutes across
-  instances, even after failures/crashes. Provider calls happen outside the
-  write lock. Cold/stale contenders refuse while that single flight runs.
-  A read failure with no fresh snapshot refuses; a fresh snapshot needs no
-  provider usage read. Stale evidence is never sufficient for admission.
-- Each grant reserves **ceil(token TTL seconds / 60)** participant-minutes,
-  at most 60, until its token expiry. Reservations have random namespaced
-  keys with no room, participant or token data. Reported usage plus **all**
-  active reservations (including ones crossing a month boundary) is the
-  projection. A single write transaction checks and inserts the reservation
-  before any room/token operation: racing grants cannot both overspend.
-  **Exactly at budget passes**; `reported + reserved + this TTL > budget`
-  refuses. Failed/unknown provider outcomes retain the reservation until
-  expiry, since a token might have been created despite a lost response.
-- Refusal or provider failure: the panel says **“Built-in video is paused —
-  use the direct call”**, offers the existing free direct browser call and
-  private meeting link, and never creates an iframe. No reload is needed;
-  ordinary successful consent/join/leave behaviour is unchanged.
-- The global-admin diagnostics card is read-only and never contacts Daily.
-  It shows reported month-to-date minutes (last snapshot, or unknown), active
-  reserved minutes, budget and `ok` / `near` (90% projection) / `paused`
-  (configuration off/invalid or exhausted) / `unknown` (no fresh evidence).
-  It contains no room names, tokens or participants.
+  sessions. Sum `ceil(participant.duration / 60)` separately; never substitute
+  meeting duration or maximum seats. If Daily includes a meeting that started
+  before month start, count it too: conservative over-counting is safer than
+  rejecting a valid month-straddling record. At most **20 pages**, **5 seconds
+  per request**, and **8 seconds total** including bodies. Malformed, duplicate,
+  truncated or over-bound data refuses; no partial sum is cached.
+- Shared cache: snapshots must be **less than five minutes** old, from refresh
+  start at the database clock. A fenced DB claim makes refresh single-flight
+  across instances. A successful refresh holds the five-minute cooldown;
+  failed/crashed refreshers hold only **30 seconds**. Provider I/O stays outside
+  the write lock. Reported usage **ratchets upwards within the UTC month**:
+  a smaller/empty successful response cannot erase already reported usage.
+  Only a new month's key resets it. No fresh snapshot means no new spend.
+- Pair admission: the first pass reserves **2 × ceil(TTL seconds / 60)**
+  participant-minutes (at most **120**) for both seats, under the existing HMAC
+  room name (`dvb1:p:`; no raw Randori room/member ids or tokens). A partner or
+  rejoin reuses that prepaid envelope without additional spend, including
+  during a usage-cache outage. Their token is capped at the first token's
+  expiry, never extended by reuse. Existing per-grant rows remain counted on
+  upgrade. All pair reservations remain until **token expiry + five minutes**,
+  bridging final reported minutes and the next snapshot; this accounting grace
+  cannot mint a new pass. Failed/unknown provider outcomes keep the reservation.
+- A single write transaction checks `reported + active reservations + 2 × TTL`
+  before reserving a new pair. **Equality passes; above budget refuses both
+  seats.** Active reservations include month-straddling pairs. If a partner
+  falls back during a concurrent cold refresh, a short pair-level pause is
+  committed before the refresher can admit that pair, so both fall back together.
+  Known rolled-back lock conflicts have bounded jittered retries; unknown
+  commit acknowledgements never replay. Pair reuse makes no new reservation.
+- Refusal or provider failure: **“Built-in video is paused — use the direct
+  call”**, with the direct call and private meeting link, no reload or frame.
+  The panel asks the partner to use the same fallback too. Normal consent,
+  join and leave remain unchanged. A persistent, initially empty `role=status`
+  live region announces changes; focus moves from removed Join to status,
+  then to the direct-call action on fallback.
+- Diagnostics remain read-only, aggregate-only, with no provider calls, room
+  names, tokens or participants. `ok` is healthy; `near` (90%) and exhausted
+  `paused` are warnings. Flag/local-runtime off is neutral **“Not enabled”**,
+  not a red failure. No fresh evidence is `unknown`; invalid configuration,
+  failed/untrusted reads or failed refreshes are red failures. Fixed reasons
+  distinguish **“Usage too large to read”** (page ceiling), timeout, read failure
+  and budget exhaustion.
 
 **Owner note:** Daily requires a card on file even within the **10,000 free
 participant-minutes per month** (pricing verified 2026-11-19). Daily has no

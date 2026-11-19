@@ -195,7 +195,7 @@ free allowance; Randori caps new grants at the configured budget.
 | --- | --- | --- | --- | --- | --- |
 | `DAILY_API_KEY` | Daily REST API key. Used only by the server to create private rooms and mint short-lived meeting tokens; never sent to the browser or logged. 20 to 256 characters of `A-Z a-z 0-9 . _ -` | With `DAILY_VIDEO_ENABLED=true` | unset | Yes | Vercel Production and Development (provisioned); Preview only to canary |
 | `DAILY_DOMAIN` | The Daily subdomain the room frames load from. Must be exactly `randori-circle.daily.co`, the only origin the CSP `frame-src` and Permissions-Policy allow | With `DAILY_VIDEO_ENABLED=true` | unset | No | Vercel Production and Development (provisioned) |
-| `DAILY_MONTHLY_MINUTE_BUDGET` | Positive safe decimal integer participant-minutes per UTC calendar month. Reported usage plus unexpired token-TTL reservations plus this grant must be at most the budget; equality passes. Blank/invalid refuses video | Optional with `DAILY_VIDEO_ENABLED=true` | 9000 when unset | No | Vercel deployments enabling Daily; owner-controlled |
+| `DAILY_MONTHLY_MINUTE_BUDGET` | Positive safe decimal integer participant-minutes per UTC month. Ratcheted reported usage plus active pair reservations plus both seats' TTL must fit; equality passes. Pair reuse is prepaid and capped at first token expiry; reservations include five-minute accounting grace. Blank/invalid refuses video | Optional with `DAILY_VIDEO_ENABLED=true` | 9000 when unset | No | Vercel deployments enabling Daily; owner-controlled |
 
 ### Error reporting (Sentry)
 
