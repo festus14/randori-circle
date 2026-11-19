@@ -11,6 +11,7 @@
 // administrator can read it: an existing account with is_admin=1, not a demo
 // account, with a live session (and, when circle membership is enforced, an
 // active membership). Ordinary circle owners are refused.
+import { readDailyBudgetDiagnostics } from './_daily-budget.js';
 import { MIGRATION_CONTRACTS } from '../db/migration-contract.js';
 import { LEDGER_READINESS_STATES, ledgerReadiness } from '../db/migration-compatibility.js';
 import {
@@ -635,13 +636,14 @@ const SMOKE_UNAVAILABLE=Object.freeze({...unavailable(EXECUTION_SMOKE_MAX_AGE_MS
 export async function readAdminDiagnostics(db,{env=process.env,checkReadiness=defaultReadiness}={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client required');
   const nowMs=await databaseNow(db);
-  const [outbox,deadLetters,execution,smoke,readiness,errors]=await Promise.all([
+  const [outbox,deadLetters,execution,smoke,readiness,errors,dailyVideo]=await Promise.all([
     settle(()=>readOutboxCard(db,nowMs)),
     settle(()=>readDeadLetters(db,nowMs)),
     settle(()=>readExecutionCard(db,nowMs,env)),
     settle(()=>readExecutionSmoke(db,nowMs)),
     settle(()=>readReadinessCard(db,nowMs,{env,checkReadiness})),
     settle(()=>readErrorsCard(db,nowMs)),
+    readDailyBudgetDiagnostics(db,{env}),
   ]);
   return Object.freeze({
     ok:true,
@@ -658,6 +660,7 @@ export async function readAdminDiagnostics(db,{env=process.env,checkReadiness=de
         :Object.freeze({...unavailable(EXECUTION_EVIDENCE_MAX_AGE_MS),smoke:smoke.ok?smoke.value:SMOKE_UNAVAILABLE}),
       readiness:readiness.ok?readiness.value:unavailable(DIAGNOSTICS_SNAPSHOT_MAX_AGE_MS),
       errors:errors.ok?errors.value:unavailable(LOG_EVIDENCE_MAX_AGE_MS),
+      dailyVideo,
     }),
   });
 }

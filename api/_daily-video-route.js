@@ -1,6 +1,7 @@
 // POST /api/video/room handler (issue #463, ID-98). Loaded by api/video.js
 // only while the embedded-video capability is configured, so the existing
 // signaling route keeps its exact import graph and behaviour when it is off.
+import { reserveDailyGrant } from './_daily-budget.js';
 import { getClient, getJwtSecret, verifyRequestAuth } from './_db.js';
 import { ensureDataSessionControlsReadiness } from './_data-readiness.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
@@ -27,7 +28,7 @@ function authenticatedUserId(payload){
   return Number.isSafeInteger(userId)&&userId>0?userId:null;
 }
 
-const EMBEDDED_VIDEO_UNAVAILABLE={error:'embedded video unavailable',code:'embedded_video_unavailable'};
+const EMBEDDED_VIDEO_UNAVAILABLE={error:'video_unavailable',fallback:'direct_call'};
 
 async function readEmbeddedRoomAccess(db,{userId,room,versionKey}){
   const transaction=await db.transaction('read');
@@ -86,6 +87,7 @@ export async function handleEmbeddedRoom(req,res,config){
     });
   }
   try{
+    await reserveDailyGrant(db,config,{window,fetchImpl:globalThis.fetch});
     const grant=await mintDailyRoomGrant(config,{
       roomId:input.roomId,secret,window,label:dailyParticipantLabel(access.state),
       camera:input.camera,microphone:input.microphone,fetchImpl:globalThis.fetch,

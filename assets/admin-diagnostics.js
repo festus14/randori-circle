@@ -13,13 +13,14 @@
 export const SNAPSHOT_FORMAT = 'randori.admin-diagnostics.v1';
 export const TICK_MS = 30 * 1000;
 
-export const CARD_ORDER = Object.freeze(['outbox', 'outboxWatchdog', 'backupWatchdog', 'execution', 'readiness', 'errors']);
+export const CARD_ORDER = Object.freeze(['outbox', 'outboxWatchdog', 'backupWatchdog', 'execution', 'dailyVideo', 'readiness', 'errors']);
 
 const CARD_TITLES = Object.freeze({
   outbox: 'Outbox delivery',
   outboxWatchdog: 'Outbox watchdog',
   backupWatchdog: 'Backup watchdog',
   execution: 'Code execution',
+  dailyVideo: 'Daily video allowance',
   readiness: 'Readiness and migrations',
   errors: 'Recent errors',
 });
@@ -289,6 +290,12 @@ export function cardView(id, card, elapsedMs = 0) {
   else if (status === 'deferred') lines = [...(DEFERRED_COPY[id] || ['Not available yet.']), `Expected cadence: every ${formatDuration(source.cadenceMs)}.`];
   else if (id === 'outbox') lines = outboxLines(source);
   else if (id === 'execution') lines = executionLines(source);
+  else if (id === 'dailyVideo') {
+    const minutes=value=>Number.isSafeInteger(value)&&value>=0?String(value):'unknown';
+    const state=['ok','near','paused','unknown'].includes(source.state)?source.state:'unknown';
+    lines=[`UTC month: ${minutes(source.reportedMinutes)} reported · ${minutes(source.reservedMinutes)} reserved · ${minutes(source.budget)} budget participant-minutes.`,
+      `State: ${state}. Paused or unknown: use the direct call. Reported usage may lag; reservations last until token expiry.`];
+  }
   else if (id === 'readiness') lines = readinessLines(source);
   else if (id === 'errors') lines = errorLines(source);
   else lines = [];

@@ -47,6 +47,7 @@ function snapshot(overrides = {}) {
     outboxWatchdog: { status: 'deferred', category: 'github_actions_artifact_only', cadenceMs: HOUR, liveEquivalent: 'outbox', evidence: null },
     backupWatchdog: { status: 'deferred', category: 'github_actions_artifact_only', cadenceMs: 8 * DAY, liveEquivalent: 'readiness', evidence: null },
     execution: { status: 'healthy', category: null, provider: 'vercel-sandbox', configured: true, reason: null, recent24h: { success: 3, failed: 0, unavailable: 0 }, lastOutcome: 'success', evidence: fresh(26 * HOUR, HOUR), smoke: SMOKE_PASSED },
+    dailyVideo: {status:'unknown',state:'unknown',reportedMinutes:null,reservedMinutes:0,budget:9000},
     readiness: { status: 'healthy', category: null, ready: true, ledger: { state: 'current', currentVersion: 23, expectedVersion: 23, appliedCount: 23, latest: { version: 23, name: 'invite-requests', appliedAt: '2026-10-19T10:00:00.000Z', disposition: 'applied' }, recent: [] }, evidence: fresh(5 * MINUTE) },
     errors: { status: 'healthy', category: null, windowMs: DAY, totals: { error: 0, warn: 0 }, bySource: {}, categories: [], otherCount: 0, evidence: fresh(HOUR, MINUTE) },
     ...overrides,
@@ -162,7 +163,7 @@ const staleBadge = (elements, id) => cardNode(elements, id).byTestId('admin-diag
 test('the module exposes a frozen API on window-free hosts', () => {
   assert.ok(Object.isFrozen(diagnosticsUi));
   assert.equal(diagnosticsUi.mountAdminDiagnostics, mountAdminDiagnostics);
-  assert.deepEqual(CARD_ORDER, ['outbox', 'outboxWatchdog', 'backupWatchdog', 'execution', 'readiness', 'errors']);
+  assert.deepEqual(CARD_ORDER, ['outbox', 'outboxWatchdog', 'backupWatchdog', 'execution', 'dailyVideo', 'readiness', 'errors']);
   assert.equal(TICK_MS, 30_000);
   assert.deepEqual(Object.keys(REPLAY_REASON_LABELS), ['OPERATOR_RETRY', 'PROVIDER_RECOVERED', 'CONFIGURATION_FIXED']);
 });
@@ -426,7 +427,7 @@ test('opening the disclosure loads and renders every card and the dead letters',
   assert.equal(state.loads, 1, 'reopening keeps the snapshot');
   const cards = elements.adminDiagnosticsCards.children;
   assert.deepEqual(cards.map(node => node.dataset.card), CARD_ORDER);
-  assert.deepEqual(cards.map(node => node.dataset.status), ['healthy', 'deferred', 'deferred', 'healthy', 'healthy', 'healthy']);
+  assert.deepEqual(cards.map(node => node.dataset.status), ['healthy', 'deferred', 'deferred', 'healthy', 'unknown', 'healthy', 'healthy']);
   assert.ok(cards.every(node => node.dataset.stale === 'false'));
   assert.equal(cardNode(elements, 'outbox').getAttribute('aria-labelledby'), 'adminDiagCard-outbox');
   const table = cardNode(elements, 'outbox').byTestId('admin-outbox-types')[0];
@@ -548,7 +549,7 @@ test('a failed or malformed load clears the view and explains why', async () => 
   ]) {
     const { elements } = harness({ payloads: [snapshot(), payload] });
     await openPanel(elements);
-    assert.equal(elements.adminDiagnosticsCards.children.length, 6);
+    assert.equal(elements.adminDiagnosticsCards.children.length, CARD_ORDER.length);
     await elements.adminDiagnosticsRefresh.dispatch('click');
     assert.equal(elements.adminDiagnosticsCards.children.length, 0);
     assert.equal(elements.adminDeadLetters.children.length, 0);

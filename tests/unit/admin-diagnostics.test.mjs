@@ -852,7 +852,7 @@ test('a global admin receives the aggregate snapshot with no-store caching', asy
   assert.equal(result.status, 200);
   assert.equal(result.headers['cache-control'], 'no-store');
   assert.equal(result.body.format, ADMIN_DIAGNOSTICS_FORMAT);
-  assert.deepEqual(Object.keys(result.body.cards), ['outbox', 'deadLetters', 'outboxWatchdog', 'backupWatchdog', 'execution', 'readiness', 'errors']);
+  assert.deepEqual(Object.keys(result.body.cards), ['outbox', 'deadLetters', 'outboxWatchdog', 'backupWatchdog', 'execution', 'readiness', 'errors', 'dailyVideo']);
   assert.equal(result.body.cards.deadLetters.items[0].providerReason, 'testing_recipient_restricted');
   assertNoPrivateData(result.body);
 });
