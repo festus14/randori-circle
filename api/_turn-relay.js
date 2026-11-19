@@ -35,6 +35,15 @@ export const TURN_PROVIDER_TIMEOUT_MS=5000;
 export const TURN_RATE_WINDOW_SECONDS=15*60;
 export const TURN_RATE_LIMITS=Object.freeze({account:20,address:60});
 export const TURN_DEFAULT_BUDGET_GB=Object.freeze({cloudflare:800,metered:16});
+// The providers' documented free monthly allowances. A configured budget is
+// clamped to these unless TURN_ALLOW_PAID_OVERAGE is literally true, so a typo
+// can never turn "stay free" into a bill.
+export const TURN_FREE_ALLOWANCE_GB=Object.freeze({cloudflare:1000,metered:20});
+// The browser gives up after three seconds (assets/turn-relay.js
+// TURN_TIMEOUT_MS). The route finishes its provider work well before that, and
+// never reserves or mints without enough time left to answer.
+export const TURN_ROUTE_DEADLINE_MS=2500;
+export const TURN_MIN_MINT_MS=750;
 // One credential's worst case for one hour: a relayed allocation carries both
 // directions of the call and Cloudflare/Metered count each byte on ingress
 // and again on egress, so 2 streams x 2 x 1 Mbps x 3600 s / 8 = 1,800 MB.
@@ -48,6 +57,7 @@ const API_TOKEN=/^[A-Za-z0-9._~+/=-]{20,512}$/;
 const ACCOUNT_ID=/^[a-f0-9]{32}$/;
 const METERED_DOMAIN=/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.metered\.live$/;
 const METERED_KEY=/^[A-Za-z0-9._~-]{16,256}$/;
+const CYCLE_DAY=/^(?:[1-9]|1\d|2[0-8])$/;
 const POSITIVE_NUMBER=/^(?:[1-9]\d{0,6}|0)(?:\.\d{1,3})?$/;
 const CREDENTIAL=/^[\x21-\x7e]+$/;
 // scheme:host[:port][?transport=udp|tcp]; the host is checked per provider.
@@ -82,6 +92,19 @@ export function parseBudgetGb(value,fallback){
   return Number.isFinite(parsed)&&parsed>0?parsed:null;
 }
 
+function budgetMb(provider,budgetGb,env){
+  if(budgetGb===null) return null;
+  const capped=env.TURN_ALLOW_PAID_OVERAGE==='true'?budgetGb:Math.min(budgetGb,TURN_FREE_ALLOWANCE_GB[provider]);
+  return Math.floor(capped*1000);
+}
+
+/** The day of the month (1-28, UTC) Cloudflare's allowance resets; default 1. */
+export function turnCloudflareCycleDay(env=process.env){
+  const raw=text(env.TURN_CLOUDFLARE_CYCLE_DAY);
+  if(!raw) return 1;
+  return CYCLE_DAY.test(raw)?Number(raw):null;
+}
+
 export function turnReserveMbPerCall(env=process.env){
   const raw=text(env.TURN_RESERVE_MB_PER_CALL);
   if(!raw) return TURN_DEFAULT_RESERVE_MB_PER_CALL;
@@ -93,22 +116,23 @@ function cloudflareConfiguration(env,reserveMb){
   const keyId=text(env.CLOUDFLARE_TURN_KEY_ID),apiToken=text(env.CLOUDFLARE_TURN_API_TOKEN);
   const accountId=text(env.CLOUDFLARE_ACCOUNT_ID).toLowerCase(),analyticsToken=text(env.CLOUDFLARE_ANALYTICS_API_TOKEN);
   if(!keyId&&!apiToken&&!accountId&&!analyticsToken) return {config:null,issue:null};
-  const budgetGb=parseBudgetGb(env.TURN_MONTHLY_GB_BUDGET,TURN_DEFAULT_BUDGET_GB.cloudflare);
+  const budget=budgetMb('cloudflare',parseBudgetGb(env.TURN_MONTHLY_GB_BUDGET,TURN_DEFAULT_BUDGET_GB.cloudflare),env);
+  const cycleDay=turnCloudflareCycleDay(env);
   if(!KEY_ID.test(keyId)||!API_TOKEN.test(apiToken)||!ACCOUNT_ID.test(accountId)||!API_TOKEN.test(analyticsToken)
-    ||budgetGb===null||reserveMb===null) return {config:null,issue:'configuration'};
+    ||budget===null||budget<1||reserveMb===null||cycleDay===null) return {config:null,issue:'configuration'};
   return {config:Object.freeze({provider:'cloudflare',keyId,apiToken,accountId,analyticsToken,
-    budgetMb:Math.floor(budgetGb*1000),reserveMb}),issue:null};
+    budgetMb:budget,reserveMb,cycleDay}),issue:null};
 }
 
 function meteredConfiguration(env,reserveMb){
   const domain=text(env.METERED_TURN_APP_DOMAIN).toLowerCase();
   const apiKey=text(env.METERED_TURN_API_KEY),secretKey=text(env.METERED_TURN_SECRET_KEY);
   if(!domain&&!apiKey&&!secretKey) return {config:null,issue:null};
-  const budgetGb=parseBudgetGb(env.METERED_TURN_MONTHLY_GB_BUDGET,TURN_DEFAULT_BUDGET_GB.metered);
+  const budget=budgetMb('metered',parseBudgetGb(env.METERED_TURN_MONTHLY_GB_BUDGET,TURN_DEFAULT_BUDGET_GB.metered),env);
   if(!METERED_DOMAIN.test(domain)||!METERED_KEY.test(apiKey)||!METERED_KEY.test(secretKey)
-    ||budgetGb===null||reserveMb===null) return {config:null,issue:'configuration'};
+    ||budget===null||budget<1||reserveMb===null) return {config:null,issue:'configuration'};
   return {config:Object.freeze({provider:'metered',domain,apiKey,secretKey,
-    budgetMb:Math.floor(budgetGb*1000),reserveMb}),issue:null};
+    budgetMb:budget,reserveMb,cycleDay:1}),issue:null};
 }
 
 /**
@@ -136,9 +160,10 @@ export function turnProviderStates(env=process.env){
   for(const [provider,read] of [['cloudflare',cloudflareConfiguration],['metered',meteredConfiguration]]){
     const {config,issue}=read(env,reserveMb);
     const fallback=TURN_DEFAULT_BUDGET_GB[provider];
-    const budgetGb=parseBudgetGb(provider==='cloudflare'?env.TURN_MONTHLY_GB_BUDGET:env.METERED_TURN_MONTHLY_GB_BUDGET,fallback);
+    const budget=budgetMb(provider,parseBudgetGb(provider==='cloudflare'?env.TURN_MONTHLY_GB_BUDGET:env.METERED_TURN_MONTHLY_GB_BUDGET,fallback),env);
+    const cycleDay=provider==='cloudflare'?turnCloudflareCycleDay(env):1;
     states[provider]=Object.freeze({enabled:enabled&&!!config,issue:enabled?issue:null,
-      budgetMb:config?config.budgetMb:budgetGb===null?null:Math.floor(budgetGb*1000)});
+      budgetMb:config?config.budgetMb:budget,cycleDay:cycleDay??1});
   }
   return Object.freeze({enabled,providers:Object.freeze(states)});
 }
@@ -270,6 +295,26 @@ export function parseMeteredIceServers(payload){
 }
 
 /**
+ * Reads at most `limit` bytes of a body as a stream and cancels the rest, so
+ * an oversized answer is never buffered whole. Returns null when the body is
+ * larger than the limit. Bodies without a stream fall back to text().
+ */
+export async function readLimited(response,limit){
+  const reader=response.body?.getReader?.();
+  if(!reader) return response.text();
+  const chunks=[];
+  let size=0;
+  for(;;){
+    const {done,value}=await reader.read();
+    if(done) break;
+    size+=value.byteLength;
+    if(size>limit){ try{ await reader.cancel(); }catch{} return null; }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks.map(chunk=>Buffer.from(chunk))).toString('utf8');
+}
+
+/**
  * One bounded provider call: no redirects, a deadline covering the body, a
  * size cap, and JSON only. Throws TurnProviderError(`${prefix}request` |
  * `${prefix}status` | `${prefix}response`) on any failure.
@@ -283,16 +328,16 @@ export async function providerJson(provider,url,init,{fetchImpl,signal,okStatuse
   if(!okStatuses.includes(status)) throw fail('status',status);
   const declared=Number(response.headers?.get?.('content-length'));
   if(Number.isFinite(declared)&&declared>TURN_LIMITS.responseBytes) throw fail('response',status);
-  try{ body=await response.text(); }catch{ throw fail('request',status); }
+  try{ body=await readLimited(response,TURN_LIMITS.responseBytes); }catch{ throw fail('request',status); }
   if(typeof body!=='string'||Buffer.byteLength(body,'utf8')>TURN_LIMITS.responseBytes) throw fail('response',status);
   try{ return {status,payload:JSON.parse(body)}; }
   catch{ throw fail('response',status); }
 }
 
 /** Returns {iceServers, expiresAt, relay}; throws TurnProviderError. */
-export async function mintTurnIceServers(config,{window,fetchImpl=globalThis.fetch}){
+export async function mintTurnIceServers(config,{window,fetchImpl=globalThis.fetch,timeoutMs=TURN_PROVIDER_TIMEOUT_MS}){
   if(!config||!PROVIDER_HOSTS[config.provider]||!(window?.ttlSeconds>0)) throw new TurnProviderError('configuration',null,config?.provider??null);
-  const signal=AbortSignal.timeout(TURN_PROVIDER_TIMEOUT_MS);
+  const signal=AbortSignal.timeout(Math.max(1,Math.min(TURN_PROVIDER_TIMEOUT_MS,timeoutMs)));
   let result;
   if(config.provider==='cloudflare'){
     result=await providerJson('cloudflare',cloudflareTurnCredentialsUrl(config.keyId),{

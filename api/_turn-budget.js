@@ -41,11 +41,18 @@ function code(provider){
   return value;
 }
 
-export function turnBudgetMonth(nowSeconds,provider){
+/**
+ * The provider's monthly window in UTC: from `cycleDay` (1-28, default 1, the
+ * calendar month) to the same day next month. The key follows the window, so
+ * a new window starts from the provider's own figure.
+ */
+export function turnBudgetMonth(nowSeconds,provider,cycleDay=1){
   if(!integer(nowSeconds)) throw new TurnBudgetError(provider);
+  if(!Number.isSafeInteger(cycleDay)||cycleDay<1||cycleDay>28) throw new TurnBudgetError(provider,'configuration');
   const date=new Date(nowSeconds*1000);
-  const start=Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),1)/1000;
-  const end=Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,1)/1000;
+  const month=date.getUTCMonth()-(date.getUTCDate()<cycleDay?1:0);
+  const start=Date.UTC(date.getUTCFullYear(),month,cycleDay)/1000;
+  const end=Date.UTC(date.getUTCFullYear(),month+1,cycleDay)/1000;
   return {start,end,key:`${PREFIX}${code(provider)}:${start}`};
 }
 
@@ -182,7 +189,7 @@ async function ensureUsage(db,config,fetchImpl,timeoutMs){
   const provider=config.provider;
   const generation=Number.parseInt(randomBytes(6).toString('hex'),16);
   const claim=await transaction(db,'write',async tx=>{
-    const now=await clock(tx,provider),month=turnBudgetMonth(now,provider);
+    const now=await clock(tx,provider),month=turnBudgetMonth(now,provider,config.cycleDay??1);
     const cached=await snapshot(tx,month,now,provider);
     if(cached?.fresh) return null;
     const result=await tx.execute({sql:`INSERT INTO auth_rate_limits(key,attempts,expires_at) VALUES (?,?,?)
@@ -198,7 +205,7 @@ async function ensureUsage(db,config,fetchImpl,timeoutMs){
     const mb=await readTurnUsageMb(config,{month:claim.month,nowSeconds:claim.at,fetchImpl,timeoutMs});
     await transaction(db,'write',async tx=>{
       const now=await clock(tx,provider);
-      if(now-claim.at>=TURN_USAGE_FAILURE_COOLDOWN_SECONDS||turnBudgetMonth(now,provider).start!==claim.month.start
+      if(now-claim.at>=TURN_USAGE_FAILURE_COOLDOWN_SECONDS||turnBudgetMonth(now,provider,config.cycleDay??1).start!==claim.month.start
         ||!await ownsRefresh(tx,claim.month,generation,now)) throw new TurnBudgetError(provider,'usage_unavailable');
       const previous=await snapshot(tx,claim.month,now,provider);
       // A smaller provider figure never reopens the month's budget; only the
@@ -225,7 +232,7 @@ async function ensureUsage(db,config,fetchImpl,timeoutMs){
 }
 
 async function reservedMb(db,provider,now){
-  const pattern=`${PREFIX}${code(provider)}:r:*`;
+  const pattern=`${PREFIX}${code(provider)}:p:*`;
   const rows=(await db.execute({sql:'SELECT attempts FROM auth_rate_limits WHERE key GLOB ? AND expires_at>?',args:[pattern,now]})).rows;
   let total=0;
   for(const row of rows){
@@ -242,39 +249,73 @@ export function turnReservationMb(reserveMbPerCall,ttlSeconds){
   return Math.max(1,Math.ceil(reserveMbPerCall*ttlSeconds/3600));
 }
 
+// A room's envelope is reused while at least a minute of its credential
+// window is left; after that a fresh one is reserved.
+const MIN_REUSE_SECONDS=60;
+
+async function activeEnvelope(db,provider,roomKey,now){
+  const row=(await db.execute({sql:`SELECT key,attempts,expires_at FROM auth_rate_limits
+    WHERE key GLOB ? AND expires_at>? ORDER BY expires_at DESC LIMIT 1`,
+  args:[`${PREFIX}${code(provider)}:p:${roomKey}:*`,now+TURN_RESERVATION_GRACE_SECONDS+MIN_REUSE_SECONDS]})).rows?.[0];
+  if(!row) return null;
+  const mb=Number(row.attempts),expires=Number(row.expires_at);
+  if(!integer(mb)||mb<1||mb>MAX_RESERVATION_MB||!integer(expires)) throw new TurnBudgetError(provider,'store_unavailable');
+  return {key:String(row.key),windowEnd:expires-TURN_RESERVATION_GRACE_SECONDS};
+}
+
+function reusedGrant(envelope,{ttlSeconds,expiresAtMs},now){
+  const expiresAt=Math.min(Math.floor(expiresAtMs/1000),envelope.windowEnd);
+  return Object.freeze({key:envelope.key,reused:true,ttlSeconds:Math.min(ttlSeconds,expiresAt-now),expiresAtMs:expiresAt*1000});
+}
+
 /**
- * Admit one credential under the provider's monthly budget: a fresh
- * snapshot, plus everything still reserved, plus this credential's
- * reservation must stay within budget. The reservation lives until the
- * credential expires plus five minutes. Returns {key, reportedMb, reservedMb,
- * budgetMb}; throws TurnBudgetError.
+ * Admit one credential under the provider's monthly budget. One reservation
+ * covers a room: the first member's request reserves the room's envelope
+ * (`TURN_RESERVE_MB_PER_CALL` prorated by the credential lifetime) and the
+ * partner, or a rejoin, reuses it with a credential capped at the envelope's
+ * expiry, at no new cost and even while usage is unreadable. A new envelope
+ * needs a fresh snapshot, and reported plus every live reservation plus this
+ * one must stay within budget (equality passes). Envelopes live until their
+ * credential window ends plus five minutes and are never released early once
+ * a credential was handed out. Returns {key, reused, ttlSeconds, expiresAtMs};
+ * throws TurnBudgetError.
  */
-export async function reserveTurnRelay(db,config,{ttlSeconds,expiresAtMs,fetchImpl=globalThis.fetch,timeoutMs}){
+export async function reserveTurnRelay(db,config,{ttlSeconds,expiresAtMs,roomKey,fetchImpl=globalThis.fetch,timeoutMs}){
   const provider=config?.provider;
   if(!CODES[provider]||!integer(config.budgetMb)||config.budgetMb<1||!integer(config.reserveMb)||config.reserveMb<1
-    ||!integer(ttlSeconds)||ttlSeconds<1||ttlSeconds>3600||!integer(expiresAtMs)) throw new TurnBudgetError(provider,'configuration');
+    ||!integer(ttlSeconds)||ttlSeconds<1||ttlSeconds>3600||!integer(expiresAtMs)
+    ||typeof roomKey!=='string'||!/^[a-f0-9]{32}$/.test(roomKey)) throw new TurnBudgetError(provider,'configuration');
   try{
+    const now=await clock(db,provider);
+    if(Math.floor(expiresAtMs/1000)<=now) throw new TurnBudgetError(provider,'configuration');
+    // Envelopes are immutable while live, so this reuse read needs no lock.
+    const prepaid=await activeEnvelope(db,provider,roomKey,now);
+    if(prepaid) return reusedGrant(prepaid,{ttlSeconds,expiresAtMs},now);
     await ensureUsage(db,config,fetchImpl,timeoutMs);
     return await transaction(db,'write',async tx=>{
-      const now=await clock(tx,provider),month=turnBudgetMonth(now,provider);
-      const expiresAt=Math.ceil(expiresAtMs/1000);
+      const now=await clock(tx,provider),month=turnBudgetMonth(now,provider,config.cycleDay??1);
+      const expiresAt=Math.floor(expiresAtMs/1000);
       if(expiresAt<=now) throw new TurnBudgetError(provider,'configuration');
+      const raced=await activeEnvelope(tx,provider,roomKey,now);
+      if(raced) return reusedGrant(raced,{ttlSeconds,expiresAtMs},now);
       const cached=await snapshot(tx,month,now,provider);
       if(!cached?.fresh) throw new TurnBudgetError(provider,'usage_unavailable');
       const reserved=await reservedMb(tx,provider,now),mb=turnReservationMb(config.reserveMb,ttlSeconds);
       if(cached.mb+reserved+mb>config.budgetMb) throw new TurnBudgetError(provider,'budget_reached');
       await tx.execute({sql:`DELETE FROM auth_rate_limits WHERE key IN (SELECT key FROM auth_rate_limits
         WHERE key GLOB ? AND expires_at<=? LIMIT 64)`,args:[`${PREFIX}${code(provider)}:*`,now]});
-      const key=`${PREFIX}${code(provider)}:r:${randomBytes(12).toString('hex')}`;
+      const key=`${PREFIX}${code(provider)}:p:${roomKey}:${randomBytes(12).toString('hex')}`;
       await tx.execute(upsert(key,mb,expiresAt+TURN_RESERVATION_GRACE_SECONDS));
-      return Object.freeze({key,reportedMb:cached.mb,reservedMb:reserved+mb,budgetMb:config.budgetMb});
+      return Object.freeze({key,reused:false,ttlSeconds,expiresAtMs:expiresAt*1000,
+        reportedMb:cached.mb,reservedMb:reserved+mb,budgetMb:config.budgetMb});
     });
   }catch(error){ throw error instanceof TurnBudgetError?error:new TurnBudgetError(provider,'store_unavailable'); }
 }
 
-/** A credential that was never handed out releases its reservation. */
+/** A new envelope whose credential was never handed out is released. */
 export async function releaseTurnReservation(db,reservation){
-  if(typeof reservation?.key!=='string'||!/^trb1:[cm]:r:[a-f0-9]{24}$/.test(reservation.key)) return false;
+  if(reservation?.reused!==false||typeof reservation.key!=='string'
+    ||!/^trb1:[cm]:p:[a-f0-9]{32}:[a-f0-9]{24}$/.test(reservation.key)) return false;
   try{ await db.execute({sql:'DELETE FROM auth_rate_limits WHERE key=?',args:[reservation.key]}); return true; }
   catch{ return false; }
 }
@@ -297,7 +338,7 @@ export async function readTurnBudgetDiagnostics(db,{env=process.env}={}){
     if(!state.enabled){ providers[provider]={...base(provider),state:'unknown',status:'unknown',reason:'not_configured'}; continue; }
     try{
       providers[provider]=await transaction(db,'read',async tx=>{
-        const now=await clock(tx,provider),month=turnBudgetMonth(now,provider);
+        const now=await clock(tx,provider),month=turnBudgetMonth(now,provider,state.cycleDay);
         const cached=await snapshot(tx,month,now,provider),reserved=await reservedMb(tx,provider,now);
         const errorRow=(await tx.execute({sql:'SELECT attempts FROM auth_rate_limits WHERE key=?',args:[`${month.key}:x`]})).rows[0];
         const result={reportedMb:cached?.mb??null,reservedMb:reserved,budgetMb:state.budgetMb,state:'unknown',status:'unknown',reason:'usage_unknown'};

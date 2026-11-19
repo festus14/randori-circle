@@ -73,7 +73,11 @@ function usageProvider(initial){
   return state;
 }
 
-function grant(seconds=3600){ return {ttlSeconds:seconds,expiresAtMs:(nowSeconds+seconds)*1000}; }
+let roomCounter=0;
+// A fresh room unless one is named: one envelope per room.
+function grant(seconds=3600,roomKey=(++roomCounter).toString(16).padStart(32,'0')){
+  return {ttlSeconds:seconds,expiresAtMs:(nowSeconds+seconds)*1000,roomKey};
+}
 
 async function rows(pattern){
   return (await real.execute({sql:'SELECT key,attempts,expires_at FROM auth_rate_limits WHERE key GLOB ? ORDER BY key',args:[pattern]})).rows
@@ -92,6 +96,12 @@ test('months are UTC calendar months, keyed per provider',()=>{
   assert.equal(turnBudgetMonth(DEC,'cloudflare').start,DEC);
   assert.throws(()=>turnBudgetMonth(-1,'cloudflare'),TurnBudgetError);
   assert.throws(()=>turnBudgetMonth(NOV,'other'),error=>error.reason==='configuration');
+  // A billing-cycle day moves the window: the 15th to the 15th.
+  const nov15=Date.UTC(2026,10,15)/1000, dec15=Date.UTC(2026,11,15)/1000, oct15=Date.UTC(2026,9,15)/1000;
+  assert.deepEqual(turnBudgetMonth(nov15,'cloudflare',15),{start:nov15,end:dec15,key:`trb1:c:${nov15}`});
+  assert.deepEqual(turnBudgetMonth(nov15-1,'cloudflare',15),{start:oct15,end:nov15,key:`trb1:c:${oct15}`});
+  assert.equal(turnBudgetMonth(Date.UTC(2027,0,3)/1000,'cloudflare',28).start,Date.UTC(2026,11,28)/1000,'across a year boundary');
+  for(const day of [0,29,1.5,'1']) assert.throws(()=>turnBudgetMonth(NOV,'cloudflare',day),error=>error.reason==='configuration');
   assert.equal(turnReservationMb(1800,3600),1800);
   assert.equal(turnReservationMb(1800,60),30);
   assert.equal(turnReservationMb(1,1),1,'never zero');
@@ -152,19 +162,21 @@ test('admission is exact at the budget boundary and counts every live reservatio
   const usage=usageProvider(()=>cloudflareUsage(4000*1_000_000));
   const config={...CLOUDFLARE,budgetMb:4000+1800+1800};
   const first=await reserveTurnRelay(db,config,{...grant(),fetchImpl:usage.fetch});
-  assert.deepEqual({...first,key:'k'},{key:'k',reportedMb:4000,reservedMb:1800,budgetMb:config.budgetMb});
-  assert.match(first.key,/^trb1:c:r:[a-f0-9]{24}$/);
+  assert.deepEqual({...first,key:'k',expiresAtMs:0},{key:'k',reused:false,ttlSeconds:3600,expiresAtMs:0,reportedMb:4000,reservedMb:1800,budgetMb:config.budgetMb});
+  assert.match(first.key,/^trb1:c:p:[a-f0-9]{32}:[a-f0-9]{24}$/);
+  assert.equal(first.reused,false);
   const second=await reserveTurnRelay(db,config,{...grant(),fetchImpl:usage.fetch});
   assert.equal(second.reservedMb,3600,'exactly at the budget is admitted');
   await assert.rejects(reserveTurnRelay(db,config,{...grant(60),fetchImpl:usage.fetch}),
     error=>error instanceof TurnBudgetError&&error.reason==='budget_reached'&&error.provider==='cloudflare','one MB over is refused');
   assert.equal(usage.requests.length,1,'one usage read serves five minutes');
-  const live=await rows('trb1:c:r:*');
+  const live=await rows('trb1:c:p:*');
   assert.equal(live.length,2);
   assert.ok(live.every(row=>row.expires===nowSeconds+3600+TURN_RESERVATION_GRACE_SECONDS),'credential expiry plus five minutes');
   // Releasing an unused credential frees its share; nothing else is released early.
   assert.equal(await releaseTurnReservation(db,second),true);
-  assert.equal(await releaseTurnReservation(db,{key:'trb1:c:1234:u'}),false,'only reservation keys can be released');
+  assert.equal(await releaseTurnReservation(db,{key:'trb1:c:1234:u',reused:false}),false,'only reservation keys can be released');
+  assert.equal(await releaseTurnReservation(db,{...first,reused:true}),false,'a reused envelope is never released');
   assert.equal(await releaseTurnReservation(db,null),false);
   assert.equal(await releaseTurnReservation({execute:async()=>{ throw new Error('down'); }},first),false);
   assert.equal((await reserveTurnRelay(db,config,{...grant(),fetchImpl:usage.fetch})).reservedMb,3600);
@@ -180,7 +192,7 @@ test('reservations expire with their credential plus grace, and are swept',async
   await assert.rejects(reserveTurnRelay(db,config,{...grant(),fetchImpl:usage.fetch}),error=>error.reason==='budget_reached','still within grace');
   nowSeconds+=1;
   await reserveTurnRelay(db,config,{...grant(),fetchImpl:usage.fetch});
-  assert.equal((await rows('trb1:c:r:*')).length,1,'the expired reservation was swept');
+  assert.equal((await rows('trb1:c:p:*')).length,1,'the expired reservation was swept');
 });
 
 test('usage ratchets within the month, refreshes after five minutes, and restarts next month',async()=>{
@@ -217,7 +229,7 @@ test('unknown usage fails closed: failed and stale reads, a held refresh lease, 
   await assert.rejects(reserveTurnRelay(db,config,{...grant(),fetchImpl:usage.fetch}),
     error=>error instanceof TurnBudgetError&&error.reason==='usage_unavailable');
   assert.equal((await rows(`trb1:c:${NOV}:x`))[0].attempts,0,'the failure reason is recorded for diagnostics');
-  assert.equal((await rows('trb1:c:r:*')).length,0);
+  assert.equal((await rows('trb1:c:p:*')).length,0);
   // Within the 30-second failure lease nobody retries the provider.
   fail=false;
   nowSeconds+=TURN_USAGE_FAILURE_COOLDOWN_SECONDS-1;
@@ -239,10 +251,10 @@ test('unknown usage fails closed: failed and stale reads, a held refresh lease, 
   await assert.rejects(reserveTurnRelay(db,config,{...grant(),fetchImpl:slow}),error=>error.reason==='usage_unavailable');
   // Corrupt stored values fail closed as store_unavailable.
   nowSeconds+=TURN_USAGE_FAILURE_COOLDOWN_SECONDS;
-  await real.execute({sql:`INSERT OR REPLACE INTO auth_rate_limits VALUES (?,?,?)`,args:[`trb1:c:r:${'f'.repeat(24)}`,0,nowSeconds+600]});
+  await real.execute({sql:`INSERT OR REPLACE INTO auth_rate_limits VALUES (?,?,?)`,args:[`trb1:c:p:${'e'.repeat(32)}:${'f'.repeat(24)}`,0,nowSeconds+600]});
   fail=false;
   await assert.rejects(reserveTurnRelay(db,config,{...grant(),fetchImpl:usage.fetch}),error=>error.reason==='store_unavailable');
-  await real.execute(`DELETE FROM auth_rate_limits WHERE key GLOB 'trb1:c:r:*'`);
+  await real.execute(`DELETE FROM auth_rate_limits WHERE key GLOB 'trb1:c:p:*'`);
   await real.execute({sql:`UPDATE auth_rate_limits SET attempts=? WHERE key=?`,args:[nowSeconds+999,`trb1:c:${NOV}:t`]});
   await assert.rejects(reserveTurnRelay(db,config,{...grant(),fetchImpl:usage.fetch}),error=>error.reason==='store_unavailable');
   await real.execute({sql:`DELETE FROM auth_rate_limits WHERE key=?`,args:[`trb1:c:${NOV}:u`]});
@@ -263,6 +275,64 @@ test('unknown usage fails closed: failed and stale reads, a held refresh lease, 
   await assert.rejects(reserveTurnRelay(badClock,config,{...grant(),fetchImpl:usage.fetch}),error=>error.reason==='store_unavailable');
 });
 
+test('one envelope per room: the partner and rejoins reuse it, capped at its expiry, even without fresh usage',async()=>{
+  const db=await database();
+  let fail=false;
+  const usage=usageProvider(()=>fail?json(500,{}):cloudflareUsage(0));
+  const config={...CLOUDFLARE,budgetMb:1800};
+  const room='ab'.repeat(16);
+  const first=await reserveTurnRelay(db,config,{...grant(3600,room),fetchImpl:usage.fetch});
+  assert.equal(first.reused,false); assert.equal(first.ttlSeconds,3600);
+  // Ten minutes later the partner asks for a full hour: it gets the rest of the room's pass, at no cost.
+  nowSeconds+=600; fail=true;
+  const partner=await reserveTurnRelay(db,config,{...grant(3600,room),fetchImpl:usage.fetch});
+  assert.deepEqual({...partner},{key:first.key,reused:true,ttlSeconds:3000,expiresAtMs:first.expiresAtMs});
+  assert.equal(usage.requests.length,1,'reuse never reads usage');
+  assert.equal((await rows('trb1:c:p:*')).length,1,'still one envelope');
+  // A shorter request keeps its own, shorter lifetime.
+  assert.equal((await reserveTurnRelay(db,config,{...grant(120,room),fetchImpl:usage.fetch})).ttlSeconds,120);
+  // Another room cannot fit while this one holds the whole budget.
+  fail=false; nowSeconds+=TURN_USAGE_MAX_AGE_SECONDS;
+  await assert.rejects(reserveTurnRelay(db,config,{...grant(),fetchImpl:usage.fetch}),error=>error.reason==='budget_reached');
+  // With under a minute of the envelope left, a fresh one is needed (and here does not fit).
+  nowSeconds=Math.floor(first.expiresAtMs/1000)-59;
+  await assert.rejects(reserveTurnRelay(db,config,{...grant(3600,room),fetchImpl:usage.fetch}),error=>error.reason==='budget_reached');
+  // A corrupt envelope fails closed.
+  await real.execute({sql:'UPDATE auth_rate_limits SET attempts=0 WHERE key=?',args:[first.key]});
+  nowSeconds=Math.floor(first.expiresAtMs/1000)-3000;
+  await assert.rejects(reserveTurnRelay(db,config,{...grant(3600,room),fetchImpl:usage.fetch}),error=>error.reason==='store_unavailable');
+});
+
+test('a partner racing the first reservation reuses the envelope created inside the lock',async()=>{
+  const db=await database();
+  const room='cd'.repeat(16);
+  let enter;
+  const gate=new Promise(resolve=>{ enter=resolve; });
+  let calls=0;
+  // The first request's usage read waits until the second has also refreshed.
+  const fetchImpl=async()=>{ calls+=1; if(calls===1) await gate; return cloudflareUsage(0); };
+  const config={...CLOUDFLARE,budgetMb:1800};
+  const first=reserveTurnRelay(db,config,{...grant(3600,room),fetchImpl});
+  await new Promise(resolve=>setTimeout(resolve,20));
+  // The second request is refused the refresh lease while the first holds it.
+  await assert.rejects(reserveTurnRelay(db,config,{...grant(3600,room),fetchImpl}),error=>error.reason==='usage_refreshing');
+  enter();
+  const made=await first;
+  assert.equal(made.reused,false);
+  const again=await reserveTurnRelay(db,config,{...grant(3600,room),fetchImpl});
+  assert.equal(again.reused,true); assert.equal(again.key,made.key);
+  // Two members admitted at the same moment: the second's unlocked read saw
+  // no envelope, but the first created one before the second took the lock.
+  const both='ef'.repeat(16);
+  const wide={...config,budgetMb:3600};
+  const seed=await reserveTurnRelay(db,wide,{...grant(3600,both),fetchImpl});
+  const blind={...db,execute:statement=>String(statement?.sql??statement).includes('ORDER BY expires_at DESC')
+    ?Promise.resolve({rows:[]}):db.execute(statement)};
+  const raced=await reserveTurnRelay(blind,wide,{...grant(3600,both),fetchImpl});
+  assert.deepEqual({key:raced.key,reused:raced.reused},{key:seed.key,reused:true});
+  assert.equal((await rows(`trb1:c:p:${both}:*`)).length,1);
+});
+
 test('invalid inputs never reserve',async()=>{
   const db=await database();
   const fetchImpl=async()=>cloudflareUsage(0);
@@ -270,10 +340,11 @@ test('invalid inputs never reserve',async()=>{
     [null,grant()],[{...CLOUDFLARE,provider:'other'},grant()],[{...CLOUDFLARE,budgetMb:0},grant()],[{...CLOUDFLARE,reserveMb:0},grant()],
     [CLOUDFLARE,{ttlSeconds:0,expiresAtMs:Date.now()}],[CLOUDFLARE,{ttlSeconds:3601,expiresAtMs:Date.now()}],
     [CLOUDFLARE,{ttlSeconds:60,expiresAtMs:1.5}],
-  ]) await assert.rejects(reserveTurnRelay(db,config,{...options,fetchImpl}),error=>error.reason==='configuration');
-  await assert.rejects(reserveTurnRelay(db,CLOUDFLARE,{ttlSeconds:60,expiresAtMs:(nowSeconds-1)*1000,fetchImpl}),
+    [CLOUDFLARE,{ttlSeconds:60,expiresAtMs:(nowSeconds+60)*1000,roomKey:'not-a-room-key'}],
+  ]) await assert.rejects(reserveTurnRelay(db,config,{roomKey:'0'.repeat(32),...options,fetchImpl}),error=>error.reason==='configuration');
+  await assert.rejects(reserveTurnRelay(db,CLOUDFLARE,{ttlSeconds:60,expiresAtMs:(nowSeconds-1)*1000,roomKey:'0'.repeat(32),fetchImpl}),
     error=>error.reason==='configuration','an already-expired credential');
-  assert.equal((await rows('trb1:c:r:*')).length,0);
+  assert.equal((await rows('trb1:c:p:*')).length,0);
 });
 
 test('busy transactions are retried, unknown commits are not',async()=>{

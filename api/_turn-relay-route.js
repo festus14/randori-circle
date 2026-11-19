@@ -1,6 +1,8 @@
 // POST /api/video/turn handler (issue #305, ID-107). Loaded by api/video.js
 // only while the TURN relay is configured, so the signalling route keeps its
 // exact import graph and behaviour when TURN_RELAY_ENABLED is off.
+import { createHmac } from 'node:crypto';
+
 import { getClient, getJwtSecret, verifyRequestAuth } from './_db.js';
 import { ensureDataSessionControlsReadiness } from './_data-readiness.js';
 import { getAuthenticatedPairAccess } from './_pair-access.js';
@@ -8,6 +10,8 @@ import { parseCanonicalRoomPath } from './_pairing.js';
 import { readAuthorizedSessionControls } from './_session-controls.js';
 import { TurnBudgetError, releaseTurnReservation, reserveTurnRelay } from './_turn-budget.js';
 import {
+  TURN_MIN_MINT_MS,
+  TURN_ROUTE_DEADLINE_MS,
   TurnProviderError,
   enforceTurnRelayRateLimit,
   mintTurnIceServers,
@@ -23,6 +27,11 @@ function parseCanonicalRoomId(value){
   return parsed?.roomId===value
     ?{roomId:parsed.roomId,weekId:parsed.weekId,pairGroupId:parsed.pairGroupId}
     :null;
+}
+
+// Opaque and stable per canonical room: never a raw room, week or pair id.
+export function turnRoomKey(roomId,secret){
+  return createHmac('sha256',secret).update(`randori-turn-room-v1\0${roomId}`,'utf8').digest('hex').slice(0,32);
 }
 
 function authenticatedUserId(payload){
@@ -51,7 +60,8 @@ async function readCallState(db,{userId,room,versionKey}){
 // pair membership, plus active primary membership while circle membership
 // is on). Every refusal of a room the viewer does not occupy is the
 // identical 404 projection.
-export async function handleTurnRelay(req,res,config){
+export async function handleTurnRelay(req,res,config,{now=()=>Date.now()}={}){
+  const deadlineAt=now()+TURN_ROUTE_DEADLINE_MS;
   res.setHeader('Cache-Control','private, no-store');
   if(req.method!=='POST'){
     res.setHeader('Allow','POST');
@@ -90,22 +100,35 @@ export async function handleTurnRelay(req,res,config){
     });
   }
   // Cloudflare first, then the Metered backup, each only within its own
-  // monthly budget. Stage, provider and HTTP status are logged; never a key,
-  // token, credential or response body.
+  // monthly budget, and only while enough of the route deadline is left to
+  // answer before the browser gives up (it never reserves or mints after).
+  // Stage, provider and HTTP status are logged; never a key, token,
+  // credential or response body.
+  const roomKey=turnRoomKey(room.roomId,secret);
+  const warn=detail=>{ try{ console.warn('[video] turn relay unavailable',JSON.stringify(detail)); }catch{} };
   let paused=0;
   for(const provider of config.providers){
     let reservation=null;
+    const left=()=>deadlineAt-now();
+    if(left()<TURN_MIN_MINT_MS*2){
+      warn({provider:provider.provider,stage:'deadline',status:null,reason:null});
+      continue;
+    }
     try{
-      reservation=await reserveTurnRelay(db,provider,{ttlSeconds:window.ttlSeconds,expiresAtMs:window.expiresAtMs,fetchImpl:globalThis.fetch});
-      const grant=await mintTurnIceServers(provider,{window,fetchImpl:globalThis.fetch});
+      reservation=await reserveTurnRelay(db,provider,{ttlSeconds:window.ttlSeconds,expiresAtMs:window.expiresAtMs,roomKey,
+        fetchImpl:globalThis.fetch,timeoutMs:left()-TURN_MIN_MINT_MS});
+      if(left()<TURN_MIN_MINT_MS) throw new TurnProviderError('deadline',null,provider.provider);
+      const grant=await mintTurnIceServers(provider,{
+        window:{ttlSeconds:reservation.ttlSeconds,expiresAtMs:reservation.expiresAtMs},
+        fetchImpl:globalThis.fetch,timeoutMs:left(),
+      });
       return res.json({iceServers:grant.iceServers,expiresAt:grant.expiresAt,relay:grant.relay});
     }catch(error){
       if(reservation) await releaseTurnReservation(db,reservation);
       const budget=error instanceof TurnBudgetError, known=error instanceof TurnProviderError;
       if(budget&&error.reason==='budget_reached') paused+=1;
-      const detail={provider:provider.provider,stage:budget?'budget':known?error.stage:'unexpected',
-        status:known?error.status:null,reason:budget?error.reason:null};
-      try{ console.warn('[video] turn relay unavailable',JSON.stringify(detail)); }catch{}
+      warn({provider:provider.provider,stage:budget?'budget':known?error.stage:'unexpected',
+        status:known?error.status:null,reason:budget?error.reason:null});
     }
   }
   // Every relay is over its free allowance: an expected state, not a fault.

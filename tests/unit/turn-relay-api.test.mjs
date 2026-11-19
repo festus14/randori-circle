@@ -211,9 +211,9 @@ test('the flag is literal true only and each provider needs every value well for
   const both=turnRelayConfiguration({...CF,...METERED_ENV});
   assert.deepEqual(both.providers.map(item=>item.provider),['cloudflare','metered'],'Cloudflare first, then Metered');
   assert.deepEqual({...both.providers[0]},{provider:'cloudflare',keyId:KEY_ID,apiToken:API_TOKEN,accountId:ACCOUNT_ID,
-    analyticsToken:ANALYTICS_TOKEN,budgetMb:800_000,reserveMb:TURN_DEFAULT_RESERVE_MB_PER_CALL});
+    analyticsToken:ANALYTICS_TOKEN,budgetMb:800_000,reserveMb:TURN_DEFAULT_RESERVE_MB_PER_CALL,cycleDay:1});
   assert.deepEqual({...both.providers[1]},{provider:'metered',domain:METERED_DOMAIN,apiKey:METERED_API_KEY,
-    secretKey:METERED_SECRET,budgetMb:16_000,reserveMb:TURN_DEFAULT_RESERVE_MB_PER_CALL});
+    secretKey:METERED_SECRET,budgetMb:16_000,reserveMb:TURN_DEFAULT_RESERVE_MB_PER_CALL,cycleDay:1});
   assert.deepEqual({...both.issues},{cloudflare:null,metered:null});
   assert.equal(TURN_DEFAULT_RESERVE_MB_PER_CALL,1800,'2 streams x ingress+egress x 1 Mbps x 1 h');
   assert.deepEqual(turnRelayConfiguration(METERED).providers.map(item=>item.provider),['metered'],'each provider is optional');
@@ -221,6 +221,13 @@ test('the flag is literal true only and each provider needs every value well for
   assert.equal(turnRelayConfiguration({...CF,TURN_MONTHLY_GB_BUDGET:'12.5',TURN_RESERVE_MB_PER_CALL:'300'}).providers[0].budgetMb,12_500);
   assert.equal(turnRelayConfiguration({...CF,TURN_RESERVE_MB_PER_CALL:'300'}).providers[0].reserveMb,300);
   assert.equal(turnRelayConfiguration({...METERED,METERED_TURN_MONTHLY_GB_BUDGET:'2'}).providers[0].budgetMb,2000);
+  // Budgets are clamped to the free allowance unless paid overage is explicitly allowed.
+  assert.equal(turnRelayConfiguration({...CF,TURN_MONTHLY_GB_BUDGET:'5000'}).providers[0].budgetMb,1_000_000);
+  assert.equal(turnRelayConfiguration({...METERED,METERED_TURN_MONTHLY_GB_BUDGET:'500'}).providers[0].budgetMb,20_000);
+  assert.equal(turnRelayConfiguration({...CF,TURN_MONTHLY_GB_BUDGET:'5000',TURN_ALLOW_PAID_OVERAGE:'TRUE'}).providers[0].budgetMb,1_000_000);
+  assert.equal(turnRelayConfiguration({...CF,TURN_MONTHLY_GB_BUDGET:'5000',TURN_ALLOW_PAID_OVERAGE:'true'}).providers[0].budgetMb,5_000_000);
+  assert.equal(turnRelayConfiguration({...CF,TURN_CLOUDFLARE_CYCLE_DAY:'15'}).providers[0].cycleDay,15);
+  assert.equal(turnRelayConfiguration({...CF,TURN_MONTHLY_GB_BUDGET:'0.0001'}),null,'a budget under one MB is invalid');
   for(const env of [
     {},{TURN_RELAY_ENABLED:'true'},{...CF,TURN_RELAY_ENABLED:'TRUE'},{...CF,TURN_RELAY_ENABLED:'1'},
     {...CF,TURN_RELAY_ENABLED:'false'},{...CF,RANDORI_LOCAL_RUNTIME:'true'},
@@ -234,6 +241,7 @@ test('the flag is literal true only and each provider needs every value well for
     {...METERED,METERED_TURN_APP_DOMAIN:'metered.live'},{...METERED,METERED_TURN_API_KEY:''},
     {...METERED,METERED_TURN_SECRET_KEY:''},{...METERED,METERED_TURN_SECRET_KEY:'has space in it 123456'},
     {...METERED,METERED_TURN_MONTHLY_GB_BUDGET:'none'},
+    {...CF,TURN_CLOUDFLARE_CYCLE_DAY:'0'},{...CF,TURN_CLOUDFLARE_CYCLE_DAY:'29'},{...CF,TURN_CLOUDFLARE_CYCLE_DAY:'x'},
   ]) assert.equal(turnRelayConfiguration(env),null,JSON.stringify(env));
   const partial=turnRelayConfiguration({...CF,...METERED_ENV,METERED_TURN_MONTHLY_GB_BUDGET:'x'});
   assert.deepEqual(partial.providers.map(item=>item.provider),['cloudflare']);
@@ -247,10 +255,11 @@ test('the flag is literal true only and each provider needs every value well for
 test('provider states for diagnostics carry budgets and issues, never secrets',()=>{
   const off=turnProviderStates({...CF,TURN_RELAY_ENABLED:'false'});
   assert.equal(off.enabled,false);
-  assert.deepEqual({...off.providers.cloudflare},{enabled:false,issue:null,budgetMb:800_000});
+  assert.deepEqual({...off.providers.cloudflare},{enabled:false,issue:null,budgetMb:800_000,cycleDay:1});
   const on=turnProviderStates({...CF,METERED_TURN_APP_DOMAIN:'bad',METERED_TURN_MONTHLY_GB_BUDGET:'x'});
-  assert.deepEqual({...on.providers.cloudflare},{enabled:true,issue:null,budgetMb:800_000});
-  assert.deepEqual({...on.providers.metered},{enabled:false,issue:'configuration',budgetMb:null});
+  assert.deepEqual({...on.providers.cloudflare},{enabled:true,issue:null,budgetMb:800_000,cycleDay:1});
+  assert.deepEqual({...on.providers.metered},{enabled:false,issue:'configuration',budgetMb:null,cycleDay:1});
+  assert.equal(turnProviderStates({...CF,TURN_CLOUDFLARE_CYCLE_DAY:'99'}).providers.cloudflare.cycleDay,1);
   assert.doesNotMatch(JSON.stringify(on),new RegExp(SECRETS.join('|')));
   assert.equal(turnProviderStates().enabled,false);
 });
@@ -369,9 +378,9 @@ test('Metered is the backup: used when Cloudflare is over budget or failing, or 
   try{ response=await invoke(); }finally{ quiet.restore(); }
   assert.equal(response.body.relay,'metered');
   assert.match(quiet.warnings[0],/"provider":"cloudflare","stage":"status","status":500/);
-  const reservations=(await currentDb.execute(`SELECT key FROM auth_rate_limits WHERE key GLOB 'trb1:c:r:*'`)).rows;
+  const reservations=(await currentDb.execute(`SELECT key FROM auth_rate_limits WHERE key GLOB 'trb1:c:p:*'`)).rows;
   assert.equal(reservations.length,0,'a credential never handed out holds no reservation');
-  assert.equal((await currentDb.execute(`SELECT key FROM auth_rate_limits WHERE key GLOB 'trb1:m:r:*'`)).rows.length,1);
+  assert.equal((await currentDb.execute(`SELECT key FROM auth_rate_limits WHERE key GLOB 'trb1:m:p:*'`)).rows.length,1);
 
   // Metered alone.
   for(const key of ENV_KEYS) delete process.env[key];
@@ -479,7 +488,7 @@ test('an interview room credential never outlives the shared timer, and a finish
   const response=await invoke();
   assert.equal(response.status,200,JSON.stringify(response.body));
   assert.deepEqual(provider.of('cloudflare')[0].body,{ttl:12*60});
-  const [reservation]=(await currentDb.execute(`SELECT attempts FROM auth_rate_limits WHERE key GLOB 'trb1:c:r:*'`)).rows;
+  const [reservation]=(await currentDb.execute(`SELECT attempts FROM auth_rate_limits WHERE key GLOB 'trb1:c:p:*'`)).rows;
   assert.equal(Number(reservation.attempts),Math.ceil(1800*12*60/3600),'the reservation is prorated by lifetime');
   await currentDb.execute(`UPDATE pair_session_controls SET remaining_ms=0`);
   const ended=await invoke();
@@ -713,4 +722,76 @@ test('provider responses are validated strictly',()=>{
     assert.throws(()=>parseMeteredIceServers(payload),
       error=>error instanceof TurnProviderError&&error.stage==='response'&&error.provider==='metered',JSON.stringify(payload)?.slice(0,160));
   }
+});
+
+test('one reservation covers the room: the partner reuses it with a credential capped at its expiry',async()=>{
+  currentDb=await readyDatabase(); enable();
+  const member=await invoke();
+  assert.equal(member.status,200);
+  const partner=await invoke({headers:{'x-test-auth':'partner'}});
+  assert.equal(partner.status,200);
+  assert.ok(Date.parse(partner.body.expiresAt)<=Date.parse(member.body.expiresAt));
+  const envelopes=(await currentDb.execute(`SELECT key,attempts FROM auth_rate_limits WHERE key GLOB 'trb1:c:p:*'`)).rows;
+  assert.equal(envelopes.length,1,'the partner adds no reservation');
+  assert.equal(Number(envelopes[0].attempts),1800);
+  assert.match(String(envelopes[0].key),/^trb1:c:p:[a-f0-9]{32}:[a-f0-9]{24}$/);
+  assert.doesNotMatch(String(envelopes[0].key),/week|pair|_10_|_20/,'the room key is an opaque HMAC');
+  assert.equal(provider.of('cloudflareUsage').length,1);
+  assert.equal(provider.of('cloudflare').length,2,'each member still gets its own credential');
+  const {turnRoomKey}=await import('../../api/_turn-relay-route.js');
+  assert.equal(turnRoomKey('week_10_pair_20',SECRET),turnRoomKey('week_10_pair_20',SECRET));
+  assert.notEqual(turnRoomKey('week_10_pair_20',SECRET),turnRoomKey('week_10_pair_21',SECRET));
+  assert.notEqual(turnRoomKey('week_10_pair_20',SECRET),turnRoomKey('week_10_pair_20',`${SECRET}-rotated`));
+});
+
+test('the route never reserves or mints once too little of its deadline is left for the browser',async()=>{
+  const {handleTurnRelay}=await import('../../api/_turn-relay-route.js');
+  const {TURN_ROUTE_DEADLINE_MS,TURN_MIN_MINT_MS}=await import('../../api/_turn-relay.js');
+  assert.ok(TURN_ROUTE_DEADLINE_MS<3000,'shorter than the browser cap (TURN_TIMEOUT_MS)');
+  currentDb=await readyDatabase(); enable({metered:true});
+  const config=turnRelayConfiguration(process.env);
+  const run=async now=>{
+    let status=200,body;
+    const res={status(code){ status=code; return this; },setHeader(){},json(value){ body=value; return this; }};
+    const req={method:'POST',url:'/api/video/turn',query:{endpoint:'turn'},headers:{'x-test-auth':'member','x-forwarded-for':'198.51.100.7'},body:{room_id:'week_10_pair_20'},socket:{}};
+    const capture=captureWarnings();
+    try{ await handleTurnRelay(req,res,config,{now}); }finally{ capture.restore(); }
+    return {status,body,warnings:capture.warnings};
+  };
+  // Time already spent before the providers: nothing is reserved or minted.
+  let calls=0;
+  const late=await run(()=>calls++===0?0:TURN_ROUTE_DEADLINE_MS-TURN_MIN_MINT_MS);
+  assert.equal(late.status,503);
+  assert.deepEqual(late.warnings,[
+    '[video] turn relay unavailable {"provider":"cloudflare","stage":"deadline","status":null,"reason":null}',
+    '[video] turn relay unavailable {"provider":"metered","stage":"deadline","status":null,"reason":null}',
+  ]);
+  assert.equal(provider.requests.length,0);
+  assert.equal((await currentDb.execute(`SELECT key FROM auth_rate_limits WHERE key GLOB 'trb1:*:p:*'`)).rows.length,0);
+  // The deadline passes during the reservation: the new envelope is released, nothing is minted.
+  calls=0;
+  const slow=await run(()=>{ calls+=1; return calls<=3?0:TURN_ROUTE_DEADLINE_MS; });
+  assert.equal(slow.status,503);
+  assert.match(slow.warnings[0],/"provider":"cloudflare","stage":"deadline"/);
+  assert.equal(provider.of('cloudflare').length,0);
+  assert.equal((await currentDb.execute(`SELECT key FROM auth_rate_limits WHERE key GLOB 'trb1:*:p:*'`)).rows.length,0);
+  // The usage read is given only the time that is left.
+  assert.ok(provider.of('cloudflareUsage').length===1);
+});
+
+test('an oversized streamed body is cut off without being buffered whole',async()=>{
+  const {readLimited}=await import('../../api/_turn-relay.js');
+  const [config]=turnRelayConfiguration(CF).providers;
+  let pulled=0,cancelled=false;
+  const huge=new ReadableStream({
+    pull(controller){ pulled+=1; controller.enqueue(new Uint8Array(4096).fill(32)); },
+    cancel(){ cancelled=true; },
+  });
+  await assert.rejects(mintTurnIceServers(config,{window:turnGrantWindow(),fetchImpl:async()=>new Response(huge,{status:201})}),
+    error=>error.stage==='response'&&error.status===201);
+  assert.equal(cancelled,true);
+  assert.ok(pulled<=Math.ceil(TURN_LIMITS.responseBytes/4096)+2,'reading stops at the cap');
+  assert.equal(await readLimited(new Response('{"a":1}'),10),'{"a":1}');
+  assert.equal(await readLimited(new Response('x'.repeat(11)),10),null);
+  assert.equal(await readLimited({text:async()=>'plain'},10),'plain','a body without a stream falls back to text()');
 });
