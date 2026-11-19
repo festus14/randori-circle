@@ -121,15 +121,24 @@ export function parseEmbeddedRoomRequest(req,parseRoom){
  * shared keyed limiter, so nothing linkable to the member is stored and no
  * migration is needed. Returns {allowed, dimension, retryAfter}.
  */
-export function enforceDailyVideoRateLimit(db,{req,userId,secret,nowSeconds=Math.floor(Date.now()/1000)}){
+export async function enforceDailyVideoRateLimit(db,{req,userId,secret,nowSeconds=Math.floor(Date.now()/1000)}){
   const window={windowSeconds:DAILY_RATE_WINDOW_SECONDS};
-  return consumeKeyedRateLimits(db,{
-    label:'randori-daily-video-rate-v1',secret,nowSeconds,
-    dimensions:[
-      ['account',String(userId),{...window,limit:DAILY_RATE_LIMITS.account}],
-      ['address',rateLimitAddress(clientAddress(req)),{...window,limit:DAILY_RATE_LIMITS.address}],
-    ],
-  });
+  for(let attempt=0;attempt<4;attempt++){
+    try{
+      return await consumeKeyedRateLimits(db,{
+        label:'randori-daily-video-rate-v1',secret,nowSeconds,
+        dimensions:[
+          ['account',String(userId),{...window,limit:DAILY_RATE_LIMITS.account}],
+          ['address',rateLimitAddress(clientAddress(req)),{...window,limit:DAILY_RATE_LIMITS.address}],
+        ],
+      });
+    }catch(error){
+      // Native lock refusals are known non-commits. A preceding dimension may
+      // have counted already; counting it again only tightens this limiter.
+      if(attempt===3||!['SQLITE_BUSY','SQLITE_BUSY_SNAPSHOT','SQLITE_LOCKED'].includes(error.code)) throw error;
+      await new Promise(resolve=>setTimeout(resolve,30*(2**attempt)+Math.floor(Math.random()*30)));
+    }
+  }
 }
 
 /**
@@ -183,7 +192,7 @@ export function dailyMeetingTokenProperties({roomName,expiresAt,label,camera,mic
   };
 }
 
-export async function dailyRequest(config,{method,path,body,stage,fetchImpl}){
+export async function dailyRequest(config,{method,path,body,stage,fetchImpl,signal}){
   let response;
   try{
     response=await fetchImpl(`${DAILY_API_BASE}${path}`,{
@@ -191,7 +200,7 @@ export async function dailyRequest(config,{method,path,body,stage,fetchImpl}){
       headers:{authorization:`Bearer ${config.apiKey}`,'content-type':'application/json',accept:'application/json'},
       body:JSON.stringify(body),
       redirect:'error',
-      signal:AbortSignal.timeout(DAILY_PROVIDER_TIMEOUT_MS),
+      signal:signal?AbortSignal.any([signal,AbortSignal.timeout(DAILY_PROVIDER_TIMEOUT_MS)]):AbortSignal.timeout(DAILY_PROVIDER_TIMEOUT_MS),
     });
   }catch{ throw new DailyProviderError(stage,null); }
   let payload=null;

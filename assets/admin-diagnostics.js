@@ -293,8 +293,13 @@ export function cardView(id, card, elapsedMs = 0) {
   else if (id === 'dailyVideo') {
     const minutes=value=>Number.isSafeInteger(value)&&value>=0?String(value):'unknown';
     const state=['ok','near','paused','unknown'].includes(source.state)?source.state:'unknown';
+    const reason={not_enabled:'Not enabled. Use the direct call; this is not a failure.',
+      budget_reached:'Paused — budget reached. Use the direct call.',configuration:'Video budget configuration is invalid.',
+      usage_too_large:'Usage too large to read within the page limit; video is paused.',
+      usage_timeout:'Usage refresh timed out; video is paused.',usage_unavailable:'Usage refresh failed; video is paused.',
+      store_unavailable:'Budget read failed; video is paused.',usage_unknown:'No fresh usage snapshot; video is paused.'}[source.reason]||`State: ${state}.`;
     lines=[`UTC month: ${minutes(source.reportedMinutes)} reported · ${minutes(source.reservedMinutes)} reserved · ${minutes(source.budget)} budget participant-minutes.`,
-      `State: ${state}. Paused or unknown: use the direct call. Reported usage may lag; reservations last until token expiry.`];
+      reason,'Pair reservations include both seats and a five-minute final-usage buffer.'];
   }
   else if (id === 'readiness') lines = readinessLines(source);
   else if (id === 'errors') lines = errorLines(source);
@@ -303,7 +308,8 @@ export function cardView(id, card, elapsedMs = 0) {
     id,
     title: CARD_TITLES[id] || id,
     status,
-    label: STATUS_VIEW[status].label,
+    label: id==='dailyVideo'&&source.reason==='not_enabled'?'Not enabled'
+      :id==='dailyVideo'&&source.reason==='budget_reached'?'Paused — budget reached':STATUS_VIEW[status].label,
     tone: STATUS_VIEW[status].tone,
     stale: state.stale,
     evidence: status === 'deferred' || status === 'unavailable' ? '' : evidenceText(id, source.evidence, elapsedMs),

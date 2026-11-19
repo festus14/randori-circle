@@ -400,7 +400,7 @@ test('joins are rate limited per account and per network before authorization or
   const blocked=await enforceDailyVideoRateLimit(currentDb,{req:rotated,userId:999,secret:SECRET,nowSeconds});
   assert.deepEqual({...blocked},{allowed:false,dimension:'address',retryAfter:15*60-(nowSeconds%(15*60))});
   const keys=await currentDb.execute('SELECT key FROM auth_rate_limits');
-  for(const row of keys.rows) assert.match(String(row.key),/^(?:[a-f0-9]{64}|dvb1:[a-z0-9:]+)$/,'keyed hashes or aggregate/random namespaced budget keys only');
+  for(const row of keys.rows) assert.match(String(row.key),/^(?:[a-f0-9]{64}|dvb1:[a-z0-9:-]+)$/,'keyed hashes or aggregate/random namespaced budget keys only');
 });
 
 test('a rate-limit store failure is a generic 503, not an unlimited grant',async()=>{
@@ -558,7 +558,7 @@ test('#490 cold usage is read before any room/token creation and a fresh snapsho
   assert.equal(response.status,200);
   assert.equal(new URL(provider.requests[0].url).pathname,'/v1/meetings');
   assert.equal(provider.tokens,1);
-  assert.equal((await currentDb.execute("SELECT SUM(attempts) AS n FROM auth_rate_limits WHERE key GLOB 'dvb1:r:*'")).rows[0].n,60);
+  assert.equal((await currentDb.execute("SELECT SUM(attempts) AS n FROM auth_rate_limits WHERE key GLOB 'dvb1:p:*' AND key NOT GLOB '*:paused'")).rows[0].n,120);
   provider.fail=path=>path==='/v1/meetings'?new Response('outage',{status:503}):undefined;
   provider.requests.length=0;
   assert.equal((await invoke({headers:{'x-test-auth':'partner'}})).status,200);
@@ -595,23 +595,33 @@ test('#490 budget invalid/overspent never calls Daily; equality passes and racin
     assert.equal(response.headers['cache-control'],'private, no-store');
   }
   assert.equal(provider.requests.length,0);
-  process.env.DAILY_MONTHLY_MINUTE_BUDGET='59';
+  process.env.DAILY_MONTHLY_MINUTE_BUDGET='119';
   const warnings=[],originalWarn=console.warn; console.warn=(...args)=>warnings.push(args.join(' '));
   try{
     assert.equal((await invoke()).status,503); assert.equal(provider.requests.length,0);
-    process.env.DAILY_MONTHLY_MINUTE_BUDGET='60';
+    process.env.DAILY_MONTHLY_MINUTE_BUDGET='120';
     // Distinct clients share one database, as two serverless instances do.
     const second=createClient({url:`file:${join(currentDirectory,'test.sqlite')}`});
     let results;
     try{ results=await Promise.all([invoke(),invoke({headers:{'x-test-auth':'partner'},address:'203.0.113.8',workspaceDb:second})]); }
     finally{ second.close(); }
-    assert.deepEqual(results.map(result=>result.status).sort(),[200,503],JSON.stringify({results,warnings}));
-    const denied=results.find(result=>result.status===503);
-    assert.deepEqual(denied.body,{error:'video_unavailable',fallback:'direct_call'});
-    assert.equal(provider.tokens,1);
-    assert.equal((await currentDb.execute("SELECT SUM(attempts) AS n FROM auth_rate_limits WHERE key GLOB 'dvb1:r:*'")).rows[0].n,60);
+    assert.deepEqual(results.map(result=>result.status).sort(),[200,200],JSON.stringify({results,warnings}));
+    assert.equal(provider.tokens,2);
+    assert.equal((await currentDb.execute("SELECT SUM(attempts) AS n FROM auth_rate_limits WHERE key GLOB 'dvb1:p:*' AND key NOT GLOB '*:paused'")).rows[0].n,120);
   }finally{ console.warn=originalWarn; }
   assert.doesNotMatch(warnings.join(' '),/week_10|rc-[a-f0-9]|eyJ|Candidate|Interviewer/);
+});
+
+test('Daily rate-lock retries are bounded and never retry an unknown outcome',async()=>{
+  currentDb=await readyDatabase();let calls=0;
+  const request={headers:{'x-forwarded-for':'203.0.113.8'},socket:{}};
+  const flaky={execute:async statement=>{if(++calls<=2)throw Object.assign(new Error('locked'),{code:'SQLITE_BUSY'});return currentDb.execute(statement);}};
+  assert.equal((await enforceDailyVideoRateLimit(flaky,{req:request,userId:2,secret:SECRET})).allowed,true);
+  assert.equal(calls,4);
+  let failed=0;const saturated={execute:async()=>{failed++;throw Object.assign(new Error('locked'),{code:'SQLITE_LOCKED'});}};
+  await assert.rejects(enforceDailyVideoRateLimit(saturated,{req:request,userId:2,secret:SECRET}));assert.equal(failed,4);
+  let unknown=0;const uncertain={execute:async()=>{unknown++;throw new Error('lost acknowledgement');}};
+  await assert.rejects(enforceDailyVideoRateLimit(uncertain,{req:request,userId:2,secret:SECRET}));assert.equal(unknown,1);
 });
 
 test('#490 provider error strings cannot smuggle identifiers into logs; failed tokens keep their reservation',async()=>{
@@ -625,6 +635,6 @@ test('#490 provider error strings cannot smuggle identifiers into logs; failed t
       assert.equal(dailyErrorCode({error:secret}),null);
     }
   }finally{ console.warn=originalWarn; }
-  assert.equal((await currentDb.execute("SELECT SUM(attempts) AS n FROM auth_rate_limits WHERE key GLOB 'dvb1:r:*'")).rows[0].n,180);
+  assert.equal((await currentDb.execute("SELECT SUM(attempts) AS n FROM auth_rate_limits WHERE key GLOB 'dvb1:p:*' AND key NOT GLOB '*:paused'")).rows[0].n,120);
   for(const secret of secrets) assert.equal(warnings.join(' ').includes(secret),false);
 });

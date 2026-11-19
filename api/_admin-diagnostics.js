@@ -643,7 +643,7 @@ export async function readAdminDiagnostics(db,{env=process.env,checkReadiness=de
     settle(()=>readExecutionSmoke(db,nowMs)),
     settle(()=>readReadinessCard(db,nowMs,{env,checkReadiness})),
     settle(()=>readErrorsCard(db,nowMs)),
-    readDailyBudgetDiagnostics(db,{env}),
+    settle(()=>readDailyBudgetDiagnostics(db,{env})),
   ]);
   return Object.freeze({
     ok:true,
@@ -660,7 +660,7 @@ export async function readAdminDiagnostics(db,{env=process.env,checkReadiness=de
         :Object.freeze({...unavailable(EXECUTION_EVIDENCE_MAX_AGE_MS),smoke:smoke.ok?smoke.value:SMOKE_UNAVAILABLE}),
       readiness:readiness.ok?readiness.value:unavailable(DIAGNOSTICS_SNAPSHOT_MAX_AGE_MS),
       errors:errors.ok?errors.value:unavailable(LOG_EVIDENCE_MAX_AGE_MS),
-      dailyVideo,
+      dailyVideo:dailyVideo.ok?dailyVideo.value:{status:'failed',state:'unknown',reason:'store_unavailable',reportedMinutes:null,reservedMinutes:null,budget:null},
     }),
   });
 }

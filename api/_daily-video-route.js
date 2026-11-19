@@ -1,7 +1,7 @@
 // POST /api/video/room handler (issue #463, ID-98). Loaded by api/video.js
 // only while the embedded-video capability is configured, so the existing
 // signaling route keeps its exact import graph and behaviour when it is off.
-import { reserveDailyGrant } from './_daily-budget.js';
+import { reserveDailyGrant, dailyBudgetTransaction } from './_daily-budget.js';
 import { getClient, getJwtSecret, verifyRequestAuth } from './_db.js';
 import { ensureDataSessionControlsReadiness } from './_data-readiness.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
@@ -10,6 +10,7 @@ import {
   DailyProviderError,
   dailyGrantWindow,
   dailyParticipantLabel,
+  dailyRoomName,
   enforceDailyVideoRateLimit,
   mintDailyRoomGrant,
   parseEmbeddedRoomRequest,
@@ -31,18 +32,9 @@ function authenticatedUserId(payload){
 const EMBEDDED_VIDEO_UNAVAILABLE={error:'video_unavailable',fallback:'direct_call'};
 
 async function readEmbeddedRoomAccess(db,{userId,room,versionKey}){
-  const transaction=await db.transaction('read');
-  let finished=false;
-  try{
-    const read=await readAuthorizedSessionControls(transaction,{
-      viewerId:userId,weekId:room.weekId,pairGroupId:room.pairGroupId,versionKey,
-    });
-    await transaction.commit(); finished=true;
-    return read;
-  }catch(error){
-    if(!finished){ try{ await transaction.rollback(); }catch{} }
-    throw error;
-  }finally{ try{ await transaction.close(); }catch{} }
+  return dailyBudgetTransaction(db,'read',tx=>readAuthorizedSessionControls(tx,{
+    viewerId:userId,weekId:room.weekId,pairGroupId:room.pairGroupId,versionKey,
+  }));
 }
 
 // POST /api/video/room (issue #463, ID-98): a private Daily room and a
@@ -87,9 +79,9 @@ export async function handleEmbeddedRoom(req,res,config){
     });
   }
   try{
-    await reserveDailyGrant(db,config,{window,fetchImpl:globalThis.fetch});
+    const admission=await reserveDailyGrant(db,config,{window,roomName:dailyRoomName(input.roomId,secret),fetchImpl:globalThis.fetch});
     const grant=await mintDailyRoomGrant(config,{
-      roomId:input.roomId,secret,window,label:dailyParticipantLabel(access.state),
+      roomId:input.roomId,secret,window:admission.window,label:dailyParticipantLabel(access.state),
       camera:input.camera,microphone:input.microphone,fetchImpl:globalThis.fetch,
     });
     return res.json({
