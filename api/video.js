@@ -6,7 +6,7 @@ import { parseCanonicalRoomPath } from './_pairing.js';
 import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
 import { readCodeProjectionForWorkspace } from './_code-document.js';
 import { secondaryCircleWorkspaceEnabled } from './_active-circle.js';
-import { dailyVideoConfiguration } from './_daily-video.js';
+import { dailyVideoConfiguration, dailyMonthlyMinuteBudget } from './_daily-video.js';
 
 const WORKSPACE_SCHEMA_VERSION = 3;
 const MAX_WORKSPACE_CODE_BYTES = 20 * 1024;
@@ -790,6 +790,11 @@ export default async function handler(req,res){
   if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
   // Embedded video exists only while DAILY_VIDEO_ENABLED and its provider
   // configuration are valid; otherwise this route keeps its old behaviour.
+  if(getEndpoint(req)==='room'&&process.env.DAILY_VIDEO_ENABLED==='true'
+    &&process.env.RANDORI_LOCAL_RUNTIME!=='true'&&dailyMonthlyMinuteBudget()===null){
+    res.setHeader('Cache-Control','private, no-store');
+    return res.status(503).json({error:'video_unavailable',fallback:'direct_call'});
+  }
   const embeddedVideo=getEndpoint(req)==='room'?dailyVideoConfiguration():null;
   if(secondaryCircleWorkspaceEnabled()){
     try{

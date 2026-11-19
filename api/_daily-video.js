@@ -4,8 +4,9 @@
 // Daily room exists for one canonical primary two-person room and (b) mints a
 // short-lived, non-owner meeting token for one authorized participant. The
 // browser then loads Daily Prebuilt in a sandboxed iframe. Nothing here is
-// persisted in Turso: the room name is derived (HMAC) from the canonical room
-// id, and rate-limit counters reuse the existing keyed-hash table.
+// persisted in Turso beyond aggregate budget snapshots/reservations and
+// rate-limit counters: the room name is derived (HMAC) from the canonical
+// room id. Budget admission happens before this module's mint operation.
 //
 // Recording is deliberately not offered. Daily's `enable_recording` takes only
 // the recording modes ("cloud", "local", "raw-tracks", ...) and is off when it
@@ -37,13 +38,16 @@ export class DailyVideoInputError extends Error{
   constructor(message){ super(message); this.name='DailyVideoInputError'; }
 }
 
-const PROVIDER_ERROR_CODE=/^[a-z][a-z-]{0,63}$/;
+// Keep only known Daily categories, never arbitrary provider strings that
+// could themselves be a room name, participant id or token.
+const PROVIDER_ERROR_CODES=new Set(['invalid-request-error','authentication-error','rate-limit-error',
+  'not-found','not-found-error','server-error','internal-server-error','invalid-token-error']);
 
 // Daily's fixed `error` enum (for example `invalid-request-error`), or null.
 // Free-text `info` and anything else from the body is never kept.
 export function dailyErrorCode(payload){
   const code=payload?.error;
-  return typeof code==='string'&&PROVIDER_ERROR_CODE.test(code)?code:null;
+  return typeof code==='string'&&PROVIDER_ERROR_CODES.has(code)?code:null;
 }
 
 // Carries only the failing stage, the provider's HTTP status and its fixed
@@ -56,19 +60,24 @@ export class DailyProviderError extends Error{
   }
 }
 
-/**
- * The flag is literal `true` only, and the capability exists only with a
- * well-formed server-only API key and the CSP-allowed Daily domain. The
- * one-command local runtime never enables it, whatever its environment says.
- */
+/** Strict participant-minute budget; unset alone selects the default. */
+export function dailyMonthlyMinuteBudget(env=process.env){
+  const raw=env.DAILY_MONTHLY_MINUTE_BUDGET;
+  if(raw===undefined) return 9000;
+  const value=typeof raw==='string'&&/^[1-9]\d*$/.test(raw)?Number(raw):NaN;
+  return Number.isSafeInteger(value)&&value>0?value:null;
+}
+
+/** Literal flag, valid key/domain/budget, and never the local runtime. */
 export function dailyVideoConfiguration(env=process.env){
   if(env.DAILY_VIDEO_ENABLED!=='true'||env.RANDORI_LOCAL_RUNTIME==='true') return null;
   const apiKey=String(env.DAILY_API_KEY??'').trim();
   const domain=String(env.DAILY_DOMAIN??'').trim().toLowerCase();
   if(!API_KEY.test(apiKey)||!DAILY_DOMAIN.test(domain)) return null;
   const origin=`https://${domain}`;
-  if(origin!==DAILY_FRAME_ORIGIN) return null;
-  return Object.freeze({apiKey,domain,origin});
+  const monthlyMinuteBudget=dailyMonthlyMinuteBudget(env);
+  if(origin!==DAILY_FRAME_ORIGIN||monthlyMinuteBudget===null) return null;
+  return Object.freeze({apiKey,domain,origin,monthlyMinuteBudget});
 }
 
 export function dailyVideoEnabled(env=process.env){
@@ -112,15 +121,24 @@ export function parseEmbeddedRoomRequest(req,parseRoom){
  * shared keyed limiter, so nothing linkable to the member is stored and no
  * migration is needed. Returns {allowed, dimension, retryAfter}.
  */
-export function enforceDailyVideoRateLimit(db,{req,userId,secret,nowSeconds=Math.floor(Date.now()/1000)}){
+export async function enforceDailyVideoRateLimit(db,{req,userId,secret,nowSeconds=Math.floor(Date.now()/1000)}){
   const window={windowSeconds:DAILY_RATE_WINDOW_SECONDS};
-  return consumeKeyedRateLimits(db,{
-    label:'randori-daily-video-rate-v1',secret,nowSeconds,
-    dimensions:[
-      ['account',String(userId),{...window,limit:DAILY_RATE_LIMITS.account}],
-      ['address',rateLimitAddress(clientAddress(req)),{...window,limit:DAILY_RATE_LIMITS.address}],
-    ],
-  });
+  for(let attempt=0;attempt<4;attempt++){
+    try{
+      return await consumeKeyedRateLimits(db,{
+        label:'randori-daily-video-rate-v1',secret,nowSeconds,
+        dimensions:[
+          ['account',String(userId),{...window,limit:DAILY_RATE_LIMITS.account}],
+          ['address',rateLimitAddress(clientAddress(req)),{...window,limit:DAILY_RATE_LIMITS.address}],
+        ],
+      });
+    }catch(error){
+      // Native lock refusals are known non-commits. A preceding dimension may
+      // have counted already; counting it again only tightens this limiter.
+      if(attempt===3||!['SQLITE_BUSY','SQLITE_BUSY_SNAPSHOT','SQLITE_LOCKED'].includes(error.code)) throw error;
+      await new Promise(resolve=>setTimeout(resolve,30*(2**attempt)+Math.floor(Math.random()*30)));
+    }
+  }
 }
 
 /**
@@ -174,7 +192,7 @@ export function dailyMeetingTokenProperties({roomName,expiresAt,label,camera,mic
   };
 }
 
-async function dailyRequest(config,{method,path,body,stage,fetchImpl}){
+export async function dailyRequest(config,{method,path,body,stage,fetchImpl,signal}){
   let response;
   try{
     response=await fetchImpl(`${DAILY_API_BASE}${path}`,{
@@ -182,7 +200,7 @@ async function dailyRequest(config,{method,path,body,stage,fetchImpl}){
       headers:{authorization:`Bearer ${config.apiKey}`,'content-type':'application/json',accept:'application/json'},
       body:JSON.stringify(body),
       redirect:'error',
-      signal:AbortSignal.timeout(DAILY_PROVIDER_TIMEOUT_MS),
+      signal:signal?AbortSignal.any([signal,AbortSignal.timeout(DAILY_PROVIDER_TIMEOUT_MS)]):AbortSignal.timeout(DAILY_PROVIDER_TIMEOUT_MS),
     });
   }catch{ throw new DailyProviderError(stage,null); }
   let payload=null;

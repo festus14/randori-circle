@@ -9,7 +9,7 @@ import authHandler from '../../api/auth.js';
 import { DAILY_FRAME_ORIGIN } from '../../api/_daily-video.js';
 import { securityHeaderIsSafe } from '../../scripts/check-deployability.mjs';
 
-const KEYS=['DAILY_VIDEO_ENABLED','DAILY_API_KEY','DAILY_DOMAIN','RANDORI_LOCAL_RUNTIME'];
+const KEYS=['DAILY_MONTHLY_MINUTE_BUDGET','DAILY_VIDEO_ENABLED','DAILY_API_KEY','DAILY_DOMAIN','RANDORI_LOCAL_RUNTIME'];
 const previous=Object.fromEntries(KEYS.map(key=>[key,process.env[key]]));
 afterEach(()=>{
   for(const [key,value] of Object.entries(previous)){
@@ -37,6 +37,13 @@ test('embeddedVideo is advertised only for the literal flag with a valid key and
   assert.equal('embeddedVideo' in await capabilities(),false);
   process.env.DAILY_VIDEO_ENABLED='true';
   assert.equal((await capabilities()).embeddedVideo,true);
+  for(const invalid of ['','0','-1','invalid']){
+    process.env.DAILY_MONTHLY_MINUTE_BUDGET=invalid;
+    assert.equal('embeddedVideo' in await capabilities(),false,'invalid budget hides capability');
+  }
+  process.env.DAILY_MONTHLY_MINUTE_BUDGET='60';
+  assert.equal((await capabilities()).embeddedVideo,true);
+  delete process.env.DAILY_MONTHLY_MINUTE_BUDGET;
   process.env.DAILY_API_KEY='';
   assert.equal('embeddedVideo' in await capabilities(),false,'missing key');
   process.env.DAILY_API_KEY='daily-test-api-key-0123456789abcdef';

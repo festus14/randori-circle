@@ -37,7 +37,8 @@ export const COPY=Object.freeze({
   signedOut:'Sign in again to join the video call.',
   noRoom:'Open your pair room first.',
   solo:'Solo practice has no partner to call. Use Code and Board instead.',
-  unavailable:'Built-in video is unavailable right now.',
+  unavailable:'Built-in video is paused — use the direct call',
+  fallbackPartner:'Ask your partner to use the direct call too, or open the same meeting link together.',
   fallbackLink:'Open your private meeting link',
   fallbackLinkHint:'Opens outside Randori.',
   fallbackNoLink:'You can add a private meeting link in the Session tab, or use the direct browser call.',
@@ -79,11 +80,14 @@ export function mountEmbeddedVideo({window:root=globalThis.window,document:doc=g
     element.addEventListener('click',onClick);
     return element;
   }
-  function status(text){
-    const element=node('div',{className:'small muted',text,testId:'embedded-video-status'});
-    element.setAttribute('role','status'); element.setAttribute('aria-live','polite');
-    return element;
-  }
+  // Mount an EMPTY live region once, before any announcement. It is never
+  // removed/reparented during render, so screen readers observe text changes.
+  const liveStatus=node('div',{className:'small muted',testId:'embedded-video-status'});
+  liveStatus.setAttribute('role','status'); liveStatus.setAttribute('aria-live','polite');
+  liveStatus.setAttribute('tabindex','-1');
+  const contentSlot=node('div');
+  section.replaceChildren(liveStatus,contentSlot);
+  function status(text){ liveStatus.textContent=text; }
   function shell(){
     const wrapper=node('div'); wrapper.style.cssText='display:grid;gap:8px';
     const heading=node('b',{text:COPY.title}); heading.style.fontSize='12.5px';
@@ -115,8 +119,14 @@ export function mountEmbeddedVideo({window:root=globalThis.window,document:doc=g
   }
 
   function render(){
-    section.replaceChildren();
-    if(state.phase==='idle'){ section.hidden=true; return; }
+    const hadFocus=section.contains?.(doc.activeElement)===true;
+    contentSlot.replaceChildren();
+    status('');
+    if(state.phase==='idle'){
+      section.hidden=true;
+      if(hadFocus) doc.getElementById?.('vidJoinBtn')?.focus?.();
+      return;
+    }
     section.hidden=false;
     const content=shell();
     if(state.phase==='consent'){
@@ -136,13 +146,15 @@ export function mountEmbeddedVideo({window:root=globalThis.window,document:doc=g
       const privacy=node('a',{className:'small',text:COPY.privacy}); privacy.href='/privacy#video';
       content.append(choices,actions,privacy);
     }else if(state.phase==='joining'){
-      content.append(status(COPY.joining),button(COPY.cancel,'embedded-video-cancel','btn secondary sm',()=>stop()));
+      status(COPY.joining);
+      content.append(button(COPY.cancel,'embedded-video-cancel','btn secondary sm',()=>stop()));
     }else if(state.phase==='live'){
-      content.append(status(COPY.live));
+      status(COPY.live);
       if(state.frame) content.append(state.frame);
       content.append(button(COPY.leave,'embedded-video-leave','btn danger sm',()=>stop('closed',COPY.left)));
     }else if(state.phase==='fallback'){
-      content.append(status(state.message));
+      status(state.message);
+      content.append(node('p',{className:'small',text:COPY.fallbackPartner,testId:'embedded-video-fallback-partner'}));
       const actions=node('div',{className:'row'}); actions.style.cssText='gap:8px;flex-wrap:wrap;align-items:center';
       const href=safeExternalHref(host.meetingLinkHref?.());
       if(href){
@@ -156,10 +168,13 @@ export function mountEmbeddedVideo({window:root=globalThis.window,document:doc=g
       actions.append(button(COPY.cancel,'embedded-video-cancel','btn ghost sm',()=>stop()));
       content.append(actions);
     }else{
-      content.append(status(state.message));
+      status(state.message);
       content.append(button(COPY.cancel,'embedded-video-dismiss','btn ghost sm',()=>stop()));
     }
-    section.append(content);
+    contentSlot.append(content);
+    if(state.phase==='fallback'){
+      (section.querySelector?.('[data-testid="embedded-video-legacy"]')||liveStatus).focus?.();
+    }else if(hadFocus) liveStatus.focus?.();
   }
 
   function safeExternalHref(value){

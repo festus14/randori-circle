@@ -13,13 +13,14 @@
 export const SNAPSHOT_FORMAT = 'randori.admin-diagnostics.v1';
 export const TICK_MS = 30 * 1000;
 
-export const CARD_ORDER = Object.freeze(['outbox', 'outboxWatchdog', 'backupWatchdog', 'execution', 'readiness', 'errors']);
+export const CARD_ORDER = Object.freeze(['outbox', 'outboxWatchdog', 'backupWatchdog', 'execution', 'dailyVideo', 'readiness', 'errors']);
 
 const CARD_TITLES = Object.freeze({
   outbox: 'Outbox delivery',
   outboxWatchdog: 'Outbox watchdog',
   backupWatchdog: 'Backup watchdog',
   execution: 'Code execution',
+  dailyVideo: 'Daily video allowance',
   readiness: 'Readiness and migrations',
   errors: 'Recent errors',
 });
@@ -289,6 +290,17 @@ export function cardView(id, card, elapsedMs = 0) {
   else if (status === 'deferred') lines = [...(DEFERRED_COPY[id] || ['Not available yet.']), `Expected cadence: every ${formatDuration(source.cadenceMs)}.`];
   else if (id === 'outbox') lines = outboxLines(source);
   else if (id === 'execution') lines = executionLines(source);
+  else if (id === 'dailyVideo') {
+    const minutes=value=>Number.isSafeInteger(value)&&value>=0?String(value):'unknown';
+    const state=['ok','near','paused','unknown'].includes(source.state)?source.state:'unknown';
+    const reason={not_enabled:'Not enabled. Use the direct call; this is not a failure.',
+      budget_reached:'Paused — budget reached. Use the direct call.',configuration:'Video budget configuration is invalid.',
+      usage_too_large:'Usage too large to read within the page limit; video is paused.',
+      usage_timeout:'Usage refresh timed out; video is paused.',usage_unavailable:'Usage refresh failed; video is paused.',
+      store_unavailable:'Budget read failed; video is paused.',usage_unknown:'No fresh usage snapshot; video is paused.'}[source.reason]||`State: ${state}.`;
+    lines=[`UTC month: ${minutes(source.reportedMinutes)} reported · ${minutes(source.reservedMinutes)} reserved · ${minutes(source.budget)} budget participant-minutes.`,
+      reason,'Pair reservations include both seats and a five-minute final-usage buffer.'];
+  }
   else if (id === 'readiness') lines = readinessLines(source);
   else if (id === 'errors') lines = errorLines(source);
   else lines = [];
@@ -296,7 +308,8 @@ export function cardView(id, card, elapsedMs = 0) {
     id,
     title: CARD_TITLES[id] || id,
     status,
-    label: STATUS_VIEW[status].label,
+    label: id==='dailyVideo'&&source.reason==='not_enabled'?'Not enabled'
+      :id==='dailyVideo'&&source.reason==='budget_reached'?'Paused — budget reached':STATUS_VIEW[status].label,
     tone: STATUS_VIEW[status].tone,
     stale: state.stale,
     evidence: status === 'deferred' || status === 'unavailable' ? '' : evidenceText(id, source.evidence, elapsedMs),

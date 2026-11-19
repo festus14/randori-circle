@@ -125,7 +125,10 @@ test('admin diagnostics: a global admin reads every card, sees stale evidence, a
     await diagnostics.locator('summary').focus();
     await owner.keyboard.press('Enter');
     const first=await (await firstLoad).json();
-    await expect(owner.getByTestId('admin-diagnostics-card')).toHaveCount(6);
+    await expect(owner.getByTestId('admin-diagnostics-card')).toHaveCount(7);
+    await expect(owner.locator('[data-card="dailyVideo"]')).toContainText('Daily video allowance');
+    await expect(owner.locator('[data-card="dailyVideo"] [data-testid="admin-diagnostics-card-status"]')).toHaveText('Not enabled');
+    await expect(owner.locator('[data-card="dailyVideo"]')).toHaveAttribute('data-status','unknown');
 
     // Aggregate counts and categories only: no addresses, tokens or payloads.
     const serialized=JSON.stringify(first);

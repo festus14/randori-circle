@@ -66,7 +66,7 @@ async function openRoom(page:Page,store:Store,actorId:1|2,{embedded=true}:Option
     },
     '/api/video/room':(request:Request)=>{
       store.roomPosts.push({actorId,body:request.postDataJSON() as Record<string,unknown>});
-      if(store.roomStatus!==200) return {_status:store.roomStatus,error:'embedded video unavailable',code:'embedded_video_unavailable'};
+      if(store.roomStatus!==200) return {_status:store.roomStatus,error:'video_unavailable',fallback:'direct_call'};
       return {ok:true,room_id:roomId,provider:'daily',room_url:`${dailyOrigin}/${dailyRoom}`,
         token:`eyJhbGci.actor-${actorId}.signature`,expires_at:new Date(Date.now()+20*60*1000).toISOString(),expires_in:20*60,recording:false};
     },
@@ -91,6 +91,10 @@ test('interviewer and candidate consent, join the same private room in-page, and
       await expect(panel).toBeVisible();
       await expect(page.getByTestId('embedded-video-notice')).toContainText('only after you click Join');
       await expect(panel).toContainText('not recorded');
+      const status=page.getByTestId('embedded-video-status');
+      await expect(status).toHaveAttribute('role','status');
+      await expect(status).toHaveAttribute('aria-live','polite');
+      await expect(status).toHaveText('');
       await expect(page.getByTestId('embedded-video-frame')).toHaveCount(0);
     }
     expect(store.roomPosts).toHaveLength(0);
@@ -142,13 +146,23 @@ test('an unavailable provider falls back to the private meeting link without loa
   await expect(page.getByTestId('meeting-link-join')).toBeVisible();
   await page.locator('#vidJoinBtn').click();
   await page.getByTestId('embedded-video-join').click();
-  await expect(page.getByTestId('embedded-video-status')).toHaveText('Built-in video is unavailable right now.');
+  await expect(page.getByTestId('embedded-video-status')).toHaveText('Built-in video is paused — use the direct call');
   const link=page.getByTestId('embedded-video-fallback-link');
   await expect(link).toHaveAttribute('href',meetingUrl);
   await expect(link).toHaveAttribute('rel','noopener noreferrer');
   await expect(page.getByTestId('embedded-video-legacy')).toBeVisible();
+  await expect(page.getByTestId('embedded-video-legacy')).toBeFocused();
+  await expect(page.getByTestId('embedded-video-fallback-partner')).toContainText('Ask your partner to use the direct call too');
   await expect(page.getByTestId('embedded-video-frame')).toHaveCount(0);
   expect(store.frames).toHaveLength(0);
+  const originalUrl=page.url();
+  const directJoin=page.waitForRequest(request=>request.url().endsWith('/api/video/signal')
+    &&request.method()==='POST'&&(request.postDataJSON() as {type?:string}).type==='join');
+  await page.getByTestId('embedded-video-legacy').click();
+  await directJoin;
+  expect(page.url()).toBe(originalUrl);
+  await expect(page.getByTestId('embedded-video-frame')).toHaveCount(0);
+  expect(store.roomPosts).toHaveLength(1);
 });
 
 test('with the capability off the room keeps its existing call and never loads the embed',async({page})=>{

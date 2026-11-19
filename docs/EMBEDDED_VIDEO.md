@@ -66,15 +66,82 @@ required`. The URL is new even though no handler behaviour changed.
   expires_in, recording:false}`, `Cache-Control: private, no-store`.
   `expires_in` is the pass lifetime in seconds, computed from the database
   clock; the browser schedules the close from it, not from its own clock.
-- Provider failures and timeouts (5 s per call, redirects refused) return
-  `503 {error:"embedded video unavailable", code:"embedded_video_unavailable"}`.
+- Budget refusals, provider failures and timeouts (5 s per call, redirects
+  refused) return exactly `503 {"error":"video_unavailable","fallback":"direct_call"}`,
+  with `Cache-Control: private, no-store` and no diagnostic detail.
   The log line is `{stage, status, error}`: the failing stage, the provider's
-  HTTP status and Daily's fixed `error` code (for example
-  `invalid-request-error`) when it is a plain lowercase code. Daily's `info`
-  text, the key, a token, a role label and the room name are never logged.
+  HTTP status and an allowlisted Daily `error` category (for example
+  `invalid-request-error`). Arbitrary provider strings are not log categories.
+  Daily's `info` text, the key, a token, a role label and the room name are
+  never logged.
 
-Nothing is written to Turso apart from the rate-limit counters. There is no
-migration.
+Rate limits, aggregate usage snapshots and random grant reservations reuse
+`auth_rate_limits`. No migration or runtime DDL is needed.
+
+## Monthly budget and fallback
+
+Issue [#490](https://github.com/festus14/randori-circle/issues/490),
+[ID-106](IMPLEMENTED_DECISIONS.md#id-106-cap-daily-video-grants-with-a-shared-monthly-budget-and-direct-call-fallback).
+`DAILY_MONTHLY_MINUTE_BUDGET` is a positive safe decimal integer, default **9000**
+participant-minutes when unset. Blank, zero, negative, fractional, nonnumeric,
+unsafe integers or other invalid values fail closed (no embedded capability;
+the room endpoint gives the typed 503). The flag remains **off** by default.
+
+- Period: calendar month **UTC**, not a rolling window. `GET /v1/meetings`
+  uses `timeframe_start` at month start and `timeframe_end` at month end,
+  `limit=100` and `starting_after` cursors. No `ongoing` filter excludes live
+  sessions. Sum `ceil(participant.duration / 60)` separately; never substitute
+  meeting duration or maximum seats. If Daily includes a meeting that started
+  before month start, count it too: conservative over-counting is safer than
+  rejecting a valid month-straddling record. At most **20 pages**, **5 seconds
+  per request**, and **8 seconds total** including bodies. Malformed, duplicate,
+  truncated or over-bound data refuses; no partial sum is cached.
+- Shared cache: snapshots must be **less than five minutes** old, from refresh
+  start at the database clock. A fenced DB claim makes refresh single-flight
+  across instances. A successful refresh holds the five-minute cooldown;
+  failed/crashed refreshers hold only **30 seconds**. Provider I/O stays outside
+  the write lock. Reported usage **ratchets upwards within the UTC month**:
+  a smaller/empty successful response cannot erase already reported usage.
+  Only a new month's key resets it. No fresh snapshot means no new spend.
+- Pair admission: the first pass reserves **2 × ceil(TTL seconds / 60)**
+  participant-minutes (at most **120**) for both seats, under the existing HMAC
+  room name (`dvb1:p:`; no raw Randori room/member ids or tokens). A partner or
+  rejoin reuses that prepaid envelope without additional spend, including
+  during a usage-cache outage. Their token is capped at the first token's
+  expiry, never extended by reuse. Existing per-grant rows remain counted on
+  upgrade. All pair reservations remain until **token expiry + five minutes**,
+  bridging final reported minutes and the next snapshot; this accounting grace
+  cannot mint a new pass. Failed/unknown provider outcomes keep the reservation.
+- A single write transaction checks `reported + active reservations + 2 × TTL`
+  before reserving a new pair. **Equality passes; above budget refuses both
+  seats.** Active reservations include month-straddling pairs. If a partner
+  falls back during a concurrent cold refresh, a short pair-level pause is
+  committed before the refresher can admit that pair, so both fall back together.
+  Known rolled-back lock conflicts have bounded jittered retries; unknown
+  commit acknowledgements never replay. Pair reuse makes no new reservation.
+- Refusal or provider failure: **“Built-in video is paused — use the direct
+  call”**, with the direct call and private meeting link, no reload or frame.
+  The panel asks the partner to use the same fallback too. Normal consent,
+  join and leave remain unchanged. A persistent, initially empty `role=status`
+  live region announces changes; focus moves from removed Join to status,
+  then to the direct-call action on fallback.
+- Diagnostics remain read-only, aggregate-only, with no provider calls, room
+  names, tokens or participants. `ok` is healthy; `near` (90%) and exhausted
+  `paused` are warnings. Flag/local-runtime off is neutral **“Not enabled”**,
+  not a red failure. No fresh evidence is `unknown`; invalid configuration,
+  failed/untrusted reads or failed refreshes are red failures. Fixed reasons
+  distinguish **“Usage too large to read”** (page ceiling), timeout, read failure
+  and budget exhaustion.
+
+**Owner note:** Daily requires a card on file even within the **10,000 free
+participant-minutes per month** (pricing verified 2026-11-19). Daily has no
+documented spending cap; Randori caps new grants at the budget. Reporting
+can lag (~15-second duration granularity; joins under ~10 seconds may be
+absent), so this is a conservative admission guard, **not** a guarantee of
+zero provider charges: delayed usage, other apps sharing the Daily account,
+repeated joins with one token and month-start attribution can differ from
+billing. Keep the 1,000-minute default headroom, use a dedicated account,
+and review Daily usage before enabling or increasing the budget.
 
 ## Provider settings
 
@@ -170,5 +237,6 @@ Development.
 
 Rollback: unset the flag (or set `false`) and redeploy. The capability and
 the route disappear; the meeting link and the direct call work as before.
-Daily rooms expire on their own within two hours. There is nothing to clean
-up in Turso.
+Daily rooms expire on their own within two hours. Budget reservations expire
+with their tokens and namespaced counters are reclaimed by existing TTL
+cleanup; keep the table and do not reset live reservations when toggling.

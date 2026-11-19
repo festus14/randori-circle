@@ -846,13 +846,21 @@ test('the route fails closed with 503 on session, client, authorization or read 
   assert.equal((await invoke({ read: async () => { throw new Error('down'); } })).status, 503);
 });
 
+test('the Daily diagnostics card is independently settled if its reader throws',async()=>{
+  const env=Object.defineProperty({},'DAILY_MONTHLY_MINUTE_BUDGET',{get(){throw new Error('synthetic reader failure');}});
+  const snapshot=await readAdminDiagnostics(db,{env,checkReadiness:ready});
+  assert.equal(snapshot.ok,true);assert.equal(snapshot.cards.readiness.ready,true);
+  assert.equal(snapshot.cards.dailyVideo.status,'failed');assert.equal(snapshot.cards.dailyVideo.reason,'store_unavailable');
+  assert.equal(snapshot.cards.dailyVideo.reportedMinutes,null);
+});
+
 test('a global admin receives the aggregate snapshot with no-store caching', async () => {
   await deadLetter('403:validation_error:testing_recipient_restricted');
   const result = await invoke({ env: MEMBERSHIP_ENV });
   assert.equal(result.status, 200);
   assert.equal(result.headers['cache-control'], 'no-store');
   assert.equal(result.body.format, ADMIN_DIAGNOSTICS_FORMAT);
-  assert.deepEqual(Object.keys(result.body.cards), ['outbox', 'deadLetters', 'outboxWatchdog', 'backupWatchdog', 'execution', 'readiness', 'errors']);
+  assert.deepEqual(Object.keys(result.body.cards), ['outbox', 'deadLetters', 'outboxWatchdog', 'backupWatchdog', 'execution', 'readiness', 'errors', 'dailyVideo']);
   assert.equal(result.body.cards.deadLetters.items[0].providerReason, 'testing_recipient_restricted');
   assertNoPrivateData(result.body);
 });
