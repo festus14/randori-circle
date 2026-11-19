@@ -28,6 +28,11 @@ malformed response, too many attempts) the panel says so and offers the
 pair's meeting link (opens outside Randori, `rel="noopener noreferrer"`) and
 the direct browser call.
 
+The direct browser call can relay through TURN while `TURN_RELAY_ENABLED` is
+on: Cloudflare Realtime TURN first, Metered Open Relay as the free backup,
+each within its monthly budget, and STUN-only otherwise, so the fallback also
+connects behind restrictive NATs ([direct call relay](DIRECT_CALL_RELAY.md), ID-107).
+
 In interview lobby mode (ID-99) the candidate can join the call from the lobby;
 the lobby gates code, board and selection, not conversation
 ([session controls](SESSION_CONTROLS.md#realtime-relay-kits-and-video)).

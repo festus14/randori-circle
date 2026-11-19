@@ -48,6 +48,7 @@ function snapshot(overrides = {}) {
     backupWatchdog: { status: 'deferred', category: 'github_actions_artifact_only', cadenceMs: 8 * DAY, liveEquivalent: 'readiness', evidence: null },
     execution: { status: 'healthy', category: null, provider: 'vercel-sandbox', configured: true, reason: null, recent24h: { success: 3, failed: 0, unavailable: 0 }, lastOutcome: 'success', evidence: fresh(26 * HOUR, HOUR), smoke: SMOKE_PASSED },
     dailyVideo: {status:'unknown',state:'unknown',reportedMinutes:null,reservedMinutes:0,budget:9000},
+    turnRelay: { status: 'unknown', state: 'unknown', reason: 'not_enabled', providers: { cloudflare: { reportedMb: null, reservedMb: null, budgetMb: 800000, state: 'unknown', status: 'unknown', reason: 'not_enabled' }, metered: { reportedMb: null, reservedMb: null, budgetMb: 16000, state: 'unknown', status: 'unknown', reason: 'not_enabled' } } },
     readiness: { status: 'healthy', category: null, ready: true, ledger: { state: 'current', currentVersion: 23, expectedVersion: 23, appliedCount: 23, latest: { version: 23, name: 'invite-requests', appliedAt: '2026-10-19T10:00:00.000Z', disposition: 'applied' }, recent: [] }, evidence: fresh(5 * MINUTE) },
     errors: { status: 'healthy', category: null, windowMs: DAY, totals: { error: 0, warn: 0 }, bySource: {}, categories: [], otherCount: 0, evidence: fresh(HOUR, MINUTE) },
     ...overrides,
@@ -163,7 +164,7 @@ const staleBadge = (elements, id) => cardNode(elements, id).byTestId('admin-diag
 test('the module exposes a frozen API on window-free hosts', () => {
   assert.ok(Object.isFrozen(diagnosticsUi));
   assert.equal(diagnosticsUi.mountAdminDiagnostics, mountAdminDiagnostics);
-  assert.deepEqual(CARD_ORDER, ['outbox', 'outboxWatchdog', 'backupWatchdog', 'execution', 'dailyVideo', 'readiness', 'errors']);
+  assert.deepEqual(CARD_ORDER, ['outbox', 'outboxWatchdog', 'backupWatchdog', 'execution', 'dailyVideo', 'turnRelay', 'readiness', 'errors']);
   assert.equal(TICK_MS, 30_000);
   assert.deepEqual(Object.keys(REPLAY_REASON_LABELS), ['OPERATOR_RETRY', 'PROVIDER_RECOVERED', 'CONFIGURATION_FIXED']);
 });
@@ -427,7 +428,7 @@ test('opening the disclosure loads and renders every card and the dead letters',
   assert.equal(state.loads, 1, 'reopening keeps the snapshot');
   const cards = elements.adminDiagnosticsCards.children;
   assert.deepEqual(cards.map(node => node.dataset.card), CARD_ORDER);
-  assert.deepEqual(cards.map(node => node.dataset.status), ['healthy', 'deferred', 'deferred', 'healthy', 'unknown', 'healthy', 'healthy']);
+  assert.deepEqual(cards.map(node => node.dataset.status), ['healthy', 'deferred', 'deferred', 'healthy', 'unknown', 'unknown', 'healthy', 'healthy']);
   assert.ok(cards.every(node => node.dataset.stale === 'false'));
   assert.equal(cardNode(elements, 'outbox').getAttribute('aria-labelledby'), 'adminDiagCard-outbox');
   const table = cardNode(elements, 'outbox').byTestId('admin-outbox-types')[0];
@@ -868,4 +869,34 @@ test('the controller works without the age line', async () => {
   controller.tick();
   assert.equal(elements.adminDiagnostics.dataset.stale, 'true');
   assert.equal(elements.adminDiagnosticsStatus.textContent, 'This snapshot is out of date. Refresh for current data.');
+});
+
+test('the call relay card shows each provider in aggregate megabytes (ID-107)', () => {
+  const off = cardView('turnRelay', { status: 'unknown', state: 'unknown', reason: 'not_enabled', providers: null });
+  assert.equal(off.title, 'Call relay allowance');
+  assert.equal(off.label, 'Not enabled');
+  assert.deepEqual(off.lines, ['Relays not enabled.', 'With no relay available the direct call still connects where STUN alone can.']);
+  const provider = (state, status, reason, reportedMb, reservedMb = 1800, budgetMb = 800000) => ({ state, status, reason, reportedMb, reservedMb, budgetMb });
+  const paused = cardView('turnRelay', { status: 'degraded', state: 'paused', reason: 'budget_reached', providers: {
+    cloudflare: provider('paused', 'degraded', 'budget_reached', 800000),
+    metered: provider('near', 'degraded', null, 14500, 0, 16000),
+  } });
+  assert.equal(paused.label, 'Paused — budget reached');
+  assert.equal(paused.tone, 'warning');
+  assert.deepEqual(paused.lines.slice(0, 2), [
+    'Cloudflare: 800,000 reported · 1,800 reserved · 800,000 budget MB — paused — budget reached.',
+    'Metered (backup): 14,500 reported · 0 reserved · 16,000 budget MB — near the budget.',
+  ]);
+  const mixed = cardView('turnRelay', { status: 'failed', state: 'ok', reason: null, providers: {
+    cloudflare: provider('ok', 'healthy', null, 10),
+    metered: provider('weird', 'failed', 'configuration', null, null, null),
+  } });
+  assert.equal(mixed.label, 'Failed');
+  assert.deepEqual(mixed.lines.slice(0, 2), [
+    'Cloudflare: 10 reported · 1,800 reserved · 800,000 budget MB — available.',
+    'Metered (backup): unknown reported · unknown reserved · unknown budget MB — configuration is invalid; not used.',
+  ]);
+  const odd = cardView('turnRelay', { status: 'unknown', state: 'unknown', reason: 'new_reason', providers: { cloudflare: provider('mystery', 'unknown', 'new_reason', -1) } });
+  assert.equal(odd.lines[0], 'Cloudflare: unknown reported · 1,800 reserved · 800,000 budget MB — state unknown.');
+  assert.equal(cardView('turnRelay', { status: 'unknown', reason: 'new_reason' }).lines[0], 'Relay state unknown.');
 });

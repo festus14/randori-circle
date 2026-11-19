@@ -335,6 +335,10 @@
       "destination": "/api/video?endpoint=ice"
     },
     {
+      "source": "/api/video/turn",
+      "destination": "/api/video?endpoint=turn"
+    },
+    {
       "source": "/api/video/join",
       "destination": "/api/video?endpoint=join"
     },

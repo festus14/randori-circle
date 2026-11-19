@@ -132,6 +132,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-104](#id-104-gate-typescript-and-piston-only-go-by-provider-without-runtime-installs) | Gate TypeScript and Piston-only Go by provider without runtime installs | Content & Catalogue | Active |
 | [ID-105](#id-105-warn-before-production-database-credentials-expire-without-exposing-tokens) | Warn before production database credentials expire without exposing tokens | Observability & Ops | Active |
 | [ID-106](#id-106-cap-daily-video-grants-with-a-shared-monthly-budget-and-direct-call-fallback) | Cap Daily video grants with a shared monthly budget and direct-call fallback | Observability & Ops | Active |
+| [ID-107](#id-107-relay-the-direct-call-through-free-turn-allowances-with-monthly-usage-gates) | Relay the direct call through free TURN allowances with monthly usage gates | Observability & Ops | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -145,8 +146,9 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-107).
+   plus one (currently ID-108).
    ID-106 (#490) adds the shared Daily participant-minute budget and fallback.
+   ID-107 (#305) adds budget-gated TURN relays for the direct call.
    Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
@@ -6522,3 +6524,88 @@ shared refresh/fencing, invalid budgets, fresh/stale failure handling, typed
 plus unchanged consent/join/leave. All existing gates and coverage thresholds
 remain unchanged.
 
+## ID-107: Relay the direct call through free TURN allowances with monthly usage gates
+
+**Status: Active.** Implements #305 (re-scoped), with the owner's 2026-11-19
+addition of usage gating and a free backup. Off by default behind
+`TURN_RELAY_ENABLED`. No migration. See [direct call relay](DIRECT_CALL_RELAY.md).
+
+**Context.** The pair room's direct browser call used Google STUN only, so it
+failed when both peers sat behind restrictive NATs. Embedded Daily video
+(ID-98) falls back to the direct call once Daily's free budget is reached
+(#490), so the direct call has to connect on every network, at no cost.
+
+**Decision.** `POST /api/video/turn`, grouped into the existing `api/video.js`
+function, gives a member of the room (the direct call's own signalling
+authorization, `authPairAccessSql`) short-lived relay credentials with a
+lifetime of `min(call window, 1 h)`: Cloudflare Realtime TURN first, then
+Metered Open Relay as the backup, each only while its own monthly usage gate
+admits the credential; when every relay is over budget the answer is
+`relay: "none"` and the browser stays STUN-only. The flag is literal `true`;
+each relay is optional and used only with all of its values well formed. The
+route is authenticated, same-origin for mutations, rate limited (20 per
+account, 60 per network per 15 minutes, keyed hashes), `private, no-store`,
+404 when off and a typed 503 on failure. Provider calls have a 5-second
+deadline, no redirects and a 16 KiB cap; ICE servers are validated strictly
+(schemes, the provider's own hosts, counts, lengths, credential pairs) and
+Cloudflare's browser-blocked `:53` alternates are dropped. Logs carry provider,
+stage, status and budget reason only.
+
+**Usage gates.** As for Daily (#490): a per-provider snapshot in
+`auth_rate_limits`, refreshed at most every five minutes by one request at a
+time (30-second lease, 8-second total deadline), ratcheting within the UTC
+month and failing closed when unknown. Each room's envelope reserves
+`TURN_RESERVE_MB_PER_CALL` (default 1,800 MB: two streams, counted on ingress
+and egress, at 1 Mbps for an hour) prorated by the credential lifetime, until
+expiry plus five minutes; a new envelope is refused when reported plus
+reserved plus its reservation exceeds the budget (`TURN_MONTHLY_GB_BUDGET`, default 800 of Cloudflare's
+1,000 GB; `METERED_TURN_MONTHLY_GB_BUDGET`, default 16 of Metered's 20 GB). The
+owner suggested 300 MB per call; 1,800 MB is the computed worst case for one
+credential-hour, which the owner asked to be computed and documented.
+Cloudflare usage is the GraphQL `callsTurnUsageAdaptiveGroups` egress plus
+ingress for the key through a separate Account Analytics read token; Metered
+usage is its `current_usage` endpoint (secret key), where an overage counts as
+the whole quota. Admin Diagnostics shows an aggregate Call relay allowance
+card.
+
+**Browser.** A lazy `assets/turn-relay.js` (about 510 bytes inline), loaded
+only while the server advertises `turnRelay`, fetches credentials as the member
+joins, caps the lookup at three seconds (`TURN_TIMEOUT_MS`), reuses them until
+a minute before expiry (so a reconnect after expiry fetches again), re-checks
+them, keeps them in memory only and forgets them on sign-out. Peer creation
+stays synchronous up to `pc = peer` whenever the answer is known (no relay
+advertised: the old path byte for byte); while a lookup is in flight, every
+caller of the call epoch shares one pending creation, so the `if (!pc)` guards
+can never create two peers (review B1). Any failure keeps today's STUN-only
+call. No CSP change: TURN is ICE, not fetch, and the route is same-origin.
+
+**Review amendments (2026-11-19).** The route finishes provider work within
+2.5 s (`TURN_ROUTE_DEADLINE_MS`, under the browser's 3 s) and never reserves
+or mints without time to answer. One reservation covers a room (an HMAC-keyed
+envelope the partner and rejoins reuse, capped at its expiry), keeping the
+per-account rate limit. Budgets are clamped to the free allowances unless
+`TURN_ALLOW_PAID_OVERAGE=true`. `TURN_CLOUDFLARE_CYCLE_DAY` (1–28, default 1)
+moves the Cloudflare month if its allowance follows a billing date. Provider
+bodies are read as a stream and cancelled past 16 KiB.
+
+**Alternatives.** A self-hosted coturn costs money and operations. Minting a
+Metered credential per call is unusable at call setup (up to two minutes to
+propagate), so the backup uses one pre-created credential. Cloudflare's
+`customIdentifier` is not sent because its request field is unconfirmed.
+Credentials are not refreshed mid-call (`setConfiguration`) in this change; a
+relayed call that outlives its pass can drop and rejoining fetches a new one.
+
+**Privacy.** The privacy policy names both relays: they carry encrypted call
+media only when a direct connection is not possible, see IP addresses and
+traffic volume, and cannot see call content. Randori stores only opaque
+counters that expire on their own.
+
+**Verification.** Unit tests cover configuration, authorization (non-member,
+unknown room, triad, membership, secondary circle), flag-off 404, lifetime,
+rate limits, provider order and fallback, strict validation per provider,
+deadlines, budget boundaries, ratchet, stale and failed reads, refresh lease,
+reservations and their expiry, month rollover, diagnostics and log redaction.
+Client tests and Playwright (mocked route) cover TURN use, the Metered backup,
+`relay: "none"`, 404, 503, a slow route and a non-provider host, each falling
+back to STUN-only. The live API shapes are verified by the operator before
+enabling.

@@ -60,6 +60,11 @@ including ratcheted reported usage and both seats' reservations (with five-minut
 accounting grace). Partner passes reuse the same envelope, capped at the first
 pass's expiry. It is off by default
 and needs no migration ([embedded video](docs/EMBEDDED_VIDEO.md), ID-98, ID-106).
+`TURN_RELAY_ENABLED=true` gives the direct browser call short-lived TURN relay
+credentials so it connects behind restrictive NATs: Cloudflare Realtime TURN
+first and Metered Open Relay as the free backup, each only within its monthly
+usage budget, otherwise STUN-only as before. It is off by default and needs no
+migration ([direct call relay](docs/DIRECT_CALL_RELAY.md), ID-107).
 Not built yet: presence and remote cursors.
 Which feature is on in production, and what each flag needs, is in the
 [feature flag table](docs/ENVIRONMENT.md#feature-flags).
@@ -375,6 +380,14 @@ Randori caps grants at its own budget, not a provider spending cap. Refusals
 and provider failures offer the free direct call and private meeting link
 without reload ([budget and setup](docs/EMBEDDED_VIDEO.md#monthly-budget-and-fallback)).
 The local runtime blanks the key/domain and never calls Daily.
+The direct call relay reads `TURN_RELAY_ENABLED`, `CLOUDFLARE_TURN_KEY_ID`,
+the sensitive `CLOUDFLARE_TURN_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, the
+sensitive `CLOUDFLARE_ANALYTICS_API_TOKEN`, `TURN_MONTHLY_GB_BUDGET`,
+`METERED_TURN_APP_DOMAIN`, the sensitive `METERED_TURN_API_KEY` and
+`METERED_TURN_SECRET_KEY`, `METERED_TURN_MONTHLY_GB_BUDGET`,
+`TURN_RESERVE_MB_PER_CALL`, `TURN_ALLOW_PAID_OVERAGE` (off: budgets stay within
+the free allowances) and `TURN_CLOUDFLARE_CYCLE_DAY`; the local runtime turns it off
+([relay setup](docs/DIRECT_CALL_RELAY.md#operator-setup)).
 
 For optional sub-second pair-code relay, configure `SUPABASE_URL` and the
 browser-safe `SUPABASE_PUBLISHABLE_KEY`, plus server-only sensitive

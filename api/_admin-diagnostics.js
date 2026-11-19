@@ -12,6 +12,7 @@
 // account, with a live session (and, when circle membership is enforced, an
 // active membership). Ordinary circle owners are refused.
 import { readDailyBudgetDiagnostics } from './_daily-budget.js';
+import { readTurnBudgetDiagnostics } from './_turn-budget.js';
 import { MIGRATION_CONTRACTS } from '../db/migration-contract.js';
 import { LEDGER_READINESS_STATES, ledgerReadiness } from '../db/migration-compatibility.js';
 import {
@@ -636,7 +637,7 @@ const SMOKE_UNAVAILABLE=Object.freeze({...unavailable(EXECUTION_SMOKE_MAX_AGE_MS
 export async function readAdminDiagnostics(db,{env=process.env,checkReadiness=defaultReadiness}={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client required');
   const nowMs=await databaseNow(db);
-  const [outbox,deadLetters,execution,smoke,readiness,errors,dailyVideo]=await Promise.all([
+  const [outbox,deadLetters,execution,smoke,readiness,errors,dailyVideo,turnRelay]=await Promise.all([
     settle(()=>readOutboxCard(db,nowMs)),
     settle(()=>readDeadLetters(db,nowMs)),
     settle(()=>readExecutionCard(db,nowMs,env)),
@@ -644,6 +645,7 @@ export async function readAdminDiagnostics(db,{env=process.env,checkReadiness=de
     settle(()=>readReadinessCard(db,nowMs,{env,checkReadiness})),
     settle(()=>readErrorsCard(db,nowMs)),
     settle(()=>readDailyBudgetDiagnostics(db,{env})),
+    settle(()=>readTurnBudgetDiagnostics(db,{env})),
   ]);
   return Object.freeze({
     ok:true,
@@ -661,6 +663,8 @@ export async function readAdminDiagnostics(db,{env=process.env,checkReadiness=de
       readiness:readiness.ok?readiness.value:unavailable(DIAGNOSTICS_SNAPSHOT_MAX_AGE_MS),
       errors:errors.ok?errors.value:unavailable(LOG_EVIDENCE_MAX_AGE_MS),
       dailyVideo:dailyVideo.ok?dailyVideo.value:{status:'failed',state:'unknown',reason:'store_unavailable',reportedMinutes:null,reservedMinutes:null,budget:null},
+      // Direct-call relay allowances (ID-107): aggregate megabytes only.
+      turnRelay:turnRelay.ok?turnRelay.value:{status:'failed',state:'unknown',reason:'store_unavailable',providers:null},
     }),
   });
 }

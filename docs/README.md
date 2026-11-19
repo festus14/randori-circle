@@ -78,6 +78,7 @@ rings are under [Operations runbooks](#operations-runbooks).
 | [CALENDAR_EXPORT.md](CALENDAR_EXPORT.md) | Private `.ics` export of an accepted session, generated in the browser (ID-27) |
 | [PRIVATE_MEETING_LINKS.md](PRIVATE_MEETING_LINKS.md) | One private HTTPS meeting link per accepted primary session (ID-57) |
 | [EMBEDDED_VIDEO.md](EMBEDDED_VIDEO.md) | Consent-gated, never-recorded Daily video inside primary pair rooms, behind a flag (ID-98) |
+| [DIRECT_CALL_RELAY.md](DIRECT_CALL_RELAY.md) | Budget-gated Cloudflare and Metered TURN relays for the direct browser call, behind a flag (ID-107) |
 | [SECONDARY_SCHEDULING.md](SECONDARY_SCHEDULING.md) | Scheduling for a secondary-circle pair, and the v13 to v16 rollout sequence (ID-33). Off in production. **Note:** its "52 application tables and 56 named indexes" count predates later migrations |
 
 ## Notifications and outbox

@@ -85,9 +85,10 @@ for (const [path, html] of Object.entries(pages)) {
     assert.match(html, new RegExp(`<h1>${title}</h1>`, 'u'));
     // The two pages change independently: pin each one's own date.
     // The privacy policy was last updated on 19 November 2026 to disclose
-    // custom code-run input and the provider retention gap (issue #467).
+    // custom code-run input and the provider retention gap (issue #467), and
+    // again that day for the direct call relays (issue #305).
     if(path === '/privacy'){
-      assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-11-19T11:00:00Z">19 November 2026<\/time><\/p>/u);
+      assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-11-19T19:00:00Z">19 November 2026<\/time><\/p>/u);
     }else{
       assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-10-22">22 October 2026<\/time><\/p>/u);
     }
@@ -203,6 +204,11 @@ test('the privacy policy states the retention gaps and providers the code really
     /a short trail of what happened just before it \(such as pages opened, buttons pressed and the addresses of requests the app made\)/u,
     /your browser’s session storage briefly keeps a reference to it/u,
     /They can’t delete accounts themselves, but can remove you from the circle and pass your request on\./u,
+    // Direct call relay (ID-107): both relays, encrypted media, IP addresses, no content.
+    /Cloudflare \(Cloudflare Realtime TURN\) and, as a backup, Metered \(Metered Open Relay\) relay the direct browser call when your browser and your partner’s can’t connect directly/u,
+    /while they stay encrypted, so it can’t see or hear the call\. It sees both of your IP addresses/u,
+    /the call is relayed, still encrypted, through Cloudflare or Metered/u,
+    /Call relay : we store nothing about the call itself/u,
   ]) {
     assert.match(text, phrase);
   }

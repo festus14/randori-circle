@@ -12,7 +12,8 @@ import {newGoldenPage,openSignin,signInOwner,startGoldenRuntime,waitForAppFetche
 // files through cleanUrls (pinned by tests/unit/vercel-routing-contract.test.mjs).
 
 const PAGES=[
-  // Private interviewer toolkit (#465), updated again on 19 November for custom code-run input (issue #467).
+  // Private interviewer toolkit (#465), updated again on 19 November for custom code-run input (issue #467)
+  // and later that day for the direct call relays (issue #305).
   // Pin the new within-day instant; terms retain their earlier date.
   {path:'/privacy',heading:'Privacy Policy',landingLink:'landing-privacy-policy-link',menuItem:'Privacy Policy',updated:'19 November 2026'},
   {path:'/terms',heading:'Terms of Service',landingLink:'landing-terms-link',menuItem:'Terms of Service',updated:'22 October 2026'},
@@ -29,7 +30,7 @@ async function expectPublicPage(page:Page,golden:GoldenRuntime,item:typeof PAGES
   await expect(page.getByRole('banner')).toBeVisible();
   await expect(page.getByRole('contentinfo')).toBeVisible();
   await expect(page.getByText(`Last updated: ${item.updated}`)).toBeVisible();
-  if(item.path==='/privacy') await expect(page.locator('.legal-updated time')).toHaveAttribute('datetime','2026-11-19T11:00:00Z');
+  if(item.path==='/privacy') await expect(page.locator('.legal-updated time')).toHaveAttribute('datetime','2026-11-19T19:00:00Z');
   const back=page.getByTestId('public-page-back');
   await expect(back).toBeVisible();
   await expect(back).toHaveAttribute('href','/');

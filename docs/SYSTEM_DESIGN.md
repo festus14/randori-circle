@@ -97,7 +97,7 @@ and `api/code-document.js` via Vercel filesystem routing.
 | `api/invitations.js` | `/api/invitations/prepare`, `/api/invite-requests`, `/api/invite-requests/decision`, `/api/invitations/:id` (accept / revoke invitations; invite-request intake and owner decision; bare `/api/invitations` is create / list — see the filesystem-routing note above) |
 | `api/members.js` | `/api/members` (owner roster) |
 | `api/circles.js` | `/api/circles` (filesystem routing, no rewrite): circle create / select / archive (multi-circle control plane; off in production) |
-| `api/video.js` | `/api/video/signal`, `/api/video/ice`, `/api/video/join`, `/api/video/leave`, `/api/video/room` (embedded Daily video; only while `DAILY_VIDEO_ENABLED`, [embedded video](EMBEDDED_VIDEO.md)) |
+| `api/video.js` | `/api/video/signal`, `/api/video/ice`, `/api/video/join`, `/api/video/leave`, `/api/video/room` (embedded Daily video; only while `DAILY_VIDEO_ENABLED`, [embedded video](EMBEDDED_VIDEO.md)), `/api/video/turn` (direct-call TURN relay credentials; only while `TURN_RELAY_ENABLED`, [direct call relay](DIRECT_CALL_RELAY.md)) |
 | `api/ai.js` | `/api/ai/analyze`, `/api/ai/feedback`, `/api/ai/feedback/:id`, `/api/ai/history` (off in production) |
 | `api/code-document.js` | `/api/code-document` (filesystem routing, no rewrite): shared Yjs code documents for a pair room |
 

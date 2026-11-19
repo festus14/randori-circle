@@ -13,7 +13,7 @@
 export const SNAPSHOT_FORMAT = 'randori.admin-diagnostics.v1';
 export const TICK_MS = 30 * 1000;
 
-export const CARD_ORDER = Object.freeze(['outbox', 'outboxWatchdog', 'backupWatchdog', 'execution', 'dailyVideo', 'readiness', 'errors']);
+export const CARD_ORDER = Object.freeze(['outbox', 'outboxWatchdog', 'backupWatchdog', 'execution', 'dailyVideo', 'turnRelay', 'readiness', 'errors']);
 
 const CARD_TITLES = Object.freeze({
   outbox: 'Outbox delivery',
@@ -21,6 +21,7 @@ const CARD_TITLES = Object.freeze({
   backupWatchdog: 'Backup watchdog',
   execution: 'Code execution',
   dailyVideo: 'Daily video allowance',
+  turnRelay: 'Call relay allowance',
   readiness: 'Readiness and migrations',
   errors: 'Recent errors',
 });
@@ -281,6 +282,35 @@ const DEFERRED_COPY = Object.freeze({
 });
 
 /** View model for one card: title, status badge, stale state and text lines. */
+// The direct call's TURN relays (ID-107): one line per provider, aggregate
+// megabytes for the UTC month only.
+const TURN_RELAY_PROVIDERS = Object.freeze([['cloudflare', 'Cloudflare'], ['metered', 'Metered (backup)']]);
+const TURN_RELAY_REASONS = Object.freeze({
+  not_enabled: 'not enabled',
+  not_configured: 'not configured',
+  configuration: 'configuration is invalid; not used',
+  budget_reached: 'paused — budget reached',
+  usage_unavailable: 'usage refresh failed; paused',
+  usage_timeout: 'usage refresh timed out; paused',
+  usage_unknown: 'no fresh usage snapshot; paused until the next call refreshes it',
+  store_unavailable: 'budget read failed; paused',
+});
+
+function turnRelayLines(source) {
+  const mb = value => (Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString('en-GB') : 'unknown');
+  const lines = [];
+  for (const [id, name] of TURN_RELAY_PROVIDERS) {
+    const item = record(source.providers?.[id]);
+    if (!item) continue;
+    const state = ['ok', 'near', 'paused'].includes(item.state) ? item.state : 'unknown';
+    const reason = TURN_RELAY_REASONS[item.reason] || (state === 'near' ? 'near the budget' : state === 'ok' ? 'available' : 'state unknown');
+    lines.push(`${name}: ${mb(item.reportedMb)} reported · ${mb(item.reservedMb)} reserved · ${mb(item.budgetMb)} budget MB — ${reason}.`);
+  }
+  if (!lines.length) lines.push(TURN_RELAY_REASONS[source.reason] ? `Relays ${TURN_RELAY_REASONS[source.reason]}.` : 'Relay state unknown.');
+  lines.push('With no relay available the direct call still connects where STUN alone can.');
+  return lines;
+}
+
 export function cardView(id, card, elapsedMs = 0) {
   const source = record(card) || { status: 'unavailable' };
   const status = STATUS_VIEW[source.status] ? source.status : 'unavailable';
@@ -301,6 +331,7 @@ export function cardView(id, card, elapsedMs = 0) {
     lines=[`UTC month: ${minutes(source.reportedMinutes)} reported · ${minutes(source.reservedMinutes)} reserved · ${minutes(source.budget)} budget participant-minutes.`,
       reason,'Pair reservations include both seats and a five-minute final-usage buffer.'];
   }
+  else if (id === 'turnRelay') lines = turnRelayLines(source);
   else if (id === 'readiness') lines = readinessLines(source);
   else if (id === 'errors') lines = errorLines(source);
   else lines = [];
@@ -309,7 +340,9 @@ export function cardView(id, card, elapsedMs = 0) {
     title: CARD_TITLES[id] || id,
     status,
     label: id==='dailyVideo'&&source.reason==='not_enabled'?'Not enabled'
-      :id==='dailyVideo'&&source.reason==='budget_reached'?'Paused — budget reached':STATUS_VIEW[status].label,
+      :id==='dailyVideo'&&source.reason==='budget_reached'?'Paused — budget reached'
+      :id === 'turnRelay' && source.reason === 'not_enabled' ? 'Not enabled'
+      : id === 'turnRelay' && source.reason === 'budget_reached' ? 'Paused — budget reached' : STATUS_VIEW[status].label,
     tone: STATUS_VIEW[status].tone,
     stale: state.stale,
     evidence: status === 'deferred' || status === 'unavailable' ? '' : evidenceText(id, source.evidence, elapsedMs),
