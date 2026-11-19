@@ -12,7 +12,7 @@ import {newGoldenPage,openSignin,signInOwner,startGoldenRuntime,waitForAppFetche
 // files through cleanUrls (pinned by tests/unit/vercel-routing-contract.test.mjs).
 
 const PAGES=[
-  // Private interviewer toolkit (#465), updated again on 18 November.
+  // Private interviewer toolkit (#465), updated again on 19 November for custom code-run input (issue #467).
   // Pin the new within-day instant; terms retain their earlier date.
   {path:'/privacy',heading:'Privacy Policy',landingLink:'landing-privacy-policy-link',menuItem:'Privacy Policy',updated:'19 November 2026'},
   {path:'/terms',heading:'Terms of Service',landingLink:'landing-terms-link',menuItem:'Terms of Service',updated:'22 October 2026'},
