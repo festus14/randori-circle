@@ -303,6 +303,40 @@ test('one envelope per room: the partner and rejoins reuse it, capped at its exp
   await assert.rejects(reserveTurnRelay(db,config,{...grant(3600,room),fetchImpl:usage.fetch}),error=>error.reason==='store_unavailable');
 });
 
+test('an envelope a partner already reuses is never released by the first request failing',async()=>{
+  const db=await database();
+  const usage=usageProvider(()=>cloudflareUsage(0));
+  const config={...CLOUDFLARE,budgetMb:1800};
+  const room='9a'.repeat(16);
+  // A creates the room's envelope, B reuses it, then A's mint fails.
+  const a=await reserveTurnRelay(db,config,{...grant(3600,room),fetchImpl:usage.fetch});
+  const b=await reserveTurnRelay(db,config,{...grant(3600,room),fetchImpl:usage.fetch});
+  assert.deepEqual({a:a.reused,b:b.reused,same:a.key===b.key},{a:false,b:true,same:true});
+  assert.equal((await rows(`trb1:c:q:${room}:*`)).length,1,'the reuse is recorded');
+  assert.equal(await releaseTurnReservation(db,a),false,'B still holds a live credential');
+  assert.equal((await rows(`trb1:c:p:${room}:*`)).length,1,'the envelope survives');
+  // It still counts against the budget, so another room cannot take its share.
+  nowSeconds+=TURN_USAGE_MAX_AGE_SECONDS;
+  await assert.rejects(reserveTurnRelay(db,config,{...grant(),fetchImpl:usage.fetch}),error=>error.reason==='budget_reached');
+  // Without a served reuse, a failed first mint does release its envelope.
+  const lone='8b'.repeat(16);
+  const wide={...config,budgetMb:3600};
+  const solo=await reserveTurnRelay(db,wide,{...grant(3600,lone),fetchImpl:usage.fetch});
+  assert.equal(await releaseTurnReservation(db,solo),true);
+  assert.equal((await rows(`trb1:c:p:${lone}:*`)).length,0);
+  // A reuse whose envelope vanished between the unlocked read and the lock
+  // reserves afresh instead of handing out an unbacked pass.
+  const gone='7c'.repeat(16);
+  const seed=await reserveTurnRelay(db,wide,{...grant(3600,gone),fetchImpl:usage.fetch});
+  let deleted=false;
+  const vanishing={...db,transaction:async mode=>{
+    if(!deleted){ deleted=true; await real.execute({sql:'DELETE FROM auth_rate_limits WHERE key=?',args:[seed.key]}); }
+    return db.transaction(mode);
+  }};
+  const fresh=await reserveTurnRelay(vanishing,wide,{...grant(3600,gone),fetchImpl:usage.fetch});
+  assert.equal(fresh.reused,false); assert.notEqual(fresh.key,seed.key);
+});
+
 test('a partner racing the first reservation reuses the envelope created inside the lock',async()=>{
   const db=await database();
   const room='cd'.repeat(16);

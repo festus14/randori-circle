@@ -28,13 +28,13 @@ Relays, in order, each only while its own monthly free-allowance gate allows:
    plus SFU and MoQ are included free; Randori budgets 800 GB (80 %).
 2. **Metered Open Relay** (`relay: "metered"`), the free backup: 20 GB/month,
    no card; Randori budgets 16 GB (80 %).
+3. Neither (`relay: "none"`): the call proceeds STUN-only, exactly as before
+   this change. If Daily is also paused, the room still offers the private
+   meeting link.
 
 A configured budget is clamped to the provider's free allowance (1,000 GB and
 20 GB) unless `TURN_ALLOW_PAID_OVERAGE=true` (default off), so staying free is
 structural rather than a convention.
-3. Neither (`relay: "none"`): the call proceeds STUN-only, exactly as before
-   this change. If Daily is also paused, the room still offers the private
-   meeting link.
 
 ## Server contract
 
@@ -106,7 +106,10 @@ on the existing `auth_rate_limits` table (no migration):
   a fresh envelope is reserved. A new envelope is refused when
   `reported + reserved + this envelope > budget` (equality passes). An
   envelope whose credential was never handed out (the provider then failed or
-  the deadline passed) is released; once handed out it is never released early.
+  the deadline passed) is released, unless a reuse was already served from it:
+  every reuse writes a marker row in the same transaction, and the release
+  re-reads that marker and deletes the envelope in one write transaction. Once
+  a credential was handed out the envelope is never released early.
   The per-account rate limit still applies.
 - **Default reservation.** One relayed allocation carries both directions of
   the call and the providers count every byte on ingress and again on egress:
@@ -153,6 +156,9 @@ which is byte-for-byte the old path. Only while a lookup is still in flight
 does creation wait, and then every caller of the same call epoch (the
 initiator timer, a remote offer, a join or a room switch) shares one pending
 creation, so the `if (!pc)` guards can never produce two peer connections.
+A remote offer that arrives before the lazy module import has resolved gets a
+STUN-only peer for that connection, by design: creation never waits for the
+import itself.
 
 No CSP change: TURN is ICE traffic, which `connect-src` does not govern, and
 the route is same-origin.
@@ -193,6 +199,13 @@ credentials take up to two minutes to propagate, so none is minted per call);
    `relay: "none"` with a STUN-only call. A non-member gets 404. The Vercel
    logs show no key, token or credential.
 6. Then set the flag in Production and redeploy.
+
+Cold usage reads and the backup: a cold or stale Cloudflare usage read (at most
+once every five minutes) can use most of the 2.5-second route deadline. When
+it does, the Metered backup is skipped with `stage: "deadline"` and that
+request answers 503 (the call stays STUN-only) until the next request finds a
+fresh snapshot. This is not a Metered fault; check the Cloudflare usage line in
+Admin Diagnostics and the `provider:"cloudflare"` log lines first.
 
 Rollback: unset the flag (or set `false`) and redeploy. The route becomes a
 404 and the browser keeps its STUN-only call. Issued credentials expire within

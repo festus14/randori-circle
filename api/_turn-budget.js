@@ -263,6 +263,18 @@ async function activeEnvelope(db,provider,roomKey,now){
   return {key:String(row.key),windowEnd:expires-TURN_RESERVATION_GRACE_SECONDS};
 }
 
+// A served reuse is recorded on a sibling marker row (`…:q:<room>:<id>`, same
+// lifetime as the envelope), written in the same transaction that serves it,
+// so an envelope that anyone else is relying on is never released.
+function reuseMarker(envelopeKey){ return envelopeKey.replace(/^(trb1:[cm]):p:/,'$1:q:'); }
+
+async function serveReuse(tx,provider,roomKey,grant,now){
+  const envelope=await activeEnvelope(tx,provider,roomKey,now);
+  if(!envelope) return null;
+  await tx.execute(upsert(reuseMarker(envelope.key),1,envelope.windowEnd+TURN_RESERVATION_GRACE_SECONDS));
+  return reusedGrant(envelope,grant,now);
+}
+
 function reusedGrant(envelope,{ttlSeconds,expiresAtMs},now){
   const expiresAt=Math.min(Math.floor(expiresAtMs/1000),envelope.windowEnd);
   return Object.freeze({key:envelope.key,reused:true,ttlSeconds:Math.min(ttlSeconds,expiresAt-now),expiresAtMs:expiresAt*1000});
@@ -288,16 +300,19 @@ export async function reserveTurnRelay(db,config,{ttlSeconds,expiresAtMs,roomKey
   try{
     const now=await clock(db,provider);
     if(Math.floor(expiresAtMs/1000)<=now) throw new TurnBudgetError(provider,'configuration');
-    // Envelopes are immutable while live, so this reuse read needs no lock.
-    const prepaid=await activeEnvelope(db,provider,roomKey,now);
-    if(prepaid) return reusedGrant(prepaid,{ttlSeconds,expiresAtMs},now);
+    // An unlocked read finds a prepaid envelope cheaply; the reuse itself is
+    // served (and marked) inside a write transaction that re-reads the row.
+    if(await activeEnvelope(db,provider,roomKey,now)){
+      const reused=await transaction(db,'write',async tx=>serveReuse(tx,provider,roomKey,{ttlSeconds,expiresAtMs},await clock(tx,provider)));
+      if(reused) return reused;
+    }
     await ensureUsage(db,config,fetchImpl,timeoutMs);
     return await transaction(db,'write',async tx=>{
       const now=await clock(tx,provider),month=turnBudgetMonth(now,provider,config.cycleDay??1);
       const expiresAt=Math.floor(expiresAtMs/1000);
       if(expiresAt<=now) throw new TurnBudgetError(provider,'configuration');
-      const raced=await activeEnvelope(tx,provider,roomKey,now);
-      if(raced) return reusedGrant(raced,{ttlSeconds,expiresAtMs},now);
+      const raced=await serveReuse(tx,provider,roomKey,{ttlSeconds,expiresAtMs},now);
+      if(raced) return raced;
       const cached=await snapshot(tx,month,now,provider);
       if(!cached?.fresh) throw new TurnBudgetError(provider,'usage_unavailable');
       const reserved=await reservedMb(tx,provider,now),mb=turnReservationMb(config.reserveMb,ttlSeconds);
@@ -312,12 +327,23 @@ export async function reserveTurnRelay(db,config,{ttlSeconds,expiresAtMs,roomKey
   }catch(error){ throw error instanceof TurnBudgetError?error:new TurnBudgetError(provider,'store_unavailable'); }
 }
 
-/** A new envelope whose credential was never handed out is released. */
+/**
+ * A new envelope whose credential was never handed out is released, but only
+ * if no reuse was served from it meanwhile: the check and the delete happen in
+ * one write transaction that re-reads the marker.
+ */
 export async function releaseTurnReservation(db,reservation){
   if(reservation?.reused!==false||typeof reservation.key!=='string'
     ||!/^trb1:[cm]:p:[a-f0-9]{32}:[a-f0-9]{24}$/.test(reservation.key)) return false;
-  try{ await db.execute({sql:'DELETE FROM auth_rate_limits WHERE key=?',args:[reservation.key]}); return true; }
-  catch{ return false; }
+  try{
+    const released=await transaction(db,'write',async tx=>{
+      const used=await tx.execute({sql:'SELECT 1 FROM auth_rate_limits WHERE key=?',args:[reuseMarker(reservation.key)]});
+      if(used.rows?.length) return null;
+      await tx.execute({sql:'DELETE FROM auth_rate_limits WHERE key=?',args:[reservation.key]});
+      return true;
+    });
+    return released===true;
+  }catch{ return false; }
 }
 
 const STATUS_RANK=Object.freeze({healthy:0,unknown:1,degraded:2,failed:3});
