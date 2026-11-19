@@ -236,7 +236,67 @@ test('credentials stay in memory: the module never touches web storage or cookie
   assert.doesNotMatch(source,/localStorage|sessionStorage|indexedDB|document\.cookie|caches\./);
 });
 
-test('index.html lazily asks for the relay just before each peer and keeps Google STUN as the base',()=>{
+test('peek answers synchronously whenever it can, and create claims the peer slot at once then',async()=>{
+  let release;
+  const h=harness(({nowMs})=>new Promise(resolve=>{ release=()=>resolve(json(200,relayPayload(nowMs))); }));
+  const source=createIceServerSource(STUN,{fetchImpl:h.fetchImpl,now:h.now});
+  for(const room of ['',null]) assert.deepEqual(source.peek(room),STUN,'no room is an immediate STUN answer');
+  const made=[];
+  const make=servers=>{ made.push(servers); return Promise.resolve(`peer-${made.length}`); };
+  // While the relay answer is pending, every caller of the same epoch shares one creation.
+  const first=source.create(ROOM,1,make), second=source.create(ROOM,1,make), third=source.create(ROOM,1,make);
+  assert.ok(first instanceof Promise);
+  assert.equal(made.length,0,'nothing is created before the relay answers');
+  assert.equal(second,first); assert.equal(third,first);
+  assert.equal(h.calls.length,1,'one request');
+  await new Promise(resolve=>setImmediate(resolve));
+  release();
+  assert.equal(await first,'peer-1');
+  assert.equal(made.length,1,'exactly one peer');
+  assert.deepEqual(made[0],[...STUN,{urls:['stun:stun.cloudflare.com:3478']},RELAY]);
+  // With a fresh answer, create is synchronous: make runs before create returns.
+  const sync=source.create(ROOM,2,make);
+  assert.equal(made.length,2,'synchronous, exactly like the old path');
+  assert.equal(await sync,'peer-2');
+  assert.ok(Array.isArray(source.peek(ROOM)));
+  // A new epoch never reuses an older pending creation.
+  h.advance(2*60*60*1000);
+  const stale=source.create(ROOM,3,make);
+  const fresh=source.create(ROOM,4,make);
+  assert.notEqual(stale,fresh);
+  await new Promise(resolve=>setImmediate(resolve));
+  release();
+  await Promise.all([stale,fresh]);
+  assert.equal(made.length,4);
+  // clear() drops a pending creation's slot.
+  source.clear();
+  h.advance(2*60*60*1000);
+  const pendingBeforeClear=source.create(ROOM,5,make);
+  source.clear();
+  assert.notEqual(source.create(ROOM,5,make),pendingBeforeClear,'a cleared slot is not shared');
+});
+
+test('flag off or a 404 keeps create synchronous with STUN only',async()=>{
+  const h=harness(()=>json(404,{code:'turn_relay_disabled'}));
+  const source=createIceServerSource(STUN,{fetchImpl:h.fetchImpl,now:h.now});
+  assert.deepEqual(await source.peek(ROOM),STUN);
+  const made=[];
+  source.create(ROOM,1,servers=>made.push(servers));
+  assert.deepEqual(made,[STUN],'synchronous after the 404 is known');
+  assert.equal(h.calls.length,1);
+});
+
+test('a fetch that ignores its abort signal still cannot hold the call past the deadline',async()=>{
+  const source=createIceServerSource(STUN,{fetchImpl:()=>new Promise(()=>{}),timeoutMs:20});
+  const made=[];
+  const started=Date.now();
+  await source.create(ROOM,1,servers=>made.push(servers));
+  assert.ok(Date.now()-started<1000);
+  assert.deepEqual(made,[STUN]);
+  assert.deepEqual(source.peek(ROOM),STUN,'and backs off afterwards');
+});
+
+test('index.html asks for the relay only when advertised and keeps peer creation synchronous otherwise',()=>{
   const html=readFileSync(new URL('../../index.html',import.meta.url),'utf8');
   const start=html.indexOf('// ---------- live video (WebRTC + Turso signaling) ----------');
   const end=html.indexOf('// ---------- tabs ----------',start);
@@ -244,11 +304,17 @@ test('index.html lazily asks for the relay just before each peer and keeps Googl
   assert.ok(start>0&&end>start);
   assert.doesNotMatch(video,/turn:|metered|credential\s*:/,'no hard-coded relay or credential');
   assert.match(video,/const iceServers = \[\n(?:\s+\{ urls: 'stun:stun\d?\.l\.google\.com:19302' \},?\n){4}\s+\];/);
-  assert.match(video,/import\('\/assets\/turn-relay\.js'\)\.then\(m=>m\.createIceServerSource\(iceServers\)\)/);
-  assert.match(video,/setTimeout\(r,3e3,iceServers\)/,'the whole lookup, import included, is capped at three seconds');
-  const createPeer=video.slice(video.indexOf('async function createPeer('),video.indexOf('async function joinVideo('));
-  assert.match(createPeer,/const servers=await videoIceServers\(getVideoRoomId\(\)\);\n\s+if\(!videoSessionMatches\(expectedEpoch\)\) return null;\n\s+if\(pc\) closeVideoPeer\(pc\);\n\s+const peer = new RTCPeerConnection\(\{ iceServers:servers \}\);/);
+  assert.match(video,/if\(window\._randori_auth\?\.capabilities\?\.turnRelay===true\) \(iceLoad\?\?=import\('\/assets\/turn-relay\.js'\)\.then\(m=>iceSrc=m\.createIceServerSource\(iceServers\)\)/,
+    'the module loads only when the server advertises the relay');
+  assert.doesNotMatch(video,/3e3|setTimeout\(r,/,'the deadline lives in the module (TURN_TIMEOUT_MS)');
+  assert.match(video,/function createPeer\(i,e=videoSessionEpoch\)\{\n\s+return iceSrc\?iceSrc\.create\(getVideoRoomId\(\),e,v=>makePeer\(i,e,v\)\):makePeer\(i,e,iceServers\);\n\s+\}/,
+    'without the relay module, creation is the old synchronous path');
+  const makePeer=video.slice(video.indexOf('async function makePeer('),video.indexOf('async function joinVideo('));
+  assert.match(makePeer,/^async function makePeer\(isInitiator,expectedEpoch,servers\)\{\n\s+if\(!videoSessionMatches\(expectedEpoch\)\) return null;\n\s+if\(pc\) closeVideoPeer\(pc\);\n\s+const peer = new RTCPeerConnection\(\{ iceServers:servers \}\);\n\s+pc=peer;/,
+    'no await between the slot check and pc=peer');
   assert.equal((video.match(/new RTCPeerConnection/g)||[]).length,1);
-  assert.match(video,/videoUpdateStatus\('joining '\+room\.slice\(0,6\)\);\n\s+videoIceServers\(room\);/,'prefetched on join');
-  assert.match(video,/videoIce\?\.then\(s=>s\?\.clear\(\)\);\n\s+clearVideoSession\(\{releaseMedia:true\}\);/,'forgotten on sign-out');
+  assert.match(video,/const joinEpoch=\+\+videoSessionEpoch;\n\s+videoIceWarm\(room\);/,'warmed as soon as the member joins');
+  assert.match(video,/videoIceWarm\(getVideoRoomId\(\)\);\n\s+sendSignal\('join',\{peer:webrtcPeerId\},''\);/,'and on a room switch');
+  assert.match(video,/iceSrc\?\.clear\(\);\n\s+clearVideoSession\(\{releaseMedia:true\}\);/,'forgotten on sign-out');
+  assert.match(html,/turnRelay:capabilities\.turnRelay===true,/,'the capability is parsed');
 });

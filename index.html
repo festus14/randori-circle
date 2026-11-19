@@ -4380,6 +4380,7 @@ async function refreshMe(){
       executionStdin:capabilities.executionStdin===true,
       ...(capabilities.executionQueue===true?{executionQueue:true}:{}),
       embeddedVideo:capabilities.embeddedVideo===true,
+      turnRelay:capabilities.turnRelay===true,
       registrationMode:mode,
     });
   }
@@ -9582,11 +9583,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' }
   ];
-  // + short-lived TURN (ID-107), memory only; STUN-only on failure
-  let videoIce=null;
-  function videoIceServers(room){
-    videoIce??=import('/assets/turn-relay.js').then(m=>m.createIceServerSource(iceServers)).catch(()=>videoIce=null);
-    return Promise.race([videoIce.then(s=>s?s.servers(room):iceServers),new Promise(r=>setTimeout(r,3e3,iceServers))]).catch(()=>iceServers);
+  let iceSrc=null,iceLoad=null;
+  function videoIceWarm(room){
+    if(window._randori_auth?.capabilities?.turnRelay===true) (iceLoad??=import('/assets/turn-relay.js').then(m=>iceSrc=m.createIceServerSource(iceServers)).catch(()=>iceLoad=null)).then(s=>s?.peek(room));
   }
 
   function videoUpdateStatus(txt){ const el=document.getElementById('videoStatus'); if(el) el.textContent=txt; const rl=document.getElementById('videoRoomLabel'); if(rl){ const r=getVideoRoomId(); rl.textContent=window._randori_pairing_view?.roomLabel?.(r)||'room —'; }
@@ -9762,9 +9761,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }catch(e){ /* ignore */ }
   }
 
-  async function createPeer(isInitiator,expectedEpoch=videoSessionEpoch){
-    if(!videoSessionMatches(expectedEpoch)) return null;
-    const servers=await videoIceServers(getVideoRoomId());
+  // ID-107: sync to pc=peer unless relay ICE is pending (then shared per epoch)
+  function createPeer(i,e=videoSessionEpoch){
+    return iceSrc?iceSrc.create(getVideoRoomId(),e,v=>makePeer(i,e,v)):makePeer(i,e,iceServers);
+  }
+
+  async function makePeer(isInitiator,expectedEpoch,servers){
     if(!videoSessionMatches(expectedEpoch)) return null;
     if(pc) closeVideoPeer(pc);
     const peer = new RTCPeerConnection({ iceServers:servers });
@@ -9827,6 +9829,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       }
     }catch{}
     const joinEpoch=++videoSessionEpoch;
+    videoIceWarm(room);
     const camBtn=document.getElementById('vidCamBtn');
     const needCam = camBtn ? !camBtn.classList.contains('off') : true;
     const stream = await ensureLocalStream(needCam,joinEpoch);
@@ -9844,7 +9847,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     document.getElementById('vidJoinBtn').style.display='none';
     document.getElementById('vidLeaveBtn').style.display='inline-flex';
     videoUpdateStatus('joining '+room.slice(0,6));
-    videoIceServers(room);
     await sendSignal('join', { peer: webrtcPeerId, name: (typeof me!=='undefined'&&me?.name)||localStorage.getItem('randori-me')?.slice?.(0,20)||'you' }, '');
     if(!videoJoined||joinEpoch!==videoSessionEpoch) return;
     // start polling
@@ -9899,7 +9901,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // No signaling: an authoritative sign-out may already have invalidated the
     // session, and a best-effort leave request would race identity teardown.
     try{ window._randori_embedded_video?.teardown?.(); }catch{}
-    videoIce?.then(s=>s?.clear());
+    iceSrc?.clear();
     clearVideoSession({releaseMedia:true});
   }
 
@@ -9980,6 +9982,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       videoRoomSwitchTimer=setTimeout(()=>{
         videoRoomSwitchTimer=null;
         if(!videoJoined||switchEpoch!==videoSessionEpoch) return;
+        videoIceWarm(getVideoRoomId());
         sendSignal('join',{peer:webrtcPeerId},'');
         if(!pc) createPeer(true,switchEpoch).catch(()=>{});
       }, 600);

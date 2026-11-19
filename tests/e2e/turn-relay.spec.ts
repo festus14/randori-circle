@@ -27,18 +27,22 @@ function pairResponse(){
   };
 }
 
-async function openRoom(page:Page,turn:Turn){
+type RoomOptions={advertised?:boolean;remoteOfferAfterMs?:number|null};
+
+async function openRoom(page:Page,turn:Turn,{advertised=true,remoteOfferAfterMs=null}:RoomOptions={}){
   const turnPosts:Array<Record<string,unknown>>=[];
+  let joinedAt:number|null=null, offerDelivered=false;
   await page.route(/^https:\/\//,route=>route.abort());
   await page.addInitScript(()=>{
     const app=window as any;
     app.__peerConfigs=[];
+    app.__peerEvents=[];
     class FakePeerConnection{
       signalingState='stable'; connectionState='new'; localDescription:any=null;
       ontrack:any=null; onicecandidate:any=null; onconnectionstatechange:any=null;
-      constructor(config:any){ app.__peerConfigs.push(JSON.parse(JSON.stringify(config))); }
-      addTrack(){} close(){ this.connectionState='closed'; }
-      async setRemoteDescription(){} async createAnswer(){ return {type:'answer',sdp:'a'}; }
+      constructor(config:any){ app.__peerConfigs.push(JSON.parse(JSON.stringify(config))); app.__peerEvents.push('new'); }
+      addTrack(){} close(){ this.connectionState='closed'; app.__peerEvents.push('close'); }
+      async setRemoteDescription(){ app.__peerEvents.push('setRemote'); } async createAnswer(){ return {type:'answer',sdp:'a'}; }
       async createOffer(){ return {type:'offer',sdp:'o'}; }
       async setLocalDescription(value:any){ this.localDescription=value; }
       async addIceCandidate(){} getSenders(){ return []; }
@@ -54,12 +58,21 @@ async function openRoom(page:Page,turn:Turn){
     HTMLMediaElement.prototype.play=async()=>{};
   });
   await mockApi(page,{
+    '/api/auth/capabilities':{ok:true,registrationMode:'private_beta',
+      capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,...(advertised?{turnRelay:true}:{})}},
     '/api/auth/me':{ok:true,user:users[1]},'/api/profile':{ok:true,user:users[1]},
     '/api/questions':{ok:true,questions:[originalQuestionFixture],count:1},
     '/api/my-pair':pairResponse(),
     '/api/video/signal':(request:Request)=>{
       const url=new URL(request.url());
       if(request.method()==='GET'&&url.searchParams.get('channel')==='workspace') return {ok:true,room_id:roomId,revision:0,snapshot:null};
+      if(request.method()==='POST'&&request.postDataJSON()?.type==='join') joinedAt??=Date.now();
+      // One remote offer, delivered once the configured time after join has passed.
+      if(request.method()==='GET'&&remoteOfferAfterMs!==null&&joinedAt!==null&&!offerDelivered&&Date.now()-joinedAt>=remoteOfferAfterMs){
+        offerDelivered=true;
+        const signal={id:1,room_id:roomId,from_id:'p_remote',to_id:'',type:'offer',payload:JSON.stringify({type:'offer',sdp:'remote'}),created_at:new Date().toISOString()};
+        return {ok:true,room_id:roomId,signals:[signal],after:1,count:1};
+      }
       return {ok:true,room_id:roomId,signals:[],after:0,count:0};
     },
     '/api/video/turn':async(request:Request)=>{
@@ -77,6 +90,9 @@ async function openRoom(page:Page,turn:Turn){
 async function joinAndReadConfig(page:Page){
   await page.evaluate(()=>(window as any)._randori_video.joinVideo());
   await expect.poll(()=>page.evaluate(()=>(window as any).__peerConfigs.length),{timeout:10_000}).toBeGreaterThan(0);
+  // Exactly one peer, however long the relay lookup took.
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(()=>(window as any).__peerConfigs.length)).toBe(1);
   return page.evaluate(()=>(window as any).__peerConfigs[0].iceServers as Array<{urls:string|string[];username?:string;credential?:string}>);
 }
 
@@ -130,6 +146,33 @@ test('a slow relay route times out and the call proceeds STUN-only within three 
   expect(servers.map(server=>server.urls)).toEqual(GOOGLE_STUN);
   // Join waits 1.2 s before the initiator creates its peer; the lookup adds at most 3 s.
   expect(Date.now()-started).toBeLessThan(8_000);
+});
+
+test('a hung relay route and a remote offer still create exactly one peer that reaches the offer',async({page})=>{
+  // Reviewer regression: callers guard with `if(!pc)`, so peer creation must
+  // claim its slot synchronously even while the relay lookup is pending.
+  const posts=await openRoom(page,()=>new Promise(()=>{}),{remoteOfferAfterMs:1500});
+  await page.evaluate(()=>(window as any)._randori_video.joinVideo());
+  await expect.poll(()=>page.evaluate(()=>(window as any).__peerEvents),{timeout:12_000}).toEqual(['new','setRemote']);
+  await page.waitForTimeout(1000);
+  expect(await page.evaluate(()=>(window as any).__peerEvents)).toEqual(['new','setRemote']);
+  const configs=await page.evaluate(()=>(window as any).__peerConfigs);
+  expect(configs.length).toBe(1);
+  expect(configs[0].iceServers.map((server:{urls:string})=>server.urls)).toEqual(GOOGLE_STUN);
+  expect(posts.length).toBe(1);
+});
+
+test('without the advertised capability nothing is fetched and the peer is created exactly as before',async({page})=>{
+  const posts=await openRoom(page,()=>({iceServers:[RELAY],expiresAt:new Date(Date.now()+3600_000).toISOString(),relay:'cloudflare'}),
+    {advertised:false,remoteOfferAfterMs:1500});
+  await page.evaluate(()=>(window as any)._randori_video.joinVideo());
+  await expect.poll(()=>page.evaluate(()=>(window as any).__peerEvents),{timeout:8_000}).toEqual(['new','setRemote']);
+  const configs=await page.evaluate(()=>(window as any).__peerConfigs);
+  expect(configs.length).toBe(1);
+  expect(configs[0].iceServers.map((server:{urls:string})=>server.urls)).toEqual(GOOGLE_STUN);
+  expect(posts).toEqual([]);
+  const assets=await page.evaluate(()=>performance.getEntriesByType('resource').map(entry=>new URL(entry.name).pathname));
+  expect(assets).not.toContain('/assets/turn-relay.js');
 });
 
 test('a non-Cloudflare relay from the route is ignored',async({page})=>{

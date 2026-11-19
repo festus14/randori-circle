@@ -56,21 +56,30 @@ export function relayServersFrom(payload,nowMs=Date.now()){
 }
 
 /**
- * One in-memory source of ICE servers for the direct call. `servers(room)`
- * always resolves (never rejects) to STUN `base` plus any relay servers.
+ * One in-memory source of ICE servers for the direct call.
+ * - `peek(room)` answers synchronously with an array (STUN `base` plus a
+ *   fresh relay, or STUN alone while relays are off, backing off or there is
+ *   no room), or else a single-flight Promise for that array.
+ * - `servers(room)` always resolves (never rejects) to that array.
+ * - `create(room, key, make)` runs `make(servers)` synchronously whenever
+ *   `peek` can answer synchronously, so the caller's peer slot is claimed at
+ *   once exactly as without a relay. Otherwise it shares one pending creation
+ *   per `key` (the call's epoch) between every caller until the relay answers
+ *   or the deadline passes: two callers can never create two peers.
+ * - `clear()` forgets the pass, any back-off and any pending creation.
+ * The whole lookup is capped at `timeoutMs` (three seconds), whatever the
+ * network does.
  */
 export function createIceServerSource(base,{fetchImpl=(...args)=>globalThis.fetch(...args),now=()=>Date.now(),timeoutMs=TURN_TIMEOUT_MS}={}){
   const stun=()=>base.map(entry=>({...entry}));
-  let cached=null,pending=null,retryAt=0;
+  let cached=null,pending=null,retryAt=0,slot=null;
 
-  async function request(room){
-    const controller=new AbortController();
-    const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  async function attempt(room,signal){
     try{
       const response=await fetchImpl(TURN_ENDPOINT,{
         method:'POST',credentials:'same-origin',cache:'no-store',
         headers:{'content-type':'application/json'},
-        body:JSON.stringify({room_id:room}),signal:controller.signal,
+        body:JSON.stringify({room_id:room}),signal,
       });
       if(!response.ok){
         retryAt=now()+(response.status===404?TURN_OFF_RETRY_MS:TURN_FAILURE_RETRY_MS);
@@ -83,10 +92,23 @@ export function createIceServerSource(base,{fetchImpl=(...args)=>globalThis.fetc
     }catch{
       retryAt=now()+TURN_FAILURE_RETRY_MS;
       return null;
+    }
+  }
+
+  // A hard deadline: even a fetch that ignores its abort signal cannot hold
+  // the call past `timeoutMs`.
+  async function request(room){
+    const controller=new AbortController();
+    let timer;
+    const deadline=new Promise(resolve=>{ timer=setTimeout(()=>{ controller.abort(); resolve(false); },timeoutMs); });
+    try{
+      const result=await Promise.race([attempt(room,controller.signal),deadline]);
+      if(result===false){ retryAt=now()+TURN_FAILURE_RETRY_MS; return null; }
+      return result;
     }finally{ clearTimeout(timer); }
   }
 
-  async function servers(room){
+  function peek(room){
     if(typeof room!=='string'||!room) return stun();
     if(cached?.room===room&&cached.expiresAtMs-now()>TURN_REFRESH_MARGIN_MS) return [...stun(),...cached.servers];
     if(now()<retryAt) return stun();
@@ -94,19 +116,31 @@ export function createIceServerSource(base,{fetchImpl=(...args)=>globalThis.fetc
       const entry={room};
       entry.promise=request(room).then(relay=>{
         // A clear() while this was in flight wins: nothing is kept.
-        if(pending!==entry) return null;
+        if(pending!==entry) return stun();
         pending=null;
-        if(relay) cached={room,servers:relay.servers,expiresAtMs:relay.expiresAtMs};
-        return relay;
+        if(!relay) return stun();
+        cached={room,servers:relay.servers,expiresAtMs:relay.expiresAtMs};
+        return [...stun(),...relay.servers];
       });
       pending=entry;
     }
-    const relay=await pending.promise;
-    return relay?[...stun(),...relay.servers]:stun();
+    return pending.promise.then(list=>list.map(entry=>({...entry})));
   }
 
-  // Sign-out: forget the pass and any back-off.
-  function clear(){ cached=null; pending=null; retryAt=0; }
+  async function servers(room){ return peek(room); }
 
-  return Object.freeze({servers,clear});
+  function create(room,key,make){
+    if(slot&&slot.key===key) return slot.promise;
+    const answer=peek(room);
+    if(Array.isArray(answer)) return make(answer);
+    const entry={key};
+    entry.promise=answer.then(make).finally(()=>{ if(slot===entry) slot=null; });
+    slot=entry;
+    return entry.promise;
+  }
+
+  // Sign-out: forget the pass, any back-off and any pending creation.
+  function clear(){ cached=null; pending=null; retryAt=0; slot=null; }
+
+  return Object.freeze({peek,servers,create,clear});
 }

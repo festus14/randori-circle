@@ -86,6 +86,7 @@ import {
 import { DELETION_TOKEN_MIGRATION_VERSION, requestAccountDeletionEmail } from './_account-deletion-tokens.js';
 import { schemaFeatureAvailable } from './_schema-capability.js';
 import { dailyVideoEnabled } from './_daily-video.js';
+import { turnRelayConfiguration } from './_turn-relay.js';
 import {
   DataExportTooLargeError,
   buildDataExport,
@@ -408,6 +409,10 @@ async function handleCapabilities(req,res){
       // literally true and the server-only Daily key and domain are valid.
       ...(interviewerToolkit?{interviewerToolkit:true}:{}),
       ...(dailyVideoEnabled()?{embeddedVideo:true}:{}),
+      // Issue #305 (ID-107): advertised only while TURN_RELAY_ENABLED is literally
+      // true and at least one relay is fully configured. Without it the browser
+      // never loads the relay module and creates its peer exactly as before.
+      ...(turnRelayConfiguration()?{turnRelay:true}:{}),
     },
     registrationMode:localIdentity?'local_invite':(verifiedEmailActivation?'verified_invite':(passwordSignup?'local_open':'private_beta')),
   });
