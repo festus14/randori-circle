@@ -7,6 +7,7 @@ import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled
 import { readCodeProjectionForWorkspace } from './_code-document.js';
 import { secondaryCircleWorkspaceEnabled } from './_active-circle.js';
 import { dailyVideoConfiguration, dailyMonthlyMinuteBudget } from './_daily-video.js';
+import { turnRelayConfiguration } from './_turn-relay.js';
 
 const WORKSPACE_SCHEMA_VERSION = 3;
 const MAX_WORKSPACE_CODE_BYTES = 20 * 1024;
@@ -796,12 +797,21 @@ export default async function handler(req,res){
     return res.status(503).json({error:'video_unavailable',fallback:'direct_call'});
   }
   const embeddedVideo=getEndpoint(req)==='room'?dailyVideoConfiguration():null;
+  // The direct call's TURN relay (ID-107) exists only while TURN_RELAY_ENABLED
+  // and its Cloudflare configuration are valid; otherwise it is a plain 404
+  // and the browser keeps its STUN-only call.
+  const turnRoute=getEndpoint(req)==='turn';
+  const turnRelay=turnRoute?turnRelayConfiguration():null;
+  if(turnRoute&&!turnRelay){
+    res.setHeader?.('Cache-Control','private, no-store');
+    return res.status(404).json({error:'call relay unavailable',code:'turn_relay_disabled'});
+  }
   if(secondaryCircleWorkspaceEnabled()){
     try{
       const {prepareWorkspaceRequest,dispatchWorkspaceVideo}=await import('./_workspace-router.js');
       const selected=await prepareWorkspaceRequest(req,res);
       if(selected?.mode==='secondary'){
-        if(embeddedVideo) return res.status(404).json({error:'pair not found'});
+        if(embeddedVideo||turnRelay) return res.status(404).json({error:'pair not found'});
         return await dispatchWorkspaceVideo(req,res,selected);
       }
       if(selected){
@@ -821,6 +831,10 @@ export default async function handler(req,res){
         return sendMultiCircleFeatureUnavailable(res);
       }
     }catch{ return res.status(503).json({error:'circle context unavailable'}); }
+  }
+  if(turnRelay){
+    const {handleTurnRelay}=await import('./_turn-relay-route.js');
+    return handleTurnRelay(req,res,turnRelay);
   }
   if(embeddedVideo){
     const {handleEmbeddedRoom}=await import('./_daily-video-route.js');

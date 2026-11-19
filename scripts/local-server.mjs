@@ -744,7 +744,7 @@ function apiRoute(pathname,query){
     if(aiMatch[2]!==undefined) query.id=decodeURIComponent(aiMatch[2]);
     return 'ai';
   }
-  const videoMatch=pathname.match(/^\/api\/video\/(signal|ice|join|leave|room)$/);
+  const videoMatch=pathname.match(/^\/api\/video\/(signal|ice|join|leave|room|turn)$/);
   if(videoMatch){
     query.endpoint=videoMatch[1];
     return 'video';
@@ -1014,6 +1014,10 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
     DAILY_VIDEO_ENABLED:'false',
     DAILY_API_KEY:'',
     DAILY_DOMAIN:'',
+    // The direct call's Cloudflare TURN relay (ID-107) is hosted-only too.
+    TURN_RELAY_ENABLED:'false',
+    CLOUDFLARE_TURN_KEY_ID:'',
+    CLOUDFLARE_TURN_API_TOKEN:'',
     TWILIO_AUTH_TOKEN:'',
     ADMIN_EMAILS:'',
     SIGNUP_ALLOWLIST:'',
