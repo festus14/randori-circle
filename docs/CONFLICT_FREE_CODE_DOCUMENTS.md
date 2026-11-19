@@ -356,6 +356,11 @@ CI or this implementation. Do not contact a real project from unit/e2e tests.
    bypass RLS; it must never reach a browser. Reapplying this file safely
    replaces only the four `rc_code_relay_*` policies. Do not put this SQL in
    the Turso migration ledger or an application request.
+   If the preflight aborts with `realtime.messages must have row level security enabled`, do not
+   remove the check or re-run under a wider role: RLS is on by default on Supabase, so an off state
+   means the project is in an unexpected state; raise it with Supabase support. `realtime.messages`
+   is partitioned; the policies live on the parent, which is what Realtime queries, so partitions are
+   covered through it. The file is idempotent and safe to re-run.
 6. Verify in the provider canary: both authorized participants can privately
    join their identical topic; another room/context, anonymous publishable
    key, expired token and missing room claim cannot read or broadcast;

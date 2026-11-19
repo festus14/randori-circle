@@ -26,8 +26,15 @@ BEGIN
     RAISE EXCEPTION 'realtime.messages not found';
   END IF;
   may_own := pg_has_role(current_user,owner_role,'USAGE');
-  granted := COALESCE((NULLIF(current_setting('supautils.policy_grants',true),'')::jsonb
-    -> current_user::text) ? 'realtime.messages', false);
+  -- Exact match on purpose: supautils lists the table as 'realtime.messages'. A different form only
+  -- causes a (safe) abort. jsonb_exists avoids `?`, which some SQL clients treat as a bind placeholder.
+  BEGIN
+    granted := COALESCE(jsonb_exists(
+      NULLIF(current_setting('supautils.policy_grants',true),'')::jsonb -> current_user::text,
+      'realtime.messages'), false);
+  EXCEPTION WHEN invalid_text_representation THEN
+    RAISE EXCEPTION 'supautils.policy_grants is not valid JSON; cannot verify the policy grant for %', current_user;
+  END;
   IF NOT rls_on THEN
     IF may_own THEN
       EXECUTE 'ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY';
