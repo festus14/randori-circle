@@ -197,6 +197,28 @@ free allowance; Randori caps new grants at the configured budget.
 | `DAILY_DOMAIN` | The Daily subdomain the room frames load from. Must be exactly `randori-circle.daily.co`, the only origin the CSP `frame-src` and Permissions-Policy allow | With `DAILY_VIDEO_ENABLED=true` | unset | No | Vercel Production and Development (provisioned) |
 | `DAILY_MONTHLY_MINUTE_BUDGET` | Positive safe decimal integer participant-minutes per UTC month. Ratcheted reported usage plus active pair reservations plus both seats' TTL must fit; equality passes. Pair reuse is prepaid and capped at first token expiry; reservations include five-minute accounting grace. Blank/invalid refuses video | Optional with `DAILY_VIDEO_ENABLED=true` | 9000 when unset | No | Vercel deployments enabling Daily; owner-controlled |
 
+### Direct call relay (TURN)
+
+Read only while `TURN_RELAY_ENABLED=true` ([direct call relay](DIRECT_CALL_RELAY.md), ID-107).
+Each relay is optional and is used only when every one of its values is well
+formed; a relay with any value set but one invalid is shown as a configuration
+failure in Admin Diagnostics and never used. With neither relay configured the
+route stays a 404 and the direct call is STUN-only. The local runtime blanks
+all of them.
+
+| Variable | Purpose | Required | Default | Secret | Where set |
+| --- | --- | --- | --- | --- | --- |
+| `CLOUDFLARE_TURN_KEY_ID` | Cloudflare Realtime TURN key ID; credentials are minted from it per call. 8 to 128 characters of `A-Z a-z 0-9 _ -` | For the Cloudflare relay | unset | No | Vercel (not provisioned) |
+| `CLOUDFLARE_TURN_API_TOKEN` | That TURN key's API token. Server-only; never sent to the browser or logged | For the Cloudflare relay | unset | Yes (sensitive) | Vercel (not provisioned) |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID (32 hex characters) for the usage query | For the Cloudflare relay | unset | No | Vercel (not provisioned) |
+| `CLOUDFLARE_ANALYTICS_API_TOKEN` | A separate least-privilege API token with only Account Analytics read, used to read TURN usage | For the Cloudflare relay | unset | Yes (sensitive) | Vercel (not provisioned) |
+| `TURN_MONTHLY_GB_BUDGET` | Cloudflare relay budget per UTC month, in GB (10^9 bytes), egress plus ingress. Positive number with up to three decimals; anything else disables the Cloudflare relay | No | `800` (80 % of the 1,000 GB included) | No | Vercel |
+| `METERED_TURN_APP_DOMAIN` | Metered app domain, exactly `<app>.metered.live` | For the Metered backup | unset | No | Vercel (not provisioned) |
+| `METERED_TURN_API_KEY` | API key of the pre-created Metered TURN credential, used to fetch its ICE servers | For the Metered backup | unset | Yes (sensitive) | Vercel (not provisioned) |
+| `METERED_TURN_SECRET_KEY` | Metered account secret key, used only to read usage; never sent to the browser or logged | For the Metered backup | unset | Yes (sensitive) | Vercel (not provisioned) |
+| `METERED_TURN_MONTHLY_GB_BUDGET` | Metered backup budget per month, in GB; same format as above | No | `16` (80 % of the free 20 GB) | No | Vercel |
+| `TURN_RESERVE_MB_PER_CALL` | MB reserved per credential-hour against either budget until the credential expires plus five minutes. Positive integer; anything else disables both relays | No | `1800` (2 streams × ingress and egress × 1 Mbps × 1 h) | No | Vercel |
+
 ### Error reporting (Sentry)
 
 | Variable | Purpose | Required | Default | Secret | Where set |
@@ -250,7 +272,7 @@ production state in the [feature flag table](#feature-flags):
 `INTERVIEWER_TOOLKIT_ENABLED`, `INTERVIEW_EVALUATION_PURGE_ENABLED`,
 `CIRCLE_HEALTH_ENABLED`, `ADMIN_DIAGNOSTICS_ENABLED`,
 `ACCOUNT_DELETION_ENABLED`, `ACCOUNT_DELETION_GRACE_ENABLED`,
-`DATA_EXPORT_ENABLED`, `DAILY_VIDEO_ENABLED`,
+`DATA_EXPORT_ENABLED`, `DAILY_VIDEO_ENABLED`, `TURN_RELAY_ENABLED`,
 `OUTBOX_PII_RETENTION_ENABLED`, `REALTIME_RELAY_ENABLED`, `PRESENCE_ENABLED` and `AI_ENABLED`.
 `ALLOW_OPEN_SIGNUP` is the exception: it is development-only, works only in
 the local runtime and is ignored when `NODE_ENV=production`.
@@ -424,7 +446,9 @@ isolated values: it sets `NODE_ENV=development`, a local `file:` database, a
 generated `JWT_SECRET`, its loopback `APP_URL`, circle membership, password
 reset and invite requests on, and blanks every provider credential (Google,
 Resend, AI, Sentry, execution, Daily video (`DAILY_VIDEO_ENABLED=false`,
-`DAILY_API_KEY` and `DAILY_DOMAIN` blank), `CRON_SECRET`, `ADMIN_EMAILS`,
+`DAILY_API_KEY` and `DAILY_DOMAIN` blank), the direct call relays
+(`TURN_RELAY_ENABLED=false`, the Cloudflare and Metered keys blank),
+`CRON_SECRET`, `ADMIN_EMAILS`,
 `SIGNUP_ALLOWLIST`). It restores the previous values on shutdown and refuses to
 start with `TURSO_AUTH_TOKEN`, a remote database, or any Vercel variable set.
 
@@ -522,6 +546,7 @@ them off cannot undo.
 | `INTERVIEWER_TOOLKIT_ENABLED` | Evaluator-only rubric, private notes, decisions and report/playback; capability and room/History entries only after v27 | off | On (observed: `interviewerToolkit`, 2026-11-19; migration v27 applied) | `INTERVIEW_SESSION_ENABLED=true`, additive migration v27 | ID-102 ([interviewer toolkit](INTERVIEWER_TOOLKIT.md)) | Hides feature; own data export and evaluator deletion remain independent. Keep schema and ledger |
 | `INTERVIEW_EVALUATION_PURGE_ENABLED` | Explicit bounded physical purge (max 100 expired evaluations), no scheduler | off | Not deployed by this change | Explicit operator opt-in; v27 data; documented rehearsal/owner approval | ID-102 ([retention runbook](INTERVIEWER_TOOLKIT.md#retention-runbook)) | Stops future purges; already-open atomic batch may finish. Logical 90-day expiry remains enforced |
 | `DAILY_VIDEO_ENABLED` | Consent-gated, never-recorded embedded Daily video in primary two-person rooms: `POST /api/video/room` and the `embeddedVideo` capability | off | On (observed: `embeddedVideo`, 2026-11-19; held below the free allowance by the #490 budget guard merged in #492; `DAILY_MONTHLY_MINUTE_BUDGET` unset, so the default 9,000 participant-minutes a month applies; see [PRODUCTION_STATE.md](PRODUCTION_STATE.md#daily-video)) | `DAILY_API_KEY`, `DAILY_DOMAIN=randori-circle.daily.co`, valid `DAILY_MONTHLY_MINUTE_BUDGET` (default 9000); never in the local runtime | ID-98, ID-106 ([embedded video](EMBEDDED_VIDEO.md)) | Safe: the capability and route disappear, live frames stop at their token expiry, the meeting link and direct call keep working. Aggregate budget snapshots and reservations persist through TTL; do not reset them |
+| `TURN_RELAY_ENABLED` | Short-lived TURN relay credentials for the direct browser call (`POST /api/video/turn`): Cloudflare Realtime TURN first, Metered Open Relay as the backup, each within its monthly budget; STUN-only otherwise | off | Not deployed by this change | At least one relay fully configured (see [direct call relay](#direct-call-relay-turn)); never in the local runtime | ID-107 ([direct call relay](DIRECT_CALL_RELAY.md)) | Safe: unset/`false` and redeploy; the route returns 404 and calls are STUN-only as before. Issued credentials expire within an hour (revoke in the provider for immediate effect). Only opaque counters are stored, and they expire on their own |
 | `EXERCISE_SUGGESTIONS_ENABLED` | "Attempted" markers and suggested exercises; `GET /api/exercise-suggestions` | off | On (owner) | none | ID-77 | Safe; nothing is stored |
 | `CIRCLE_HEALTH_ENABLED` | Owner-only Circle health card and `GET /api/circle/health` | off | On (observed: `circleHealth`) | `CIRCLE_MEMBERSHIP_ENABLED` | ID-78 ([circle health](CIRCLE_HEALTH.md)) | Safe; nothing is stored |
 | `ADMIN_DIAGNOSTICS_ENABLED` | Read-only admin Diagnostics in the Circle view | off | On (observed: `adminDiagnostics`) | none (still admin-only) | ID-73 | Safe; nothing is stored |
