@@ -8,8 +8,17 @@ const vercel=JSON.parse(readFileSync(new URL('../../vercel.json',import.meta.url
 const policy=name=>apply.match(new RegExp(`CREATE POLICY ${name} ON realtime\\.messages\\s+([\\s\\S]*?);`))?.[1];
 
 test('reviewed Realtime SQL has room-bound broadcast permissive policies plus all-role restrictive fences',()=>{
-  assert.match(apply,/BEGIN;[\s\S]*DO \$rc_owner\$[\s\S]*pg_has_role\(current_user,relation\.relowner,'USAGE'\)[\s\S]*RAISE EXCEPTION 'Applying role must own realtime\.messages'[\s\S]*ALTER TABLE realtime\.messages ENABLE ROW LEVEL SECURITY;[\s\S]*COMMIT;/);
-  assert.match(apply,/BEGIN;[\s\S]*ALTER TABLE realtime\.messages ENABLE ROW LEVEL SECURITY;[\s\S]*COMMIT;/);
+  // Preflight runs inside the transaction before any policy write: it requires RLS to be on (only the
+  // owner may turn it on) and the applying role to own the table or hold Supabase's supautils policy grant.
+  assert.match(apply,/BEGIN;[\s\S]*DO \$rc_preflight\$[\s\S]*relation\.relrowsecurity[\s\S]*pg_has_role\(current_user,owner_role,'USAGE'\)[\s\S]*current_setting\('supautils\.policy_grants',true\)[\s\S]*'realtime\.messages'\), false\)[\s\S]*IF NOT rls_on THEN[\s\S]*IF may_own THEN[\s\S]*EXECUTE 'ALTER TABLE realtime\.messages ENABLE ROW LEVEL SECURITY'[\s\S]*RAISE EXCEPTION 'realtime\.messages must have row level security enabled'[\s\S]*IF NOT \(may_own OR granted\) THEN[\s\S]*RAISE EXCEPTION 'Applying role must own realtime\.messages or hold its supautils policy grant'[\s\S]*\$rc_preflight\$;[\s\S]*DROP POLICY IF EXISTS rc_code_relay_read ON/);
+  // RLS is never disabled, the only ALTER TABLE is the owner-only conditional, and commit re-checks RLS.
+  assert.doesNotMatch(apply,/DISABLE ROW LEVEL SECURITY|NO FORCE ROW LEVEL SECURITY/);
+  assert.equal((apply.replace(/--[^\n]*\n/g,'').match(/ALTER TABLE/g)||[]).length,1);
+  // COALESCE is load-bearing: without it an unset GUC makes NOT (false OR NULL) NULL and the guard never fires.
+  assert.match(apply,/granted := COALESCE\(jsonb_exists\(\s*NULLIF\(current_setting\('supautils\.policy_grants',true\),''\)::jsonb -> current_user::text,\s*'realtime\.messages'\), false\);/);
+  assert.match(apply,/EXCEPTION WHEN invalid_text_representation THEN\s*RAISE EXCEPTION 'supautils\.policy_grants is not valid JSON/);
+  assert.ok(apply.indexOf('$rc_preflight$;')<apply.indexOf('POLICY'),'preflight must precede every policy statement');
+  assert.match(apply,/DO \$rc_postcheck\$[\s\S]*relrowsecurity[\s\S]*RAISE EXCEPTION 'realtime\.messages row level security is not enabled'[\s\S]*\$rc_postcheck\$;\s*COMMIT;\s*$/);
   assert.equal((apply.match(/CREATE POLICY /g)||[]).length,4);
   for(const [action,kind,clause] of [['read','SELECT','USING'],['write','INSERT','WITH CHECK']]){
     const grant=policy(`rc_code_relay_${action}`),fence=policy(`rc_code_relay_${action}_scope`);
@@ -33,6 +42,8 @@ test('provider rollback removes permissive policies but retains deny-all restric
   assert.match(rollback,/ALTER POLICY rc_code_relay_read_scope ON realtime\.messages USING \(false\);/);
   assert.match(rollback,/ALTER POLICY rc_code_relay_write_scope ON realtime\.messages WITH CHECK \(false\);/);
   assert.doesNotMatch(rollback,/DROP POLICY[^;]*_scope|DISABLE ROW LEVEL SECURITY/);
+  assert.doesNotMatch(rollback,/DISABLE ROW LEVEL SECURITY|NO FORCE ROW LEVEL SECURITY/);
+  assert.equal((rollback.replace(/--[^\n]*\n/g,'').match(/ALTER TABLE/g)||[]).length,0);
 });
 
 test('deployment allows Supabase WSS only, not provider scripts/CDNs/REST or a new serverless route',()=>{
