@@ -212,12 +212,14 @@ all of them.
 | `CLOUDFLARE_TURN_API_TOKEN` | That TURN key's API token. Server-only; never sent to the browser or logged | For the Cloudflare relay | unset | Yes (sensitive) | Vercel (not provisioned) |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID (32 hex characters) for the usage query | For the Cloudflare relay | unset | No | Vercel (not provisioned) |
 | `CLOUDFLARE_ANALYTICS_API_TOKEN` | A separate least-privilege API token with only Account Analytics read, used to read TURN usage | For the Cloudflare relay | unset | Yes (sensitive) | Vercel (not provisioned) |
-| `TURN_MONTHLY_GB_BUDGET` | Cloudflare relay budget per UTC month, in GB (10^9 bytes), egress plus ingress. Positive number with up to three decimals; anything else disables the Cloudflare relay | No | `800` (80 % of the 1,000 GB included) | No | Vercel |
+| `TURN_MONTHLY_GB_BUDGET` | Cloudflare relay budget per month, in GB (10^9 bytes), egress plus ingress, clamped to the 1,000 GB free allowance unless `TURN_ALLOW_PAID_OVERAGE=true`. Positive number with up to three decimals; anything else disables the Cloudflare relay | No | `800` (80 % of the 1,000 GB included) | No | Vercel |
 | `METERED_TURN_APP_DOMAIN` | Metered app domain, exactly `<app>.metered.live` | For the Metered backup | unset | No | Vercel (not provisioned) |
 | `METERED_TURN_API_KEY` | API key of the pre-created Metered TURN credential, used to fetch its ICE servers | For the Metered backup | unset | Yes (sensitive) | Vercel (not provisioned) |
 | `METERED_TURN_SECRET_KEY` | Metered account secret key, used only to read usage; never sent to the browser or logged | For the Metered backup | unset | Yes (sensitive) | Vercel (not provisioned) |
-| `METERED_TURN_MONTHLY_GB_BUDGET` | Metered backup budget per month, in GB; same format as above | No | `16` (80 % of the free 20 GB) | No | Vercel |
-| `TURN_RESERVE_MB_PER_CALL` | MB reserved per credential-hour against either budget until the credential expires plus five minutes. Positive integer; anything else disables both relays | No | `1800` (2 streams × ingress and egress × 1 Mbps × 1 h) | No | Vercel |
+| `METERED_TURN_MONTHLY_GB_BUDGET` | Metered backup budget per month, in GB, clamped to the 20 GB free allowance unless `TURN_ALLOW_PAID_OVERAGE=true`; same format as above | No | `16` (80 % of the free 20 GB) | No | Vercel |
+| `TURN_RESERVE_MB_PER_CALL` | MB reserved per room per relayed hour against either budget (one envelope per room, reused by the partner) until the credential expires plus five minutes. Positive integer; anything else disables both relays | No | `1800` (2 streams × ingress and egress × 1 Mbps × 1 h) | No | Vercel |
+| `TURN_ALLOW_PAID_OVERAGE` | Literal `true` lets either budget exceed the provider's free allowance (Cloudflare 1,000 GB, Metered 20 GB). Otherwise both budgets are clamped to it | No | off (clamped) | No | Vercel (leave unset) |
+| `TURN_CLOUDFLARE_CYCLE_DAY` | Day of the month (1–28, UTC) on which Cloudflare's allowance resets; the Cloudflare budget month follows it. Anything else disables the Cloudflare relay | No | `1` (calendar month) | No | Vercel |
 
 ### Error reporting (Sentry)
 

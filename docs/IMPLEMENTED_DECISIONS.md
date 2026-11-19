@@ -132,7 +132,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-104](#id-104-gate-typescript-and-piston-only-go-by-provider-without-runtime-installs) | Gate TypeScript and Piston-only Go by provider without runtime installs | Content & Catalogue | Active |
 | [ID-105](#id-105-warn-before-production-database-credentials-expire-without-exposing-tokens) | Warn before production database credentials expire without exposing tokens | Observability & Ops | Active |
 | [ID-106](#id-106-cap-daily-video-grants-with-a-shared-monthly-budget-and-direct-call-fallback) | Cap Daily video grants with a shared monthly budget and direct-call fallback | Observability & Ops | Active |
-| [ID-107](#id-107-relay-the-direct-call-through-free-turn-allowances-with-monthly-usage-gates) | Relay the direct call through free TURN allowances with monthly usage gates | Pairing & Scheduling | Active |
+| [ID-107](#id-107-relay-the-direct-call-through-free-turn-allowances-with-monthly-usage-gates) | Relay the direct call through free TURN allowances with monthly usage gates | Observability & Ops | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -6554,11 +6554,11 @@ stage, status and budget reason only.
 **Usage gates.** As for Daily (#490): a per-provider snapshot in
 `auth_rate_limits`, refreshed at most every five minutes by one request at a
 time (30-second lease, 8-second total deadline), ratcheting within the UTC
-month and failing closed when unknown. Each credential reserves
+month and failing closed when unknown. Each room's envelope reserves
 `TURN_RESERVE_MB_PER_CALL` (default 1,800 MB: two streams, counted on ingress
-and egress, at 1 Mbps for an hour) prorated by its lifetime, until expiry plus
-five minutes; it is refused when reported plus reserved plus its reservation
-exceeds the budget (`TURN_MONTHLY_GB_BUDGET`, default 800 of Cloudflare's
+and egress, at 1 Mbps for an hour) prorated by the credential lifetime, until
+expiry plus five minutes; a new envelope is refused when reported plus
+reserved plus its reservation exceeds the budget (`TURN_MONTHLY_GB_BUDGET`, default 800 of Cloudflare's
 1,000 GB; `METERED_TURN_MONTHLY_GB_BUDGET`, default 16 of Metered's 20 GB). The
 owner suggested 300 MB per call; 1,800 MB is the computed worst case for one
 credential-hour, which the owner asked to be computed and documented.
@@ -6568,12 +6568,25 @@ usage is its `current_usage` endpoint (secret key), where an overage counts as
 the whole quota. Admin Diagnostics shows an aggregate Call relay allowance
 card.
 
-**Browser.** A lazy `assets/turn-relay.js` (about 450 bytes inline) fetches
-credentials just before each peer connection, caps the whole lookup at three
-seconds, reuses them until a minute before expiry (so a reconnect after expiry
-fetches again), re-checks them, keeps them in memory only and forgets them on
-sign-out. Any failure keeps today's STUN-only call. No CSP change: TURN is ICE,
-not fetch, and the route is same-origin.
+**Browser.** A lazy `assets/turn-relay.js` (about 510 bytes inline), loaded
+only while the server advertises `turnRelay`, fetches credentials as the member
+joins, caps the lookup at three seconds (`TURN_TIMEOUT_MS`), reuses them until
+a minute before expiry (so a reconnect after expiry fetches again), re-checks
+them, keeps them in memory only and forgets them on sign-out. Peer creation
+stays synchronous up to `pc = peer` whenever the answer is known (no relay
+advertised: the old path byte for byte); while a lookup is in flight, every
+caller of the call epoch shares one pending creation, so the `if (!pc)` guards
+can never create two peers (review B1). Any failure keeps today's STUN-only
+call. No CSP change: TURN is ICE, not fetch, and the route is same-origin.
+
+**Review amendments (2026-11-19).** The route finishes provider work within
+2.5 s (`TURN_ROUTE_DEADLINE_MS`, under the browser's 3 s) and never reserves
+or mints without time to answer. One reservation covers a room (an HMAC-keyed
+envelope the partner and rejoins reuse, capped at its expiry), keeping the
+per-account rate limit. Budgets are clamped to the free allowances unless
+`TURN_ALLOW_PAID_OVERAGE=true`. `TURN_CLOUDFLARE_CYCLE_DAY` (1–28, default 1)
+moves the Cloudflare month if its allowance follows a billing date. Provider
+bodies are read as a stream and cancelled past 16 KiB.
 
 **Alternatives.** A self-hosted coturn costs money and operations. Minting a
 Metered credential per call is unusable at call setup (up to two minutes to

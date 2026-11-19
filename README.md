@@ -384,8 +384,9 @@ The direct call relay reads `TURN_RELAY_ENABLED`, `CLOUDFLARE_TURN_KEY_ID`,
 the sensitive `CLOUDFLARE_TURN_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, the
 sensitive `CLOUDFLARE_ANALYTICS_API_TOKEN`, `TURN_MONTHLY_GB_BUDGET`,
 `METERED_TURN_APP_DOMAIN`, the sensitive `METERED_TURN_API_KEY` and
-`METERED_TURN_SECRET_KEY`, `METERED_TURN_MONTHLY_GB_BUDGET` and
-`TURN_RESERVE_MB_PER_CALL`; the local runtime turns it off
+`METERED_TURN_SECRET_KEY`, `METERED_TURN_MONTHLY_GB_BUDGET`,
+`TURN_RESERVE_MB_PER_CALL`, `TURN_ALLOW_PAID_OVERAGE` (off: budgets stay within
+the free allowances) and `TURN_CLOUDFLARE_CYCLE_DAY`; the local runtime turns it off
 ([relay setup](docs/DIRECT_CALL_RELAY.md#operator-setup)).
 
 For optional sub-second pair-code relay, configure `SUPABASE_URL` and the
