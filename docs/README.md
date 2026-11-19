@@ -159,6 +159,7 @@ migrations have run).
 | [TURSO_BACKUP_RESTORE_REHEARSAL.md](TURSO_BACKUP_RESTORE_REHEARSAL.md) | The Monday PITR restore rehearsal into a disposable database, with the hourly watchdog (ID-16) |
 | [BACKUP_WATCHDOG_ACTIVATION.md](BACKUP_WATCHDOG_ACTIVATION.md) | Why the backup watchdog's activation epoch is fixed at 2026-09-21 03:17 UTC (ID-54, ID-75) |
 | [KEY_ROTATION.md](KEY_ROTATION.md) | Staged, forward-only rotation of the four credential key rings through the key-control workflow (ID-19, ID-31) |
+| [CREDENTIAL_EXPIRY.md](CREDENTIAL_EXPIRY.md) | Offline daily database-token expiry warnings, owner-managed secret copies, the 2026-11-18/19 incident and one-year token rotation (ID-105, #486) |
 | [OUTBOX_EXTERNAL_SCHEDULER.md](OUTBOX_EXTERNAL_SCHEDULER.md) | Setting up cron-job.org to call `/api/cron/outbox` every five minutes with `OUTBOX_DISPATCH_SECRET` (ID-67) |
 | [OUTBOX_DISPATCH_WATCHDOG.md](OUTBOX_DISPATCH_WATCHDOG.md) | The hourly watchdog that alerts on outbox delivery health (ID-43, updated by ID-67) |
 | [runbooks/README.md](runbooks/README.md) | The on-call checklist and the runbook index: what to check first, in order |

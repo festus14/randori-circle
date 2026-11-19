@@ -244,6 +244,7 @@ two provider units and is never automatically replayed after a busy response.
 | Backup restore rehearsal (Turso PITR into a disposable database) | Monday 03:17 UTC, plus an hourly watchdog | GitHub Actions |
 | Live execution smoke check | Daily 07:29 UTC and after each production deploy | GitHub Actions |
 | Read-only production smoke check | Daily 07:17 UTC and after each production deploy | GitHub Actions |
+| Offline database credential expiry warning | Daily 06:43 UTC | GitHub Actions |
 
 The design decisions behind all of this are in the
 [decision log](docs/IMPLEMENTED_DECISIONS.md). The current system design is
@@ -395,6 +396,7 @@ uses the existing `auth_rate_limits` table with a 20-second TTL
   [migrations](docs/TURSO_PRODUCTION_MIGRATION.md),
   [backup and restore rehearsal](docs/TURSO_BACKUP_RESTORE_REHEARSAL.md),
   [key rotation](docs/KEY_ROTATION.md),
+  [database credential expiry and rotation](docs/CREDENTIAL_EXPIRY.md),
   [outbox scheduler](docs/OUTBOX_EXTERNAL_SCHEDULER.md),
   [chat retention](docs/CHAT_RETENTION.md). More runbooks are tracked in
   [#361](https://github.com/festus14/randori-circle/issues/361).

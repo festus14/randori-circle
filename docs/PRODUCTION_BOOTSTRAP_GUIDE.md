@@ -174,13 +174,13 @@ unmanaged. No protected workflow can therefore take an empty database to v1.
 ```bash
 turso db show randori-circle          # Name, ID (DbId), Group, URL
 turso db show randori-circle --url    # libsql://<hostname>
-turso db tokens create randori-circle --expiration 30d   # TURSO_AUTH_TOKEN (full access)
+turso db tokens create randori-circle --expiration 365d   # TURSO_AUTH_TOKEN (full access)
 ```
 
 | Value | Where it goes |
 | --- | --- |
 | `libsql://…` URL | `TURSO_DATABASE_URL`: Vercel Production and `credential-key-control` secret |
-| DB auth token | `TURSO_AUTH_TOKEN`: Vercel Production and `credential-key-control` secret. The key-control workflow writes, so do not use `--read-only` |
+| DB auth token | `TURSO_AUTH_TOKEN`: Vercel Production and `credential-key-control` secret; add the exact copy as repository `TURSO_AUTH_TOKEN_EXPIRY_WATCH` for [daily expiry warnings](CREDENTIAL_EXPIRY.md). Store/transfer the command's output privately, never in logs. The key-control workflow writes, so do not use `--read-only` |
 | Hostname (URL without `libsql://`) | `TURSO_PRODUCTION_DATABASE_HOST` variable in `credential-key-control` |
 | Org slug | `TURSO_ORGANIZATION` in both Turso migration environments |
 | Group | `TURSO_GROUP` in both Turso migration environments |

@@ -130,6 +130,7 @@ Every entry appears exactly once, in numeric order. The index is the checklist f
 | [ID-102](#id-102-keep-human-interview-evaluations-private-to-the-evaluator) | Keep human interview evaluations private to the evaluator | Security, Secrets & Privacy | Active |
 | [ID-103](#id-103-bound-execution-admission-and-spend-with-a-durable-retry-queue-and-pristine-runtime-snapshots) | Bound execution admission and spend with a durable retry queue and pristine runtime snapshots | Observability & Ops | Active |
 | [ID-104](#id-104-gate-typescript-and-piston-only-go-by-provider-without-runtime-installs) | Gate TypeScript and Piston-only Go by provider without runtime installs | Content & Catalogue | Active |
+| [ID-105](#id-105-warn-before-production-database-credentials-expire-without-exposing-tokens) | Warn before production database credentials expire without exposing tokens | Observability & Ops | Active |
 ## How to add a decision
 
 New decisions go at the end of the log, in numeric order, with a row in the
@@ -143,8 +144,8 @@ old entry (and say so in the new one) instead of deleting it; the log is
 history, not just current state.
 
 1. **Pick the next free ID.** The next ID is the highest ID in the Index
-   plus one (currently ID-105).
-   ID-103 (#468/#483) and ID-104 (#466) are in this log.
+   plus one (currently ID-106).
+   ID-105 (#486) adds offline database credential expiry monitoring.
    Never reuse a number, even if an entry is
    superseded, and do not mint an ID for a docs-only correction or
    reordering — those change no decision.
@@ -6396,4 +6397,49 @@ Measured smoke remains four JS/Python calls plus one unpaired TypeScript call
 (five total); ordinary smoke remains 2/3 Vercel or up to 4 Piston. All claim
 windows, read-only readiness and byte thresholds remain unchanged. The requester
 gets only a fixed Go compile-failure note; empty Go stdout remains `no result`.
+
+## ID-105: Warn before production database credentials expire without exposing tokens
+
+**Status: Active.** Implements #486. No application, schema, asset or provider
+configuration changes; operator setup remains required.
+
+**Context.** The Vercel Production app DB token expired on 2026-11-18, breaking
+DB access, readiness and sign-in/sign-up for approximately 25 hours without an
+advance warning. On 2026-11-19 the owner replaced the app and separate ledger
+tokens with one-year tokens.
+
+**Decision.** Inspect only JWT `exp` locally in a daily/manual GitHub Actions
+workflow on `main`. The existing repository `DELETION_LEDGER_AUTH_TOKEN` is
+required; an optional `TURSO_AUTH_TOKEN_EXPIRY_WATCH` repository secret must be
+added by the owner as an exact copy of Vercel Production's app token. Missing
+optional copy is a notice/skip, never a claim that the app token is covered.
+Fail at an inclusive 30 days remaining or less (including expired tokens), or
+for malformed JWT/exp; warn at an inclusive 45 days. A missing `exp` passes
+with a notice because Turso supports `--expiration never`. Exact seconds own
+the thresholds; whole displayed days round down. Daily scheduling is
+best-effort, so GitHub delay can shorten notification lead time.
+
+**Privacy and authority.** No signature/header decoding, authentication,
+network calls, dependencies, file outputs, artifacts or rotation in the
+checker. Only fixed credential names, days and fixed diagnostic text leave
+memory; raw tokens, segments, other claims and parser exceptions never do.
+GitHub masks step-scoped Actions secrets; no token-bearing `add-mask` command
+is printed. Immutable approved Node 24 actions run before the secret step,
+with `contents: read`, no persisted checkout credentials, a pinned Ubuntu
+24.04 runner, shared concurrency lock and bounded job/step deadlines.
+
+**Alternatives and operations.** Do not query Vercel for sensitive values or
+call Turso merely to inspect expiry. An independent freshly minted watch token
+would not monitor the production token's lifetime. Update all secret copies
+together when minting `--expiration 365d`, replace Vercel Production values as
+Sensitive, redeploy and verify readiness 200 plus production-smoke. Red runs
+require a watched owner notification route; dedicated production-smoke paging
+is an optional follow-up. No human outreach is implemented here.
+
+**Verification.** Synthetic unit tests cover expiry parsing, no-exp policy,
+malformed/expired credentials, exact error/warning boundaries, missing-secret
+policy and redaction of every output. A write-denied CLI rehearsal checks
+stdout/stderr and untouched Actions output/summary files. Workflow tests pin
+triggers, actions, runner, permissions, concurrency, deadlines and step-only
+secrets. See [credential expiry and rotation](CREDENTIAL_EXPIRY.md).
 
