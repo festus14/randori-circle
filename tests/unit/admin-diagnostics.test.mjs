@@ -854,13 +854,21 @@ test('the Daily diagnostics card is independently settled if its reader throws',
   assert.equal(snapshot.cards.dailyVideo.reportedMinutes,null);
 });
 
+test('the call relay card is independently settled if its reader throws (ID-107)', async () => {
+  const env = Object.defineProperty({}, 'TURN_RELAY_ENABLED', { get() { throw new Error('synthetic reader failure'); } });
+  const snapshot = await readAdminDiagnostics(db, { env, checkReadiness: ready });
+  assert.equal(snapshot.ok, true);
+  assert.deepEqual(snapshot.cards.turnRelay, { status: 'failed', state: 'unknown', reason: 'store_unavailable', providers: null });
+});
+
 test('a global admin receives the aggregate snapshot with no-store caching', async () => {
   await deadLetter('403:validation_error:testing_recipient_restricted');
   const result = await invoke({ env: MEMBERSHIP_ENV });
   assert.equal(result.status, 200);
   assert.equal(result.headers['cache-control'], 'no-store');
   assert.equal(result.body.format, ADMIN_DIAGNOSTICS_FORMAT);
-  assert.deepEqual(Object.keys(result.body.cards), ['outbox', 'deadLetters', 'outboxWatchdog', 'backupWatchdog', 'execution', 'readiness', 'errors', 'dailyVideo']);
+  assert.deepEqual(Object.keys(result.body.cards), ['outbox', 'deadLetters', 'outboxWatchdog', 'backupWatchdog', 'execution', 'readiness', 'errors', 'dailyVideo', 'turnRelay']);
+  assert.equal(result.body.cards.turnRelay.reason, 'not_enabled');
   assert.equal(result.body.cards.deadLetters.items[0].providerReason, 'testing_recipient_restricted');
   assertNoPrivateData(result.body);
 });
