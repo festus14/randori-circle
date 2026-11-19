@@ -188,6 +188,15 @@ verified pass and does not erase completed catalogue results.
 - Only after provider-owned retention and limits are verified may the owner
   set `EXECUTION_STDIN_ENABLED=true` and redeploy.
 
+**Owner decision (2026-11-19):** the Vercel Sandbox review found that Vercel
+documents neither a retention period nor a deletion API for command output
+(stdin is not documented as stored; command `args` are). Randori already sends
+custom input only on stdin, creates sandboxes with `persistent: false`, deletes
+each one after its run and never logs custom input or output. The owner chose to
+enable the feature on that basis, with the privacy policy stating the gap
+plainly ("Vercel doesn't publish how long it may keep the output of an
+individual run"). Revisit if Vercel publishes a retention period.
+
 Turning the flag off rejects every request containing `stdin` (including an
 empty string) with 404, hides the controls after capabilities reload, and
 leaves normal catalogue runs unchanged. No migration or request-path DDL.
