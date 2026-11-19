@@ -48,7 +48,7 @@ Last updated: 2026-11-19 (Daily video enabled).
 | `REALTIME_RELAY_ENABLED` | On since 2026-11-19 | Provider canary below; `realtimeRelay` capability; unauthenticated token request 401 |
 | `EXECUTION_LANGUAGE_GO_ENABLED` | Off (owner decision) | Production runs Vercel Sandbox; Go is Piston-only |
 | `EXECUTION_WARM_MEASURE_ENABLED` | Off (owner decision) | Stay on cold starts; no snapshots built |
-| `DAILY_VIDEO_ENABLED` | On since 2026-11-19 | Join canary with the owner's payment method (2 joined, a third refused); free-allowance guard #490 merged first; `embeddedVideo` capability; production smoke 16/16 |
+| `DAILY_VIDEO_ENABLED` | On since 2026-11-19 | Free-allowance budget guard (#490) merged in #492 before enabling; join canary (two joined, a third refused); `embeddedVideo` capability; production smoke 16/16 |
 
 The full flag table, including older flags, is in
 [ENVIRONMENT.md](ENVIRONMENT.md#feature-flags).
@@ -104,21 +104,22 @@ Dedicated relay-only project (the origin in `SUPABASE_URL`).
   transcription storage off, no recordings bucket.
 - A room minted by the app's own code is private, has two seats, no recording
   mode, and expires and ejects after two hours.
-- **On since 2026-11-19.** A payment method is on file, but usage is capped
-  below the free allowance (10,000 participant-minutes a month, as published on
-  2026-11-19) by the budget guard from #490 (ID-106):
-  `DAILY_MONTHLY_MINUTE_BUDGET` is unset, so the default **9,000** applies.
-  Each pair's two seats are reserved before a token is minted, reported usage
-  can only rise within a month, and an unreadable usage figure refuses new
-  calls. When video is refused, the room offers the direct call.
-- Join canary (2026-11-19): two simulated-camera browsers joined an app-minted
+- **On since 2026-11-19.** A payment method is on file, so Daily will not stop the
+  account at the free allowance (10,000 participant-minutes a month, as published on
+  2026-11-19); the budget guard from #490 (ID-106), merged in #492, holds usage below it.
+  `DAILY_MONTHLY_MINUTE_BUDGET` is unset, so the default **9,000** applies. Each pair's
+  two seats are reserved before a token is minted, reported usage can only rise within a
+  month, and if usage cannot be read the app refuses new calls (fail closed). When video
+  is refused, the room offers the direct call.
+- Join canary (2026-11-19, run before the guard shipped): two simulated-camera browsers joined an app-minted
   room (the Daily presence API reported both); a third participant was refused
   ("The meeting is full"). The canary room was deleted.
 - **Invariants:**
   - Keep `DAILY_MONTHLY_MINUTE_BUDGET` at or below 9,000 unless the owner
-    decides to pay for more; Daily has no spending ceiling of its own.
-  - The admin Diagnostics card shows month-to-date and reserved minutes; if it
-    shows `failed`, video is refused until usage can be read again.
+    decides to pay for more; Daily enforces no spending ceiling of its own.
+  - The admin Diagnostics card reports the guard's state (not enabled, paused or
+    failed) alongside month-to-date and reserved minutes; while it reads `failed`,
+    video stays refused until usage can be read again.
 
 ## Known alerts
 
