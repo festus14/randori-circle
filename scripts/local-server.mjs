@@ -1014,10 +1014,15 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
     DAILY_VIDEO_ENABLED:'false',
     DAILY_API_KEY:'',
     DAILY_DOMAIN:'',
-    // The direct call's Cloudflare TURN relay (ID-107) is hosted-only too.
+    // The direct call's TURN relays (ID-107) are hosted-only too.
     TURN_RELAY_ENABLED:'false',
     CLOUDFLARE_TURN_KEY_ID:'',
     CLOUDFLARE_TURN_API_TOKEN:'',
+    CLOUDFLARE_ACCOUNT_ID:'',
+    CLOUDFLARE_ANALYTICS_API_TOKEN:'',
+    METERED_TURN_APP_DOMAIN:'',
+    METERED_TURN_API_KEY:'',
+    METERED_TURN_SECRET_KEY:'',
     TWILIO_AUTH_TOKEN:'',
     ADMIN_EMAILS:'',
     SIGNUP_ALLOWLIST:'',

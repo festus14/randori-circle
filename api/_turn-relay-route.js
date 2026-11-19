@@ -6,6 +6,7 @@ import { ensureDataSessionControlsReadiness } from './_data-readiness.js';
 import { getAuthenticatedPairAccess } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { readAuthorizedSessionControls } from './_session-controls.js';
+import { TurnBudgetError, releaseTurnReservation, reserveTurnRelay } from './_turn-budget.js';
 import {
   TurnProviderError,
   enforceTurnRelayRateLimit,
@@ -88,14 +89,29 @@ export async function handleTurnRelay(req,res,config){
       code:interview?'interview_session_ended':'session_completed',
     });
   }
-  try{
-    const grant=await mintTurnIceServers(config,{window,fetchImpl:globalThis.fetch});
-    return res.json({iceServers:grant.iceServers,expiresAt:grant.expiresAt});
-  }catch(error){
-    // Stage and HTTP status only: no key id, token, credential or body text.
-    const known=error instanceof TurnProviderError;
-    const detail={stage:known?error.stage:'unexpected',status:known?error.status:null};
-    try{ console.warn('[video] turn relay unavailable',JSON.stringify(detail)); }catch{}
-    return res.status(503).json(TURN_RELAY_UNAVAILABLE);
+  // Cloudflare first, then the Metered backup, each only within its own
+  // monthly budget. Stage, provider and HTTP status are logged; never a key,
+  // token, credential or response body.
+  let paused=0;
+  for(const provider of config.providers){
+    let reservation=null;
+    try{
+      reservation=await reserveTurnRelay(db,provider,{ttlSeconds:window.ttlSeconds,expiresAtMs:window.expiresAtMs,fetchImpl:globalThis.fetch});
+      const grant=await mintTurnIceServers(provider,{window,fetchImpl:globalThis.fetch});
+      return res.json({iceServers:grant.iceServers,expiresAt:grant.expiresAt,relay:grant.relay});
+    }catch(error){
+      if(reservation) await releaseTurnReservation(db,reservation);
+      const budget=error instanceof TurnBudgetError, known=error instanceof TurnProviderError;
+      if(budget&&error.reason==='budget_reached') paused+=1;
+      const detail={provider:provider.provider,stage:budget?'budget':known?error.stage:'unexpected',
+        status:known?error.status:null,reason:budget?error.reason:null};
+      try{ console.warn('[video] turn relay unavailable',JSON.stringify(detail)); }catch{}
+    }
   }
+  // Every relay is over its free allowance: an expected state, not a fault.
+  // The call proceeds STUN-only, exactly as without a relay.
+  if(paused===config.providers.length){
+    return res.json({iceServers:[],expiresAt:null,relay:'none',reason:'budget_reached'});
+  }
+  return res.status(503).json(TURN_RELAY_UNAVAILABLE);
 }
