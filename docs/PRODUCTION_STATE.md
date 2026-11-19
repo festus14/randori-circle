@@ -105,8 +105,8 @@ Dedicated relay-only project (the origin in `SUPABASE_URL`).
 - A room minted by the app's own code is private, has two seats, no recording
   mode, and expires and ejects after two hours.
 - **Blocked:** Daily Prebuilt is unavailable on this account until billing is
-  set up; in a 2026-11-19 test, two browsers could not join (Daily reported no
-  participants). `DAILY_VIDEO_ENABLED` stays off.
+  set up; in a 2026-11-19 test, two browsers could not join (the Daily presence
+  API reported 0 participants). `DAILY_VIDEO_ENABLED` stays off.
 - Before enabling (owner decision 2026-11-19): complete Daily billing setup;
   keep usage inside the published free allowance (10,000 participant-minutes a
   month, as published on 2026-11-19) with the budget guard and automatic
