@@ -8,8 +8,13 @@ const vercel=JSON.parse(readFileSync(new URL('../../vercel.json',import.meta.url
 const policy=name=>apply.match(new RegExp(`CREATE POLICY ${name} ON realtime\\.messages\\s+([\\s\\S]*?);`))?.[1];
 
 test('reviewed Realtime SQL has room-bound broadcast permissive policies plus all-role restrictive fences',()=>{
-  assert.match(apply,/BEGIN;[\s\S]*DO \$rc_owner\$[\s\S]*pg_has_role\(current_user,relation\.relowner,'USAGE'\)[\s\S]*RAISE EXCEPTION 'Applying role must own realtime\.messages'[\s\S]*ALTER TABLE realtime\.messages ENABLE ROW LEVEL SECURITY;[\s\S]*COMMIT;/);
-  assert.match(apply,/BEGIN;[\s\S]*ALTER TABLE realtime\.messages ENABLE ROW LEVEL SECURITY;[\s\S]*COMMIT;/);
+  // Preflight runs inside the transaction before any policy write: it requires RLS to be on (only the
+  // owner may turn it on) and the applying role to own the table or hold Supabase's supautils policy grant.
+  assert.match(apply,/BEGIN;[\s\S]*DO \$rc_preflight\$[\s\S]*relation\.relrowsecurity[\s\S]*pg_has_role\(current_user,owner_role,'USAGE'\)[\s\S]*current_setting\('supautils\.policy_grants',true\)[\s\S]*\? 'realtime\.messages'[\s\S]*IF NOT rls_on THEN[\s\S]*IF may_own THEN[\s\S]*EXECUTE 'ALTER TABLE realtime\.messages ENABLE ROW LEVEL SECURITY'[\s\S]*RAISE EXCEPTION 'realtime\.messages must have row level security enabled'[\s\S]*IF NOT \(may_own OR granted\) THEN[\s\S]*RAISE EXCEPTION 'Applying role must own realtime\.messages or hold its supautils policy grant'[\s\S]*\$rc_preflight\$;[\s\S]*DROP POLICY IF EXISTS rc_code_relay_read ON/);
+  // RLS is never disabled, the only ALTER TABLE is the owner-only conditional, and commit re-checks RLS.
+  assert.doesNotMatch(apply,/DISABLE ROW LEVEL SECURITY|NO FORCE ROW LEVEL SECURITY/);
+  assert.equal((apply.match(/ALTER TABLE/g)||[]).length,1);
+  assert.match(apply,/DO \$rc_postcheck\$[\s\S]*relrowsecurity[\s\S]*RAISE EXCEPTION 'realtime\.messages row level security is not enabled'[\s\S]*\$rc_postcheck\$;\s*COMMIT;\s*$/);
   assert.equal((apply.match(/CREATE POLICY /g)||[]).length,4);
   for(const [action,kind,clause] of [['read','SELECT','USING'],['write','INSERT','WITH CHECK']]){
     const grant=policy(`rc_code_relay_${action}`),fence=policy(`rc_code_relay_${action}_scope`);

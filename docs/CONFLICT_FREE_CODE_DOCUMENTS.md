@@ -338,22 +338,24 @@ CI or this implementation. Do not contact a real project from unit/e2e tests.
    optional `alg`/`use` must be `ES256`/`sig`. Never put `d` in a browser asset,
    public env prefix or committed file. Use a separate key/project per
    environment if previews must not join production channels.
-5. In the **Supabase Dashboard SQL Editor**, first check the applying role and
-   table owner with `SELECT current_user, tableowner FROM pg_tables WHERE
-   schemaname='realtime' AND tablename='messages';`. Use the owning role (or its
-   active inherited ownership role); stop if ownership is unavailable—do not
-   widen permissions or remove the RLS statement. Then review and execute the entire
+5. In the **Supabase Dashboard SQL Editor** (or the Management API query endpoint, which runs as the
+   same `postgres` role), check the applying role, the table owner and RLS with `SELECT current_user,
+   tableowner, (SELECT relrowsecurity FROM pg_class WHERE oid='realtime.messages'::regclass) FROM
+   pg_tables WHERE schemaname='realtime' AND tablename='messages';`. On Supabase the table belongs to
+   `supabase_realtime_admin` with RLS already enabled, and `postgres` is not its owner but is granted
+   policy management on exactly this table by `supautils.policy_grants` (verified 2026-11-19; it cannot
+   `ALTER TABLE`). Do not widen permissions. Then review and execute the entire
    [`supabase/realtime-authorization.sql`](../supabase/realtime-authorization.sql)
-   against the relay project. Its ownership preflight and first mutating
-   `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` run inside `BEGIN`/`COMMIT`, so
-   an ownership failure rolls back before any policies change. The transaction
-   enables RLS and installs two authenticated broadcast permissive policies
+   against the relay project. Its preflight runs inside `BEGIN`/`COMMIT` before any policy write: it
+   fails unless RLS is already on (only the table owner may enable it there) and the role owns the table
+   or holds that supautils grant, and a post-check refuses to commit unless RLS is still on. The transaction
+   installs two authenticated broadcast permissive policies
    plus restrictive read/write fences for
    **all roles**, so another permissive policy cannot widen room scope or
    allow a publishable/anonymous key. Supabase's trusted service role can
    bypass RLS; it must never reach a browser. Reapplying this file safely
    replaces only the four `rc_code_relay_*` policies. Do not put this SQL in
-   the Turso migration ledger or an API request.
+   the Turso migration ledger or an application request.
 6. Verify in the provider canary: both authorized participants can privately
    join their identical topic; another room/context, anonymous publishable
    key, expired token and missing room claim cannot read or broadcast;
