@@ -63,6 +63,9 @@ Randori has read-only schema inspection for configured databases, a transactiona
   The private toolkit has no capability until
   the approved migration is applied. See [interviewer toolkit](INTERVIEWER_TOOLKIT.md).
 
+- Production applied v26 on 2026-11-18 and v27 on 2026-11-19 through the protected
+  workflow; see [PRODUCTION_STATE.md](PRODUCTION_STATE.md#database).
+
 ## Commands
 
 Use database credentials only in an operator environment, never in browser code or committed files.
