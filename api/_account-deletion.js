@@ -62,7 +62,7 @@ export const ACCOUNT_DATA_INVENTORY=Object.freeze([
   ['auth_identity_audit_events',['user_id','actor_user_id'],'keep','Security audit of codes only, no personal data; the id now resolves to the tombstone.'],
   ['account_deletion_requests',['user_id','requested_at','scheduled_for','cancelled_at','executed_at'],'keep',
     'Grace-period request history: opaque ids and timestamps only. The executed row is the audit trail of a deletion; cancelled rows prove a request was withdrawn.'],
-  ['auth_rate_limits',['key'],'keep','Secret-keyed counters and opaque admission records, with no personal data or raw account ids. TTLs differ by purpose: Daily pair reservations last to token expiry plus five minutes; aggregate usage and refresh diagnostics last to UTC month end plus one hour. Keep/exclude policy is unchanged.'],
+  ['auth_rate_limits',['key'],'keep','Secret-keyed counters and opaque admission records with no personal data; TTLs vary by purpose, up to UTC month end plus one hour for Daily usage records.'],
   ['circle_memberships',['user_id','role','status','invited_by'],'anonymise',
     'Every membership made inactive and demoted to member. Rows stay so history and invited_by resolve to "Deleted member"; reactivation is refused.'],
   ['circles',['created_by'],'keep','Shared circle; created_by is an opaque id that now resolves to the tombstone.'],
