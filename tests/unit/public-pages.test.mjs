@@ -87,7 +87,7 @@ for (const [path, html] of Object.entries(pages)) {
     // The privacy policy was last updated for the private interviewer toolkit
     // (issue #465), later the same day as the video disclosure.
     if(path === '/privacy'){
-      assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-11-18T11:35:00Z">18 November 2026<\/time><\/p>/u);
+      assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-11-19T11:00:00Z">19 November 2026<\/time><\/p>/u);
     }else{
       assert.match(html, /<p class="legal-updated">Last updated: <time datetime="2026-10-22">22 October 2026<\/time><\/p>/u);
     }
