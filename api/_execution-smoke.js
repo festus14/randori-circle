@@ -20,7 +20,7 @@
 // messages, and nothing here throws: every failure maps to a category.
 import { performance } from 'node:perf_hooks';
 import { executeProgram, resolveExecutionProvider } from './_execution.js';
-import { ExecutionBusyError, recordExecutionRefusal } from './_execution-queue.js';
+import { ExecutionBusyError, executionQueueConfiguration, recordExecutionRefusal } from './_execution-queue.js';
 import { sanitizeStartupPair, warmMeasurementEnabled, warmMeasurementCohort, readStartupMeasurement } from './_execution-measurement.js';
 import { availableExecutionLanguages } from './_execution-languages.js';
 
@@ -126,6 +126,29 @@ export function executionSmokeLanguagePasses(entry){
 function allPass(languages){
   return EXECUTION_SMOKE_LANGUAGES.every(language=>executionSmokeLanguagePasses(languages[language]))
     && Object.keys(languages).every(language=>ALL_SMOKE_LANGUAGES.includes(language)&&executionSmokeLanguagePasses(languages[language]));
+}
+
+// With the admission queue on, every smoke language shares the single `ops`
+// circle, whose concurrency (EXECUTION_CIRCLE_CONCURRENCY, default 2) is lower
+// than the number of advertised languages once TypeScript is enabled. Running
+// them all at once queued the third behind the other two until it timed out as
+// `busy`, so one language was never verified. Run at most the ops circle's
+// concurrency at a time (worst case 3 x 90 s < the 300 s function limit).
+export function smokeConcurrency(env,count){
+  let config=null;
+  try{ config=executionQueueConfiguration(env); }catch{ return 1; }
+  if(!config) return Math.max(1,count);
+  return Math.max(1,Math.min(count,config.CIRCLE_CONCURRENCY));
+}
+
+async function runLimited(items,limit,run){
+  const results=new Array(items.length);
+  let next=0;
+  async function worker(){
+    while(next<items.length){ const index=next++; results[index]=await run(items[index]); }
+  }
+  await Promise.all(Array.from({length:Math.max(1,Math.min(limit,items.length))},worker));
+  return results;
 }
 
 async function smokeLanguage(language,{env,execute,monotonic,setTimer,clearTimer,deadlineMs,db}){
@@ -322,7 +345,8 @@ export async function runExecutionSmoke({trigger,getDb,env=process.env,execute=e
       ...(cohort?{coldStart:await readStartupMeasurement(db,env)}:{})}};
     const options={env,execute,monotonic,setTimer,clearTimer,deadlineMs,db};
     // Pair only JS/Python for the existing cohort; additions each spend one run.
-    const entries=await Promise.all(languageNames.map(language=>smokeLanguage(language,options)));
+    const entries=await runLimited(languageNames,smokeConcurrency(env,languageNames.length),
+      language=>smokeLanguage(language,options));
     const languages=Object.fromEntries(languageNames.map((language,index)=>[language,entries[index]]));
     await recordExecutionSmoke(db,claimId,languages,{cohort});
     return {status:200,body:{ok:allPass(languages),checkedAt:isoNow(clock),languages,

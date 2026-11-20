@@ -284,3 +284,14 @@ removes old rows, and the existing auth TTL sweeper can also remove them. Aggreg
 logs follow the existing 30-day app-log retention. An account deletion does not
 release an uncertain running VM's lease early; safe expiry preserves the spend
 ceiling and no personal execution bytes are added to backups.
+
+### Smoke runs under the queue
+
+With `EXECUTION_QUEUE_ENABLED=true`, every execution-smoke language is admitted
+through the single `ops` circle. The smoke therefore runs at most
+`EXECUTION_CIRCLE_CONCURRENCY` languages at a time (default 2), instead of all
+of them at once. Before this, enabling TypeScript gave the smoke three
+languages, and the third queued behind the other two until it was reported as
+`busy`, so it was never verified (observed in production on 2026-11-19, when
+Python was deferred). The worst case is three sequential 90-second measured
+languages, which is within the 300-second function limit.
