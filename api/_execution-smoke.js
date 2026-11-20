@@ -20,7 +20,7 @@
 // messages, and nothing here throws: every failure maps to a category.
 import { performance } from 'node:perf_hooks';
 import { executeProgram, resolveExecutionProvider } from './_execution.js';
-import { ExecutionBusyError, recordExecutionRefusal } from './_execution-queue.js';
+import { ExecutionBusyError, executionQueueConfiguration, recordExecutionRefusal } from './_execution-queue.js';
 import { sanitizeStartupPair, warmMeasurementEnabled, warmMeasurementCohort, readStartupMeasurement } from './_execution-measurement.js';
 import { availableExecutionLanguages } from './_execution-languages.js';
 
@@ -128,7 +128,48 @@ function allPass(languages){
     && Object.keys(languages).every(language=>ALL_SMOKE_LANGUAGES.includes(language)&&executionSmokeLanguagePasses(languages[language]));
 }
 
-async function smokeLanguage(language,{env,execute,monotonic,setTimer,clearTimer,deadlineMs,db}){
+// With the admission queue on, every smoke language shares the single `ops`
+// circle, whose concurrency (EXECUTION_CIRCLE_CONCURRENCY, default 2) is lower
+// than the number of advertised languages once TypeScript is enabled. Running
+// them all at once queued the third behind the other two until it timed out as
+// `busy`, so one language was never verified. Run at most the ops circle's
+// concurrency at a time (worst case 3 x 90 s < the 300 s function limit).
+export function smokeConcurrency(env,count){
+  let config=null;
+  try{ config=executionQueueConfiguration(env); }
+  catch(error){
+    // An invalid queue configuration makes admission refuse at once, so one at
+    // a time costs nothing; anything else is a real bug and must surface.
+    if(!(error instanceof ExecutionBusyError)) throw error;
+    return 1;
+  }
+  if(!config) return Math.max(1,count);
+  return Math.max(1,Math.min(count,config.CIRCLE_CONCURRENCY));
+}
+
+// The whole smoke must finish inside the 300 s Fluid function limit with a
+// reserve for cold start and sandbox setup; a language that would start after
+// the budget is reported as a timeout instead of risking a 504.
+export const EXECUTION_SMOKE_TOTAL_BUDGET_MS=240_000;
+
+// Runs every item, at most `limit` at a time, preserving input order. A thrown
+// item does not abandon the others; the first error is rethrown at the end.
+export async function runLimited(items,limit,run){
+  const results=new Array(items.length);
+  let next=0, failure=null, failed=false;
+  async function worker(){
+    while(next<items.length){
+      const index=next++;
+      try{ results[index]=await run(items[index],index); }
+      catch(error){ if(!failed){ failed=true; failure=error; } }
+    }
+  }
+  await Promise.all(Array.from({length:Math.max(1,Math.min(limit,items.length))},()=>worker()));
+  if(failed) throw failure;
+  return results;
+}
+
+async function smokeLanguage(language,{env,execute,monotonic,setTimer,clearTimer,deadlineMs,db,totalRemainingMs}){
   const started=monotonic();
   let status, startup=null, expired=false;
   let timer;
@@ -148,7 +189,7 @@ async function smokeLanguage(language,{env,execute,monotonic,setTimer,clearTimer
       }
       return startup?classifyExecutionResult(warm):'provider_error';
     }).catch(classifyExecutionError);
-    const deadline=new Promise(resolve=>{ timer=setTimer(()=>{expired=true;resolve('timeout');},measurement?Math.max(90000,deadlineMs):deadlineMs); });
+    const deadline=new Promise(resolve=>{ timer=setTimer(()=>{expired=true;resolve('timeout');},measurement?Math.min(Math.max(90000,deadlineMs),totalRemainingMs??Infinity):deadlineMs); });
     status=await Promise.race([attempt,deadline]);
   }catch{
     status='provider_error';
@@ -322,7 +363,17 @@ export async function runExecutionSmoke({trigger,getDb,env=process.env,execute=e
       ...(cohort?{coldStart:await readStartupMeasurement(db,env)}:{})}};
     const options={env,execute,monotonic,setTimer,clearTimer,deadlineMs,db};
     // Pair only JS/Python for the existing cohort; additions each spend one run.
-    const entries=await Promise.all(languageNames.map(language=>smokeLanguage(language,options)));
+    const limit=smokeConcurrency(env,languageNames.length);
+    const startedAt=monotonic();
+    // The first wave always starts at once, exactly as before; only languages
+    // that wait for a free slot are held to the total budget.
+    const entries=await runLimited(languageNames,limit,(language,index)=>{
+      if(index<limit) return smokeLanguage(language,options);
+      const spent=monotonic()-startedAt;
+      const remaining=Number.isFinite(spent)?EXECUTION_SMOKE_TOTAL_BUDGET_MS-spent:0;
+      if(remaining<=0) return {status:'timeout',durationMs:0};
+      return smokeLanguage(language,{...options,deadlineMs:Math.min(deadlineMs,remaining),totalRemainingMs:remaining});
+    });
     const languages=Object.fromEntries(languageNames.map((language,index)=>[language,entries[index]]));
     await recordExecutionSmoke(db,claimId,languages,{cohort});
     return {status:200,body:{ok:allPass(languages),checkedAt:isoNow(clock),languages,
