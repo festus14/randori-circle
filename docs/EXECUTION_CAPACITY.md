@@ -294,4 +294,9 @@ of them at once. Before this, enabling TypeScript gave the smoke three
 languages, and the third queued behind the other two until it was reported as
 `busy`, so it was never verified (observed in production on 2026-11-19, when
 Python was deferred). The worst case is three sequential 90-second measured
-languages, which is within the 300-second function limit.
+languages, which is within the 300-second function limit. The smoke also has a
+240-second total budget (a 60-second reserve under that limit): a language that
+would start after it is reported as `timeout`. At the default circle concurrency
+of 2, three languages run in two waves (about 90 seconds unmeasured, 180 seconds
+measured). TypeScript has its own `smoke-typescript` account lane, like
+JavaScript and Python, so unrelated maintenance work can't take its slot.

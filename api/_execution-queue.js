@@ -77,7 +77,7 @@ function identity(config, context) {
   if (!context || (!Number.isSafeInteger(context.userId) || context.userId < 1) && context.ops !== true
     || (!Number.isSafeInteger(context.circleId) || context.circleId < 1) && context.ops !== true
     || typeof context.operation !== 'string' || !context.operation) throw new ExecutionBusyError('configuration');
-  const lane = ['smoke-javascript','smoke-python'].includes(context.lane) ? context.lane : 'maintenance';
+  const lane = ['smoke-javascript','smoke-python','smoke-typescript'].includes(context.lane) ? context.lane : 'maintenance';
   return { account: digest(config, 'account', context.ops ? `ops:${lane}` : context.userId),
     circle: digest(config, 'circle', context.ops ? 'ops' : context.circleId),
     operation: digest(config, 'operation', context.operation), priority: context.interview === true ? 'i' : 'p' };

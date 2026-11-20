@@ -29,6 +29,8 @@ import {
   recordExecutionSmoke,
   runExecutionSmoke,
   smokeConcurrency,
+  runLimited,
+  EXECUTION_SMOKE_TOTAL_BUDGET_MS,
   throttledExecutionSmokeBody,
 } from '../../api/_execution-smoke.js';
 
@@ -671,4 +673,33 @@ test('with the queue on, smoke languages never exceed the ops circle concurrency
     assert.equal(outcome.body.ok,true,'no language is left queued as busy');
     for(const language of ['javascript','python','typescript']) assert.equal(outcome.body.languages[language].status,'ok',language);
   }
+});
+
+test('runLimited keeps order, handles empty lists and never abandons items after a failure',async()=>{
+  assert.deepEqual(await runLimited([],2,async()=>1),[]);
+  const order=await runLimited(['a','b','c','d'],2,async(item,index)=>{ await new Promise(r=>setTimeout(r,(4-index)*5)); return item+index; });
+  assert.deepEqual(order,['a0','b1','c2','d3']);
+  const ran=[];
+  await assert.rejects(runLimited(['a','b','c'],1,async item=>{ ran.push(item); if(item==='a') throw new Error('first'); return item; }),/first/);
+  assert.deepEqual(ran,['a','b','c'],'later items still run after an earlier one throws');
+});
+
+test('a queue configuration error runs one language at a time; other errors surface',()=>{
+  const QUEUED={...SANDBOX,EXECUTION_QUEUE_ENABLED:'true',JWT_SECRET:'x'.repeat(48)};
+  assert.equal(smokeConcurrency({...QUEUED,EXECUTION_GLOBAL_CONCURRENCY:'nope'},3),1);
+  assert.throws(()=>smokeConcurrency(new Proxy({},{get(){ throw new TypeError('boom'); }}),3),/boom/);
+});
+
+test('the smoke stops starting languages once the total budget is spent',async()=>{
+  assert.ok(EXECUTION_SMOKE_TOTAL_BUDGET_MS<=240_000,'keeps a 60 s reserve under the 300 s function limit');
+  let now=0;
+  const QUEUED={...SANDBOX,EXECUTION_QUEUE_ENABLED:'true',JWT_SECRET:'smoke-budget-test-secret-'.padEnd(48,'x'),
+    EXECUTION_LANGUAGE_TYPESCRIPT_ENABLED:'true',EXECUTION_CIRCLE_CONCURRENCY:'1'};
+  await db.execute('DELETE FROM app_logs');
+  const ran=[];
+  const outcome=await runExecutionSmoke({trigger:'schedule',getDb:()=>db,env:QUEUED,monotonic:()=>now,
+    execute:async request=>{ ran.push(request.language); now+=EXECUTION_SMOKE_TOTAL_BUDGET_MS; return okRun(); }});
+  assert.equal(ran.length,1,'only the first wave starts; the budget is spent before the queued languages');
+  const statuses=Object.values(outcome.body.languages).map(entry=>entry.status).sort();
+  assert.deepEqual(statuses,['ok','timeout','timeout']);
 });
